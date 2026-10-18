@@ -133,12 +133,13 @@ test('the lock: a dead owner\'s is taken over at once; one that cannot be remove
   assert.equal(fs.existsSync(lock), false);
   // a stale lock that cannot be moved (EPERM, a read-only folder): waited for like a live one, then 503 — bounded
   fs.writeFileSync(lock, `999999999 ${'b'.repeat(16)}`);
-  const rename = fs.renameSync;
-  fs.renameSync = (a, b) => { if (String(a).endsWith('.lock')) { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; } return rename(a, b); };
+  const unlink = fs.unlinkSync;
+  fs.unlinkSync = (a) => { if (String(a).endsWith('/.lock')) { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; } return unlink(a); };
   t = Date.now();
   try {
     assert.throws(() => store.add({ kind: 'other', host: 'c.example', auth: 'ssh' }), (e) => e.status === 503 && /busy/.test(e.message));
-  } finally { fs.renameSync = rename; }
+  } finally { fs.unlinkSync = unlink; }
+  assert.equal(fs.existsSync(`${lock}.break`), false, 'the break file never stays behind');
   const took = Date.now() - t;
   assert.ok(took >= 2000 && took < 10000, `waited ${took} ms (300 tries of 10 ms, never a spin)`);
   fs.unlinkSync(lock);
@@ -148,5 +149,75 @@ test('the lock: a dead owner\'s is taken over at once; one that cannot be remove
   fs.unlinkSync(lock);
   // its own: removed
   store.locked(() => { assert.match(fs.readFileSync(lock, 'utf8'), new RegExp(`^${process.pid} [0-9a-f]{16}$`)); });
+  assert.equal(fs.existsSync(lock), false);
+});
+
+test('breaking a stale lock: one breaker at a time (.lock.break), only the very stale lock removed; own PID, another id: stale', () => {
+  const dir = path.join(ROOT, 'break');
+  const store = new GitHosts({ dir });
+  store.add({ kind: 'other', host: 'a.example', auth: 'ssh' });
+  const lock = path.join(store.dir, '.lock'), brk = `${lock}.break`;
+  const old = (Date.now() - 20000) / 1000;
+  // another attempt is breaking it (a fresh .lock.break): this one waits — no second breaker — then "busy"
+  fs.writeFileSync(lock, `999999999 ${'d'.repeat(16)}`);
+  fs.writeFileSync(brk, '');
+  assert.throws(() => store.add({ kind: 'other', host: 'b.example', auth: 'ssh' }), (e) => e.status === 503);
+  assert.equal(fs.readFileSync(lock, 'utf8'), `999999999 ${'d'.repeat(16)}`, 'not broken past another breaker');
+  // a .lock.break a dead breaker left (older than 10 s): it goes, and the stale lock is broken
+  fs.utimesSync(brk, old, old);
+  store.add({ kind: 'other', host: 'b.example', auth: 'ssh' });
+  assert.equal(fs.existsSync(brk) || fs.existsSync(lock), false);
+  // the lock changed hands while this one took .lock.break (a live owner now): left as it is
+  fs.writeFileSync(lock, `999999999 ${'e'.repeat(16)}`);
+  const open = fs.openSync;
+  let swapped = false;
+  fs.openSync = (f, flags, mode) => {
+    const fd = open(f, flags, mode);
+    if (String(f).endsWith('.lock.break') && !swapped) { swapped = true; fs.writeFileSync(lock, `1 ${'f'.repeat(16)}`); }
+    return fd;
+  };
+  try {
+    assert.throws(() => store.add({ kind: 'other', host: 'c.example', auth: 'ssh' }), (e) => e.status === 503);
+  } finally { fs.openSync = open; }
+  assert.equal(fs.readFileSync(lock, 'utf8'), `1 ${'f'.repeat(16)}`, 'a live owner\'s lock stays');
+  fs.unlinkSync(lock);
+  // this process's PID with another id: stale at once (locked() is synchronous, never re-entered)
+  fs.writeFileSync(lock, `${process.pid} ${'0'.repeat(16)}`);
+  const t = Date.now();
+  store.add({ kind: 'other', host: 'd.example', auth: 'ssh' });
+  assert.ok(Date.now() - t < 1000, 'no wait');
+  assert.equal(fs.existsSync(lock), false);
+});
+
+test('a lock is read safely: a link never followed, a FIFO never blocks, 64 bytes at most, odd ones broken after 10 s', () => {
+  const dir = path.join(ROOT, 'odd');
+  const store = new GitHosts({ dir });
+  store.add({ kind: 'other', host: 'a.example', auth: 'ssh' });
+  const lock = path.join(store.dir, '.lock');
+  const old = (Date.now() - 20000) / 1000;
+  // a link to another file: not followed, not read; once old, the link (not its target) is removed
+  const victim = path.join(ROOT, 'victim.txt');
+  fs.writeFileSync(victim, 'keep me');
+  fs.symlinkSync(victim, lock);
+  assert.throws(() => store.add({ kind: 'other', host: 'b.example', auth: 'ssh' }), (e) => e.status === 503, 'a fresh odd lock: waited for');
+  fs.lutimesSync(lock, old, old);
+  store.add({ kind: 'other', host: 'b.example', auth: 'ssh' });
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'keep me');
+  assert.equal(fs.existsSync(lock), false);
+  // a FIFO: never blocks the read (O_NONBLOCK; not a regular file), broken once old
+  const mkfifo = ['/usr/bin/mkfifo', '/bin/mkfifo'].find((f) => fs.existsSync(f));
+  if (mkfifo) {
+    spawnSync(mkfifo, [lock]);
+    fs.utimesSync(lock, old, old);
+    const t = Date.now();
+    store.add({ kind: 'other', host: 'c.example', auth: 'ssh' });
+    assert.ok(Date.now() - t < 2000);
+    assert.equal(fs.existsSync(lock), false);
+  }
+  // a long file: 64 bytes read, no owner in them — broken once it is a second old
+  fs.writeFileSync(lock, `${process.pid} ${'1'.repeat(16)}${'x'.repeat(100000)}`);
+  const sec = (Date.now() - 2000) / 1000;
+  fs.utimesSync(lock, sec, sec);
+  store.add({ kind: 'other', host: 'd.example', auth: 'ssh' });
   assert.equal(fs.existsSync(lock), false);
 });

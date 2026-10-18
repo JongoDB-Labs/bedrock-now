@@ -1608,9 +1608,11 @@ operation you started, sent only where you saw it go.
   would break glab or the Code page), or anything glab or GitLab cannot confirm, is refused. The import turns shell
   tracing off before it reads a token (`bash -x` prints nothing of it). Git hosts' file is written under a lock file
   holding its owner's PID and a random id, so the import and the code container never write over each other's
-  change: a lock whose process is gone (or older than 10 s) is taken over by a rename only one attempt wins, a lock
-  that cannot be taken over is waited for and then answered "busy" (never a spin), and only a lock this process still
-  owns is removed.
+  change: a lock whose process is gone, that holds this process's PID with another id, or that is older than 10 s is
+  broken behind an exclusively created `.lock.break` (one breaker at a time, which removes `.lock` only while it still
+  holds the same stale owner); a lock that cannot be broken is waited for and then answered "busy" (never a spin); a
+  lock is read without following a link or blocking, as a regular file of 64 bytes at most; and only a lock this
+  process still owns is removed.
 - [x] **One operation, its host, while it runs — HTTPS token.** The network command (`git fetch`, `push`, `clone`,
   `ls-remote`) gets one more descriptor, a socket pair as its fd 3, which only it and its children inherit, and the
   configuration `credential.helper=` (empty: every helper the repository's or the sandbox's configuration names is

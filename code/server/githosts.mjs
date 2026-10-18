@@ -58,6 +58,35 @@ const msTime = (v) => (Number.isInteger(v) && v > 0 && v < 1e14 ? v : null);
 // sleepSync(ms): the store's few milliseconds' wait for another process's write (import-host.mjs)
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const knownPrefix = (host, port) => (port && port !== 22 ? `[${host}]:${port}` : host);
+// readLock(file) -> {owner, mtimeMs, odd} of a lock file, or null when there is none: opened without following a link
+// and without blocking (O_NOFOLLOW, O_NONBLOCK), read only as a regular file and 64 bytes at most; anything else (a
+// link, a FIFO, a folder) is odd — never an owner, stale once it is 10 s old
+const LOCK_OPEN = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+function readLock(file) {
+  let fd;
+  try { fd = fs.openSync(file, LOCK_OPEN); } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    try { return { owner: '', mtimeMs: fs.lstatSync(file).mtimeMs, odd: true }; } catch { return null; }
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { owner: '', mtimeMs: st.mtimeMs, odd: true };
+    const buf = Buffer.alloc(64);
+    const n = fs.readSync(fd, buf, 0, 64, 0);
+    return { owner: buf.subarray(0, n).toString('latin1'), mtimeMs: st.mtimeMs, odd: false };
+  } catch { return { owner: '', mtimeMs: 0, odd: true }; } finally { fs.closeSync(fd); }
+}
+// lockStale(found, me) -> whether a lock someone holds may be broken: its process gone, this process's PID with another
+// id, older than 10 s — or, without an owner yet (being written) or odd, older than 1 s / 10 s
+function lockStale(found, me) {
+  const age = Date.now() - found.mtimeMs;
+  if (found.odd) return age > 10000;
+  const m = /^([0-9]{1,10}) ([0-9a-f]{16})$/.exec(found.owner);
+  if (!m) return age > 1000;
+  if (age > 10000) return true;
+  if (Number(m[1]) === process.pid) return found.owner !== me;
+  try { process.kill(Number(m[1]), 0); return false; } catch (e) { return e.code !== 'EPERM'; }
+}
 
 // The store: read at each use (one small file), written whole (a temporary file renamed over it).
 export class GitHosts {
@@ -84,11 +113,14 @@ export class GitHosts {
   // and this server never write over each other's change
   update(fn) { return this.locked(() => { const v = this.read(); const out = fn(v); this.write(v); return out; }); }
   // locked(fn): fn() while this process holds .lock — a file created exclusively, holding "<pid> <random>" (its owner).
-  // A lock whose process is gone (this container's PIDs: the importer runs here too), or older than 10 s, is stale: it
-  // is taken over by renaming it to a name of this attempt's own (one rename wins), checked to be the very lock found
-  // stale (else put back, without replacing a newer one), then removed. Every attempt counts towards one limit — a lock
-  // that cannot be taken over (read-only, EPERM) is waited for like a live one, then "busy": never a spin. Only a lock
-  // this process still owns is removed afterwards.
+  // A lock is stale when its process is gone (this container's PIDs: the importer runs here too), when it holds this
+  // process's PID with another random id (locked() is synchronous and never re-entered: no call of this process can
+  // hold it now), or when it is older than 10 s. A stale lock is broken behind .lock.break, created exclusively: one
+  // breaker at a time re-reads .lock, removes it only while it still holds the same stale owner, then removes
+  // .lock.break (a .lock.break older than 10 s was left by a process that died). Every attempt counts towards one
+  // limit — a lock that cannot be broken (EPERM, read-only) is waited for like a live one, then "busy": never a spin.
+  // A lock is read without following a link, without blocking (a FIFO), as a regular file only, 64 bytes at most; only
+  // a lock this process still owns is removed afterwards.
   locked(fn) {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const lock = path.join(this.dir, '.lock');
@@ -114,31 +146,30 @@ export class GitHosts {
     }
     try { return fn(); } finally {
       try { fs.closeSync(fd); } catch { /* closed */ }
-      try { if (fs.readFileSync(lock, 'utf8') === me) fs.unlinkSync(lock); } catch { /* gone, or another's now */ }
+      if (readLock(lock)?.owner === me) { try { fs.unlinkSync(lock); } catch { /* gone */ } }
     }
   }
   // takeOver(lock, me) -> true when a stale lock was removed (or the lock is gone): try again at once; false: wait
   takeOver(lock, me) {
-    let owner, st;
-    try { st = fs.statSync(lock); owner = fs.readFileSync(lock, 'utf8'); } catch (e) { return e.code === 'ENOENT'; }
-    const pid = /^([0-9]{1,10}) [0-9a-f]{16}$/.exec(owner)?.[1];
-    let alive = Boolean(pid);
-    if (pid) { try { process.kill(Number(pid), 0); } catch (e) { alive = e.code === 'EPERM'; } }
-    if (alive && Date.now() - st.mtimeMs <= 10000) return false;
-    if (!pid && Date.now() - st.mtimeMs <= 1000) return false;   // (being written: its owner is about to fill it)
-    const aside = `${lock}.${me.split(' ')[1]}`;
-    try { fs.renameSync(lock, aside); } catch (e) { return e.code === 'ENOENT'; }
-    let taken = '';
-    try { taken = fs.readFileSync(aside, 'utf8'); } catch { /* gone */ }
-    if (taken !== owner) {
-      // (another attempt took the stale one over first, and this rename caught its fresh lock: put back, unless a
-      // newer one exists)
-      try { fs.linkSync(aside, lock); } catch { /* a newer lock: that one stands */ }
-      try { fs.unlinkSync(aside); } catch { /* gone */ }
+    const found = readLock(lock);
+    if (!found) return true;
+    if (!lockStale(found, me)) return false;
+    const brk = `${lock}.break`;
+    let bfd;
+    try { bfd = fs.openSync(brk, 'wx', 0o600); } catch (e) {
+      // (another attempt is breaking it — or died doing so: a .lock.break older than 10 s goes, and the next try breaks)
+      if (e.code === 'EEXIST') { try { if (Date.now() - fs.lstatSync(brk).mtimeMs > 10000) fs.unlinkSync(brk); } catch { /* gone */ } }
       return false;
     }
-    try { fs.unlinkSync(aside); } catch { /* left aside: harmless */ }
-    return true;
+    try {
+      const again = readLock(lock);
+      if (!again) return true;
+      if (again.owner !== found.owner || again.odd !== found.odd || !lockStale(again, me)) return false;
+      try { fs.unlinkSync(lock); return true; } catch (e) { return e.code === 'ENOENT'; }
+    } finally {
+      try { fs.closeSync(bfd); } catch { /* closed */ }
+      try { fs.unlinkSync(brk); } catch { /* gone */ }
+    }
   }
 
   // public(h) -> what the page may see of a host: never the token or the private key
