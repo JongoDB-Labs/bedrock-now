@@ -185,11 +185,11 @@ test_the_remote_preview_host_follows_the_remote_code_page() {
   assert_not_contains "$(ts_service_names) $(ts_serve_config tailscale "$TN")" "preview"
   steps="$(ts_admin_steps tailscale)"
   assert_contains "$steps" "The Code page's previews over remote access, bedrock-now-preview, are off: read docs/remote.md"
-  assert_contains "$steps" "define and approve that Service first, then ./stack config set REMOTE_PREVIEW true"
+  assert_contains "$steps" "define and approve that Service first, then ./stack config set REMOTE_PREVIEW (then: true)"
   note="$(remote_preview_note)"
   assert_contains "$note" "same site as every other app of"
   assert_contains "$note" "first define the Service bedrock-now-preview (port tcp:443)"
-  assert_contains "$note" "Off: ./stack config set REMOTE_PREVIEW false"
+  assert_contains "$note" "Off: ./stack config set REMOTE_PREVIEW (then: false)"
   for v in '' false OFF no 0 maybe; do
     set_env REMOTE_PREVIEW "$v"; code_remote_sync; assert_eq "[$(get_env REMOTE_PREVIEW_HOST)]" "[]"
   done
@@ -207,7 +207,7 @@ p = json.load(sys.stdin)
 assert "svc:bedrock-now-preview" in p["autoApprovers"]["services"] and "svc:bedrock-now-preview" in p["grants"][0]["dst"], p' || return 1
   steps="$(ts_admin_steps tailscale)"
   assert_contains "$steps" "bedrock-now-preview shows the dev servers running in the sandbox"
-  assert_contains "$steps" "Off: ./stack config set REMOTE_PREVIEW false"
+  assert_contains "$steps" "Off: ./stack config set REMOTE_PREVIEW (then: false)"
   assert_eq "$(remote_preview_note)" ""
   assert_contains "$(remote_app_list)" "chat admin files terminal code preview"
   set_env REMOTE_PREVIEW yes; code_remote_sync; assert_eq "$(get_env REMOTE_PREVIEW_HOST)" "bedrock-now-preview.$TN"
@@ -251,7 +251,7 @@ test_status_and_test_name_the_remote_previews() {
   assert_contains "$(code_status)" "remote: off (the default; REMOTE_PREVIEW=true turns them on"
   assert_contains "$(remote_status)" "preview  off — the Code page's previews stay on this computer (REMOTE_PREVIEW; docs/remote.md before turning them on)"
   set_env REMOTE_PREVIEW true; code_remote_sync
-  assert_contains "$(code_status)" "remote: https://bedrock-now-preview.$TN (one port at a time per browser; off: ./stack config set REMOTE_PREVIEW false)"
+  assert_contains "$(code_status)" "remote: https://bedrock-now-preview.$TN (one port at a time per browser; off: ./stack config set REMOTE_PREVIEW (then: false))"
   assert_contains "$(remote_status)" "preview  https://bedrock-now-preview.$TN   (dev servers in the sandbox, opened from the Code page)"
   # ./stack remote test: the preview host without its cookie, and a request from its origin to the portal — refused
   _caddy_remote_get() { echo "$*" >> "$TMP/gets"; echo "403|"; }

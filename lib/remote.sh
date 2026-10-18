@@ -360,10 +360,10 @@ EOF
      The sidecar ($(ts_node_name)) advertises them on start; with the autoApprovers above they are approved
      at once — otherwise approve it under "Service hosts" of each Service.$(if [ -n "$(code_remote_preview_app)" ]; then printf '
      %s-preview shows the dev servers running in the sandbox: sandbox content, on the same site as every other
-     Service and app of your tailnet (bedrock-now'"'"'s refuse its requests; docs/remote.md). Off: ./stack config set REMOTE_PREVIEW false.' "$b"
+     Service and app of your tailnet (bedrock-now'"'"'s refuse its requests; docs/remote.md). Off: ./stack config set REMOTE_PREVIEW (then: false).' "$b"
      elif [ -n "$(code_remote_app)" ]; then printf '
      (The Code page'"'"'s previews over remote access, %s-preview, are off: read docs/remote.md before you turn
-     them on — define and approve that Service first, then ./stack config set REMOTE_PREVIEW true.)' "$b"; fi)
+     them on — define and approve that Service first, then ./stack config set REMOTE_PREVIEW (then: true).)' "$b"; fi)
   5. Your devices: install Tailscale and sign in$( [ -n "$(get_env TAILSCALE_ALLOWED_LOGIN)" ] && printf ' as %s' "$(get_env TAILSCALE_ALLOWED_LOGIN)").
      Clients need v1.94+ (Linux clients up to v1.93: sudo tailscale set --accept-routes).
 EOF

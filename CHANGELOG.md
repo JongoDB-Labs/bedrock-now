@@ -8,6 +8,10 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Fixed
 
+- **Hints that showed `./stack config set KEY VALUE`** (remote previews, sandbox internet access) — `config set` asks
+  for the value after the key; the hints now say so. `.env.example` explains that `name:PORT` in
+  `TERMINAL_EGRESS_ALLOW` opens that port instead of 80/443/22 for that name.
+
 - **Tests:** right after a pull that changed LiteLLM's hook, the shell suite failed once with an unnamed live-state
   guard (a `./stack up` test re-rendered into the checkout's `litellm/`). It no longer does; `tests/run.sh` names the
   test that trips a guard and lists every failure on its last line.

@@ -233,7 +233,7 @@ EOF
     printf 'With Tailscale: first define the Service %s-preview (port tcp:443) in the admin console and add\n' "$(ts_base)"
     printf 'svc:%s-preview to your policy'"'"'s autoApprovers and grants (docs/remote.md), then turn previews on.\n' "$(ts_base)"
   fi
-  printf 'On: ./stack config set REMOTE_PREVIEW true (or Settings › Remote access, on this computer). Off: ./stack config set REMOTE_PREVIEW false.\n'
+  printf 'On: ./stack config set REMOTE_PREVIEW (then: true) (or Settings › Remote access, on this computer). Off: ./stack config set REMOTE_PREVIEW (then: false).\n'
 }
 
 # code_preview_domain_ok NAME REMOTE_HOST -> 0 for a REMOTE_PREVIEW_DOMAIN the previews can use; else prints why
@@ -453,7 +453,7 @@ code_status() {
     "$(get_env TERMINAL_WORKSPACE)" "$(get_env BUDGET_TERMINAL)" "$(terminal_egress_words)"
   printf '  Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.%s\n' "$(get_env PREVIEW_DOMAIN)"
   if [ -n "$(get_env REMOTE_PREVIEW_HOST)" ]; then
-    printf '             remote: https://%s (one port at a time per browser; off: ./stack config set REMOTE_PREVIEW false)\n' "$(get_env REMOTE_PREVIEW_HOST)"
+    printf '             remote: https://%s (one port at a time per browser; off: ./stack config set REMOTE_PREVIEW (then: false))\n' "$(get_env REMOTE_PREVIEW_HOST)"
   elif [ -n "$(get_env REMOTE_CODE_HOST)" ]; then
     printf '             remote: off (the default; REMOTE_PREVIEW=true turns them on — same-site with your tailnet'"'"'s or domain'"'"'s other apps: docs/remote.md)\n'
   fi
