@@ -41,7 +41,8 @@ All notable changes to bedrock-now are documented here. The format follows
   line stays in view. A hostile sandbox cannot word its text as a message from bedrock-now asking for a code.
 - **Names, titles and errors on the Code page show more invisible characters** as `⟨U+…⟩`: Hangul fillers (U+115F,
   U+1160, U+3164, U+FFA0), the Mongolian vowel separator, the combining grapheme joiner, the soft hyphen and
-  variation selectors — not the text/emoji presentation ones (U+FE0E, U+FE0F): an emoji stays an emoji.
+  variation selectors — the text/emoji presentation ones (U+FE0E, U+FE0F) only where no emoji comes before them:
+  an emoji stays an emoji.
 
 ## [0.15.0] - 2026-10-18
 

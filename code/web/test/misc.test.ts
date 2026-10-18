@@ -19,12 +19,19 @@ test('text: caps, visible controls, ids, paths', () => {
   assert.equal(visible('a\r\nb\u0007c\u001b[31md\u001b[0m‮e'), 'a\nb⟨U+0007⟩cd⟨U+202E⟩e');
   assert.equal(label('  two\n lines  '), 'two lines');
   // labels: Hangul fillers, the Mongolian vowel separator, the combining grapheme joiner, the soft hyphen, variation
-  // selectors U+FE00–FE0D and U+E0100–E01EF — visible; the text/emoji presentation selectors (U+FE0E/U+FE0F) are not
+  // selectors U+FE00–FE0D and U+E0100–E01EF — visible; the text/emoji presentation selectors (U+FE0E/U+FE0F) only
+  // where they follow no character that can be an emoji
   assert.equal(label('a\u115fb\u1160c\u3164d\uffa0e\u180ef\u034fg\u00adh\ufe00i\ufe0dj\u{e0100}k\u{e01ef}l'),
     'a⟨U+115F⟩b⟨U+1160⟩c⟨U+3164⟩d⟨U+FFA0⟩e⟨U+180E⟩f⟨U+034F⟩g⟨U+00AD⟩h⟨U+FE00⟩i⟨U+FE0D⟩j⟨U+E0100⟩k⟨U+E01EF⟩l');
-  assert.equal(label('Fix \u26a0\ufe0f warnings'), 'Fix \u26a0\ufe0f warnings', 'an emoji title stays the emoji');
+  assert.equal(label('\u26a0\ufe0f'), '\u26a0\ufe0f', 'an emoji stays the emoji');
+  assert.equal(label('Fix \u26a0\ufe0f warnings'), 'Fix \u26a0\ufe0f warnings');
   assert.equal(label('\u2764\ufe0e'), '\u2764\ufe0e');
+  assert.equal(label('1\ufe0f\u20e3'), '1\ufe0f\u20e3', 'a keycap');
+  assert.equal(label('x\ufe0f'), 'x⟨U+FE0F⟩', 'after a letter: shown');
+  assert.equal(label('\ufe0f'), '⟨U+FE0F⟩', 'alone: shown');
+  assert.equal(label('a \ufe0ez'), 'a ⟨U+FE0E⟩z');
   assert.equal(label('x\ufe01y'), 'x⟨U+FE01⟩y');
+  assert.equal(label('\u26a0\u{e0100}'), '\u26a0⟨U+E0100⟩');
   assert.equal(visible('ok \u26a0\ufe0f'), 'ok \u26a0\ufe0f');
   assert.equal(label(label('x\ufe01')), 'x⟨U+FE01⟩', 'twice: the same');
   assert.ok(isUuid('3f2a7c1e-9b4d-4e8a-a1c2-0d9e8f7a6b5c'));
