@@ -276,7 +276,13 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
   }
 
   // --- the repositories and their remotes (no network) ---
-  const repos = async () => reposOf((await call({ op: 'git.repos' }, { timeoutMs: 15000 })).result);
+  // repos(root) — the repositories in a project's folder (root: from the project records; none: the workspace), as
+  // folders of the workspace (bn-coded answers them relative to the root)
+  const repos = async (root = null) => {
+    const r = reposOf((await call({ op: 'git.repos', ...(root?.rel ? { root: root.abs } : {}) }, { timeoutMs: 15000 })).result);
+    if (!root?.rel) return r;
+    return { ...r, repos: r.repos.map((x) => ({ path: x.path ? `${root.rel}/${x.path}` : root.rel })).filter((x) => repoOk(x.path)) };
+  };
   async function state(repo) {
     if (!repoOk(repo)) throw err(400, 'not a repository folder of the workspace');
     const st = remoteStateOf((await call({ op: 'git.remote.state', repo }, { timeoutMs: 45000 })).result);

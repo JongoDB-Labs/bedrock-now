@@ -1,6 +1,9 @@
 // The REST half of protocol.mjs: sessions (list, history, open, close, rename), the workspace's files and Claude Code's
 // plugins — all through bn-coded in the sandbox (this container mounts no folder of yours), and every answer from
-// there checked before it goes to the page.
+// there checked before it goes to the page. What works in a project (Search, @-search, Review, Run & test, launch.json,
+// memory, the permission files, the terminal's windows, deletes into its trash) takes `root` — {id, rel, abs} from the
+// project records (projects.mjs), never a folder the page or the sandbox names: bn-coded gets its folder, and the paths
+// it answers relative to it are made paths of the workspace here (the page's paths are the workspace's).
 import { isUtf8 } from 'node:buffer';
 import crypto from 'node:crypto';
 import { getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
@@ -13,6 +16,7 @@ import { DraftError, draftPrompt, runDraft } from './gitdraft.mjs';
 import { repoOk, SandboxSaid } from './gitremote.mjs';
 import { reasonOf, GIT_LOG_FAILED } from './gitreasons.mjs';
 import { watched } from './watch.mjs';
+import { WS, WORKSPACE_ID, PROJECTS_MAX, absOf, cwdOk, nameOk, rootOk } from './projects.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
 export class HttpError extends Error {
@@ -66,29 +70,62 @@ export function capEntries(entries) {
   return { list, cut };
 }
 
-export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 10000 }) {
+// sessions listed at most (bn-coded's sessions.list: the most recent of every folder of the workspace)
+export const SESSIONS_MAX = 300;
+// a root's field for bn-coded: only for a project folder (the workspace's ops are sent as they always were)
+export const rootField = (root) => (root?.rel ? { root: root.abs } : {});
+// a path bn-coded answered relative to a root, as a path of the workspace (the page's)
+export const inRoot = (root, p) => (root?.rel ? `${root.rel}/${p}` : p);
+
+export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, reloadMaxMs = 10000 }) {
   const need = (v, what) => { if (v === null) throw new HttpError(400, `bad ${what}`); return v; };
   const okPath = (v) => short(v, 4096);
 
   // --- sessions ---
+  // The working folder of each session the sandbox listed (its transcript records it; bn-coded keeps only folders of
+  // the workspace whose store folder it is in, and so does this side): where a resume, a title or the terminal finds
+  // it. A folder outside the workspace is never placed, shown or resumed.
+  const cwds = new Map();
+  const noteCwd = (id, cwd) => { if (cwds.size >= 5000 && !cwds.has(id)) cwds.clear(); cwds.set(id, cwd); };
   async function listSessions(q) {
     const { result } = await call({ op: 'sessions.list' });
-    const rows = (Array.isArray(result.sessions) ? result.sessions : []).slice(0, 200).map(sessionRow).filter(Boolean);
+    const place = projects ? projects.placer() : () => WORKSPACE_ID;
+    const rows = [];
+    for (const raw of (Array.isArray(result.sessions) ? result.sessions : []).slice(0, SESSIONS_MAX)) {
+      const r = sessionRow(raw);
+      if (!r) continue;
+      // (a sandbox from before projects names no folder: its sessions are the workspace's, as they were)
+      const cwd = raw.cwd === undefined || raw.cwd === null ? WS : raw.cwd;
+      if (!cwdOk(cwd)) continue;
+      noteCwd(r.id, cwd);
+      rows.push({ ...r, cwd, project: place(r.id, cwd) });
+    }
     const open = new Map(sessions.list().map((s) => [s.id, s]));
     const needle = typeof q === 'string' ? q.trim().toLowerCase().slice(0, 200) : '';
     const out = rows.filter((r) => !needle || `${r.title}\n${r.firstPrompt}\n${r.lastPrompt}`.toLowerCase().includes(needle))
       .map((r) => ({ ...r, state: open.get(r.id)?.state || null }));
     return { sessions: out };
   }
+  /** cwdFor(id) -> a session's working folder: its process's here, else the last list's (listed again once when it is
+   *  not in it), else the workspace (a session of the workspace from before projects). */
+  async function cwdFor(id) {
+    const s = sessions.get?.(id);
+    if (s?.cwd) return s.cwd;
+    if (cwds.has(id)) return cwds.get(id);
+    try { await listSessions(''); } catch { /* the workspace's, below */ }
+    return cwds.get(id) ?? WS;
+  }
+  // (bn-coded's field for a session's folder: none for the workspace's, as before projects)
+  const cwdField = (cwd) => (cwd && cwd !== WS ? { cwd } : {});
 
   // A read-only SessionStore over bn-coded's sessions.load, for the SDK's own transcript parsing (chain, order,
   // compaction) — never passed to query(): resuming uses the sandbox's files through --resume.
-  const storeFor = (id) => {
+  const storeFor = (id, cwd) => {
     const store = {
       truncated: false,
       async load(key) {
         if (key?.sessionId !== id) return null;
-        const { result } = await call({ op: 'sessions.load', id });
+        const { result } = await call({ op: 'sessions.load', id, ...cwdField(cwd) });
         if (!Array.isArray(result.entries)) return null;
         const { list, cut } = capEntries(result.entries);
         store.truncated = result.truncated === true || cut;
@@ -103,7 +140,7 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
   // there. null: it was the conversation's first prompt. 404: no such prompt in the transcript.
   async function parentOf(id, prompt) {
     if (!isUuid(id) || !isUuid(prompt)) throw new HttpError(400, 'bad session or prompt id');
-    const { result } = await call({ op: 'sessions.load', id });
+    const { result } = await call({ op: 'sessions.load', id, ...cwdField(await cwdFor(id)) });
     const e = (Array.isArray(result.entries) ? result.entries : []).find((x) => x && typeof x === 'object' && x.uuid === prompt && x.type === 'user');
     if (!e) throw new HttpError(404, 'that prompt is not in the session\'s transcript (only its last 3 MiB are read)');
     return isUuid(e.parentUuid) ? e.parentUuid : null;
@@ -113,8 +150,9 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
   // or more events (`messages` and `events` are the same list). tail: the last `tail` messages (more: earlier ones)
   async function messages(id, offset, limit, tail) {
     if (!isUuid(id)) throw new HttpError(400, 'bad session id');
-    const store = storeFor(id);
-    const all = await getSessionMessages(id, { dir: '/workspace', sessionStore: store, includeSystemMessages: true });
+    const cwd = await cwdFor(id);
+    const store = storeFor(id, cwd);
+    const all = await getSessionMessages(id, { dir: cwd, sessionStore: store, includeSystemMessages: true });
     const msgs = Array.isArray(all) ? all : [];
     const t = int(tail, 1, 2000);
     const lim = t ?? int(limit, 1, 2000) ?? 500;
@@ -133,7 +171,7 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     const s = sessions.get?.(id);
     if (s) s.title = t;
     if (s && !s.hasTranscript) { s.pendingTitle = t; return { ok: true, pending: true }; }
-    await call({ op: 'sessions.title', id, title: t });
+    await call({ op: 'sessions.title', id, title: t, ...cwdField(await cwdFor(id)) });
     return { ok: true };
   }
 
@@ -150,7 +188,7 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     try {
       const s = sessions.get?.(id);
       if (s) await s.toTerminal();
-      ({ result } = await call({ op: 'terminal.resume', id }, { timeoutMs: 20000 }));
+      ({ result } = await call({ op: 'terminal.resume', id, ...cwdField(await cwdFor(id)) }, { timeoutMs: 20000 }));
     } catch (e) {
       handing.delete(id);
       if (e instanceof SandboxError && e.kind === 'refused' && /no such session/.test(e.message)) throw new HttpError(404, e.message);
@@ -184,10 +222,10 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
 
   // --- the Permissions view: the sandbox's user settings (the rules "Always" wrote; removable) and the workspace's
   // .claude/settings*.json (read only), plus the rules the page's modes add on their own ---
-  async function permissions() {
-    const { result } = await call({ op: 'perm.read' });
-    return { user: permSide(result?.user, '~/.claude/settings.json'), project: permSide(result?.project, '.claude/settings.json'),
-      local: permSide(result?.local, '.claude/settings.local.json'), bypassAsk: [...BYPASS_ASK], readOnlyDeny: [...READ_ONLY_DENY] };
+  async function permissions(root = null) {
+    const { result } = await call({ op: 'perm.read', ...rootField(root) });
+    return { user: permSide(result?.user, '~/.claude/settings.json'), project: permSide(result?.project, inRoot(root, '.claude/settings.json')),
+      local: permSide(result?.local, inRoot(root, '.claude/settings.local.json')), bypassAsk: [...BYPASS_ASK], readOnlyDeny: [...READ_ONLY_DENY] };
   }
   async function permissionRemove(body) {
     const list = body?.list, rule = body?.rule, sha = body?.sha256;
@@ -270,42 +308,46 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     if (!from || !to) throw new HttpError(400, 'from and to are needed');
     return { path: okPath((await call({ op: 'fs.rename', from, to })).result.path) };
   }
-  // ifMtimeMs: only while the entry is unchanged (the Review pane's Undo of a new file)
-  async function remove(path, ifMtimeMs) {
+  // ifMtimeMs: only while the entry is unchanged (the Review pane's Undo of a new file). root: the project it is in —
+  // the entry goes to that project's trash (the path, the workspace's, goes to bn-coded as its absolute path then)
+  async function remove(path, ifMtimeMs, root = null) {
     const p = need(relPath(path), 'path');
     if (!p || p === '.' || p === '/') throw new HttpError(400, 'not the workspace itself');
     const pre = ifMtimeMs === undefined || ifMtimeMs === null ? undefined : num(ifMtimeMs, 0, 1e14);
     if (pre === null) throw new HttpError(400, 'bad ifMtimeMs');
-    return { trash: okPath((await call({ op: 'fs.delete', path: p, ...(pre === undefined ? {} : { ifMtimeMs: pre }) })).result.trash) };
+    const named = root?.rel ? (p === WS || p.startsWith(`${WS}/`) ? p : `${WS}/${p.replace(/^\/+/, '')}`) : p;
+    return { trash: okPath((await call({ op: 'fs.delete', path: named, ...rootField(root), ...(pre === undefined ? {} : { ifMtimeMs: pre }) })).result.trash) };
   }
 
   // --- the @-picker over the whole workspace: paths whose relative path contains q (bn-coded walks, bounded) ---
-  async function find(q, limit) {
+  async function find(q, limit, root = null) {
     const needle = typeof q === 'string' ? q.slice(0, 200) : '';
     const lim = int(limit, 1, 200) ?? 50;
-    const { result } = await call({ op: 'fs.find', q: needle, limit: lim });
+    const { result } = await call({ op: 'fs.find', q: needle, limit: lim, ...rootField(root) });
     const paths = (Array.isArray(result.paths) ? result.paths : []).slice(0, lim)
-      .filter((x) => typeof x === 'string' && x.length <= 4096 && !x.split('/').some((seg) => seg === '..') && !/[\x00-\x1f\x7f]/.test(x) && !x.startsWith('/'));
+      .filter((x) => typeof x === 'string' && x.length <= 4096 && !x.split('/').some((seg) => seg === '..') && !/[\x00-\x1f\x7f]/.test(x) && !x.startsWith('/'))
+      .map((x) => inRoot(root, x));
     return { paths, truncated: result.truncated === true };
   }
 
   // --- search in files: bn-coded's fs.grep (ripgrep, or a bounded literal walk), checked both ways ---
-  async function grep(params) {
+  async function grep(params, root = null) {
     const c = grepRequest(params);
     let result;
     try {
-      ({ result } = await call({ op: 'fs.grep', ...c }, { timeoutMs: 30000, maxBytes: 4 << 20 }));
+      ({ result } = await call({ op: 'fs.grep', ...c, ...rootField(root) }, { timeoutMs: 30000, maxBytes: 4 << 20 }));
     } catch (e) {
       if (e instanceof SandboxError && e.kind === 'refused' && /^busy/.test(e.message)) throw new HttpError(429, e.message);
       throw e;
     }
-    return grepResult(result);
+    const r = grepResult(result);
+    return root?.rel ? { ...r, files: r.files.map((f) => ({ ...f, path: inRoot(root, f.path) })) } : r;
   }
 
   // --- the Review pane: what changed since the last commit (bn-coded's read-only git), parsed and checked here ---
-  async function gitDiff() {
-    const { result, stdout } = await call({ op: 'git.diff' }, { timeoutMs: 45000, maxBytes: 12 << 20 });
-    return reviewOf(result, stdout.toString('utf8'));
+  async function gitDiff(root = null) {
+    const { result, stdout } = await call({ op: 'git.diff', ...rootField(root) }, { timeoutMs: 45000, maxBytes: 12 << 20 });
+    return reviewOf(result, stdout.toString('utf8'), root?.rel ?? '');
   }
 
   // --- the Git panel: bn-coded's git.* ops (the requests checked here and there; every answer checked here). repo: the
@@ -384,16 +426,17 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return { ok: result?.ok === true, action: oneOf(result?.action, ['restored', 'trashed'], 'restored'), trash: relOk(result?.trash) ? result.trash : null };
   }
 
-  // --- memory (CLAUDE.md): this workspace's (/workspace/CLAUDE.md, a file of the workspace) or your user one in the
-  // sandbox (~/.claude/CLAUDE.md, a fixed file bn-coded reads and writes) ---
+  // --- memory (CLAUDE.md): the project's (<its folder>/CLAUDE.md, a file of the workspace: /workspace/CLAUDE.md for the
+  // Workspace) or your user one in the sandbox (~/.claude/CLAUDE.md, a fixed file bn-coded reads and writes) ---
   const MEMORY_MAX = 1 << 20;
-  async function memory(scope) {
+  async function memory(scope, root = null) {
     if (scope === 'project') {
+      const file = inRoot(root, 'CLAUDE.md'), shown = `${WS}/${file}`;
       try {
-        const f = await readFile('CLAUDE.md');
-        return { scope, path: '/workspace/CLAUDE.md', exists: true, text: f.binary ? '' : f.text, size: f.size, mtimeMs: f.mtimeMs, truncated: f.truncated };
+        const f = await readFile(file);
+        return { scope, path: shown, exists: true, text: f.binary ? '' : f.text, size: f.size, mtimeMs: f.mtimeMs, truncated: f.truncated };
       } catch (e) {
-        if (e instanceof SandboxError && /ENOENT/.test(e.message)) return { scope, path: '/workspace/CLAUDE.md', exists: false, text: '', size: 0, mtimeMs: null, truncated: false };
+        if (e instanceof SandboxError && /ENOENT/.test(e.message)) return { scope, path: shown, exists: false, text: '', size: 0, mtimeMs: null, truncated: false };
         throw e;
       }
     }
@@ -403,11 +446,11 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return { scope, path: '~/.claude/CLAUDE.md', exists: result.exists === true, text: isText(data, result.truncated === true) ? data.toString('utf8') : '',
       size: int(result.size, 0, 1e15) ?? data.length, mtimeMs: num(result.mtimeMs, 0, 1e14), truncated: result.truncated === true };
   }
-  async function memoryWrite(scope, body) {
+  async function memoryWrite(scope, body, root = null) {
     if (typeof body?.text !== 'string') throw new HttpError(400, 'text missing');
     const data = Buffer.from(body.text, 'utf8');
     if (data.length > MEMORY_MAX) throw new HttpError(413, 'a memory file of at most 1 MiB');
-    if (scope === 'project') return writeFile('CLAUDE.md', { text: body.text, ifMtimeMs: body.ifMtimeMs });
+    if (scope === 'project') return writeFile(inRoot(root, 'CLAUDE.md'), { text: body.text, ifMtimeMs: body.ifMtimeMs });
     if (scope !== 'user') throw new HttpError(400, 'scope: project or user');
     const ifMtimeMs = body.ifMtimeMs === undefined || body.ifMtimeMs === null ? undefined : num(body.ifMtimeMs, 0, 1e14);
     if (ifMtimeMs === null) throw new HttpError(400, 'bad ifMtimeMs');
@@ -540,19 +583,19 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     await call({ op: 'ports.stop', pid, port, signal });
     return { ok: true, pid, port, signal };
   }
-  async function launch() {
-    const { result } = await call({ op: 'launch.list' });
+  async function launch(root = null) {
+    const { result } = await call({ op: 'launch.list', ...rootField(root) });
     return { exists: result.exists === true, error: short(result.error, 200) || null,
       configurations: (Array.isArray(result.configurations) ? result.configurations : []).slice(0, 20).map(launchRow).filter(Boolean) };
   }
   // Start: by name, and only while the entry is what the page showed (its digest: argv, folder, environment, port)
-  async function launchStart(body) {
+  async function launchStart(body, root = null) {
     const name = body?.name, digest = body?.digest;
     if (typeof name !== 'string' || !/^[^\x00-\x1f\x7f]{1,100}$/.test(name)) throw new HttpError(400, 'bad name');
     if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new HttpError(400, 'digest: the SHA-256 of the entry shown');
     let result;
     try {
-      ({ result } = await call({ op: 'launch.start', name, digest }, { timeoutMs: 30000 }));
+      ({ result } = await call({ op: 'launch.start', name, digest, ...rootField(root) }, { timeoutMs: 30000 }));
     } catch (e) {
       if (e instanceof SandboxError && /changed since it was shown/.test(e.message)) throw new HttpError(409, e.message);
       throw e;
@@ -564,19 +607,19 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
   // --- Run & test: the workspace's tasks (bn-coded reads package.json, the Makefile, pyproject.toml — nothing runs to list
   // them), one run by name through its fixed wrapper in a window of the terminal's tmux while it is what the page showed
   // (its digest), and the runs' exit status and output (the Problems list) ---
-  async function runTasks() {
-    const { result } = await call({ op: 'run.list' });
+  async function runTasks(root = null) {
+    const { result } = await call({ op: 'run.list', ...rootField(root) });
     return { sources: (Array.isArray(result.sources) ? result.sources : []).slice(0, 3).map(runSourceRow).filter(Boolean),
       tasks: (Array.isArray(result.tasks) ? result.tasks : []).slice(0, 300).map(runTaskRow).filter(Boolean) };
   }
-  async function runStart(body) {
+  async function runStart(body, root = null) {
     const source = body?.source, name = body?.name, digest = body?.digest;
     if (typeof source !== 'string' || !Object.hasOwn(RUN_NAMES, source)) throw new HttpError(400, 'source: npm, make or python');
     if (typeof name !== 'string' || !RUN_NAMES[source].test(name)) throw new HttpError(400, 'bad name');
     if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) throw new HttpError(400, 'digest: the SHA-256 of the task shown');
     let result;
     try {
-      ({ result } = await call({ op: 'run.start', source, name, digest }, { timeoutMs: 30000 }));
+      ({ result } = await call({ op: 'run.start', source, name, digest, ...rootField(root) }, { timeoutMs: 30000 }));
     } catch (e) {
       if (e instanceof SandboxError && /changed since it was shown/.test(e.message)) throw new HttpError(409, e.message);
       throw e;
@@ -616,11 +659,112 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     return captureRow(result);
   }
 
-  return { listSessions, messages, parentOf, title, toTerminal, notRunning, permissions, permissionRemove, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff,
+  // --- projects (projects.mjs): the records are this container's; whether their folders are there, the sandbox's word
+  // (bn-coded's project.check: a real folder, a git repository) — shown, never trusted to add or widen anything ---
+  const store = () => { if (!projects) throw new HttpError(501, 'no projects here'); return projects; };
+  // folders(list) -> Map(id -> {folder: dir|missing|link|other, git}); an older sandbox (or no answer): nothing said
+  async function folders(list) {
+    const out = new Map();
+    if (!list.length) return out;
+    try {
+      const { result } = await call({ op: 'project.check', roots: list.map((p) => absOf(p.root)) }, { timeoutMs: 15000 });
+      const rows = Array.isArray(result?.roots) ? result.roots : [];
+      list.forEach((p, i) => {
+        const r = rows[i];
+        if (r && r.root === absOf(p.root)) out.set(p.id, { folder: oneOf(r.type, ['dir', 'missing', 'link', 'other'], 'other'), git: r.git === true });
+      });
+    } catch { /* not said */ }
+    return out;
+  }
+  const projectOut = (p, f) => ({ id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created ?? null, workspace: p.id === WORKSPACE_ID,
+    folder: f?.folder ?? null, git: f?.git ?? null });
+  async function listProjects() {
+    const list = store().list();
+    const f = await folders(list);
+    return { projects: list.map((p) => projectOut(p, f.get(p.id))), max: PROJECTS_MAX };
+  }
+  // folderThere(root) — throws 409 unless the project's folder is a real folder in the sandbox now (a new session starts
+  // there; an older sandbox that cannot say: let it try)
+  async function folderThere(root) {
+    const f = (await folders([{ id: 'x', root: root.rel }])).get('x');
+    if (f && f.folder !== 'dir') throw new HttpError(409, f.folder === 'missing' ? `the project's folder ${root.abs} is not there (any more)` : `the project's folder ${root.abs} is a link or not a folder`);
+  }
+  // addProject({kind: new | folder, folder, name?, git?}) -> {project, git?, gitError?}: a new folder of the workspace,
+  // made in the sandbox (and git init when asked), or a folder that is there already — then its record. The folder is
+  // the page's word, checked here (projects.mjs rootOk) and there (bn-coded: never through a link).
+  async function addProject(b) {
+    const kind = b?.kind;
+    if (kind !== 'new' && kind !== 'folder') throw new HttpError(400, 'kind: new or folder');
+    const folder = typeof b.folder === 'string' ? b.folder.trim().replace(/^\/workspace\//, '').replace(/\/+$/, '') : '';
+    if (!rootOk(folder)) throw new HttpError(400, 'a folder of the workspace: 1 to 4 levels of names (none starting with "."), at most 160 bytes');
+    const name = b.name === undefined || b.name === null || b.name === '' ? null : typeof b.name === 'string' ? b.name.trim() : b.name;
+    if (name !== null && !nameOk(name)) throw new HttpError(400, 'a name of 1 to 80 characters, one line');
+    const had = store().list().find((p) => p.root === folder);
+    if (had) throw new HttpError(409, `that folder is the project ${had.name} already`);
+    if (store().list().length - 1 >= PROJECTS_MAX) throw new HttpError(409, `at most ${PROJECTS_MAX} projects: remove one first`);
+    let made = {};
+    if (kind === 'new') {
+      const { result } = await call({ op: 'project.create', root: absOf(folder), git: b.git === true }, { timeoutMs: 30000 });
+      made = { git: result?.git === true, gitError: short(result?.gitError, 300) || null };
+    } else {
+      const f = (await folders([{ id: 'x', root: folder }])).get('x');
+      if (!f) throw new HttpError(502, 'the sandbox did not say whether that folder is there');
+      if (f.folder !== 'dir') throw new HttpError(f.folder === 'missing' ? 404 : 400, f.folder === 'missing' ? 'no such folder in the workspace' : 'a link, or a link on its way: add the folder it points to');
+      made = { git: f.git };
+    }
+    const p = store().add({ name: name ?? undefined, root: folder });
+    return { project: projectOut(p, { folder: 'dir', git: made.git }), ...made };
+  }
+  // removeProject(id, {trash, confirm}) — the record goes (its sessions stay, shown where their folder is). trash: its
+  // folder too, into the workspace's trash — only with its folder named again (confirm) and no session of it running
+  async function removeProject(id, { trash = false, confirm = null } = {}) {
+    const p = store().get(id);
+    if (!p) throw new HttpError(404, 'no such project (it was removed?)');
+    if (p.id === WORKSPACE_ID) throw new HttpError(400, 'the Workspace is always there');
+    let moved = null;
+    if (trash) {
+      if (confirm !== p.root) throw new HttpError(400, `to move its folder to the trash too, name it again: ${p.root}`);
+      const at = absOf(p.root);
+      if (sessions.list().some((s) => s.open && typeof s.cwd === 'string' && (s.cwd === at || s.cwd.startsWith(`${at}/`)))) {
+        throw new HttpError(409, 'a session of this project is open: close it first (its folder would vanish under it)');
+      }
+      moved = okPath((await call({ op: 'fs.delete', path: p.root })).result.trash);
+    }
+    store().remove(id);
+    return { ok: true, removed: { id: p.id, name: p.name, root: p.root }, trash: moved };
+  }
+  const renameProject = (id, b) => ({ project: projectOut(store().rename(id, b?.name)) });
+  const fileSessions = (id, b) => store().file(b?.ids, id);
+  // a project's terminal: a new window of the terminal's tmux session in its folder (bn-coded terminal.window)
+  async function projectTerminal(root) {
+    let result;
+    try {
+      ({ result } = await call({ op: 'terminal.window', ...rootField(root) }, { timeoutMs: 20000 }));
+    } catch (e) {
+      if (unknownOp(e)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
+      throw e;
+    }
+    return { ok: result?.ok === true, window: short(result?.window, 40) };
+  }
+  // Connect a git repository: a project's folder made a repository (git init: no template, the first branch main)
+  async function projectGitInit(root) {
+    try {
+      await call({ op: 'git.init', repo: root?.rel ?? '' }, { timeoutMs: 30000 });
+    } catch (e) {
+      if (unknownOp(e)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
+      if (e instanceof SandboxError && e.kind === 'refused' && /already/.test(e.message)) throw new HttpError(409, e.message);
+      throw e;
+    }
+    return { ok: true };
+  }
+
+  return { listSessions, messages, parentOf, title, toTerminal, notRunning, cwdFor, permissions, permissionRemove, list, readFile, download, writeFile, upload, mkdir, rename, remove, find, grep, gitDiff,
     gitStatus, gitLog, gitFile, gitStage, gitUnstage, gitCommit, gitDiscard, gitDraft, memory, memoryWrite, plugins, available, pluginAction,
     marketplaces: async () => ({ marketplaces: (await plugins()).marketplaces }), marketplaceAdd, marketplaceRemove, marketplaceUpdate, mcpAdd, mcpRemove,
-    ports, stopPort, launch, launchStart, runTasks, runStart, runResults, runShow, terminalCapture };
+    ports, stopPort, launch, launchStart, runTasks, runStart, runResults, runShow, terminalCapture,
+    listProjects, addProject, removeProject, renameProject, fileSessions, projectTerminal, projectGitInit, folderThere };
 }
+const unknownOp = (e) => e instanceof SandboxError && e.kind === 'refused' && /unknown op/.test(e.message);
 
 // --- terminal.capture's answer, checked: the text with control characters (but tab and newline) and escapes out, at
 // most CAPTURE_TEXT_MAX characters (the newest kept: cut), a pane id %N, the window's index and name (one line) ---
@@ -789,8 +933,9 @@ export function parseGitDiff(text) {
   return files;
 }
 const mtime = (v) => num(v, 0, 1e14);
-// reviewOf(result, patch) -> what GET /api/git/diff answers: {repo, reason, head, files, truncated, timedOut}
-export function reviewOf(r, patch) {
+// reviewOf(result, patch, prefix) -> what GET /api/git/diff answers: {repo, reason, head, files, truncated, timedOut};
+// prefix: the project's folder (bn-coded answered paths relative to it — the page's are the workspace's)
+export function reviewOf(r, patch, prefix = '') {
   if (!r || r.repo !== true) return { repo: false, ...reasonOf(r?.reason), head: null, files: [], truncated: false, timedOut: false };
   const parsed = parseGitDiff(patch);
   const files = [];
@@ -815,7 +960,8 @@ export function reviewOf(r, patch) {
   for (const x of Array.isArray(r.files) ? r.files.slice(0, DIFF.files) : []) add(x, false);
   for (const x of Array.isArray(r.untracked) ? r.untracked.slice(0, DIFF.files) : []) add(x, true);
   const head = typeof r.head === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(r.head) ? r.head : null;
-  return { repo: true, reason: null, head, files, truncated: r.truncated === true || files.length >= DIFF.files, timedOut: r.timedOut === true };
+  const out = prefix ? files.map((f) => ({ ...f, path: `${prefix}/${f.path}` })) : files;
+  return { repo: true, reason: null, head, files: out, truncated: r.truncated === true || files.length >= DIFF.files, timedOut: r.timedOut === true };
 }
 
 // --- the Git panel: the page's requests checked (bn-coded checks them again) and what bn-coded answers checked for the
@@ -1038,7 +1184,9 @@ export function runResultRow(x, max = RUN_TAIL) {
   if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !RUN_ID.test(x.id)) return null;
   if (typeof x.source !== 'string' || !Object.hasOwn(RUN_NAMES, x.source) || !['running', 'done', 'lost'].includes(x.state)) return null;
   const row = { id: x.id, source: x.source, name: short(x.name, 100), command: str(typeof x.command === 'string' ? x.command : '', 4000),
-    window: RUN_WINDOW.test(x.window ?? '') ? x.window : null, startedAt: num(x.startedAt, 0, 1e14), state: x.state };
+    window: RUN_WINDOW.test(x.window ?? '') ? x.window : null, startedAt: num(x.startedAt, 0, 1e14), state: x.state,
+    // (the folder it ran in: a project's, '' the workspace's — what bn-coded recorded, shown only)
+    root: typeof x.root === 'string' && (x.root === '' || rootOk(x.root)) ? x.root : '' };
   if (x.state !== 'done') return row;
   const tail = typeof x.tail === 'string' ? x.tail : '';
   return { ...row, exitCode: int(x.exitCode, 0, 255), signal: /^SIG[A-Z0-9]{1,12}$/.test(x.signal ?? '') ? x.signal : null,

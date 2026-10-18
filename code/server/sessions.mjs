@@ -9,6 +9,7 @@ import { fromSdk, errorEvent } from './normalize.mjs';
 import { isUuid, isModel, isFullModel, str, short, capped, num } from './validate.mjs';
 import { START_MODES, SET_MODES, normMode, cliMode, pageMode, permissionsFor, unionPermissions, samePermissions, startFlags } from './modes.mjs';
 import { checkSnapshot, diffSnapshots, watchEvent, revertOf } from './watch.mjs';
+import { WS, cwdOk } from './projects.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
@@ -68,9 +69,14 @@ const pluginsKey = (list) => (Array.isArray(list) ? list.filter((p) => p && type
   .map((p) => `${short(p.name, 200)}@${short(p.version, 60)}`).sort().join('\n') : null);
 
 export class Session {
-  constructor(mgr, { id, model, mode, effort, resume, fork, at, taskStop, hasTranscript, budget }) {
+  constructor(mgr, { id, model, mode, effort, resume, fork, at, taskStop, hasTranscript, budget, cwd = WS }) {
     this.mgr = mgr;
     this.id = id;
+    // The folder Claude Code runs in (its project's, or — a resumed session — the one its transcript records: Claude Code
+    // finds a session by the folder it runs in). Always a folder of the workspace; bn-coded confines it there again.
+    this.cwd = cwdOk(cwd) ? cwd : WS;
+    // the watchlist's folder: the project folder that holds cwd (the code container's records), set at each start
+    this.watchRoot = null;
     // The budget (set_budget; null: none). hard: Claude Code's own stop, maxBudgetUsd — its estimate, checked after
     // every request, per process — at what is left when a process starts (left()); a budget changed while a process
     // runs restarts it at the next prompt that starts a turn. spent: the page's figure (LiteLLM's spend logs);
@@ -121,7 +127,7 @@ export class Session {
   info() {
     return { id: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, title: this.title, open: this.open,
       pending: this.mgr.broker.forSession(this.id).length, lastActive: this.lastActive, error: this.error, epoch: this.epoch,
-      budget: this.budget ? { ...this.budget } : null, terminal: this.inTerminal !== null };
+      budget: this.budget ? { ...this.budget } : null, terminal: this.inTerminal !== null, cwd: this.cwd };
   }
 
   // --- the budget ---
@@ -186,9 +192,13 @@ export class Session {
     this.ring = new Ring();
     this.epoch = crypto.randomBytes(4).toString('hex');
     this.lastInitModel = null; this.modelSet = false;
+    // the watchlist's folder now (a project added or removed meanwhile: the next turn compares with a fresh snapshot)
+    const wr = this.mgr.watchRootOf?.(this.cwd) ?? null;
+    if ((wr?.abs ?? WS) !== (this.watchRoot?.abs ?? WS)) { this.watchBase = null; this.watchLast = null; }
+    this.watchRoot = wr;
     const feed = { inbox: [], wake: null, closed: false, ready: null };
     const options = {
-      cwd: '/workspace',
+      cwd: this.cwd,
       pathToClaudeCodeExecutable: '/usr/local/bin/claude',   // a path in the sandbox: only the arguments travel
       spawnClaudeCodeProcess: (o) => this.mgr.spawn(o, { litellmSession: this.id, onStderr: (s) => this.mgr.logStderr(this.id, `claude ${this.id.slice(0, 8)} stderr: ${short(s, 300)}`) }),
       env: {},                                                 // nothing of this container's environment
@@ -610,7 +620,7 @@ export class Session {
 
   // --- the watchlist (watch.mjs) ---
   async snapshot() {
-    const snap = checkSnapshot(await this.mgr.watcher.snapshot());
+    const snap = checkSnapshot(await this.mgr.watcher.snapshot(this.watchRoot));
     if (!snap) throw new Error('not a snapshot');
     return snap;
   }
@@ -689,7 +699,7 @@ export class Session {
     const restore = async (c) => {
       try {
         const r = await this.mgr.watcher.restore({ path: c.path, ifSha256: c.afterSha,
-          data: c.before ? c.before.data.toString('base64') : null, mode: c.before ? c.before.mode : null });
+          data: c.before ? c.before.data.toString('base64') : null, mode: c.before ? c.before.mode : null }, this.watchRoot);
         c.done = true;
         results.set(c.path, { path: c.path, ok: true, action: short(r?.action, 20) || 'restored' });
       } catch (e) { results.set(c.path, { path: c.path, ok: false, error: short(e?.message || String(e), 300) }); }
@@ -787,10 +797,13 @@ export class SessionManager {
   //            start in it, and "Allow once" reaches the actions it blocked)
   // watcher: {snapshot() -> ws.sensitive's RESULT, restore({path, ifSha256, data, mode}) -> ws.restore's} (bn-coded),
   //          or null (no watchlist)
+  // watchRootOf(cwd) -> {rel, abs} of the project folder that holds a session's folder (its watchlist's), or null: the
+  // workspace's
   constructor({ query, spawn, broker, log = () => {}, onEvent = () => {}, onState = () => {}, onReload = () => {}, onReset = () => {},
-    transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000, allowBypass = false, allowAuto = false, watcher = null }) {
+    transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000, allowBypass = false, allowAuto = false, watcher = null,
+    watchRootOf = () => null }) {
     Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, onReset, transcriptExists, maxOpen, idleMs, allowBypass: allowBypass === true,
-      allowAuto: allowAuto === true, watcher });
+      allowAuto: allowAuto === true, watcher, watchRootOf });
     this.sessions = new Map();
     this.stderrSeen = new Map();   // session -> {from, n, dropped}
     this.timer = setInterval(() => this.sweepIdle(), 60000);
@@ -812,8 +825,10 @@ export class SessionManager {
     if (w.n++ < STDERR_LINES) this.log(line); else w.dropped++;
   }
 
-  /** POST /api/sessions -> {id, existing} */
-  open({ model, mode, effort, resume, fork, at, taskStop, budget } = {}) {
+  /** POST /api/sessions -> {id, existing}. cwd: the folder a new (or forked) session runs in — its project's; a resumed
+   *  one, its own (the caller reads it from the transcript's list) */
+  open({ model, mode, effort, resume, fork, at, taskStop, budget, cwd } = {}) {
+    if (cwd !== undefined && cwd !== null && !cwdOk(cwd)) throw new SessionError('bad folder: /workspace or a folder of it');
     if (model !== undefined && model !== null && !isModel(model)) throw new SessionError('bad model');
     if (model !== undefined && model !== null && !isFullModel(model)) throw new SessionError(ALIAS_REFUSED);
     // auto: a session in Auto starts in Manual and is switched before its first prompt — while Settings allow it; else
@@ -838,7 +853,7 @@ export class SessionManager {
       }
     }
     const id = resume && !fork ? resume : crypto.randomUUID();
-    const s = new Session(this, { id, model, mode, effort, resume, fork, at, taskStop, budget: budget || undefined });
+    const s = new Session(this, { id, model, mode, effort, resume, fork, at, taskStop, budget: budget || undefined, cwd: cwd ?? WS });
     this.sessions.set(id, s);
     this.trim();
     return { id, existing: false };
@@ -858,10 +873,10 @@ export class SessionManager {
       if (this.sessions.has(id)) throw new Error('already a session here');
       s.close('reset');
       let has = false;
-      try { has = (await this.transcriptExists(id)) === true; } catch { has = false; }
+      try { has = (await this.transcriptExists(id, s.cwd)) === true; } catch { has = false; }
       if (this.sessions.has(id)) throw new Error('already a session here');   // (one opened meanwhile)
       const ns = new Session(this, { id, model: s.model, mode: s.mode, effort: s.effort, taskStop: s.taskStop, resume: has ? id : undefined, hasTranscript: has,
-        budget: s.budget ? { ...s.budget } : undefined });
+        budget: s.budget ? { ...s.budget } : undefined, cwd: s.cwd });
       this.sessions.set(id, ns);
       this.trim();
       this.onReset(s, ns);

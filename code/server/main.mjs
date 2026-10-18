@@ -13,11 +13,12 @@ import { WebSocketServer } from 'ws';
 import { LIMITS, DECISIONS } from './protocol.mjs';
 import { PermissionBroker } from './broker.mjs';
 import { SessionManager, SessionError } from './sessions.mjs';
-import { makeApi, HttpError, sandboxStatus, attachment } from './api.mjs';
+import { makeApi, HttpError, sandboxStatus, attachment, rootField } from './api.mjs';
 import { str, short, isUuid, isId } from './validate.mjs';
 import { commandsOf, mcpOf, pluginsOf } from './normalize.mjs';
 import { GitHosts, HostError } from './githosts.mjs';
 import { makeGitRemote, NEVER_ASKS, sandboxWords } from './gitremote.mjs';
+import { Projects, ProjectError, projectIdOk, WS } from './projects.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -91,10 +92,12 @@ export function ownOrigin(req) {
 // of yours it sees — a label). watch: false turns the watchlist off. gitHosts: the Git hosts store (githosts.mjs; made
 // on first use: /var/lib/bn-code), openBroker: sandboxBroker (Claude's own git, while a host allows it). gitConnect:
 // sandboxTunnel (a Git host sign-in's requests to its provider, TLS here: oauth.mjs), gitApps: Settings' application IDs
-// ({github: {clientId, appSlug}, gitlab: {clientId}}; blank: the project's own).
+// ({github: {clientId, appSlug}, gitlab: {clientId}}; blank: the project's own). projects: the project records
+// (projects.mjs; made on first use: /var/lib/bn-code).
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
   reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},
-  allowBypass = false, allowAuto = false, sandbox = {}, watch = true, gitHosts = null, openBroker = null, gitConnect = null, gitApps = {}, gitOAuthDelay = null }) {
+  allowBypass = false, allowAuto = false, sandbox = {}, watch = true, gitHosts = null, openBroker = null, gitConnect = null, gitApps = {}, gitOAuthDelay = null,
+  projects = null }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -131,23 +134,30 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   });
   const stateMsg = (s) => ({ type: 'session_state', session: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, error: s.error,
     budget: s.budget ? { ...s.budget } : null, lastActive: s.lastActive });
-  // the watchlist's two ops in the sandbox (bn-coded): the watched files (hashes, copies ≤ 1 MiB), and one put back
+  // the project records (projects.mjs): made on first use, as Git hosts are
+  let projectStore = projects;
+  const proj = () => (projectStore ??= new Projects());
+  // the watchlist's two ops in the sandbox (bn-coded): the watched files (hashes, copies ≤ 1 MiB), and one put back —
+  // in a session's project folder (root: from the records, by the folder the session runs in; none: the workspace)
   const watcher = watch === false ? null : {
-    snapshot: async () => (await call({ op: 'ws.sensitive' }, { timeoutMs: 15000 })).result,
-    restore: async (r) => (await call({ op: 'ws.restore', ...r }, { timeoutMs: 20000 })).result,
+    snapshot: async (root) => (await call({ op: 'ws.sensitive', ...rootField(root) }, { timeoutMs: 15000 })).result,
+    restore: async (r, root) => (await call({ op: 'ws.restore', ...r, ...rootField(root) }, { timeoutMs: 20000 })).result,
+  };
+  const watchRootOf = (cwd) => {
+    try { const p = proj().folderOf(cwd); return p.root ? { rel: p.root, abs: `${WS}/${p.root}` } : null; } catch { return null; }
   };
   const sandboxInfo = { egress: typeof sandbox.egress === 'boolean' ? sandbox.egress : null,
     egressHost: typeof sandbox.egressHost === 'boolean' ? sandbox.egressHost : null,
     workspace: typeof sandbox.workspace === 'string' && sandbox.workspace ? short(sandbox.workspace, 1000) : null };
   const mgr = new SessionManager({
-    query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher,
+    query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher, watchRootOf,
     onEvent: (s, seq, ev) => {
       toAttached(s.id, { type: 'event', session: s.id, epoch: s.epoch, seq, ev });
       // a title given before the session had a transcript: written once its first turn is over
       if (ev.type === 'result' && s.pendingTitle && s.hasTranscript) {
         const title = s.pendingTitle;
         s.pendingTitle = null;
-        call({ op: 'sessions.title', id: s.id, title }).catch((e) => logger(`title ${s.id.slice(0, 8)}: ${short(e?.message || String(e), 200)}`));
+        call({ op: 'sessions.title', id: s.id, title, ...(s.cwd !== WS ? { cwd: s.cwd } : {}) }).catch((e) => logger(`title ${s.id.slice(0, 8)}: ${short(e?.message || String(e), 200)}`));
       }
     },
     onState: (s) => toAll(stateMsg(s)),
@@ -161,8 +171,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       onStateBoth(old, ns);
     },
     // is there a transcript for this session in the sandbox already?
-    transcriptExists: async (id) => {
-      const { result } = await call({ op: 'sessions.load', id });
+    transcriptExists: async (id, cwd) => {
+      const { result } = await call({ op: 'sessions.load', id, ...(cwd && cwd !== WS ? { cwd } : {}) });
       return Array.isArray(result?.entries) && result.entries.length > 0;
     },
     // a plugin reload: the pages showing that session get its new commands, plugins and MCP servers
@@ -173,7 +183,19 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     },
   });
   function onStateBoth(a, b) { toAll(stateMsg(a)); toAll(stateMsg(b)); }
-  const api = makeApi({ call, sessions: mgr, reloadPollMs, reloadMaxMs });
+  const api = makeApi({ call, sessions: mgr, projects: { list: () => proj().list(), get: (id) => proj().get(id), add: (b) => proj().add(b), rename: (id, n) => proj().rename(id, n),
+    remove: (id) => proj().remove(id), file: (ids, pid) => proj().file(ids, pid), placer: () => proj().placer() }, reloadPollMs, reloadMaxMs });
+  // rootFor(v) -> the project a request names (?project= or {project}): its {id, rel, abs} from the records — never a
+  // folder the page names; null (none, or the Workspace): the workspace, as every call was before projects
+  const rootFor = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    if (!projectIdOk(v)) throw new HttpError(400, 'bad project id');
+    const r = proj().rootOf(v);
+    if (!r) throw new HttpError(404, 'no such project (it was removed?)');
+    return r.rel ? r : null;
+  };
+  // the sessions of /api/state, each with the project it is shown in
+  const listed = () => { let place = null; try { place = proj().placer(); } catch { /* none */ } return mgr.list().map((x) => ({ ...x, project: place ? place(x.id, x.cwd) : 'ws' })); };
   // Git hosts and the Git panel's remote operations (gitremote.mjs): every use goes to the pages (Activity)
   let gitRemoteApi = null;
   const gitRemote = () => (gitRemoteApi ??= makeGitRemote({ call, openBroker, store: gitHosts || new GitHosts(), log: logger, connect: gitConnect, apps: gitApps,
@@ -210,7 +232,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       return send(res, 200, {
         versions: { cli: versions.claudeCode, sdk: versions.sdk, claudeCode: versions.claudeCode },
         limits: { ...LIMITS, sessions: LIMITS.maxOpen, upload: LIMITS.maxUploadBytes, image: LIMITS.maxImageBytes },
-        sessions: mgr.list(), pending: broker.count, portal_origin: portalOrigin(req) || null, terminal_url: terminalUrl(req),
+        sessions: listed(), pending: broker.count, portal_origin: portalOrigin(req) || null, terminal_url: terminalUrl(req),
         bypass: { allowed: mgr.allowBypass }, auto: { allowed: mgr.allowAuto }, sandbox: sandboxInfo,
         // over remote access (Caddy's remote sites say 1, the local one 0; a client's copy never gets here)
         remote: req.headers['x-bn-remote'] === '1',
@@ -220,6 +242,14 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/sessions' && m === 'POST') {
       const b = await readJson(req);
       const base = { model: b.model ?? undefined, mode: b.mode ?? undefined, effort: b.effort ?? undefined, taskStop: b.taskStop === true, budget: b.budget ?? undefined };
+      // the folder it runs in: a resumed or forked session's own (its transcript's, as the sandbox's list says — a folder
+      // of the workspace), a new one's its project's (?project: from the records; its folder must be there)
+      if (isUuid(b.resume)) base.cwd = await api.cwdFor(b.resume);
+      else {
+        const root = rootFor(b.project);
+        if (root) await api.folderThere(root);
+        base.cwd = root ? root.abs : WS;
+      }
       // a conversation resumed here that runs in the terminal (or anywhere else in the sandbox) right now: refused
       if (isUuid(b.resume) && b.fork !== true && !mgr.get(b.resume)?.open) await api.notRunning(b.resume);
       if (b.before !== undefined && b.before !== null) {
@@ -236,7 +266,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     }
     if ((mm = /^\/api\/sessions\/([^/]+)\/title$/.exec(p)) && m === 'POST') return send(res, 200, await api.title(mm[1], await readJson(req)));
     if ((mm = /^\/api\/sessions\/([^/]+)\/terminal$/.exec(p)) && m === 'POST') return send(res, 200, await api.toTerminal(mm[1]));
-    if (p === '/api/permissions' && m === 'GET') return send(res, 200, await api.permissions());
+    if (p === '/api/permissions' && m === 'GET') return send(res, 200, await api.permissions(rootFor(q.get('project'))));
     if (p === '/api/permissions/remove' && m === 'POST') return send(res, 200, await api.permissionRemove(await readJson(req)));
     if ((mm = /^\/api\/sessions\/([^/]+)$/.exec(p)) && m === 'DELETE') {
       const s = mgr.get(mm[1]);
@@ -248,7 +278,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/fs' && m === 'DELETE') {
       const pre = q.get('ifMtimeMs');
       if (pre !== null && !/^[0-9]{1,15}(\.[0-9]{1,6})?$/.test(pre)) throw new HttpError(400, 'bad ifMtimeMs');
-      return send(res, 200, await api.remove(q.get('path'), pre === null ? undefined : Number(pre)));
+      return send(res, 200, await api.remove(q.get('path'), pre === null ? undefined : Number(pre), rootFor(q.get('project'))));
     }
     if (p === '/api/fs/file' && m === 'GET' && q.get('download') !== '1') return send(res, 200, await api.readFile(q.get('path')));
     if (p === '/api/fs/file' && m === 'PUT') return send(res, 200, await api.writeFile(q.get('path'), await readJson(req, (LIMITS.maxUploadBytes * 2) + (64 << 10))));
@@ -266,11 +296,27 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       return send(res, 200, await api.upload(q.get('dir') ?? '', name, data));
     }
     if (p === '/api/fs/mkdir' && m === 'POST') return send(res, 200, await api.mkdir(await readJson(req)));
-    if (p === '/api/fs/find' && m === 'GET') return send(res, 200, await api.find(q.get('q') ?? '', /^[0-9]{1,3}$/.test(q.get('limit') ?? '') ? Number(q.get('limit')) : undefined));
+    if (p === '/api/fs/find' && m === 'GET') return send(res, 200, await api.find(q.get('q') ?? '', /^[0-9]{1,3}$/.test(q.get('limit') ?? '') ? Number(q.get('limit')) : undefined, rootFor(q.get('project'))));
     if (p === '/api/fs/grep' && m === 'GET') {
-      return send(res, 200, await api.grep({ q: q.get('q') ?? '', regex: q.get('regex') ?? '', case: q.get('case') ?? '', include: q.get('include') ?? '', exclude: q.get('exclude') ?? '' }));
+      return send(res, 200, await api.grep({ q: q.get('q') ?? '', regex: q.get('regex') ?? '', case: q.get('case') ?? '', include: q.get('include') ?? '', exclude: q.get('exclude') ?? '' },
+        rootFor(q.get('project'))));
     }
-    if (p === '/api/git/diff' && m === 'GET') return send(res, 200, await api.gitDiff());
+    if (p === '/api/git/diff' && m === 'GET') return send(res, 200, await api.gitDiff(rootFor(q.get('project'))));
+    // projects (projects.mjs): the records, a new one (a new folder, or one that is there), a name, the sessions filed
+    // there, removal (the record; its folder into the trash only when named again), its terminal, git init in it
+    if (p === '/api/projects' && m === 'GET') return send(res, 200, await api.listProjects());
+    if (p === '/api/projects' && m === 'POST') return send(res, 200, await api.addProject(await readJson(req)));
+    if ((mm = /^\/api\/projects\/(ws|p_[0-9a-f]{8})(?:\/(sessions|terminal|git-init))?$/.exec(p))) {
+      const id = mm[1], what = mm[2] || '';
+      if (!what && m === 'POST') return send(res, 200, api.renameProject(id, await readJson(req)));
+      if (!what && m === 'DELETE') return send(res, 200, await api.removeProject(id, { trash: q.get('trash') === '1', confirm: q.get('confirm') }));
+      if (what === 'sessions' && m === 'POST') return send(res, 200, api.fileSessions(id, await readJson(req)));
+      if (what === 'terminal' && m === 'POST') return send(res, 200, await api.projectTerminal(rootFor(id)));
+      if (what === 'git-init' && m === 'POST') {
+        const r = rootFor(id);
+        return send(res, 200, await api.projectGitInit(r));
+      }
+    }
     // the Git panel (changes only with the page's own Origin: checked above for every request but GET/HEAD); repo: a
     // repository folder of the workspace ('' or none: the workspace folder itself)
     if (p === '/api/git/status' && m === 'GET') return send(res, 200, await api.gitStatus(q.get('repo') ?? ''));
@@ -301,7 +347,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         if (what === 'known' && m === 'DELETE') return send(res, 200, { host: g().forgetKnown(id) });
         if (what === 'ca' && m === 'POST') return send(res, 200, { host: g().setCa(id, await readJson(req, 96 << 10), remote) });
       }
-      if (p === '/api/git/repos' && m === 'GET') return send(res, 200, await g().repos());
+      if (p === '/api/git/repos' && m === 'GET') return send(res, 200, await g().repos(rootFor(q.get('project'))));
       if (p === '/api/git/remote' && m === 'GET') return send(res, 200, await g().state(q.get('repo') ?? ''));
       if (p === '/api/git/remote' && m === 'POST') return send(res, 200, await g().remoteSet(await readJson(req)));
       if (p === '/api/git/branch' && m === 'POST') return send(res, 200, await g().branch(await readJson(req)));
@@ -320,8 +366,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       res.on('close', () => { if (!res.writableFinished) ac.abort(); });
       return send(res, 200, await api.gitDraft(body, ac.signal));
     }
-    if (p === '/api/memory' && m === 'GET') return send(res, 200, await api.memory(q.get('scope')));
-    if (p === '/api/memory' && m === 'PUT') return send(res, 200, await api.memoryWrite(q.get('scope'), await readJson(req, (2 << 20) + (64 << 10))));
+    if (p === '/api/memory' && m === 'GET') return send(res, 200, await api.memory(q.get('scope'), rootFor(q.get('project'))));
+    if (p === '/api/memory' && m === 'PUT') return send(res, 200, await api.memoryWrite(q.get('scope'), await readJson(req, (2 << 20) + (64 << 10)), rootFor(q.get('project'))));
     if (p === '/api/fs/rename' && m === 'POST') return send(res, 200, await api.rename(await readJson(req)));
     if (p === '/api/plugins' && m === 'GET') return send(res, 200, await api.plugins());
     if (p === '/api/plugins/available' && m === 'GET') {
@@ -337,10 +383,10 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (p === '/api/mcp' && m === 'DELETE') return send(res, 200, await api.mcpRemove(q.get('name')));
     if (p === '/api/ports' && m === 'GET') return send(res, 200, await api.ports());
     if (p === '/api/ports/stop' && m === 'POST') return send(res, 200, await api.stopPort(await readJson(req)));
-    if (p === '/api/launch' && m === 'GET') return send(res, 200, await api.launch());
-    if (p === '/api/launch/start' && m === 'POST') return send(res, 200, await api.launchStart(await readJson(req)));
-    if (p === '/api/run' && m === 'GET') return send(res, 200, await api.runTasks());
-    if (p === '/api/run/start' && m === 'POST') return send(res, 200, await api.runStart(await readJson(req)));
+    if (p === '/api/launch' && m === 'GET') return send(res, 200, await api.launch(rootFor(q.get('project'))));
+    if (p === '/api/launch/start' && m === 'POST') { const b = await readJson(req); return send(res, 200, await api.launchStart(b, rootFor(b.project))); }
+    if (p === '/api/run' && m === 'GET') return send(res, 200, await api.runTasks(rootFor(q.get('project'))));
+    if (p === '/api/run/start' && m === 'POST') { const b = await readJson(req); return send(res, 200, await api.runStart(b, rootFor(b.project))); }
     if (p === '/api/run/results' && m === 'GET') return send(res, 200, await api.runResults(q.get('id')));
     if (p === '/api/run/show' && m === 'POST') return send(res, 200, await api.runShow(await readJson(req)));
     if (p === '/api/terminal/capture' && m === 'GET') return send(res, 200, await api.terminalCapture(q.get('lines'), q.get('pane')));
@@ -400,7 +446,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     try {
       return await route(req, res, url);
     } catch (e) {
-      const [status, msg] = e instanceof HttpError || e instanceof HostError ? [e.status, e.message] : sandboxStatus(e);
+      const [status, msg] = e instanceof HttpError || e instanceof HostError || e instanceof ProjectError ? [e.status, e.message] : sandboxStatus(e);
       if (status >= 500) logger(`${req.method} ${url.pathname}: ${short(e.message, 300)}`);
       if (res.headersSent) return res.destroy();
       // (a failure on the Git panel's routes in the sandbox's own words — any refusal of bn-coded's, git's reason, Claude

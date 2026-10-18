@@ -8,15 +8,20 @@
 // Requests other than GET/HEAD must carry the page's own Origin (browsers add it to fetch() by themselves).
 //   GET    /api/state                      {versions: {cli, sdk}, limits: {sessions, upload, image, …}, sessions:
 //                                           [{id, state, model, mode, effort, title, pending, open, error, lastActive,
-//                                           budget: {usd, hard} | null, terminal (handed to the terminal)}], pending,
+//                                           budget: {usd, hard} | null, terminal (handed to the terminal), cwd (the folder
+//                                           it runs in), project (the project it is shown in)}], pending,
 //                                           portal_origin, terminal_url, bypass: {allowed} (CODE_ALLOW_BYPASS),
 //                                           auto: {allowed} (CODE_AUTO_MODE),
 //                                           sandbox: {egress: true|false (TERMINAL_EGRESS: any internet), egressHost:
 //                                           true|false (TERMINAL_EGRESS=host: this computer's services too), workspace: the folder of
 //                                           yours the sandbox sees (a label: this container mounts nothing) | null},
 //                                           remote: true over remote access (Caddy's X-Bn-Remote)}
-//   GET    /api/sessions?q=TEXT            {sessions: [{id, title, first_prompt, branch, modified, size, created, state}]}
-//                                           the sandbox's transcripts for /workspace, newest first (at most 200)
+//   GET    /api/sessions?q=TEXT            {sessions: [{id, title, first_prompt, branch, modified, size, created, state,
+//                                           cwd, project}]} the sandbox's transcripts of the workspace and its folders,
+//                                           newest first (at most 300): cwd, the folder each ran in as its transcript
+//                                           records it (a folder outside the workspace: the row is left out); project,
+//                                           the project it is shown in (filed there by hand, else the deepest project
+//                                           folder holding cwd, else "ws": the Workspace)
 //   GET    /api/sessions/ID/messages?offset=N&limit=N (≤ 2000) | ?tail=N (≤ 2000)
 //                                           {messages: [ev…], total, offset, limit, more, truncated} a transcript as the
 //                                           WebSocket's events (user with the prompt's uuid, text, thinking, tool_use,
@@ -26,7 +31,9 @@
 //                                           truncated: only the transcript's last 3 MiB (and at most 20,000 entries,
 //                                           50 compaction boundaries) was read
 //   POST   /api/sessions  {model?, mode?, effort?, resume?: ID, fork?: bool, at?: MESSAGE_UUID, before?: PROMPT_UUID,
-//                                           taskStop?: bool, budget?: {usd, hard, spent?}}   budget: as set_budget, before
+//                                           taskStop?: bool, budget?: {usd, hard, spent?}, project?: ID}   project: a new
+//                                           session runs in that project's folder (404 not a project, 409 its folder is
+//                                           not there); a resumed or forked one in its own (cwd)   budget: as set_budget, before
 //                                           the process starts (409 for a resume while another process in the sandbox
 //                                           runs that conversation: the terminal)   mode: readOnly | plan | default |
 //                                           acceptEdits (the former dontAsk is readOnly), or auto while CODE_AUTO_MODE is
@@ -48,7 +55,28 @@
 //                                           ends (409 while a turn runs), then a new window of the terminal's tmux
 //                                           session runs `claude-bedrock --resume ID` (typed into its shell: bn-coded's
 //                                           terminal.resume); until Claude Code exits there, resuming it here is refused
-//   GET    /api/permissions                {user, project, local: {path, exists, error, sha256, allow, ask, deny, other,
+//   Projects (projects.mjs; ?project=ID or {project: ID} on the calls that work in one — /api/fs/find, /api/fs/grep,
+//   /api/git/diff, /api/git/repos, /api/memory, /api/permissions, DELETE /api/fs, /api/run(/start), /api/launch(/start)
+//   and a new session — an id of the records, never a folder: 400 not an id, 404 not a project; none or "ws": the
+//   workspace, as before projects):
+//   GET    /api/projects                   {projects: [{id, name, root (its folder in the workspace; "" the Workspace),
+//                                           path, created, workspace, folder: dir|missing|link|other|null, git:
+//                                           bool|null}], max} — the Workspace first; folder/git: what the sandbox says
+//                                           (null: not said)
+//   POST   /api/projects {kind: new|folder, folder, name?, git?}   {project, git, gitError?} — new: the folder made in
+//                                           the sandbox (not there yet, its parent a real folder) and, git: true, `git
+//                                           init` in it (no template); folder: one that is there. folder: 1–4 names,
+//                                           none starting with ".", ≤ 160 bytes; 409 a project already, or 64 of them
+//   POST   /api/projects/ID {name}         {project} — renamed (not the Workspace)
+//   DELETE /api/projects/ID?trash=1&confirm=FOLDER   {ok, removed, trash} — the record goes (its sessions are shown
+//                                           where their folder is); trash=1 with its folder named again (confirm): the
+//                                           folder too, into the workspace trash — 409 while a session of it runs
+//   POST   /api/projects/ID/sessions {ids}  {ok, filed} — Add to project: those sessions shown there (a label; each
+//                                           still runs in its own folder); "ws": back to the Workspace
+//   POST   /api/projects/ID/terminal       {ok, window} — a new window of the terminal in its folder
+//   POST   /api/projects/ID/git-init       {ok} — Connect a git repository: its folder made a repository (git init,
+//                                           no template); 409 it is one already
+//   GET    /api/permissions?project=ID     {user, project, local: {path, exists, error, sha256, allow, ask, deny, other,
 //                                           truncated, defaultMode, directories}, bypassAsk, readOnlyDeny} — the permission
 //                                           rules: the sandbox's ~/.claude/settings.json (where "Always" writes), the
 //                                           workspace's .claude/settings.json and settings.local.json (shown only:
@@ -71,12 +99,13 @@
 //                                           a file that is not there (409 "exists already" otherwise)
 //   POST   /api/fs/upload?dir=D            raw body (≤ 25 MiB), X-Filename: NAME (percent-encoded) -> {path, size,
 //                                           mtimeMs}; an existing name gets -1, -2 … before its extension
-//   GET    /api/fs/find?q=TEXT&limit=N (≤ 200)   {paths: ["src/a.ts", "src/" …], truncated} — paths under the
-//                                           workspace whose relative path contains TEXT (any case); folders end in "/";
+//   GET    /api/fs/find?q=TEXT&limit=N (≤ 200)&project=ID   {paths: ["src/a.ts", "src/" …], truncated} — paths
+//                                           under the workspace (a project's folder) whose relative path contains TEXT
+//                                           (any case; paths of the workspace either way); folders end in "/";
 //                                           a bounded walk (20,000 entries, depth 12; .git, the trash, dependencies
 //                                           and build output — node_modules, .venv, venv, __pycache__, dist, build,
 //                                           target, .next, .cache — skipped; links never followed)
-//   GET    /api/fs/grep?q=TEXT&regex=1&case=1&include=GLOBS&exclude=GLOBS   {engine: ripgrep|node, files: [{path, hits:
+//   GET    /api/fs/grep?q=TEXT&regex=1&case=1&include=GLOBS&exclude=GLOBS&project=ID   {engine: ripgrep|node, files: [{path, hits:
 //                                           [{line, text, col, len, count, cut}]}], hits, truncated, timedOut, error}
 //                                           — TEXT searched in the workspace's files (literal unless regex=1: ripgrep's
 //                                           own engine, linear time; the fallback without ripgrep refuses regex); any
@@ -85,11 +114,12 @@
 //                                           followed; .gitignore honoured; .git, the trash, dependencies and build output
 //                                           skipped (as /api/fs/find). text: the line, at most 240 characters around the
 //                                           match (cut: more). 429 while two searches run already
-//   GET    /api/git/diff                   {repo, reason, head, files: [{path, status: modified|added|deleted, untracked,
+//   GET    /api/git/diff?project=ID        {repo, reason, head, files: [{path, status: modified|added|deleted, untracked,
 //                                           binary, symlink, modeChange: {old, new} | null, hunks: [{oldStart, oldLines,
 //                                           newStart, newLines, lines}], mtimeMs, size, cut, bad, watch: {kind, why} |
 //                                           null}], truncated, timedOut}
-//                                           — what changed in the workspace since its last commit (git in the sandbox:
+//                                           — what changed in the workspace (a project's folder: it must be the
+//                                           repository itself) since its last commit (git in the sandbox:
 //                                           read-only, fixed arguments, no program from the repository's configuration;
 //                                           docs/security.md), untracked files as new ones (.gitignore honoured; their
 //                                           text up to 256 KiB each, 2 MiB in all). repo false (with a reason): not a git
@@ -138,15 +168,16 @@
 //                                           at most 64 KiB (the newest lines kept: cut), lines over 4,000 characters cut
 //                                           (wide: how many). Read only. 409 no tmux session yet, or hooks set that would
 //                                           run on a read; 404 no such pane; 501 an older sandbox
-//   GET    /api/memory?scope=project|user  {scope, path, exists, text, size, mtimeMs, truncated} — CLAUDE.md: this
-//                                           workspace's (/workspace/CLAUDE.md) or your user one in the sandbox
-//                                           (~/.claude/CLAUDE.md); at most 1 MiB
-//   PUT    /api/memory?scope=project|user {text, ifMtimeMs?}   {path, size, mtimeMs}; 409 when it changed meanwhile
+//   GET    /api/memory?scope=project|user&project=ID  {scope, path, exists, text, size, mtimeMs, truncated} — CLAUDE.md:
+//                                           the project's (<its folder>/CLAUDE.md; /workspace/CLAUDE.md) or your user
+//                                           one in the sandbox (~/.claude/CLAUDE.md); at most 1 MiB
+//   PUT    /api/memory?scope=project|user&project=ID {text, ifMtimeMs?}   {path, size, mtimeMs}; 409 when it changed
 //   POST   /api/fs/mkdir {path}            {path}
 //   POST   /api/fs/rename {from, to}       {path}; 409 when `to` exists
-//   DELETE /api/fs?path=P&ifMtimeMs=N      {trash}: moved into /workspace/.bedrock-now-trash/ (which holds a .gitignore
-//                                           of "*" so git leaves it alone); ifMtimeMs: only while its modification time
-//                                           is still N (409 otherwise)
+//   DELETE /api/fs?path=P&ifMtimeMs=N&project=ID   {trash}: moved into /workspace/.bedrock-now-trash/ — a project's
+//                                           own (<its folder>/.bedrock-now-trash/) for a file in it — (which holds a
+//                                           .gitignore of "*" so git leaves it alone); ifMtimeMs: only while its
+//                                           modification time is still N (409 otherwise)
 //   GET    /api/plugins                    {installed: [{id, name, marketplace, version, scope, enabled, fromFolder,
 //                                           installedAt, updatedAt, errors}], marketplaces: [{name, source, location}]}
 //                                           (claude plugin list / plugin marketplace list --json in the sandbox)
