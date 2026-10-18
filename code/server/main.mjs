@@ -283,7 +283,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       if (p === '/api/git/hosts' && m === 'POST') return send(res, 200, { host: g().addHost(await readJson(req, 96 << 10), remote) });
       if ((mm = /^\/api\/git\/hosts\/(h_[0-9a-f]{12})(?:\/(token|key|claude|test|known|ca))?$/.exec(p))) {
         const id = mm[1], what = mm[2] || '';
-        if (!what && m === 'DELETE') return send(res, 200, { host: g().removeHost(id) });
+        if (!what && m === 'DELETE') return send(res, 200, g().removeHost(id));
         if (what === 'token' && m === 'POST') return send(res, 200, { host: g().setToken(id, await readJson(req), remote) });
         if (what === 'key' && m === 'POST') return send(res, 200, { host: g().newKey(id, remote) });
         if (what === 'claude' && m === 'POST') return send(res, 200, { host: g().setClaude(id, await readJson(req), remote) });

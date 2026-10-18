@@ -146,7 +146,10 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     if (h.auth === 'token') return { kind: 'token', ...(h.ca ? { ca: h.ca } : {}) };
     return { kind: 'ssh', publicKey: h.ssh.publicKey, knownHosts: GitHosts.knownHosts(h, p.port), ...(learn ? { learn: true } : {}) };
   }
-  const via = (h) => (h ? `${h.auth === 'token' ? 'HTTPS token' : 'SSH key'} '${h.label}'` : 'no credential (a public repository)');
+  // (an imported login says so: "HTTPS token 'GitHub' (gh's login, octocat)")
+  const via = (h) => (h ? `${h.auth === 'token' ? 'HTTPS token' : 'SSH key'} '${h.label}'${h.imported ? ` (${h.imported.source}'s login${h.imported.account ? `, ${h.imported.account}` : ''})` : ''}`
+    : 'no credential (a public repository)');
+  const hostRef = (h) => (h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.imported ? { source: h.imported.source, account: h.imported.account ?? null } : {}) } : null);
   // a fetch or pull asks the first time for a remote URL with that credential (a public fetch first, then a host's
   // token for the same URL: asked again)
   const fetchKey = (h, url) => `${h?.id ?? 'none'} ${url}`;
@@ -165,11 +168,15 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
   function setCa(id, b, remote) { localOnly(remote, 'A CA certificate is set'); return store.setCa(id, b?.ca ?? null); }
   function addKnown(id, b, remote) { localOnly(remote, 'A host key is trusted'); return store.addKnown(id, b?.lines); }
   function forgetKnown(id) { return store.forgetKnown(id); }
+  // removeHost(id) -> {host, revokeAt}: gone from here; where to revoke it on the host yourself (gh's login: GitHub's
+  // authorized OAuth apps, which signs gh out too)
   function removeHost(id) {
+    const before = store.get(id);
     const h = store.remove(id);
-    event({ action: 'host', host: h.label, target: h.host, text: 'removed (its token or key is gone from here; revoke it on the host too)' });
+    const at = revokeAt(before);
+    event({ action: 'host', host: h.label, target: h.host, text: `removed (its token or key is gone from here; revoke it on the host too${at ? `: ${at}` : ''})` });
     void syncBroker();
-    return h;
+    return { host: h, revokeAt: at };
   }
   function setClaude(id, b, remote) {
     const on = b?.on === true;
@@ -214,7 +221,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     const hosts = store.read().hosts;
     const look = (u) => {
       if (!u) return null;
-      try { const p = parseRemoteUrl(u); const h = store.match(p, hosts); return { url: u, ok: true, display: p.display, scheme: p.scheme, host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth } : null }; } catch (e) { return { url: u, ok: false, why: e.message }; }
+      try { const p = parseRemoteUrl(u); const h = store.match(p, hosts); return { url: u, ok: true, display: p.display, scheme: p.scheme, host: hostRef(h) }; } catch (e) { return { url: u, ok: false, why: e.message }; }
     };
     return { ...st, remotes: st.remotes.map((x) => ({ ...x, fetch: look(x.urls[0]), push: look(x.pushUrls[0] ?? x.urls[0]) })) };
   }
@@ -281,7 +288,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
         : `${verb} ${cur} → ${p.display} (${dst}${exists ? '' : ', a new branch there'}) via ${via(h)}`;
     const planId = keep({ action, repo, remote: name, url, p, branch: cur, dst, hostId: h?.id ?? null, head: st.head });
     return { planId, action, repo, remote: name, url, display: p.display, scheme: p.scheme, branch: cur, dst, newBranch: !exists,
-      host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth } : null, auth: h ? h.auth : 'none', summary,
+      host: hostRef(h), auth: h ? h.auth : 'none', summary,
       confirm: push || !store.fetchedBefore(fetchKey(h, url)), ahead: br?.ahead ?? null, behind: br?.behind ?? null, defaultBranch: st.remoteHeads[name] ?? null };
   }
   async function clonePlan(b) {
@@ -295,7 +302,7 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
     if (!h && p.scheme === 'ssh') throw err(400, `${p.host} is not a connected git host: connect it (Git hosts) with an SSH key, or clone its https:// URL`);
     const summary = `Clone ${p.display} into ${target ? `${target}/` : 'the workspace folder'}${depth ? ` (shallow: the last ${depth} commit${depth === 1 ? '' : 's'})` : ''} via ${via(h)}`;
     const planId = keep({ action: 'clone', url: b.url, p, target, depth, hostId: h?.id ?? null });
-    return { planId, action: 'clone', url: b.url, display: p.display, scheme: p.scheme, target, depth, host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth } : null,
+    return { planId, action: 'clone', url: b.url, display: p.display, scheme: p.scheme, target, depth, host: hostRef(h),
       auth: h ? h.auth : 'none', summary, confirm: true };
   }
   async function run(b) {
@@ -413,4 +420,13 @@ export function makeGitRemote({ call, openBroker = null, store = new GitHosts(),
 
   return { hostsView, addHost, setToken, newKey, setCa, addKnown, forgetKnown, removeHost, setClaude, testHost, repos, state, branch, remoteSet, plan, clonePlan, run, syncBroker, close,
     get brokerOpen() { return Boolean(brokerConn); } };
+}
+
+// revokeAt(h) -> the page where you revoke a host's token on the host yourself: gh's login at GitHub's authorized OAuth
+// apps (GitHub CLI), a token at GitHub's or GitLab's access tokens; null for an SSH key or another server
+export function revokeAt(h) {
+  if (!h || h.kind === 'other' || h.auth !== 'token') return null;
+  const web = `https://${h.host}${h.port && h.port !== 443 ? `:${h.port}` : ''}`;
+  if (h.kind === 'github') return h.imported?.source === 'gh' ? `${web}/settings/applications` : `${web}/settings/personal-access-tokens`;
+  return `${web}/-/user_settings/personal_access_tokens`;
 }

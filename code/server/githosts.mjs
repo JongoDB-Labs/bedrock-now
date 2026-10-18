@@ -1,7 +1,9 @@
 // Git hosts (the Code page's Git panel › Git hosts; Settings › Claude Code links here): the git servers you connect
 // for clone, fetch, pull and push — GitHub, GitLab or any https/ssh host — each with an HTTPS access token or an SSH key
-// made here. They are kept in this container's own volume (code-state, at /var/lib/bn-code: compose.code.yaml), in
-// one file of mode 600 in a folder of mode 700 — unencrypted: whoever can read that volume (Docker, the computer's disk,
+// made here (an access token may come from a gh / glab login on the computer running bedrock-now: ./stack git-host
+// import, import-host.mjs — its source, account and scopes kept with it, for the page). They are kept in this
+// container's own volume (code-state, at /var/lib/bn-code: compose.code.yaml), in one file of mode 600 in a folder of
+// mode 700 — unencrypted: whoever can read that volume (Docker, the computer's disk,
 // root) can read the credentials — never in .env, the portal, the update helper's requests, backups or diagnostic
 // reports, and never in the sandbox — which gets a token for one operation of yours (bn-coded's git.net:
 // gitremote.mjs) or a signature of a login (sshagent.mjs), never the file. A token or key is never shown again: the
@@ -24,6 +26,10 @@ export const TOKEN = /^[\x21-\x7e]{8,1024}$/;
 const KNOWN = /^(\[[a-z0-9.-]{1,253}\]:[0-9]{1,5}|[a-z0-9.-]{1,253}) (ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]{16,2000}={0,2}$/;
 const PEM = /^-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{40,20000}\n-----END CERTIFICATE-----\n?(?:-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{40,20000}\n-----END CERTIFICATE-----\n?){0,9}$/;
 export const knownOk = (l) => typeof l === 'string' && KNOWN.test(l);
+// an imported login's account and scopes (./stack git-host import gh | glab)
+const ACCOUNT = /^[A-Za-z0-9._@+-]{1,100}$/;
+const SCOPE = /^[A-Za-z0-9:_./-]{1,80}$/;
+export const IMPORT_SOURCES = ['gh', 'glab'];
 // the defaults of the well-known hosts: the name, and the user name git sends with a token (any non-empty one works)
 export const DEFAULTS = {
   github: { host: 'github.com', label: 'GitHub', tokenUser: 'x-access-token', sshUser: 'git' },
@@ -36,6 +42,9 @@ export class HostError extends Error {
 }
 
 const empty = () => ({ version: 1, hosts: [], fetched: {}, events: [] });
+const msTime = (v) => (Number.isInteger(v) && v > 0 && v < 1e14 ? v : null);
+// sleepSync(ms): the store's few milliseconds' wait for another process's write (import-host.mjs)
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const knownPrefix = (host, port) => (port && port !== 22 ? `[${host}]:${port}` : host);
 
 // The store: read at each use (one small file), written whole (a temporary file renamed over it).
@@ -59,12 +68,28 @@ export class GitHosts {
     fs.writeFileSync(tmp, JSON.stringify(v), { mode: 0o600, flag: 'wx' });
     fs.renameSync(tmp, this.file);
   }
-  update(fn) { const v = this.read(); const out = fn(v); this.write(v); return out; }
+  // update(fn): read, change, write — under a lock file, so that ./stack git-host import (another process: import-host.mjs)
+  // and this server never write over each other's change (a lock older than 10 s was left by a process that died)
+  update(fn) { return this.locked(() => { const v = this.read(); const out = fn(v); this.write(v); return out; }); }
+  locked(fn) {
+    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    const lock = path.join(this.dir, '.lock');
+    let fd = null;
+    for (let i = 0; fd === null; i++) {
+      try { fd = fs.openSync(lock, 'wx', 0o600); } catch (e) {
+        if (e.code !== 'EEXIST') throw new HostError(500, 'the Git hosts file cannot be written');
+        try { if (Date.now() - fs.statSync(lock).mtimeMs > 10000) { fs.unlinkSync(lock); continue; } } catch { continue; }
+        if (i >= 300) throw new HostError(503, 'the Git hosts file is busy: try again');
+        sleepSync(10);
+      }
+    }
+    try { return fn(); } finally { fs.closeSync(fd); try { fs.unlinkSync(lock); } catch { /* gone */ } }
+  }
 
   // public(h) -> what the page may see of a host: never the token or the private key
   static public(h) {
     return { id: h.id, kind: h.kind, label: h.label, host: h.host, port: h.port ?? null, auth: h.auth, username: h.username,
-      hasToken: h.auth === 'token' && typeof h.token === 'string', tokenSetAt: h.tokenSetAt ?? null,
+      hasToken: h.auth === 'token' && typeof h.token === 'string', tokenSetAt: h.tokenSetAt ?? null, imported: h.auth === 'token' && h.imported ? { ...h.imported } : null,
       publicKey: h.ssh?.publicKey ?? null, fingerprint: h.ssh?.fingerprint ?? null, keySetAt: h.ssh?.createdAt ?? null,
       knownHosts: (h.knownHosts || []).map(knownHostFingerprint).filter(Boolean), builtinHostKeys: (KNOWN_HOSTS[h.host] || []).length > 0,
       ca: typeof h.ca === 'string', claude: h.claude === true, claudeSince: h.claudeSince ?? null, createdAt: h.createdAt };
@@ -93,6 +118,7 @@ export class GitHosts {
     if (auth === 'token') {
       if (typeof b.token !== 'string' || !TOKEN.test(b.token)) throw new HostError(400, 'the access token, please (printable characters, no spaces)');
       h.token = b.token; h.tokenSetAt = this.now();
+      if (b.imported && typeof b.imported === 'object' && IMPORT_SOURCES.includes(b.imported.source)) h.imported = b.imported;
       if (b.ca !== undefined && b.ca !== null && b.ca !== '') h.ca = checkCa(b.ca);
     } else {
       const k = newKey(`bedrock-now ${label}`);
@@ -106,10 +132,23 @@ export class GitHosts {
       return GitHosts.public(h);
     });
   }
+  // addImport({source, host, label, token, account, scopes, expiresAt}) -> the new host (public): a gh / glab login of
+  // the computer running bedrock-now (import-host.mjs), kept as an access token like any other — with where it came
+  // from, its account and scopes for the page (and a glab token's expiry), never renewed (gh's does not expire)
+  addImport(b) {
+    const source = IMPORT_SOURCES.includes(b?.source) ? b.source : null;
+    if (!source) throw new HostError(400, 'source: gh or glab');
+    if (b.account !== undefined && b.account !== null && b.account !== '' && (typeof b.account !== 'string' || !ACCOUNT.test(b.account))) throw new HostError(400, 'not an account name');
+    const imported = { source, account: b.account || null, scopes: (Array.isArray(b.scopes) ? b.scopes : []).filter((x) => typeof x === 'string' && SCOPE.test(x)).slice(0, 32),
+      app: source === 'gh' && typeof b.token === 'string' && b.token.startsWith('gho_') ? 'oauth-app' : null, expiresAt: msTime(b.expiresAt), importedAt: this.now() };
+    const h = this.add({ kind: source === 'gh' ? 'github' : 'gitlab', host: b.host, label: b.label, auth: 'token', token: b.token, imported });
+    return h;
+  }
   // a host's token replaced (never shown: replace-only)
   setToken(id, token) {
     if (typeof token !== 'string' || !TOKEN.test(token)) throw new HostError(400, 'the access token, please (printable characters, no spaces)');
-    return this.change(id, (h) => { if (h.auth !== 'token') throw new HostError(400, 'that host uses an SSH key'); h.token = token; h.tokenSetAt = this.now(); });
+    // (an imported login's token replaced: an access token of yours from then on)
+    return this.change(id, (h) => { if (h.auth !== 'token') throw new HostError(400, 'that host uses an SSH key'); h.token = token; h.tokenSetAt = this.now(); delete h.imported; });
   }
   // a new SSH key for a host (the old one stops working where you added it — remove it there)
   newKey(id) {
