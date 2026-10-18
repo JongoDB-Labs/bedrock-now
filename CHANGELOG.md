@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-18
+
 ### Added
 
 - **The walkthrough covers what a developer uses**, in six parts: *Set up* (now with **Connect a git host**: GitHub,
@@ -50,6 +52,9 @@ All notable changes to bedrock-now are documented here. The format follows
   keeps `?git=hosts` and `?git=clone` now (nothing else, and no URL with them).
 - **`./stack update`'s What's new** cut a long release title at 120 bytes — mid-word ("… credentials that never en"),
   and on a Mac possibly inside a character. It is now cut at a word, with "…".
+- **Tests:** the end-to-end check of nightly backups failed when it ran between 2:00 and 5:00 — inside the default
+  backup window, where turning nightly backups on starts that window's backup at once and the helper refuses the next
+  change while it runs ("Another action is still running"). It now waits for that backup and for the helper to be idle.
 
 ## [0.12.0] - 2026-10-17
 
@@ -1789,7 +1794,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.9.0...v0.10.0
