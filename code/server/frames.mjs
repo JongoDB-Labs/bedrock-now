@@ -2,7 +2,8 @@
 // payload. The parser keeps chunks in a list until a frame is complete (one copy per frame) and throws on a header
 // announcing more than `max` bytes — the caller then ends the connection: the sandbox's frames are untrusted.
 
-export const T = Object.freeze({ OPEN: 1, STDIN: 2, STDIN_END: 3, SIGNAL: 4, STDOUT: 0x12, STDERR: 0x13, EXIT: 0x14, RESULT: 0x15, ERROR: 0x16 });
+// ASK (from the sandbox) / ANSWER (to it): a remote git operation's credential question while it runs, and its answer
+export const T = Object.freeze({ OPEN: 1, STDIN: 2, STDIN_END: 3, SIGNAL: 4, ANSWER: 5, STDOUT: 0x12, STDERR: 0x13, EXIT: 0x14, RESULT: 0x15, ERROR: 0x16, ASK: 0x17 });
 export const MAX_FRAME = 4 << 20;   // a frame from the sandbox (and the most we send in one)
 export const CHUNK = 1 << 20;       // stdin / upload data goes in frames of at most this much
 

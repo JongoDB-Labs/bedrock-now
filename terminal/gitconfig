@@ -1,0 +1,7 @@
+# bedrock-now's sandbox (/etc/gitconfig, read-only in the image): git's credential helper here is bn-git-credential,
+# which keeps nothing. It answers only while you let Claude use a git host (Settings › Git hosts on the Code page, off
+# by default): then the code container gives the token for that host alone, and Activity says so. Otherwise it says
+# nothing and git goes on to the next helper you configured (~/.gitconfig), or asks as it always does. The Code page's
+# own push, pull and clone never read this file.
+[credential]
+	helper = /usr/local/bin/bn-git-credential

@@ -92,7 +92,9 @@ const MAX_CONNECTIONS = 32;
 const MAX_LIST = 5000;                     // directory entries
 const MAX_SESSIONS = 200;                  // sessions.list rows (the most recent)
 const MAX_TRANSCRIPT = 3 << 20;            // sessions.load: a transcript's last 3 MiB
-export const T = { OPEN: 1, STDIN: 2, STDIN_END: 3, SIGNAL: 4, STDOUT: 0x12, STDERR: 0x13, EXIT: 0x14, RESULT: 0x15, ERROR: 0x16 };
+// ASK (out) / ANSWER (in): a remote git operation asks the code container for its credential while it runs (a token
+// for git's credential helper, an SSH agent's signature) — the one case where this side asks and the other answers
+export const T = { OPEN: 1, STDIN: 2, STDIN_END: 3, SIGNAL: 4, ANSWER: 5, STDOUT: 0x12, STDERR: 0x13, EXIT: 0x14, RESULT: 0x15, ERROR: 0x16, ASK: 0x17 };
 
 export function frame(type, payload) {
   const b = Buffer.isBuffer(payload) ? payload : Buffer.from(JSON.stringify(payload ?? {}));
@@ -558,18 +560,21 @@ export function fsFind(q, limit) {
 // --- runCapped: a helper program (git, rg) with fixed arguments, no stdin (or `input`: these bytes, then EOF), a
 // --- deadline and an output cap. Resolves {code, signal, out: Buffer, err: string, cut: the output went past maxOut
 // --- (the program was killed), timedOut}. onData(chunk) may return false to stop it early (killed; `stopped`).
-function runCapped(bin, args, { cwd = WORKSPACE, env, timeoutMs = 10000, maxOut = 1 << 20, onData, input } = {}) {
+// --- fd3(stream): the program gets a 4th descriptor (a socket pair; its children inherit it) — a remote git
+// --- operation's credential channel (gitNet). errTail: keep the last 8,000 characters of stderr (not the first 4,000).
+function runCapped(bin, args, { cwd = WORKSPACE, env, timeoutMs = 10000, maxOut = 1 << 20, onData, input, fd3, errTail = false } = {}) {
   return new Promise((resolve) => {
     let c;
     // (its own process group: a stop ends whatever it started too)
-    try { c = spawn(bin, args, { cwd, env, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: true }); } catch (e) { resolve({ code: -1, signal: null, out: Buffer.alloc(0), err: e.code || e.message, missing: e.code === 'ENOENT' }); return; }
+    try { c = spawn(bin, args, { cwd, env, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe', ...(fd3 ? ['pipe'] : [])], detached: true }); } catch (e) { resolve({ code: -1, signal: null, out: Buffer.alloc(0), err: e.code || e.message, missing: e.code === 'ENOENT' }); return; }
+    if (fd3 && c.stdio[3]) { c.stdio[3].on('error', () => {}); fd3(c.stdio[3]); }
     if (input) { c.stdin.on('error', () => {}); c.stdin.end(input); }
     const parts = [];
     let size = 0, err = '', cut = false, timedOut = false, stopped = false, done = false;
     const stop = () => {
       try { process.kill(-c.pid, 'SIGKILL'); } catch { try { c.kill('SIGKILL'); } catch { /* gone */ } }
       // (a pipe some other process still holds open never closes: the answer does not wait for it)
-      setTimeout(() => { c.stdout.destroy(); c.stderr.destroy(); end(null, 'SIGKILL'); }, 2000).unref();
+      setTimeout(() => { c.stdout.destroy(); c.stderr.destroy(); c.stdio[3]?.destroy(); end(null, 'SIGKILL'); }, 2000).unref();
     };
     const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
     c.stdout.on('data', (d) => {
@@ -578,11 +583,11 @@ function runCapped(bin, args, { cwd = WORKSPACE, env, timeoutMs = 10000, maxOut 
       if (size + d.length > maxOut) { parts.push(d.subarray(0, maxOut - size)); size = maxOut; cut = true; stop(); return; }
       parts.push(d); size += d.length;
     });
-    c.stderr.on('data', (d) => { if (err.length < 4000) err += d.toString('utf8'); });
+    c.stderr.on('data', (d) => { if (errTail) err = (err + d.toString('utf8')).slice(-8000); else if (err.length < 4000) err += d.toString('utf8'); });
     const end = (code, signal, extra = {}) => {
       if (done) return;
       done = true; clearTimeout(timer);
-      resolve({ code, signal, out: Buffer.concat(parts), err: err.slice(0, 4000), cut, timedOut, stopped, ...extra });
+      resolve({ code, signal, out: Buffer.concat(parts), err: errTail ? err : err.slice(0, 4000), cut, timedOut, stopped, ...extra });
     };
     c.on('error', (e) => end(-1, null, { err: e.code || e.message, missing: e.code === 'ENOENT' }));
     c.on('close', (code, signal) => end(code, signal));
@@ -619,17 +624,19 @@ export const GIT_CONFIG = [
   ['protocol.allow', 'never'], ['protocol.file.allow', 'never'], ['protocol.ext.allow', 'never'], ['protocol.ssh.allow', 'never'],
   ['protocol.git.allow', 'never'], ['protocol.http.allow', 'never'], ['protocol.https.allow', 'never'], ['uploadpack.packObjectsHook', ''],
 ];
-// gitEnv(extra, more) -> the whole environment of a git run: nothing inherited but a fixed PATH and HOME (`more`: the
-// Git panel's commit identity, set here — never taken from outside)
-export function gitEnv(extra = [], more = {}) {
+// gitEnv(extra, more, {ceiling, add}) -> the whole environment of a git run: nothing inherited but a fixed PATH and HOME
+// (`more`: the Git panel's commit identity, set here — never taken from outside; ceiling: the folder above the
+// repository, where git stops looking for one; add: what a remote operation sets here itself — gitNetEnv)
+export function gitEnv(extra = [], more = {}, { ceiling = path.dirname(WORKSPACE), add = {} } = {}) {
   const env = {
     PATH: '/usr/local/bin:/usr/bin:/bin', HOME: os.homedir(), LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: 'bn-none', GIT_TERMINAL_PROMPT: '0',
     GIT_NO_REPLACE_OBJECTS: '1', GIT_LITERAL_PATHSPECS: '1', GIT_PAGER: 'cat', PAGER: 'cat', GIT_ADVICE: '0',
     // ":" is git's own "no editor": it never starts one (the Git panel's commit takes its message on stdin)
     GIT_EDITOR: ':', GIT_SEQUENCE_EDITOR: ':',
-    GIT_CEILING_DIRECTORIES: path.dirname(WORKSPACE),
+    GIT_CEILING_DIRECTORIES: ceiling,
   };
+  for (const [k, v] of Object.entries(add)) if (typeof v === 'string') env[k] = v;
   for (const [k, v] of Object.entries(more)) if (/^GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)$/.test(k) && typeof v === 'string') env[k] = v;
   const cfg = [...GIT_CONFIG, ...extra];
   env.GIT_CONFIG_COUNT = String(cfg.length);
@@ -688,11 +695,11 @@ function statRel(rel) {
 }
 // untrackedDiff(rel, budget) -> the synthetic git diff of a new file (all lines added), or null when it is not shown
 // (not a regular file, larger than GIT_UNTRACKED_TEXT, past the budget) — binary as git says it
-function untrackedDiff(rel, st, budget) {
+function untrackedDiff(rel, st, budget, wsRel = rel) {
   const head = `diff --git ${cquote(`a/${rel}`)} ${cquote(`b/${rel}`)}\nnew file mode ${st.mode & 0o111 ? '100755' : '100644'}\n`;
   if (st.type !== 'file' || st.size > GIT_UNTRACKED_TEXT || st.size > budget.left) return null;
   // (statRel found no link on the way; the file itself is opened O_NOFOLLOW)
-  const b = readRegular(path.join(WORKSPACE, rel), GIT_UNTRACKED_TEXT);
+  const b = readRegular(path.join(WORKSPACE, wsRel), GIT_UNTRACKED_TEXT);
   if (!b) return null;
   budget.left -= b.length;
   if (b.subarray(0, 8000).includes(0)) return `${head}Binary files /dev/null and ${cquote(`b/${rel}`)} differ\n`;
@@ -892,14 +899,28 @@ function sandboxIdentity() {
   return out;
 }
 
-// gitPrep() -> {run, head, base, gitdir, left} for a repository that is /workspace, or {no: reason}. run(args, opts)
-// runs git with the panel's arguments before `args`, its environment (and opts.env: the identity), and what is left of
-// the op's deadline.
-async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
+// repoRoot(rel) -> {abs, rel}: the repository folder a Git panel op works in — '' (or none): /workspace itself; else a
+// folder of the workspace (a clone in it, a project of its own), named as the page names paths (gitPathOk: no "..",
+// no .git part), at most 8 levels down, every folder on the way a real folder (never through a link)
+export const REPO_DEPTH = 8;
+export function repoRoot(rel) {
+  if (rel === undefined || rel === null || rel === '') return { abs: WORKSPACE, rel: '' };
+  if (typeof rel !== 'string' || !gitPathOk(rel) || rel.split('/').length > REPO_DEPTH || rel.split('/')[0] === TRASH) throw new Error('not a folder of the workspace');
+  if (statRel(rel)?.type !== 'dir') throw new Error('no such folder in the workspace (or a link on its way)');
+  return { abs: path.join(WORKSPACE, rel), rel };
+}
+// gitPrep() -> {run, head, base, gitdir, left, ws} for a repository that is `root` itself (/workspace, or a folder of
+// it: repoRoot), or {no: reason}. run(args, opts) runs git there with the panel's arguments before `args`, its
+// environment (and opts.env: the identity), and what is left of the op's deadline. ws(p): a path git names (relative
+// to the repository) as a path of the workspace.
+async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc', root = repoRoot(''), add = {} } = {}) {
   const t0 = Date.now();
   const left = () => Math.max(500, deadlineMs - (Date.now() - t0));
   let extra = [...GIT_PANEL_CONFIG];
-  const run = (args, { env: more = {}, ...opts } = {}) => runCapped(git, [...GIT_PANEL_PRE, ...args], { env: gitEnv(extra, more), timeoutMs: left(), ...opts });
+  const ceiling = path.dirname(root.abs);
+  // (per run: `config` more overrides and `add` more environment — a remote operation's network command alone)
+  const run = (args, { env: more = {}, config = [], add: plus = {}, ...opts } = {}) => runCapped(git, [...GIT_PANEL_PRE, ...args],
+    { cwd: root.abs, env: gitEnv([...extra, ...config], more, { ceiling, add: { ...add, ...plus } }), timeoutMs: left(), ...opts });
   let r = await run(GIT_PANEL_ARGS.top, { maxOut: 16384 });
   if (r.missing) return { no: 'git is not installed in the sandbox' };
   if (r.timedOut) return { no: 'git did not answer in time' };
@@ -907,7 +928,7 @@ async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '
   const [top, format, gitdir] = r.out.toString('utf8').split('\n');
   let realTop = '';
   try { realTop = fs.realpathSync(top); } catch { /* below */ }
-  if (realTop !== fs.realpathSync(WORKSPACE)) return { no: 'the repository is not the workspace folder itself' };
+  if (realTop !== fs.realpathSync(root.abs)) return { no: root.rel ? 'that folder is not the top of a git repository' : 'the repository is not the workspace folder itself' };
   if (!gitdir || !path.isAbsolute(gitdir)) return { no: 'git: no git folder' };
   r = await run(GIT_PANEL_ARGS.config, { maxOut: 1 << 20 });
   if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return { no: `git config: ${r.timedOut ? 'no answer in time' : r.cut ? 'too much configuration' : gitWhy(r)}` };
@@ -918,7 +939,8 @@ async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '
   if (r.timedOut) return { no: 'git did not answer in time' };
   const head = r.code === 0 ? r.out.toString('utf8').trim() : null;
   if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return { no: 'git: an unexpected HEAD' };
-  return { run, head, base: head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'], gitdir, left, t0, procDir };
+  const ws = (p) => (root.rel ? `${root.rel}/${p}` : p);
+  return { run, head, base: head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'], gitdir, left, t0, procDir, root, ws, format };
 }
 const gitWhy = (r) => printable(`${r.err || ''}\n${r.out ? r.out.toString('utf8').slice(0, 2000) : ''}`.trim().split('\n').filter(Boolean).pop() || `exit ${r.code}`, 300);
 // a merge, rebase … in progress (from the git folder's own files)
@@ -1010,8 +1032,8 @@ async function gitIdentity(run) {
 // git.status -> {repo, reason?, branch, detached, head, upstream, ahead, behind, state, identity, staged: [{path, code,
 // add, del, binary}], unstaged: [{path, code, add, del, binary, mtimeMs, type}], untracked: [{path, add, size, mtimeMs,
 // type}], conflicts: [{path, code}], truncated} — every list together at most GIT_NAMES_MAX entries and GIT_LIST_BYTES
-export async function gitStatus({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, listBytes = GIT_LIST_BYTES } = {}) {
-  const g = await gitPrep({ git, deadlineMs });
+export async function gitStatus({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, listBytes = GIT_LIST_BYTES, root } = {}) {
+  const g = await gitPrep({ git, deadlineMs, root });
   if (g.no) return { repo: false, reason: g.no };
   let r = await g.run(GIT_PANEL_ARGS.status, { maxOut: 4 << 20 });
   if (r.timedOut || (r.code !== 0 && !r.cut)) return { repo: false, reason: `git status: ${r.timedOut ? 'no answer in time' : gitWhy(r)}` };
@@ -1025,7 +1047,7 @@ export async function gitStatus({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, li
   if (staged.cut || unstaged.cut) truncated = true;
   let targets = null;
   try { targets = watchTargets(); } catch { /* not marked */ }
-  const w = (p) => { try { return targets && isWatched(p, targets) ? { watched: true } : {}; } catch { return {}; } };
+  const w = (p) => { try { return targets && isWatched(g.ws(p), targets) ? { watched: true } : {}; } catch { return {}; } };
   let room = listBytes, n = 0;
   const fits = (p) => { room -= Buffer.byteLength(p) + 128; n++; if (room < 0 || n > GIT_NAMES_MAX) truncated = true; return room >= 0 && n <= GIT_NAMES_MAX; };
   const out = { staged: [], unstaged: [], untracked: [], conflicts: [] };
@@ -1035,19 +1057,19 @@ export async function gitStatus({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, li
     if (!gitRel(e.path) || e.path.split('/')[0] === TRASH) continue;
     if (!fits(e.path)) break;
     if (e.kind === 'unmerged') { out.conflicts.push({ path: e.path, code: e.xy, ...w(e.path) }); continue; }
-    const s = statRel(e.path);
+    const s = statRel(g.ws(e.path));
     const where = s ? { mtimeMs: s.mtimeMs, size: s.size, type: s.type } : { mtimeMs: null, size: 0, type: 'missing' };
-    if (e.kind === 'untracked') { out.untracked.push({ path: e.path, add: s ? lineCount(e.path, s, budget) : null, ...where, ...w(e.path) }); continue; }
+    if (e.kind === 'untracked') { out.untracked.push({ path: e.path, add: s ? lineCount(g.ws(e.path), s, budget) : null, ...where, ...w(e.path) }); continue; }
     if (e.xy[0] !== '.') out.staged.push({ path: e.path, code: e.xy[0], ...counts(sn, e.path), ...w(e.path) });
     if (e.xy[1] !== '.') out.unstaged.push({ path: e.path, code: e.xy[1], ...counts(un, e.path), ...where, ...w(e.path) });
   }
-  return { repo: true, branch: st.branch, detached: st.detached, head: g.head, upstream: st.upstream, ahead: st.ahead, behind: st.behind,
+  return { repo: true, root: g.root.rel, branch: st.branch, detached: st.detached, head: g.head, upstream: st.upstream, ahead: st.ahead, behind: st.behind,
     state: repoState(g.gitdir), identity: await gitIdentity(g.run), ...out, truncated };
 }
 
 // git.log -> {repo, commits: [{hash, author, email, time (s), subject}]}: the last GIT_LOG_N commits of HEAD
-export async function gitLog({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}) {
-  const g = await gitPrep({ git, deadlineMs });
+export async function gitLog({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, root } = {}) {
+  const g = await gitPrep({ git, deadlineMs, root });
   if (g.no) return { repo: false, reason: g.no };
   if (!g.head) return { repo: true, commits: [] };
   const r = await g.run(GIT_PANEL_ARGS.log(g.head), { maxOut: 1 << 20 });
@@ -1065,17 +1087,17 @@ export async function gitLog({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE } = {}
 
 // git.file {scope: staged|unstaged|untracked, path?} -> STDOUT: the patch (one file's; or every staged change, for a
 // commit message), RESULT {repo, scope, path, mtimeMs, truncated}
-export async function gitFile(send, req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, max = GIT_FILE_PATCH_MAX } = {}) {
+export async function gitFile(send, req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, max = GIT_FILE_PATCH_MAX, root } = {}) {
   const scope = req?.scope;
   if (!['staged', 'unstaged', 'untracked'].includes(scope)) throw new Error('scope: staged, unstaged or untracked');
   const p = req.path === undefined || req.path === null ? null : req.path;
   if (p !== null && !gitPathOk(p)) throw new Error('not a path in the workspace');
   if (p === null && scope !== 'staged') throw new Error('a path, please');
-  const g = await gitPrep({ git, deadlineMs });
+  const g = await gitPrep({ git, deadlineMs, root });
   if (g.no) return { repo: false, reason: g.no };
-  const st = p ? statRel(p) : null;
+  const st = p ? statRel(g.ws(p)) : null;
   if (scope === 'untracked') {
-    const d = st ? untrackedDiff(p, st, { left: GIT_UNTRACKED_TOTAL }) : null;
+    const d = st ? untrackedDiff(p, st, { left: GIT_UNTRACKED_TOTAL }, g.ws(p)) : null;
     if (d !== null) send(T.STDOUT, Buffer.from(d));
     return { repo: true, scope, path: p, mtimeMs: st?.mtimeMs ?? null, truncated: !!st && d === null };
   }
@@ -1119,9 +1141,9 @@ const gitFailed = (r, what, g = null) => {
 };
 // nestedRepo(rel) -> the folder of a repository of its own on rel's way (a .git there), or null: git does not stage a
 // file in it from here (it would say nothing and stage nothing)
-export function nestedRepo(rel) {
+export function nestedRepo(rel, base = WORKSPACE) {
   const segs = rel.split('/');
-  let p = WORKSPACE;
+  let p = base;
   for (let i = 0; i < segs.length - 1; i++) {
     p = path.join(p, segs[i]);
     try { fs.lstatSync(path.join(p, '.git')); return segs.slice(0, i + 1).join('/'); } catch { /* none here */ }
@@ -1131,9 +1153,9 @@ export function nestedRepo(rel) {
 
 // git.stage {paths | all} — `git add -- paths`: the files' changes, a new file, a deletion. all: every change and
 // untracked file git.status lists (conflicts left out: stage those one by one). A folder or a submodule is refused.
-export async function gitStage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
+export async function gitStage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc', root } = {}) {
   let paths = gitPaths(req);
-  const g = await gitPrep({ git, deadlineMs, procDir });
+  const g = await gitPrep({ git, deadlineMs, procDir, root });
   if (g.no) throw new Error(g.no);
   if (paths === null) {
     const r = await g.run(GIT_PANEL_ARGS.status, { maxOut: 4 << 20 });
@@ -1145,8 +1167,8 @@ export async function gitStage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE
     if (paths.length > GIT_NAMES_MAX) throw new Error(`more than ${GIT_NAMES_MAX} changed files: stage them in the terminal`);
   } else {
     for (const p of paths) {
-      if (statRel(p)?.type === 'dir') throw new Error(`a folder: stage the files in it (${printable(p, 80)})`);
-      const nested = nestedRepo(p);
+      if (statRel(g.ws(p))?.type === 'dir') throw new Error(`a folder: stage the files in it (${printable(p, 80)})`);
+      const nested = nestedRepo(p, g.root.abs);
       if (nested) throw new Error(`in a repository of its own (${printable(nested, 80)}): stage it there, in the terminal`);
     }
     const r = await g.run(GIT_PANEL_ARGS.lsFiles(paths), { maxOut: 1 << 20 });
@@ -1161,9 +1183,9 @@ export async function gitStage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE
 }
 // git.unstage {paths | all} — `git reset -q HEAD -- paths` (before the first commit: `git rm --cached`): the index
 // as the last commit had it, the files as they are
-export async function gitUnstage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
+export async function gitUnstage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc', root } = {}) {
   const paths = gitPaths(req);
-  const g = await gitPrep({ git, deadlineMs, procDir });
+  const g = await gitPrep({ git, deadlineMs, procDir, root });
   if (g.no) throw new Error(g.no);
   const r = await g.run(GIT_PANEL_ARGS.unstage(g.head, paths), { maxOut: 64 << 10 });
   if (r.code !== 0) gitFailed(r, g.head ? 'git reset' : 'git rm --cached', g);
@@ -1171,9 +1193,9 @@ export async function gitUnstage(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLI
 }
 // git.commit {message} — what is staged, with that message (stdin), as the identity above; never during a rebase,
 // cherry-pick, revert or bisect (finish those in the terminal)
-export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
+export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc', root } = {}) {
   const message = gitMessage(req?.message);
-  const g = await gitPrep({ git, deadlineMs, procDir });
+  const g = await gitPrep({ git, deadlineMs, procDir, root });
   if (g.no) throw new Error(g.no);
   const state = repoState(g.gitdir);
   if (state && state !== 'merge') throw new Error(`a ${state} is in progress: finish it in the terminal`);
@@ -1214,32 +1236,626 @@ function trashEntry(rel) {
 // tracked one's current version moves there too, then git writes the staged version back (`git checkout -- path`); a
 // deleted one is written back. Only while the file still has the time the page saw (ifMtimeMs). A file with only staged
 // changes, or a conflict, is refused.
-export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc' } = {}) {
+export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc', root } = {}) {
   const p = req?.path;
   if (typeof p !== 'string' || !gitPathOk(p)) throw new Error('not a path in the workspace');
-  const g = await gitPrep({ git, deadlineMs, procDir });
+  const g = await gitPrep({ git, deadlineMs, procDir, root });
   if (g.no) throw new Error(g.no);
   const r = await g.run(GIT_PANEL_ARGS.pathStatus(p), { maxOut: 64 << 10 });
   if (r.code !== 0) gitFailed(r, 'git status');
   const e = parseStatusV2(r.out.toString('utf8')).entries.find((x) => x.path === p);
   if (!e) throw new Error('no changes to discard (it changed since?)');
   if (e.kind === 'unmerged') throw new Error('a conflict: resolve it in the terminal');
-  const st = statRel(p);
+  const st = statRel(g.ws(p));
   if (req.ifMtimeMs !== undefined && req.ifMtimeMs !== null && (st ? st.mtimeMs : null) !== req.ifMtimeMs) throw new Error('changed on disk since it was shown');
   if (e.kind === 'untracked') {
     if (!st || st.type === 'dir') throw new Error('not a file');
-    const { dest } = trashEntry(p);
+    const { dest } = trashEntry(g.ws(p));
     return { ok: true, action: 'trashed', trash: path.relative(WORKSPACE, dest) };
   }
   if (e.xy[1] === '.') throw new Error('only staged changes: unstage it first');
   let moved = null;
-  if (st && st.type !== 'dir') moved = trashEntry(p);
+  if (st && st.type !== 'dir') moved = trashEntry(g.ws(p));
   const c = await g.run(GIT_PANEL_ARGS.restore([p]), { maxOut: 64 << 10 });
   if (c.code !== 0) {
     if (moved) { try { fs.renameSync(moved.dest, moved.abs); } catch { /* left in the trash: said below */ } }
     gitFailed(c, 'git checkout', g);
   }
   return { ok: true, action: 'restored', ...(moved ? { trash: path.relative(WORKSPACE, moved.dest) } : {}) };
+}
+
+// --- Git remotes: the Git panel's clone, fetch, pull, push and publish, its branches and a repository's remotes — and
+// --- the credential each network command gets for itself alone. Every credential stays in the code container (Settings
+// --- › Git hosts, kept there: code/server/githosts.mjs); this side never stores one and never has one before git asks:
+// ---   HTTPS token  git's credential.helper (every helper the repository's configuration names cleared first) is the
+// ---                image's bn-git-credential, which asks over the descriptor the network command alone inherits
+// ---                (its fd 3, a socket pair: nothing else in the sandbox has it) — that question goes on to the code
+// ---                container as an ASK frame, the answer (the token) back to the helper, and nothing keeps it here
+// ---   SSH key      the private key never comes here: ssh (the image's, by its path, with -F /dev/null and every
+// ---                option set here: known hosts the code container sends, its own ProxyCommand) talks to an agent
+// ---                socket in a private folder of this operation, whose every request this side relays to the code
+// ---                container — which signs (only an SSH login, at most twice an operation) with the key it keeps
+// --- The remote's URL is the one the page showed and you confirmed: re-read from the configuration here, refused when
+// --- it changed meanwhile, and given to git through an alias no configuration can rewrite (url.<URL>.insteadOf and
+// --- .pushInsteadOf for a random name — the longest possible match; git takes the longest), so remote.<name>.* of the
+// --- repository (vcs, proxy, uploadpack, receivepack …) never applies either; every http.* that decides where the
+// --- connection goes or whom it trusts is set for exactly that URL too (sslVerify, CA, proxy, client certificate,
+// --- extra headers, redirects …: a URL-scoped value in the repository's configuration beats a plain one, never the
+// --- exact URL's), one protocol only (GIT_ALLOW_PROTOCOL: https or ssh), no hook, filter, merge driver, signing
+// --- program, submodule or housekeeping, a deadline. Pull is fetch, then a fast-forward only (merges and rebases are
+// --- the terminal's, or Claude's).
+const SSH = process.env.BN_SSH_BIN || firstFile(['/usr/bin/ssh', '/usr/local/bin/ssh', '/bin/ssh']);
+const SSH_PROXY = process.env.BN_SSH_PROXY || '/usr/local/bin/bn-ssh-proxy';
+export const GIT_CREDENTIAL = process.env.BN_GIT_CREDENTIAL || '/usr/local/bin/bn-git-credential';
+const GIT_TMP = process.env.BN_GIT_TMP || '/tmp/bn-git';
+const CA_BUNDLE = process.env.BN_CA_BUNDLE || firstFile(['/etc/ssl/certs/ca-certificates.crt', '/etc/ssl/cert.pem', '/etc/pki/tls/certs/ca-bundle.crt']);
+const GIT_NET_DEADLINE = 300000, GIT_CLONE_DEADLINE = 900000;
+const ASK_MAX = 8;           // credential questions or agent requests an operation may ask in all
+export const REMOTE_NAME = /^(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// a branch name the page may name: git's own rules (check-ref-format) are asked too
+export const BRANCH_NAME = /^(?!.*(?:\.\.|@\{|\/\/|\/\.|\.lock\/|\.lock$))(?!.*[./]$)[A-Za-z0-9_][A-Za-z0-9._/+-]{0,199}$/;
+const HOST_NAME = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$/;
+const URL_USER = /^[A-Za-z0-9._-]{1,64}$/;
+const URL_PATH = /^[A-Za-z0-9._~/@%+=,-]{1,1000}$/;
+// parseRemoteUrl(u) -> {scheme: https|ssh, user, host (lower case), port (null: the default), path, form: url|scp, display}
+// or throws why not: only https:// and ssh:// URLs and scp-like user@host:path — never http, git://, file://, a local
+// path, a transport helper (ext::, fd::, <name>::), a password or token in the URL, an option-like host or path, a
+// space or a control character. (code/server/gitremote.mjs has the same rules: the page's copy is checked there first.)
+export function parseRemoteUrl(u) {
+  if (typeof u !== 'string' || !u || u.length > 1200) throw new Error('a remote URL, please (https:// or ssh://, or user@host:path)');
+  if (/[\x00-\x20\x7f-￿\\]/.test(u)) throw new Error('the URL has spaces, control or non-ASCII characters');
+  if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(u)) throw new Error('a transport helper (name::address) is never used from here');
+  let m = String(u).match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)(\/[^?#]*)?$/);
+  let scheme, auth, path, form = 'url';
+  if (m) {
+    scheme = m[1].toLowerCase();
+    if (scheme !== 'https' && scheme !== 'ssh') throw new Error(scheme === 'http' ? 'plain http sends everything unencrypted: use https://' : `${scheme}:// is not used from here: https:// or ssh:// only`);
+    auth = m[2]; path = m[3] || '';
+  } else {
+    // scp-like: [user@]host:path (no "/" before the colon; git reads it as ssh)
+    m = String(u).match(/^(?:([^@/:]+)@)?([^@/:]+):(?!\/\/)(.+)$/);
+    if (!m) throw new Error('not a remote URL (https://…, ssh://… or user@host:path); a local path is never used from here');
+    scheme = 'ssh'; form = 'scp';
+    auth = `${m[1] !== undefined ? `${m[1]}@` : ''}${m[2]}`; path = m[3];
+  }
+  const at = auth.lastIndexOf('@');
+  const userinfo = at < 0 ? null : auth.slice(0, at);
+  const hostport = at < 0 ? auth : auth.slice(at + 1);
+  if (userinfo !== null && userinfo.includes(':')) throw new Error('the URL holds a password or token: take it out (Git hosts keep the credential)');
+  if (userinfo !== null && !URL_USER.test(userinfo)) throw new Error('not a user name the URL may hold');
+  const hp = String(hostport).match(/^([^:]+)(?::([0-9]{1,5}))?$/);
+  if (!hp || !HOST_NAME.test(hp[1]) || hp[1].startsWith('-')) throw new Error('not a host name (letters, digits, dots and dashes)');
+  if (form === 'scp' && hp[2] !== undefined) throw new Error('not a remote URL (user@host:path has no port: ssh://user@host:port/path)');
+  const port = hp[2] === undefined ? null : Number(hp[2]);
+  if (port !== null && (port < 1 || port > 65535)) throw new Error('not a port');
+  const bare = form === 'url' ? path.replace(/^\//, '') : path;
+  if (!bare || !URL_PATH.test(bare) || bare.startsWith('-') || bare.split('/').some((x) => x === '..' || x === '.')) throw new Error('not a repository path (letters, digits and ._~/@%+=,- only; no "..")');
+  const host = hp[1].toLowerCase();
+  const display = `${host}${port !== null ? `:${port}` : ''}/${bare.replace(/^~?\/*/, '').replace(/\.git\/?$/, '')}`;
+  return { scheme, user: userinfo, host, port, path: bare, form, display };
+}
+// the host[:port] git names to a credential helper for an https URL (the default port left out)
+const credHost = (p) => (p.port !== null && p.port !== 443 ? `${p.host}:${p.port}` : p.host);
+// a known_hosts line the code container may send (or ssh may learn): [host]:port or host, a key type, its base64
+const KNOWN_HOST = /^(\[[a-z0-9.-]{1,253}\]:[0-9]{1,5}|[a-z0-9.-]{1,253}) (ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]{16,2000}={0,2}$/;
+export const knownHostOk = (l) => typeof l === 'string' && KNOWN_HOST.test(l);
+const PEM = /^-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{40,20000}\n-----END CERTIFICATE-----\n?(?:-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{40,20000}\n-----END CERTIFICATE-----\n?){0,9}$/;
+const SSH_PUB = /^ssh-ed25519 [A-Za-z0-9+/]{68}(={0,2})( [\x21-\x7e]{1,100})?$/;
+const EGRESS_PROXY = /^http:\/\/[A-Za-z0-9.-]{1,253}:[0-9]{1,5}\/?$/;
+const egressProxy = () => { const v = process.env.HTTPS_PROXY || process.env.https_proxy || ''; return EGRESS_PROXY.test(v) ? v.replace(/\/$/, '') : ''; };
+
+// every http.* setting that decides where a request goes, whom it trusts or what it carries: set for the plain key and
+// for the exact URL (gitNetConfig); a URL-scoped setting of the repository outside this list and NET_HTTP_HARMLESS is
+// refused. (A client certificate — sslCert, sslKey and the proxy's — has no "none" value git takes: it only says who
+// the client is to that same server, never where the request goes or whom it trusts, so it is left as it is.)
+const NET_HTTP_KEYS = ['sslverify', 'sslcainfo', 'sslcapath', 'proxy', 'sslcertpasswordprotected', 'extraheader', 'cookiefile',
+  'savecookies', 'emptyauth', 'followredirects', 'curloptresolve', 'proxysslcertpasswordprotected', 'proxyauthmethod', 'delegation', 'proactiveauth'];
+const NET_HTTP_HARMLESS = ['postbuffer', 'lowspeedlimit', 'lowspeedtime', 'maxrequests', 'minsessions', 'useragent', 'version', 'sslversion',
+  'sslcipherlist', 'pinnedpubkey', 'keepaliveidle', 'keepaliveinterval', 'keepalivecount', 'noepsv', 'ssltry', 'schannelcheckrevoke', 'schannelusesslcainfo',
+  'sslbackend', 'sslcert', 'sslkey', 'proxysslcert', 'proxysslkey', 'proxysslcainfo'];
+// what every remote operation's commands get on top of the Git panel's overrides (fetch, push, merge, clone)
+export const GIT_NET_CONFIG = [
+  ['fetch.recurseSubmodules', 'false'], ['fetch.writeCommitGraph', 'false'], ['fetch.bundleURI', ''], ['transfer.bundleURI', 'false'],
+  ['transfer.credentialsInUrl', 'die'], ['push.gpgSign', 'false'], ['push.recurseSubmodules', 'no'], ['push.pushOption', ''], ['push.followTags', 'false'],
+  ['merge.verifySignatures', 'false'], ['core.alternateRefsCommand', 'true'], ['ssh.variant', 'ssh'], ['credential.helper', ''],
+  ['credential.interactive', 'false'], ['credential.useHttpPath', 'true'], ['clone.rejectShallow', 'false'],
+];
+// gitNetConfig(url, {token, ca, capath, proxy}) -> the overrides of one https operation: the credential helper (with a
+// token: this image's, alone), and NET_HTTP_KEYS for http.* and http.<url>.*
+export function gitNetConfig(url, { token = false, ca = CA_BUNDLE, capath, proxy = '' } = {}) {
+  const out = token ? [['credential.helper', GIT_CREDENTIAL]] : [];
+  const v = { sslverify: 'true', sslcainfo: ca, sslcapath: capath, proxy, sslcertpasswordprotected: 'false', extraheader: '',
+    cookiefile: '', savecookies: 'false', emptyauth: 'false', followredirects: 'false', curloptresolve: '', proxysslcertpasswordprotected: 'false',
+    proxyauthmethod: 'basic', delegation: 'none', proactiveauth: 'none' };
+  for (const pre of ['http.', `http.${url}.`]) for (const k of NET_HTTP_KEYS) if (v[k] !== undefined) out.push([`${pre}${k}`, v[k]]);
+  return out;
+}
+// netHttpRefused(text) -> the first URL-scoped http.<url>.<key> of `git config -z --get-regexp ^http\.` that is
+// neither overridden nor harmless, or null
+export function netHttpRefused(text) {
+  for (const rec of String(text).split('\0')) {
+    const key = rec.split('\n')[0];
+    if (!key.startsWith('http.')) continue;
+    const dot = key.lastIndexOf('.');
+    if (dot <= 4) continue;   // http.<key>: overridden or harmless as it is (the plain key)
+    const k = key.slice(dot + 1).toLowerCase();
+    if (!NET_HTTP_KEYS.includes(k) && !NET_HTTP_HARMLESS.includes(k)) return key;
+  }
+  return null;
+}
+// sshCommand(dir, {proxy, strict}) -> GIT_SSH_COMMAND: the image's ssh with no configuration file (-F /dev/null:
+// neither ~/.ssh/config nor /etc/ssh — no ProxyCommand, LocalCommand, Include …), this operation's known hosts and agent
+// and identity (the public key, so that the agent's key is the only one offered), the egress proxy's way out
+export function sshCommand(dir, { proxy = '', strict = true, ssh = SSH } = {}) {
+  const o = ['BatchMode=yes', 'IdentitiesOnly=yes', `IdentityFile=${dir}/id.pub`, `IdentityAgent=${dir}/agent.sock`, `UserKnownHostsFile=${dir}/known_hosts`,
+    'GlobalKnownHostsFile=/dev/null', `StrictHostKeyChecking=${strict ? 'yes' : 'accept-new'}`, 'UpdateHostKeys=no', 'HashKnownHosts=no', 'CheckHostIP=no',
+    'VerifyHostKeyDNS=no', 'PasswordAuthentication=no', 'KbdInteractiveAuthentication=no', 'HostbasedAuthentication=no', 'GSSAPIAuthentication=no',
+    'PubkeyAuthentication=yes', 'ControlMaster=no', 'ControlPath=none', 'ForwardAgent=no', 'ForwardX11=no', 'ClearAllForwardings=yes', 'PermitLocalCommand=no',
+    'AddKeysToAgent=no', 'PKCS11Provider=none', 'ConnectTimeout=30', 'ServerAliveInterval=15', 'ServerAliveCountMax=4', 'LogLevel=ERROR',
+    `ProxyCommand=${proxy ? `${SSH_PROXY} %h %p` : 'none'}`];
+  return [ssh, '-F', '/dev/null', ...o.flatMap((x) => ['-o', x])].map(shq).join(' ');
+}
+
+// opDir() -> a fresh private folder for one operation (its agent socket, known hosts, CA): /tmp/bn-git/op-XXXXXX
+function opDir() {
+  fs.mkdirSync(GIT_TMP, { recursive: true, mode: 0o700 });
+  return fs.mkdtempSync(path.join(GIT_TMP, 'op-'));
+}
+// lineReader(stream, max, onLine): newline-delimited lines of at most `max` bytes (a longer one ends the stream)
+function lineReader(stream, max, onLine) {
+  let buf = '';
+  stream.on('data', (d) => {
+    buf += d.toString('utf8');
+    if (buf.length > max) { stream.destroy(); return; }
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); onLine(l); }
+  });
+}
+const CRED_FIELD = /^[\x21-\x7e]{1,1024}$/;
+// credChannel(sock, nonce, ask, counter): the network command's fd 3 — bn-git-credential asks {nonce, protocol, host,
+// path, username}; the question goes to the code container (ask), the answer back ({username, password} or {}), and
+// this side keeps nothing of it
+function credChannel(sock, nonce, ask, counter) {
+  lineReader(sock, 8192, (line) => {
+    let q = null;
+    try { q = JSON.parse(line); } catch { /* below */ }
+    const reply = (v) => { try { sock.write(`${JSON.stringify(v)}\n`); } catch { /* gone */ } };
+    if (!q || q.nonce !== nonce || typeof q.host !== 'string' || typeof q.protocol !== 'string' || counter.n++ >= ASK_MAX) return reply({});
+    ask({ kind: 'cred', protocol: printable(q.protocol, 16), host: printable(q.host, 300), path: typeof q.path === 'string' ? printable(q.path, 1000) : '',
+      username: typeof q.username === 'string' ? printable(q.username, 200) : '' })
+      .then((a) => reply(a && CRED_FIELD.test(a.username || '') && CRED_FIELD.test(a.password || '') ? { username: a.username, password: a.password } : {}), () => reply({}));
+  });
+}
+// agentRelay(file, ask, counter) -> a server: an SSH agent's socket whose every request (a uint32 length, then the
+// message; at most 256 KiB) goes to the code container and whose answer comes back as it is — at most 4 connections
+const AGENT_MAX_MSG = 256 << 10;
+export function agentRelay(file, ask, counter, { kind = 'agent', maxConns = 4 } = {}) {
+  let conns = 0;
+  const server = net.createServer((c) => {
+    if (++conns > maxConns) { c.destroy(); return; }
+    let buf = Buffer.alloc(0), busy = Promise.resolve();
+    c.on('error', () => {});
+    c.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= 4) {
+        const len = buf.readUInt32BE(0);
+        if (len < 1 || len > AGENT_MAX_MSG) { c.destroy(); return; }
+        if (buf.length < 4 + len) break;
+        const msg = buf.subarray(4, 4 + len);
+        buf = buf.subarray(4 + len);
+        // (in order: one request at a time a connection, as the protocol has it)
+        busy = busy.then(async () => {
+          let out = Buffer.from([5]);   // SSH_AGENT_FAILURE
+          if (counter.n++ < ASK_MAX * 4) {
+            try {
+              const a = await ask({ kind, data: msg.toString('base64') });
+              const b = typeof a?.data === 'string' && /^[A-Za-z0-9+/]*={0,2}$/.test(a.data) ? Buffer.from(a.data, 'base64') : null;
+              if (b && b.length >= 1 && b.length <= AGENT_MAX_MSG) out = b;
+            } catch { /* a failure */ }
+          }
+          const h = Buffer.alloc(4); h.writeUInt32BE(out.length, 0);
+          if (!c.destroyed) c.write(Buffer.concat([h, out]));
+        });
+      }
+    });
+  });
+  server.listen(file);
+  return server;
+}
+const closeServer = (s) => new Promise((r) => { if (!s) return r(); s.close(() => r()); setTimeout(r, 1000).unref(); });
+
+// netSetup(dir, parsed, auth, ask) -> {add, config, fd3, servers, learned()}: what one network command needs for its
+// remote (parsed: parseRemoteUrl) and credential — auth: {kind: none|token|ssh, publicKey (ssh), knownHosts: [lines]
+// (ssh), ca: PEM (https, optional: instead of the image's CA bundle), learn: true (ssh: a host key not known yet is
+// taken and handed back — the code container keeps it; only for a test the page asked for)}
+async function netSetup(dir, parsed, url, auth, ask) {
+  const counter = { n: 0 };
+  const proxy = egressProxy();
+  const kind = auth?.kind;
+  if (!['none', 'token', 'ssh'].includes(kind)) throw new Error('auth: none, token or ssh');
+  if (parsed.scheme === 'https') {
+    if (kind === 'ssh') throw new Error('an SSH key does not work for an https:// remote: connect the host with a token, or use the ssh URL');
+    let ca = CA_BUNDLE;
+    if (auth.ca !== undefined && auth.ca !== null) {
+      if (typeof auth.ca !== 'string' || !PEM.test(auth.ca.replace(/\r\n/g, '\n'))) throw new Error('not a PEM certificate');
+      ca = path.join(dir, 'ca.pem');
+      fs.writeFileSync(ca, auth.ca, { mode: 0o600 });
+    }
+    if (!ca || !fs.existsSync(ca)) throw new Error('no CA certificates in the sandbox to check the server with');
+    const capath = path.join(dir, 'capath');
+    fs.mkdirSync(capath, { mode: 0o700 });   // (empty: no CA a configuration names is ever added)
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const add = { GIT_ALLOW_PROTOCOL: 'https', GIT_SSL_CAINFO: ca, GIT_SSL_CAPATH: capath, ...(kind === 'token' ? { BN_GIT_CRED_NONCE: nonce } : {}) };
+    return { add, config: gitNetConfig(url, { token: kind === 'token', ca, capath, proxy }),
+      fd3: kind === 'token' ? (s) => credChannel(s, nonce, ask, counter) : undefined, servers: [], learned: () => [] };
+  }
+  if (kind === 'token') throw new Error('a token does not work for an ssh remote: connect the host with an SSH key, or use the https:// URL');
+  if (kind !== 'ssh') throw new Error('an ssh remote needs an SSH key: connect the host with one (Git hosts)');
+  if (!SSH_PUB.test(auth.publicKey || '')) throw new Error('not an ed25519 public key');
+  const lines = Array.isArray(auth.knownHosts) ? auth.knownHosts : [];
+  if (lines.length > 32 || !lines.every(knownHostOk)) throw new Error('bad known hosts');
+  fs.writeFileSync(path.join(dir, 'known_hosts'), lines.map((l) => `${l}\n`).join(''), { mode: 0o600 });
+  fs.writeFileSync(path.join(dir, 'id.pub'), `${auth.publicKey}\n`, { mode: 0o600 });
+  const servers = [agentRelay(path.join(dir, 'agent.sock'), ask, counter)];
+  await Promise.all(servers.map((s) => new Promise((r) => (s.listening ? r() : s.once('listening', r)))));
+  const add = { GIT_ALLOW_PROTOCOL: 'ssh', GIT_SSH_COMMAND: sshCommand(dir, { proxy, strict: auth.learn !== true }), GIT_SSH_VARIANT: 'ssh', SSH_ASKPASS_REQUIRE: 'never',
+    ...(proxy ? { HTTPS_PROXY: proxy } : {}) };
+  const learned = () => {
+    let t = '';
+    try { t = fs.readFileSync(path.join(dir, 'known_hosts'), 'utf8'); } catch { /* none */ }
+    return t.split('\n').map((l) => l.trim()).filter((l) => knownHostOk(l) && !lines.includes(l)).slice(0, 8);
+  };
+  return { add, config: [], fd3: undefined, servers, learned };
+}
+// netWhy(r) -> what a failed network command says, its last meaningful line (git's own wording; never a credential:
+// git does not print one)
+function netWhy(r) {
+  if (r.timedOut) return 'no answer in time';
+  const lines = `${r.err || ''}`.split(/[\r\n]+/).map((l) => l.trim()).filter((l) => l && !/^(remote: )?(Counting|Compressing|Receiving|Resolving|Writing|Enumerating|Total|Delta)/.test(l));
+  const hint = lines.find((l) => /Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED|No .* host key is known/i.test(l)) ? 'the server\'s host key is not the one known for it (Git hosts › Test connection shows it)'
+    : lines.find((l) => /Permission denied \(publickey/i.test(l)) ? 'the server did not accept the SSH key (add the public key to the repository or your account)'
+      : lines.find((l) => /Authentication failed|could not read (Username|Password)|unable to get password|terminal prompts disabled|401|403/i.test(l)) ? 'the server did not accept the credential (or the repository does not exist for it)' : '';
+  const last = printable(lines.slice(-2).join(' — ') || `exit ${r.code}`, 400);
+  return hint ? `${hint}: ${last}` : last;
+}
+const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+async function revParse(g, ref) {
+  const r = await g.run(['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`], { maxOut: 4096 });
+  const v = r.code === 0 ? r.out.toString('utf8').trim() : '';
+  return SHA.test(v) ? v : null;
+}
+// branchOk(git, name) -> true for a branch name git takes (our rules, then `git check-ref-format`)
+async function branchOk(git, name) {
+  if (typeof name !== 'string' || !BRANCH_NAME.test(name)) return false;
+  const r = await runCapped(git, ['check-ref-format', `refs/heads/${name}`], { cwd: WORKSPACE, env: gitEnv(), timeoutMs: 5000, maxOut: 1024 });
+  return r.code === 0;
+}
+// the URL(s) the configuration names for a remote (as git reads them, includes and all): url, pushurl
+async function remoteUrls(g, name) {
+  const get = async (k) => {
+    const r = await g.run(['config', '-z', '--get-all', `remote.${name}.${k}`], { maxOut: 64 << 10 });
+    return r.code === 0 ? r.out.toString('utf8').split('\0').filter(Boolean).slice(0, 16) : [];
+  };
+  return { urls: await get('url'), pushUrls: await get('pushurl') };
+}
+// mergeDriverOverrides(text) -> merge.<name>.driver set to a program that is not there, for every merge driver the
+// configuration defines (a fast-forward never runs one; this is the second lock)
+const mergeDriverOverrides = (text) => [...new Set(String(text).split('\0').map((r) => r.split('\n')[0].match(/^merge\.(.+)\.driver$/)?.[1]).filter(Boolean))]
+  .slice(0, GIT_DRIVERS_MAX).map((n) => [`merge.${n}.driver`, '/dev/null/no-merge-driver']);
+
+// git.repos -> {repos: [{path, kind: dir|file}]}: the workspace itself when it is a repository, and the folders in it
+// (two levels down, never through a link, not the trash or dependencies) that are — no git runs for this
+export function gitRepos({ depth = 2, max = 50 } = {}) {
+  const out = [];
+  const has = (abs) => { try { const st = fs.lstatSync(path.join(abs, '.git')); return st.isDirectory() ? 'dir' : st.isFile() ? 'file' : null; } catch { return null; } };
+  const top = has(WORKSPACE);
+  if (top) out.push({ path: '', kind: top });
+  const walk = (rel, d) => {
+    if (out.length >= max || d > depth) return;
+    let ents = [];
+    try { ents = fs.readdirSync(path.join(WORKSPACE, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of ents.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (out.length >= max) return;
+      if (!e.isDirectory() || FIND_SKIP.has(e.name) || e.name.startsWith('.')) continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (!gitPathOk(r)) continue;
+      const k = has(path.join(WORKSPACE, r));
+      if (k) out.push({ path: r, kind: k });
+      else walk(r, d + 1);
+    }
+  };
+  walk('', 1);
+  return { repos: out, truncated: out.length >= max };
+}
+
+// git.remote.state {repo} -> the repository's remotes (each URL as the configuration has it, and parsed — or why it is
+// not used from here), its local branches with their upstream and ahead/behind (as the last fetch left them), the
+// remote branches, each remote's default branch, and whether the configuration rewrites URLs (url.*.insteadOf) for
+// git in the terminal. No network.
+export async function gitRemoteState({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, root } = {}) {
+  const g = await gitPrep({ git, deadlineMs, root });
+  if (g.no) return { repo: false, reason: g.no };
+  const r = await g.run(['config', '-z', '--get-regexp', '^(remote|branch|url)\\.'], { maxOut: 1 << 20 });
+  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return { repo: false, reason: `git config: ${r.timedOut ? 'no answer in time' : r.cut ? 'too much configuration' : gitWhy(r)}` };
+  const remotes = new Map(), branchCfg = new Map();
+  let rewrites = 0;
+  for (const rec of r.out.toString('utf8').split('\0')) {
+    const nl = rec.indexOf('\n');
+    const key = nl < 0 ? rec : rec.slice(0, nl), val = nl < 0 ? '' : rec.slice(nl + 1);
+    let m;
+    if ((m = String(key).match(/^remote\.(.+)\.(url|pushurl)$/)) && REMOTE_NAME.test(m[1])) {
+      if (!remotes.has(m[1])) remotes.set(m[1], { name: m[1], urls: [], pushUrls: [] });
+      const x = remotes.get(m[1]);
+      (m[2] === 'url' ? x.urls : x.pushUrls).length < 16 && (m[2] === 'url' ? x.urls : x.pushUrls).push(printable(val, 1200));
+    } else if ((m = String(key).match(/^branch\.(.+)\.(remote|merge)$/))) {
+      if (!branchCfg.has(m[1])) branchCfg.set(m[1], {});
+      branchCfg.get(m[1])[m[2]] = val;
+    } else if (/^url\..+\.(insteadof|pushinsteadof)$/.test(key)) rewrites++;
+  }
+  const check = (u) => { try { const p = parseRemoteUrl(u); return { url: u, ok: true, ...p }; } catch (e) { return { url: u, ok: false, why: e.message }; } };
+  const list = [...remotes.values()].slice(0, 32).map((x) => ({ name: x.name, urls: x.urls, pushUrls: x.pushUrls,
+    fetch: x.urls.length ? check(x.urls[0]) : null, push: x.pushUrls.length ? check(x.pushUrls[0]) : x.urls.length ? check(x.urls[0]) : null,
+    multiple: x.urls.length > 1 || x.pushUrls.length > 1 }));
+  const fe = await g.run(['for-each-ref', '--count=2000', '--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track,nobracket)%00%(symref)', 'refs/heads', 'refs/remotes'], { maxOut: 2 << 20 });
+  const branches = [], remoteBranches = [], heads = {};
+  if (fe.code === 0 || fe.cut) {
+    for (const line of fe.out.toString('utf8').split('\n')) {
+      const [ref, oid, up, track, sym] = line.split('\0');
+      if (!ref || !SHA.test(oid || '')) continue;
+      let m;
+      if ((m = String(ref).match(/^refs\/heads\/(.+)$/)) && branches.length < 500) {
+        const cfg = branchCfg.get(m[1]) || {};
+        const um = String(up || '').match(/^refs\/remotes\/([^/]+)\/(.+)$/);
+        const mm = String(cfg.merge || '').match(/^refs\/heads\/(.+)$/);
+        const a = String(track || '').match(/ahead ([0-9]{1,9})/), b = String(track || '').match(/behind ([0-9]{1,9})/);
+        branches.push({ name: m[1], head: oid, upstream: um ? { remote: um[1], branch: um[2] } : cfg.remote && cfg.remote !== '.' && mm && REMOTE_NAME.test(cfg.remote) ? { remote: cfg.remote, branch: mm[1] } : null,
+          ahead: um ? (a ? Number(a[1]) : 0) : null, behind: um ? (b ? Number(b[1]) : 0) : null, gone: track === 'gone' || (!um && !!cfg.remote && cfg.remote !== '.') });
+      } else if ((m = String(ref).match(/^refs\/remotes\/([^/]+)\/(.+)$/))) {
+        if (m[2] === 'HEAD') { const h = String(sym || '').match(/^refs\/remotes\/[^/]+\/(.+)$/); if (h) heads[m[1]] = h[1]; } else if (remoteBranches.length < 1000) remoteBranches.push({ remote: m[1], name: m[2] });
+      }
+    }
+  }
+  const st = await g.run(['symbolic-ref', '-q', '--short', 'HEAD'], { maxOut: 4096 });
+  const current = st.code === 0 ? st.out.toString('utf8').trim() : null;
+  return { repo: true, root: g.root.rel, branch: current, detached: current === null && g.head !== null, head: g.head, state: repoState(g.gitdir),
+    remotes: list, branches, remoteBranches, remoteHeads: heads, rewrites };
+}
+
+// git.branch {repo, action: switch|create|track, name, remote?} — switch to a local branch; create one at HEAD and
+// switch to it; or make a local branch of a remote one (refs/remotes/<remote>/<name>), tracking it, and switch to it.
+// git's own refusal when changes of yours would be lost is kept (nothing is forced); no hook, filter or submodule.
+export async function gitBranch(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc', root } = {}) {
+  const action = req?.action, name = req?.name;
+  if (!['switch', 'create', 'track'].includes(action)) throw new Error('action: switch, create or track');
+  if (!(await branchOk(git, name))) throw new Error('not a branch name git takes');
+  if (action === 'track' && !REMOTE_NAME.test(req.remote || '')) throw new Error('not a remote name');
+  const g = await gitPrep({ git, deadlineMs, procDir, root });
+  if (g.no) throw new Error(g.no);
+  const state = repoState(g.gitdir);
+  if (state) throw new Error(`a ${state} is in progress: finish it in the terminal`);
+  const base = ['switch', '--quiet', '--no-guess', '--no-recurse-submodules'];
+  let args;
+  if (action === 'switch') {
+    if (!(await revParse(g, `refs/heads/${name}`))) throw new Error('no such local branch');
+    args = [...base, name];
+  } else if (action === 'create') {
+    if (await revParse(g, `refs/heads/${name}`)) throw new Error('a branch of that name exists already');
+    args = [...base, '--no-track', '-c', name];
+  } else {
+    if (await revParse(g, `refs/heads/${name}`)) throw new Error('a local branch of that name exists already: switch to it');
+    if (!(await revParse(g, `refs/remotes/${req.remote}/${name}`))) throw new Error('no such remote branch (fetch first?)');
+    args = [...base, '--track', '-c', name, `refs/remotes/${req.remote}/${name}`];
+  }
+  const r = await g.run(args, { maxOut: 64 << 10 });
+  if (r.code !== 0) {
+    if (/would be overwritten|commit your changes or stash/i.test(r.err)) throw new Error('changes of yours would be overwritten: commit or stash them first');
+    gitFailed(r, 'git switch', g);
+  }
+  return { ok: true, branch: name };
+}
+
+// git.remote.set {repo, name, url} — a remote added (git remote add: its URL and the usual fetch refspec) or its URL
+// changed (git remote set-url); the URL must be one this panel would use (parseRemoteUrl)
+export async function gitRemoteSet(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '/proc', root } = {}) {
+  const name = req?.name, url = req?.url;
+  if (typeof name !== 'string' || !REMOTE_NAME.test(name)) throw new Error('a remote name of letters, digits, ., _ and -');
+  parseRemoteUrl(url);
+  const g = await gitPrep({ git, deadlineMs, procDir, root });
+  if (g.no) throw new Error(g.no);
+  const { urls } = await remoteUrls(g, name);
+  const r = await g.run(urls.length ? ['remote', 'set-url', name, url] : ['remote', 'add', name, url], { maxOut: 64 << 10 });
+  if (r.code !== 0) gitFailed(r, urls.length ? 'git remote set-url' : 'git remote add', g);
+  return { ok: true, name, added: !urls.length };
+}
+
+// The network command of one operation: its private folder, the credential channel or agent, the alias for the URL
+// (a random name only this run's configuration rewrites to the URL: url.<URL>.insteadOf and .pushInsteadOf), then
+// everything taken down again. ask: the code container's answer to a credential question (serve: the ASK frame).
+async function withNet(url, auth, ask, fn) {
+  const parsed = parseRemoteUrl(url);
+  const dir = opDir();
+  let n = null;
+  try {
+    n = await netSetup(dir, parsed, url, auth, ask);
+    const alias = `bn-git/${crypto.randomBytes(16).toString('hex')}`;
+    const config = [...GIT_NET_CONFIG, ...n.config, [`url.${url}.insteadOf`, alias], [`url.${url}.pushInsteadOf`, alias]];
+    const out = await fn({ alias, config, add: n.add, fd3: n.fd3, parsed, dir });
+    return { ...out, learned: n.learned() };
+  } finally {
+    await Promise.all((n?.servers || []).map(closeServer));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+// the URL git is to use for a remote, re-read here: refused when it is not the one the page showed (expected)
+async function sameUrl(g, name, expected, push) {
+  const { urls, pushUrls } = await remoteUrls(g, name);
+  const list = push && pushUrls.length ? pushUrls : urls;
+  if (!list.length) throw new Error(`no remote named ${printable(name, 64)}`);
+  if (list.length > 1) throw new Error(`the remote has more than one ${push && pushUrls.length ? 'push URL' : 'URL'}: ${push ? 'push' : 'fetch'} in the terminal`);
+  if (list[0] !== expected) throw new Error('the remote\'s URL changed since it was shown: look again');
+}
+const TRACKING = (remote, b) => `refs/remotes/${remote}/${b}`;
+
+// git.net {repo, action: fetch|pull|push|publish, remote, url, branch, dst, auth} — see the section's head.
+//   fetch    every branch of the remote into refs/remotes/<remote>/* (pruned), tags as git follows them
+//   pull     fetch, then `git merge --ff-only` of <remote>/<dst> into the current branch (which must be `branch`)
+//   push     the commit `branch` points to, to refs/heads/<dst> of the remote — never forced; the tracking branch
+//            follows
+//   publish  push, then the branch tracks <remote>/<dst> (branch.<branch>.remote / .merge)
+export async function gitNet(req, { git = GIT, deadlineMs = GIT_NET_DEADLINE, procDir = '/proc', root, ask } = {}) {
+  const action = req?.action, remote = req?.remote, url = req?.url;
+  if (!['fetch', 'pull', 'push', 'publish'].includes(action)) throw new Error('action: fetch, pull, push or publish');
+  if (typeof remote !== 'string' || !REMOTE_NAME.test(remote)) throw new Error('not a remote name');
+  parseRemoteUrl(url);
+  const branch = req.branch ?? null, dst = req.dst ?? branch;
+  if (action !== 'fetch' && (!(await branchOk(git, branch)) || !(await branchOk(git, dst)))) throw new Error('not a branch name git takes');
+  const g = await gitPrep({ git, deadlineMs, procDir, root });
+  if (g.no) throw new Error(g.no);
+  const push = action === 'push' || action === 'publish';
+  await sameUrl(g, remote, url, push);
+  const http = await g.run(['config', '-z', '--get-regexp', '^http\\.'], { maxOut: 256 << 10 });
+  const bad = netHttpRefused(http.out.toString('utf8'));
+  if (bad) throw new Error(`this repository's configuration sets ${printable(bad, 200)} for a URL: take it out (git config --unset) to use the panel's ${push ? 'push' : action}`);
+  const md = await g.run(['config', '-z', '--get-regexp', '^merge\\..*\\.driver$'], { maxOut: 256 << 10 });
+  const drivers = mergeDriverOverrides(md.out.toString('utf8'));
+  const state = repoState(g.gitdir);
+  if (action !== 'fetch' && state) throw new Error(`a ${state} is in progress: finish it in the terminal`);
+  let sha = null;
+  if (push) {
+    sha = await revParse(g, `refs/heads/${branch}`);
+    if (!sha) throw new Error('no such local branch');
+  }
+  if (action === 'pull') {
+    const cur = await g.run(['symbolic-ref', '-q', '--short', 'HEAD'], { maxOut: 4096 });
+    if (cur.code !== 0 || cur.out.toString('utf8').trim() !== branch) throw new Error('the current branch changed since it was shown: look again');
+  }
+  return withNet(url, req.auth, ask, async ({ alias, config, add, fd3 }) => {
+    const net = { config: [...config, ...drivers], add, fd3, errTail: true, maxOut: 256 << 10 };
+    if (push) {
+      // (--porcelain: one line a ref on stdout; never --quiet, which drops it)
+      const r = await g.run(['push', '--no-verify', '--no-signed', '--no-recurse-submodules', '--porcelain', alias, `${sha}:refs/heads/${dst}`], net);
+      const out = r.out.toString('utf8');
+      const line = out.split('\n').find((l) => /^[ +\-*!=]\t/.test(l)) || '';
+      if (r.code !== 0) {
+        if (/^!/.test(line) && /fetch first|non-fast-forward/.test(line)) throw new Error(`the remote's ${printable(dst, 120)} has commits this branch does not have: pull first`);
+        if (/^!/.test(line)) throw new Error(`git push: ${printable(line.split('\t').pop(), 300)}`);
+        throw new Error(`git push: ${netWhy(r)}`);
+      }
+      // the tracking branch as git push to a named remote would leave it, and for publish the branch tracks it
+      const u = await g.run(['update-ref', '-m', 'push (Code page)', TRACKING(remote, dst), sha], { maxOut: 4096 });
+      if (action === 'publish') {
+        for (const [k, v] of [[`branch.${branch}.remote`, remote], [`branch.${branch}.merge`, `refs/heads/${dst}`]]) {
+          const c = await g.run(['config', k, v], { maxOut: 4096 });
+          if (c.code !== 0) gitFailed(c, 'git config', g);
+        }
+      }
+      return { ok: true, action, sha, upToDate: line.startsWith('='), created: line.startsWith('*'), tracking: u.code === 0 };
+    }
+    const f = await g.run(['fetch', '--quiet', '--prune', '--no-recurse-submodules', '--no-write-fetch-head', alias, `+refs/heads/*:refs/remotes/${remote}/*`], net);
+    if (f.code !== 0) throw new Error(`git fetch: ${netWhy(f)}`);
+    if (action === 'fetch') return { ok: true, action };
+    const theirs = await revParse(g, TRACKING(remote, dst));
+    if (!theirs) throw new Error(`the remote has no branch ${printable(dst, 120)}`);
+    const before = g.head;
+    const m = await g.run(['merge', '--ff-only', '--no-edit', '--no-stat', '--no-verify-signatures', '--quiet', TRACKING(remote, dst)],
+      { config: [['merge.verifySignatures', 'false'], ...drivers], maxOut: 64 << 10, errTail: true });
+    if (m.code !== 0) {
+      if (/not possible to fast-forward|diverg/i.test(m.err)) throw new Error('this branch and the remote\'s have both moved on: merge or rebase them in the terminal (or ask Claude)');
+      if (/would be overwritten|commit your changes or stash/i.test(m.err)) throw new Error('changes of yours would be overwritten by the pull: commit or stash them first');
+      gitFailed(m, 'git merge --ff-only', g);
+    }
+    const after = await revParse(g, 'HEAD');
+    return { ok: true, action, before, after, updated: before !== after };
+  });
+}
+
+// git.clone {url, target, depth?, auth} — the repository into a new folder of the workspace (target: a path that is
+// not there yet, its parent a real folder; '' : the workspace folder itself, which must be empty). git clone with no
+// template (no hooks), no submodules, nothing of the sandbox's own git configuration; what it checks out runs no
+// filter (none is configured in a new repository). depth: 1 to 1000 for a shallow clone.
+export async function gitClone(req, { git = GIT, deadlineMs = GIT_CLONE_DEADLINE, ask } = {}) {
+  const url = req?.url, target = req?.target ?? '';
+  parseRemoteUrl(url);
+  const depth = req.depth === undefined || req.depth === null ? null : req.depth;
+  if (depth !== null && (!Number.isInteger(depth) || depth < 1 || depth > 1000)) throw new Error('depth: 1 to 1000');
+  let abs;
+  if (target === '') {
+    abs = WORKSPACE;
+    if (fs.readdirSync(WORKSPACE).length) throw new Error('the workspace folder is not empty: clone into a new folder in it');
+  } else {
+    if (typeof target !== 'string' || !gitPathOk(target) || target.split('/').length > REPO_DEPTH || target.split('/')[0] === TRASH) throw new Error('not a folder name for the workspace');
+    const parent = path.dirname(target);
+    if (parent !== '.' && statRel(parent)?.type !== 'dir') throw new Error('its parent folder is not there (or a link is on its way)');
+    if (statRel(target)) throw new Error('something of that name is there already');
+    abs = path.join(WORKSPACE, target);
+  }
+  const t0 = Date.now();
+  return withNet(url, req.auth, ask, async ({ config, add, fd3, dir }) => {
+    // (outside every repository: the private folder; git looks for none above it)
+    const env = gitEnv([...GIT_PANEL_CONFIG, ...config], {}, { ceiling: path.dirname(dir), add });
+    const r = await runCapped(git, [...GIT_PRE, 'clone', '--quiet', '--no-recurse-submodules', '--template=', ...(depth ? [`--depth=${depth}`] : []), '--', url, abs],
+      { cwd: dir, env, timeoutMs: Math.max(1000, deadlineMs - (Date.now() - t0)), maxOut: 64 << 10, fd3, errTail: true });
+    if (r.code !== 0) {
+      // (git removes what a failed clone made; stopped at the deadline it cannot: the folder left is named)
+      const left = target !== '' && statRel(target) ? ` (a partly cloned ${printable(target, 200)} is left: delete it)` : '';
+      throw new Error(`git clone: ${netWhy(r)}${left}`);
+    }
+    return { ok: true, path: target, shallow: depth !== null };
+  });
+}
+
+// git.test {url, auth} — the credential tried with the server (git ls-remote --heads, outside any repository): how many
+// branches it lists, and (ssh, auth.learn) a host key ssh did not know yet, handed back for the code container to keep
+export async function gitTest(req, { git = GIT, deadlineMs = 60000, ask } = {}) {
+  const url = req?.url;
+  parseRemoteUrl(url);
+  const t0 = Date.now();
+  return withNet(url, req.auth, ask, async ({ config, add, fd3, dir }) => {
+    const env = gitEnv([...GIT_PANEL_CONFIG, ...config], {}, { ceiling: path.dirname(dir), add });
+    const r = await runCapped(git, [...GIT_PRE, 'ls-remote', '--heads', url], { cwd: dir, env, timeoutMs: Math.max(1000, deadlineMs - (Date.now() - t0)), maxOut: 1 << 20, fd3, errTail: true });
+    if (r.code !== 0 && !r.cut) return { ok: false, why: netWhy(r) };
+    return { ok: true, branches: r.out.toString('utf8').split('\n').filter((l) => /^[0-9a-f]{40,64}\trefs\/heads\//.test(l)).length };
+  });
+}
+
+// git.broker — Claude's own git (Settings › Git hosts › "Let Claude use this host", off by default): while the code
+// container keeps this connection open, /tmp/bn-git/claude/cred.sock answers bn-git-credential run by any git in the
+// sandbox, and /tmp/bn-git/claude/agent.sock is an SSH agent (the image's ssh configuration names it while it is
+// there) — every question relayed to the code container, which answers only for the hosts you let Claude use, and
+// says so in Activity. One broker at a time; closed, both sockets go.
+let broker = null;
+export function brokerStart(ask, { dir = path.join(GIT_TMP, 'claude') } = {}) {
+  brokerStop();
+  fs.mkdirSync(GIT_TMP, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const f of ['cred.sock', 'agent.sock']) { try { fs.unlinkSync(path.join(dir, f)); } catch { /* none */ } }
+  const counter = { n: -Infinity };   // (no count: the code container limits and logs these)
+  const cred = net.createServer((c) => {
+    c.on('error', () => {});
+    let asked = false;
+    lineReader(c, 8192, (line) => {
+      if (asked) return;
+      asked = true;
+      let q = null;
+      try { q = JSON.parse(line); } catch { /* below */ }
+      const reply = (v) => { try { c.end(`${JSON.stringify(v)}\n`); } catch { /* gone */ } };
+      if (!q || typeof q.host !== 'string' || typeof q.protocol !== 'string') return reply({});
+      ask({ kind: 'cred', protocol: printable(q.protocol, 16), host: printable(q.host, 300), path: typeof q.path === 'string' ? printable(q.path, 1000) : '',
+        username: typeof q.username === 'string' ? printable(q.username, 200) : '' })
+        .then((a) => reply(a && CRED_FIELD.test(a.username || '') && CRED_FIELD.test(a.password || '') ? { username: a.username, password: a.password } : {}), () => reply({}));
+    });
+  });
+  cred.listen(path.join(dir, 'cred.sock'));
+  const agent = agentRelay(path.join(dir, 'agent.sock'), ask, counter, { kind: 'agent', maxConns: Infinity });
+  broker = { cred, agent, dir };
+  return broker;
+}
+export function brokerStop() {
+  if (!broker) return;
+  const b = broker;
+  broker = null;
+  for (const s of [b.cred, b.agent]) { try { s.close(); } catch { /* closed */ } }
+  for (const f of ['cred.sock', 'agent.sock']) { try { fs.unlinkSync(path.join(b.dir, f)); } catch { /* gone */ } }
 }
 
 // --- fs.grep: search the workspace's files — ripgrep (the sandbox image's) with fixed arguments: its own regex engine
@@ -2811,13 +3427,26 @@ export function sweepOrphans({ kill = process.kill } = {}) {
 
 // --- one connection, one op ---
 const running = { claude: 0, cli: 0 };
-const helpers = { git: 0, grep: 0, gitRead: 0, gitWrite: 0, capture: 0 };
+const helpers = { git: 0, grep: 0, gitRead: 0, gitWrite: 0, gitNet: 0, capture: 0 };
+let brokerSock = null;
 export function serve(sock) {
   const parser = new FrameParser();
   let child = null, opened = false, writer = null, done = false;
   const send = (t, p) => (sock.destroyed ? false : sock.write(frame(t, p)));
   const finish = (t, p) => { if (done) return; done = true; send(t, p); sock.end(); };
   const fail = (msg) => finish(T.ERROR, { error: printable(msg, 300) });
+  // ask(q) -> the code container's ANSWER to an ASK (a remote git operation's credential question), or a rejection
+  // when none comes in 60 s or the connection ends
+  const asks = new Map();
+  let askId = 0;
+  const ask = (q) => new Promise((resolve, reject) => {
+    if (done || sock.destroyed) { reject(new Error('the connection ended')); return; }
+    const id = ++askId;
+    const t = setTimeout(() => { asks.delete(id); reject(new Error('no answer')); }, 60000);
+    t.unref?.();
+    asks.set(id, { resolve, reject, t });
+    send(T.ASK, { ...q, id });
+  });
 
   function startProcess(args, cwd, env, { noStdin = false, kind = 'claude' } = {}) {
     if (running[kind] >= MAX_PROCS[kind]) return fail(kind === 'cli' ? 'too many plugin or MCP commands at once' : 'too many Claude Code processes');
@@ -2877,6 +3506,37 @@ export function serve(sock) {
           (kind === 'git' ? gitDiff(send) : fsGrep(req)).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
           return undefined;
         }
+        // the Git panel's remotes: no network for these two; a branch switch or a remote's URL is a change
+        case 'git.repos': return finish(T.RESULT, gitRepos());
+        case 'git.remote.state':
+        case 'git.branch':
+        case 'git.remote.set':
+        case 'git.net': {
+          const kind = req.op === 'git.remote.state' ? 'gitRead' : 'gitWrite';
+          const o = { root: repoRoot(req.repo), ask };
+          if (helpers[kind] >= (kind === 'gitRead' ? 2 : 1)) return fail(kind === 'gitRead' ? 'busy: try again in a moment' : 'busy: another git change is on its way');
+          helpers[kind]++;
+          const job = { 'git.remote.state': () => gitRemoteState(o), 'git.branch': () => gitBranch(req, o), 'git.remote.set': () => gitRemoteSet(req, o), 'git.net': () => gitNet(req, o) }[req.op];
+          Promise.resolve().then(job).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
+          return undefined;
+        }
+        // a clone or a credential test touches no repository of the workspace's but a new folder: two at once, apart
+        // from the panel's changes
+        case 'git.clone':
+        case 'git.test': {
+          if (helpers.gitNet >= 2) return fail('busy: try again in a moment');
+          helpers.gitNet++;
+          Promise.resolve().then(() => (req.op === 'git.clone' ? gitClone(req, { ask }) : gitTest(req, { ask })))
+            .then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers.gitNet--; });
+          return undefined;
+        }
+        // Claude's own git (an opt-in of the code container's): open as long as this connection is; one at a time
+        case 'git.broker':
+          if (brokerSock && brokerSock !== sock) { try { brokerSock.end(); } catch { /* gone */ } }
+          brokerSock = sock;
+          brokerStart(ask);
+          send(T.STDOUT, Buffer.from('ready\n'));
+          return undefined;
         // the Git panel: two reads at once, one change at a time (git's index lock; a second click waits for the first)
         case 'git.status':
         case 'git.log':
@@ -2886,10 +3546,11 @@ export function serve(sock) {
         case 'git.commit':
         case 'git.discard': {
           const kind = ['git.status', 'git.log', 'git.file'].includes(req.op) ? 'gitRead' : 'gitWrite';
+          const o = { root: repoRoot(req.repo) };
           if (helpers[kind] >= (kind === 'gitRead' ? 2 : 1)) return fail(kind === 'gitRead' ? 'busy: try again in a moment' : 'busy: another git change is on its way');
           helpers[kind]++;
-          const job = { 'git.status': () => gitStatus(), 'git.log': () => gitLog(), 'git.file': () => gitFile(send, req), 'git.stage': () => gitStage(req),
-            'git.unstage': () => gitUnstage(req), 'git.commit': () => gitCommit(req), 'git.discard': () => gitDiscard(req) }[req.op];
+          const job = { 'git.status': () => gitStatus(o), 'git.log': () => gitLog(o), 'git.file': () => gitFile(send, req, o), 'git.stage': () => gitStage(req, o),
+            'git.unstage': () => gitUnstage(req, o), 'git.commit': () => gitCommit(req, o), 'git.discard': () => gitDiscard(req, o) }[req.op];
           Promise.resolve().then(job).then((r) => finish(T.RESULT, r), (e) => fail(e.message)).finally(() => { helpers[kind]--; });
           return undefined;
         }
@@ -2937,6 +3598,13 @@ export function serve(sock) {
       let req; try { req = JSON.parse(payload.toString('utf8')); } catch { return fail('bad open'); }
       return open(req);
     }
+    if (type === T.ANSWER) {
+      let a = null;
+      try { a = JSON.parse(payload.toString('utf8')); } catch { /* ignored */ }
+      const w = a && typeof a === 'object' ? asks.get(a.id) : null;
+      if (w) { asks.delete(a.id); clearTimeout(w.t); w.resolve(a); }
+      return undefined;
+    }
     if (writer) {
       try {
         if (type === T.STDIN) return fsWriteChunk(writer, payload);
@@ -2963,6 +3631,9 @@ export function serve(sock) {
   // The code container went away (or closed this op): Claude Code gets stdin EOF (its own clean exit), then SIGTERM,
   // then SIGKILL; a half-written file goes.
   sock.on('close', () => {
+    for (const w of asks.values()) { clearTimeout(w.t); w.reject(new Error('the connection ended')); }
+    asks.clear();
+    if (brokerSock === sock) { brokerSock = null; brokerStop(); }
     fsWriteAbort(writer); writer = null;
     const c = child;
     if (!c) return;

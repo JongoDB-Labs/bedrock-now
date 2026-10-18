@@ -9,7 +9,8 @@
 #   webtest  the frontend's checks on that same install: npm test (tsc --noEmit, then its unit tests)
 #   deps     the backend's node_modules, checked: no native binaries, no peer dependencies, the SDK imports
 #   gitnew   the Git panel's unit tests once more with git 2.54 (Alpine 3.24): config-based hooks, which Debian's git
-#            lacks, are proven switched off there (the test may not skip)
+#            lacks, are proven switched off there (the test may not skip) — its remote operations' too (with openssl
+#            and OpenSSH for their test servers)
 #   test     the unit tests, both halves (code/test.sh builds this stage; it needs --build-context terminal=terminal):
 #            the backend and the sandbox's bn-coded and bn-preview (with Debian's git and ripgrep, as in the sandbox),
 #            and the sandbox's egress proxy (terminal/egress/bn-egress.mjs)
@@ -30,13 +31,13 @@ RUN if [ -f package.json ]; then npm test; else echo "no code/web: no frontend t
 # and `test`: setup and update build the runtime stage at the end (compose.code.yaml: no target), which needs neither —
 # an Alpine change here can never break an install or an update.
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS gitnew
-RUN apk add --no-cache "git~2.54" "nodejs~24"
+RUN apk add --no-cache "git~2.54" "nodejs~24" openssh-client openssh-server openssl
 WORKDIR /opt/code
-COPY server/frames.mjs ./server/frames.mjs
-COPY test/helpers.mjs test/bn-coded-git.test.mjs ./test/
-COPY --from=terminal bin/bn-coded.mjs /opt/terminal/bin/
+COPY server/frames.mjs server/sshagent.mjs ./server/
+COPY test/helpers.mjs test/git-servers.mjs test/bn-coded-git.test.mjs test/bn-coded-remote.test.mjs ./test/
+COPY --from=terminal bin/bn-coded.mjs bin/bn-git-credential /opt/terminal/bin/
 ENV BN_TERMINAL_DIR=/opt/terminal BN_TEST_REQUIRE_CONFIG_HOOKS=1
-RUN git --version && node --test --test-reporter=spec test/bn-coded-git.test.mjs && touch /tmp/gitnew-tested
+RUN git --version && node --test --test-reporter=spec test/bn-coded-git.test.mjs test/bn-coded-remote.test.mjs && touch /tmp/gitnew-tested
 
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS deps
 WORKDIR /opt/code
@@ -52,12 +53,14 @@ FROM deps AS test
 COPY --from=webtest /tmp/web-tested /tmp/web-tested
 COPY --from=gitnew /tmp/gitnew-tested /tmp/gitnew-tested
 # git, ripgrep and tmux, as the sandbox image has them (Debian's): bn-coded's git.diff is proven against a hostile
-# repository with the same git, fs.grep with the same ripgrep, and terminal.capture with a real tmux under LANG=C
-RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep tmux && rm -rf /var/lib/apt/lists/*
+# repository with the same git, fs.grep with the same ripgrep, and terminal.capture with a real tmux under LANG=C; the
+# Git panel's remote operations with the same OpenSSH client against test servers of their own (openssl's CA, sshd)
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep tmux ca-certificates openssh-client openssh-server openssl \
+ && rm -rf /var/lib/apt/lists/*
 COPY server/ ./server/
 COPY plain/ ./plain/
 COPY test/ ./test/
-COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs /opt/terminal/bin/
+COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs bin/bn-git-credential /opt/terminal/bin/
 COPY --from=terminal egress/bn-egress.mjs /opt/terminal/egress/
 COPY --from=terminal claude-code/package.json /opt/terminal/claude-code/package.json
 ENV BN_TERMINAL_DIR=/opt/terminal

@@ -1,0 +1,8 @@
+# bedrock-now's sandbox (/etc/ssh/ssh_known_hosts, read-only in the image): the well-known git hosts' SSH host keys
+# (ed25519), as each publishes them — github.com SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU, gitlab.com
+# SHA256:eUXGGm1YGsMAS7vkcx6JOJdOGHPem5gQp4taiCfCLB8, bitbucket.org SHA256:ybgmFkzwOSotHTHLJgHO0QN8L0xErw6vd0VhFA9m3SM
+# (code/server/sshagent.mjs has the same three; code/test/githosts.test.mjs checks both). ssh here trusts them without
+# asking; your ~/.ssh/known_hosts comes first.
+github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf
+bitbucket.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIazEu89wgQZ4bqs3d63QSMzYVa0MuJ2e2gKTKqu+UUO

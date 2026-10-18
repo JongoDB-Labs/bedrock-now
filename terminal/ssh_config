@@ -4,3 +4,8 @@
 # first (ssh keeps the first value it reads). With TERMINAL_EGRESS=host there is no proxy and ssh connects itself.
 Match exec "test -n \"${HTTPS_PROXY:-}\""
     ProxyCommand /usr/local/bin/bn-ssh-proxy %h %p
+# Claude's own git over ssh, while you let it use a git host (Settings › Git hosts on the Code page, off by default):
+# the agent socket bn-coded keeps open only then. The key never comes here — the code container signs a login with
+# it and Activity says so. An IdentityAgent of yours in ~/.ssh/config comes first.
+Match exec "test -S /tmp/bn-git/claude/agent.sock"
+    IdentityAgent /tmp/bn-git/claude/agent.sock
