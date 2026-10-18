@@ -1045,17 +1045,20 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         X-Requested-With and the portal's own Origin like every state-changing request (Caddy's same-site guard,
         not_from_preview, refuses a preview's before it gets here). One check at a time: while one runs, the click gets
         its answer. Waits up to updates.MANUAL_WAIT_S for the answer -> 200 {started, checking, update} (checking:
-        the page follows /api/summary's update.checking); 429 {reason: again | limit, retry_after, retry_at} while the
-        click floor or GitHub's own limit says not yet (nothing is asked then)."""
+        the page follows /api/summary's update.checking); 429 {reason: again | hourly | limit | refused, retry_after,
+        retry_at} while the clicks' limits or GitHub's last refusal say not yet (nothing is asked then)."""
         if (deny := api_guard(request)) is not None:
             return deny
         if not same_origin(request.headers, settings):
             return _no_store(JSONResponse({"error": "cross-site request refused"}, status_code=403))
         got = release_refresh.manual()
-        if got["reason"] in ("again", "limit"):
+        if got["reason"] in ("again", "hourly", "limit", "refused"):
             wait = got["wait"]
-            msg = (f"GitHub's limit of requests for this hour is used up: try again in {max(1, round(wait / 60))} min."
-                   if got["reason"] == "limit" else f"Checked a moment ago: try again in {wait} s.")
+            mins = max(1, -(-wait // 60))
+            msg = {"again": f"Checked a moment ago: try again in {wait} s.",
+                   "hourly": f"{updates.MANUAL_PER_HOUR} checks in the last hour: try again in {mins} min.",
+                   "limit": f"GitHub's limit of requests for this hour is used up: try again in {mins} min.",
+                   "refused": f"GitHub refused the last check: try again in {mins} min."}[got["reason"]]
             r = JSONResponse({"error": msg, "reason": got["reason"], "retry_after": wait,
                               "retry_at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + wait)),
                               "update": update_status()}, status_code=429)

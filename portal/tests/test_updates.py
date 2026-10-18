@@ -661,8 +661,8 @@ def test_clicks_are_at_most_every_30_s_and_20_an_hour(settings, paths):
             assert r.manual()["started"] is True
             await r.task
         clock[0] += updates.MANUAL_MIN_S
-        got = r.manual()   # the 21st within the hour
-        assert got["reason"] == "again" and 0 < got["wait"] <= 3600 - updates.MANUAL_MIN_S * (updates.MANUAL_PER_HOUR - 1)
+        got = r.manual()   # the 21st within the hour: a reason of its own (the page says it in minutes)
+        assert got["reason"] == "hourly" and 0 < got["wait"] <= 3600 - updates.MANUAL_MIN_S * (updates.MANUAL_PER_HOUR - 1)
         clock[0] += got["wait"]
         assert r.manual()["started"] is True
         await r.task
@@ -680,6 +680,23 @@ def test_clicks_are_at_most_every_30_s_and_20_an_hour(settings, paths):
         assert r2.headers["retry-after"] == str(d["retry_after"]) and d["update"]["latest"] == "v0.9.0"
         assert "try again in" in d["error"] and d["retry_at"].endswith("+00:00")
     assert asked(gh2) == 1
+
+
+def test_the_hourly_cap_on_clicks_is_said_in_minutes(settings, paths, monkeypatch):
+    monkeypatch.setattr(updates, "MANUAL_MIN_S", 0)
+    monkeypatch.setattr(updates, "MANUAL_PER_HOUR", 2)
+    write_version(paths, "v0.4.1")
+    run_check(paths, GitHub(rels=releases(order=("v0.4.1",))))
+    gh = GitHub(rels=releases())
+    with portal(settings, paths, gh) as c:
+        sign_in(c)
+        for _ in range(2):
+            assert c.post("/api/update/check", headers={**XRW, **ORIGIN}).status_code == 200
+        r = c.post("/api/update/check", headers={**XRW, **ORIGIN})
+        d = r.json()
+        assert r.status_code == 429 and d["reason"] == "hourly" and 3500 < d["retry_after"] <= 3600
+        assert d["error"] == "2 checks in the last hour: try again in 60 min."
+    assert asked(gh) == 2
 
 
 def test_githubs_rate_limit_says_when_to_try_again_and_nothing_is_asked_before(settings, paths, monkeypatch):
@@ -712,29 +729,72 @@ def test_githubs_rate_limit_says_when_to_try_again_and_nothing_is_asked_before(s
     assert updates.Refresher(paths, httpx.MockTransport(gh), wall=lambda: reset + 1).due() is True
 
 
-@pytest.mark.parametrize("status,headers,wait", [
-    (429, {"retry-after": "90"}, 90),                                     # a secondary limit: Retry-After
-    (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "FAR"}, updates.RETRY_AFTER_ERROR),   # never past 1 h
-    (403, {}, updates.RETRY_AFTER_ERROR),                                 # it said nothing: RETRY_AFTER_ERROR
-    (403, {"retry-after": "\u0661\u0662".encode()}, updates.RETRY_AFTER_ERROR),   # (ASCII digits only)
-    (403, {"x-ratelimit-remaining": "3", "x-ratelimit-reset": "SOON"}, updates.RETRY_AFTER_ERROR),  # not the limit's reset
+@pytest.mark.parametrize("status,headers,limited,wait", [
+    (429, {"retry-after": "90"}, True, 90),                                   # a secondary limit: Retry-After
+    (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "SOON"}, True, 60),   # the hourly limit: its reset
+    (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "FAR"}, True, updates.RETRY_AFTER_ERROR),   # never past 1 h
+    (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "999999999999"}, True, updates.RETRY_AFTER_ERROR),  # year 33658
+    (403, {"x-ratelimit-remaining": "0"}, True, updates.RETRY_AFTER_ERROR),  # no reset: RETRY_AFTER_ERROR
+    (403, {"retry-after": "99999999"}, True, updates.RETRY_AFTER_ERROR),
+    (403, {}, False, updates.RETRY_AFTER_ERROR),                           # not the limit: GitHub refused the request
+    (429, {}, False, updates.RETRY_AFTER_ERROR),
+    (403, {"retry-after": "\u0661\u0662".encode()}, False, updates.RETRY_AFTER_ERROR),   # (ASCII digits only)
+    (403, {"x-ratelimit-remaining": "3", "x-ratelimit-reset": "SOON"}, False, updates.RETRY_AFTER_ERROR),  # requests left
 ])
-def test_the_retry_time_comes_from_githubs_headers_within_an_hour(paths, status, headers, wait):
+def test_githubs_refusals_say_when_to_ask_again_never_past_an_hour(paths, status, headers, limited, wait):
     import time
     now = time.time()
     headers = {k: (str(int(now) + 9 * 3600) if v == "FAR" else str(int(now) + 60) if v == "SOON" else v) for k, v in headers.items()}
 
-    def limited(request):
+    def refuse(request):
         return httpx.Response(status, headers=headers)
-    rec = run_check(paths, limited)
-    assert rec["limited"] is True and f"HTTP {status}" in rec["error"]
+    rec = run_check(paths, refuse)   # (never raises, and saves: a reset past year 9999 has no time, not a crash)
+    assert json.loads(paths.json.read_text())["error"] == rec["error"] and f"HTTP {status}" in rec["error"]
+    assert rec["refused"] is True and rec["limited"] is limited
+    assert ("limit of requests" in rec["error"]) is limited and ("refused the request" in rec["error"]) is (not limited)
     assert abs(updates.retry_wait(rec, now) - wait) <= 2
     assert updates.retry_wait(rec, now + wait + 1) == 0
+    st = updates.status(paths, True)
+    assert st["limited"] is limited and st["refused"] is (not limited) and st["retry_at"]
+    r = updates.Refresher(paths, httpx.MockTransport(GitHub()), wall=lambda: now)
+    assert r.manual_wait()[0] == ("limit" if limited else "refused") and r.due() is False
     # a check that is not refused: no wait, whatever came before
     ok = run_check(paths, GitHub())
-    assert ok["limited"] is False and ok["retry_at"] is None and updates.retry_wait(ok) == 0
+    assert ok["limited"] is False and ok["refused"] is False and ok["retry_at"] is None and updates.retry_wait(ok) == 0
     # another failure (GitHub unreachable) is no reason to wait: a click may try again
     assert updates.retry_wait(run_check(paths, GitHub(status=500))) == 0
+
+
+def test_a_clock_set_back_never_stretches_the_wait_past_an_hour(paths):
+    import time
+    from datetime import datetime, timedelta, timezone
+    later = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds")
+    rec = {"error": "x (HTTP 403)", "error_at": later, "checked_at": later, "refused": True, "limited": False, "retry_at": None}
+    assert updates.retry_wait(rec, time.time()) == updates.RETRY_AFTER_ERROR   # (87000 s without the cap)
+    rec.update(limited=True, retry_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat(timespec="seconds"))
+    assert updates.retry_wait(rec, time.time()) == updates.RETRY_AFTER_ERROR
+
+
+def test_another_refusal_is_said_as_such_and_a_click_waits_for_it(settings, paths):
+    import time
+    write_version(paths, "v0.4.1")
+    run_check(paths, GitHub(rels=releases(order=("v0.4.1",))))
+
+    class Refuses(GitHub):
+        def __call__(self, request):
+            self.seen.append(request)
+            return httpx.Response(403, json={"message": "Forbidden"})
+    gh = Refuses()
+    with portal(settings, paths, gh) as c:
+        sign_in(c)
+        u = c.post("/api/update/check", headers={**XRW, **ORIGIN}).json()["update"]
+        assert u["refused"] is True and u["limited"] is False and "refused the request (HTTP 403)" in u["error"]
+        assert abs(updates._epoch(u["retry_at"]) - (time.time() + updates.RETRY_AFTER_ERROR)) <= 5
+    assert asked(gh) == 1
+    # after the floor between clicks: the portal says why, and asks nothing
+    clock = [10_000.0]
+    r = updates.Refresher(paths, httpx.MockTransport(gh), clock=lambda: clock[0])
+    assert r.manual()["reason"] == "refused" and asked(gh) == 1
 
 
 def test_with_the_daily_check_off_a_click_still_checks_and_the_rest_stays_off(settings, paths, monkeypatch):

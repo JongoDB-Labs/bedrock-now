@@ -9,14 +9,15 @@ over several releases names all of them. Nothing about this install is sent. UPD
 daily check off. Besides the daily check, Home asks for one when it opens and the last is older than STALE_S
 (Refresher: one at a time, at most every ON_DEMAND_MIN_S, and not again within RETRY_AFTER_ERROR of a failed one),
 and Check for updates asks for one now (Refresher.manual: also with UPDATE_CHECK=false — a click is an explicit
-request — at most every MANUAL_MIN_S and MANUAL_PER_HOUR times an hour, never while one runs, and not before GitHub's
-own limit lets it: a 403/429 says when, else RETRY_AFTER_ERROR after it).
+request — at most every MANUAL_MIN_S and MANUAL_PER_HOUR times an hour, never while one runs, and not again soon after
+GitHub refused one: its rate limit says when, else RETRY_AFTER_ERROR after it — never longer).
 
 Files (the update-check directory is the portal's only other writable place besides the price files):
   UPDATE_DIR/latest.json   the last answer: the newest release's tag, name, notes, url, published_at, and
                            releases (each recent release: tag, name, headline, notes, url, published_at), etag,
-                           checked_at, error, error_at, limited (GitHub refused for its rate limit) and retry_at (when it
-                           allows the next one), by (daily, home or manual: what asked), images
+                           checked_at, error, error_at, refused (GitHub answered 403/429), limited (... for its rate
+                           limit: X-RateLimit-Remaining 0 or Retry-After) and retry_at (when it allows the next one), by
+                           (daily, home or manual: what asked), images
   UPDATE_DIR/latest.txt    latest=vX.Y.Z / checked_at=<epoch>: what ./stack status and claude-bedrock read
 The installed version comes from STATUS_DIR/version.json, written by ./stack setup and ./stack up (the
 portal cannot see the checkout).
@@ -97,23 +98,36 @@ class Paths:
 
 
 class CheckError(Exception):
-    """A check that got no usable answer. limited: GitHub refused for its rate limit (403/429); retry_at: when it said
-    it allows the next request (epoch seconds; None when it did not say)."""
+    """A check that got no usable answer. refused: GitHub answered 403/429 (nothing is asked again for a while);
+    limited: ... for its rate limit; retry_at: when it said it allows the next request (epoch seconds; None when it did
+    not say)."""
 
-    def __init__(self, message: str, limited: bool = False, retry_at: float | None = None):
+    def __init__(self, message: str, limited: bool = False, retry_at: float | None = None, refused: bool = False):
         super().__init__(message)
-        self.limited, self.retry_at = limited, retry_at
+        self.limited, self.retry_at, self.refused = limited, retry_at, refused or limited
+
+
+def _digits(v) -> str:
+    v = (v or "").strip()
+    return v if v.isascii() and v.isdigit() and len(v) <= 12 else ""
+
+
+def _rate_limited(headers) -> bool:
+    """A 403/429 for GitHub's rate limit: X-RateLimit-Remaining 0 (the hourly limit) or a Retry-After (its secondary
+    limits). Any other 403/429 is a refusal of another kind."""
+    return (headers.get("x-ratelimit-remaining") or "").strip() == "0" or bool(_digits(headers.get("retry-after")))
 
 
 def _limit_reset(headers, now: float) -> float | None:
     """When GitHub allows the next request after a 403/429 (epoch seconds): Retry-After (its secondary limits), else
-    X-RateLimit-Reset while X-RateLimit-Remaining is 0 (the hourly limit); None when it says neither. ASCII digits only."""
-    ra = (headers.get("retry-after") or "").strip()
-    if ra.isascii() and ra.isdigit() and len(ra) <= 6:
-        return now + int(ra)
-    reset = (headers.get("x-ratelimit-reset") or "").strip()
-    if (headers.get("x-ratelimit-remaining") or "").strip() == "0" and reset.isascii() and reset.isdigit() and len(reset) <= 12:
-        return float(reset)
+    X-RateLimit-Reset while X-RateLimit-Remaining is 0 (the hourly limit) — never later than RETRY_AFTER_ERROR from
+    NOW, whatever it says; None when it says neither. ASCII digits only."""
+    ra = _digits(headers.get("retry-after"))
+    if ra:
+        return min(now + int(ra), now + RETRY_AFTER_ERROR)
+    reset = _digits(headers.get("x-ratelimit-reset"))
+    if (headers.get("x-ratelimit-remaining") or "").strip() == "0" and reset:
+        return min(float(reset), now + RETRY_AFTER_ERROR)
     return None
 
 
@@ -190,9 +204,12 @@ async def _get(client: httpx.AsyncClient, url: str, cap: int, headers: dict | No
             if r.status_code == 304:
                 return 304, b"", dict(r.headers)
             if r.status_code in (403, 429):
-                # GitHub's rate limit (60 unauthenticated requests an hour per address): not again before it says
-                raise CheckError(f"{host} refused: its limit of requests for this address is used up (HTTP {r.status_code})",
-                                 limited=True, retry_at=_limit_reset(r.headers, time.time()))
+                # GitHub's rate limit (60 unauthenticated requests an hour per address): not again before it says;
+                # another refusal: not again within RETRY_AFTER_ERROR either
+                if _rate_limited(r.headers):
+                    raise CheckError(f"{host} refused: its limit of requests for this address is used up (HTTP {r.status_code})",
+                                     limited=True, retry_at=_limit_reset(r.headers, time.time()))
+                raise CheckError(f"{host} refused the request (HTTP {r.status_code})", refused=True)
             if r.status_code != 200:
                 raise CheckError(f"{host} answered HTTP {r.status_code}")
             enc = (r.headers.get("content-encoding") or "identity").strip().lower()
@@ -305,8 +322,11 @@ def _releases(d) -> list[dict]:
     return out
 
 
-def _iso(epoch: float) -> str:
-    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
+def _iso(epoch: float) -> str | None:
+    try:
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):   # (past year 9999: no time at all)
+        return None
 
 
 def _epoch(iso) -> float | None:
@@ -328,7 +348,8 @@ async def check(client: httpx.AsyncClient, paths: Paths, total_timeout: float = 
         rec = read_latest(paths)
         rec["checked_at"] = _now_iso()
         rec["error"] = f"no answer within {int(total_timeout)} s"
-        rec.update({"error_at": rec["checked_at"], "limited": False, "retry_at": None, "by": by if by in BY else "daily"})
+        rec.update({"error_at": rec["checked_at"], "refused": False, "limited": False, "retry_at": None,
+                    "by": by if by in BY else "daily"})
         save(paths, rec)
         return rec
 
@@ -367,11 +388,11 @@ async def _check(client: httpx.AsyncClient, paths: Paths, by: str = "daily") -> 
                     rec["images"] = compose_images(text.decode("utf-8", "replace"))
                 except CheckError as e:
                     log.info("update check: no download estimate (%s)", e)
-        rec.update({"error": None, "error_at": None, "limited": False, "retry_at": None})
+        rec.update({"error": None, "error_at": None, "refused": False, "limited": False, "retry_at": None})
     except CheckError as e:
         rec["error"] = str(e)[:300]
         rec["error_at"] = rec["checked_at"]
-        rec["limited"] = e.limited
+        rec["refused"], rec["limited"] = e.refused, e.limited
         rec["retry_at"] = _iso(e.retry_at) if e.retry_at else None
     save(paths, rec)
     return rec
@@ -398,9 +419,10 @@ def _age_s(rec: dict) -> float | None:
 
 
 def retry_wait(rec: dict, now: float | None = None) -> int:
-    """Seconds until GitHub may be asked again after it refused the last check for its rate limit (0: now): the time it
-    gave, else RETRY_AFTER_ERROR after the refusal — never later than that."""
-    if not rec.get("error") or rec.get("limited") is not True:
+    """Seconds until GitHub may be asked again after it refused the last check (0: now): for its rate limit the time it
+    gave, else RETRY_AFTER_ERROR after the refusal — never more than RETRY_AFTER_ERROR from NOW (a clock set back
+    does not stretch it)."""
+    if not rec.get("error") or not (rec.get("refused") is True or rec.get("limited") is True):
         return 0
     now = time.time() if now is None else now
     refused = _epoch(rec.get("error_at")) or _epoch(rec.get("checked_at"))
@@ -410,7 +432,7 @@ def retry_wait(rec: dict, now: float | None = None) -> int:
     given = _epoch(rec.get("retry_at"))
     if given is not None:
         at = min(at, given)
-    return max(0, math.ceil(at - now))
+    return min(RETRY_AFTER_ERROR, max(0, math.ceil(at - now)))
 
 
 async def daily_loop(paths: Paths, transport: httpx.AsyncBaseTransport | None = None, refresher: "Refresher | None" = None) -> None:
@@ -476,15 +498,17 @@ def status(paths: Paths, enabled: bool) -> dict:
     """The update card's data, and the installed version for Home's version label (in every state: also with the
     check off or no answer yet). releases: every release the update brings, newest first (one per release between
     the installed version and the newest; notes, a one-line headline, its page); stale: the last check is older than
-    STALE_S (Home then asks for another); limited: GitHub refused the last check for its rate limit, retry_at: until
-    when (only while that is still ahead). With the daily check off (ENABLED false) only the answer of a check asked
+    STALE_S (Home then asks for another); limited: GitHub refused the last check for its rate limit, refused: it
+    refused it otherwise (403/429 without its rate limit's headers), retry_at: until when no click asks again (only
+    while that is still ahead). With the daily check off (ENABLED false) only the answer of a check asked
     for by a click (Check for updates) is shown."""
     inst = installed(paths)
     out = {"enabled": enabled, "installed": inst["version"] or None, "branch": inst["branch"] or None,
            "commit": inst["commit"] or None, "commit_date": inst["commit_date"] or None,
            "release_url": release_url(inst["version"]),
            "latest": None, "available": False, "releases": [], "behind": 0, "more": False,
-           "checked_at": None, "error": None, "error_at": None, "limited": False, "retry_at": None, "by": None,
+           "checked_at": None, "error": None, "error_at": None, "limited": False, "refused": False, "retry_at": None,
+           "by": None,
            "stale": False, "command": "./stack update"}
     rec = read_latest(paths)
     if not enabled and rec.get("by") != "manual":
@@ -495,6 +519,7 @@ def status(paths: Paths, enabled: bool) -> dict:
     out.update({"latest": tag, "checked_at": rec.get("checked_at") if isinstance(rec.get("checked_at"), str) else None,
                 "error": error, "error_at": rec.get("error_at") if isinstance(rec.get("error_at"), str) else None,
                 "limited": bool(error) and rec.get("limited") is True,
+                "refused": bool(error) and rec.get("refused") is True and rec.get("limited") is not True,
                 "retry_at": _iso(time.time() + wait) if wait else None,
                 "by": rec.get("by") if rec.get("by") in BY else None, "stale": stale(rec)})
     if tag and newer(tag, inst["version"]):
@@ -562,22 +587,25 @@ class Refresher:
 
     def manual_wait(self) -> tuple[str, int]:
         """Why a click would not ask GitHub now, and for how many seconds: ("again", s) — the last click's check was
-        MANUAL_MIN_S ago or less, or MANUAL_PER_HOUR in the last hour; ("limit", s) — GitHub refused the last check for its
-        rate limit; ("", 0) — it may."""
+        MANUAL_MIN_S ago or less; ("hourly", s) — MANUAL_PER_HOUR in the last hour; ("limit", s) — GitHub refused the
+        last check for its rate limit; ("refused", s) — it refused it otherwise; ("", 0) — it may."""
         now = self.clock()
         while self.manual_at and now - self.manual_at[0] >= 3600:
             self.manual_at.popleft()
         if self.manual_at and now - self.manual_at[-1] < MANUAL_MIN_S:
             return "again", math.ceil(MANUAL_MIN_S - (now - self.manual_at[-1]))
         if len(self.manual_at) >= MANUAL_PER_HOUR:
-            return "again", math.ceil(3600 - (now - self.manual_at[0]))
-        wait = retry_wait(read_latest(self.paths), self.wall())
-        return ("limit", wait) if wait else ("", 0)
+            return "hourly", math.ceil(3600 - (now - self.manual_at[0]))
+        rec = read_latest(self.paths)
+        wait = retry_wait(rec, self.wall())
+        if wait:
+            return ("limit" if rec.get("limited") is True else "refused"), wait
+        return "", 0
 
     def manual(self) -> dict:
         """A click on Check for updates: {"started": True} when it started a check, {"started": False, "reason":
         "checking"} while one runs (no second request: the click gets that one's answer), else {"started": False,
-        "reason": "again" | "limit", "wait": seconds}. Also with UPDATE_CHECK=false; the ETag keeps it a 304 when
+        "reason": "again" | "hourly" | "limit" | "refused", "wait": seconds}. Also with UPDATE_CHECK=false; the ETag keeps it a 304 when
         nothing changed."""
         if self.checking:
             return {"started": False, "reason": "checking", "wait": 0}
