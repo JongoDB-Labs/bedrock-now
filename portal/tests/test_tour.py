@@ -189,16 +189,17 @@ def test_the_code_steps_name_what_a_developer_uses():
     # every feature of the Code page a developer needs, by its exact words in the page (README › The Code page)
     js = (STATIC / "tour.js").read_text(encoding="utf-8")
     want = {
-        "code-open": ("Open Code", "unlock it with the portal password", "New session", "Needs you", "Working", "Done", "claude-code-terminal"),
+        "code-open": ("Open Code", "unlock it with the portal password", "New session", "Projects", "Needs you", "Working", "Done",
+                      "claude-code-terminal"),
         "code-modes": ("Read only", "Plan", "Manual", "Accept edits", "Shift+Tab", "Alt+M", "Allow once", "Always", "Deny", "Permissions",
                        "Auto", "Bypass permissions", '"CODE_AUTO_MODE"'),
         "code-models": ("works", "chat only", "not tested", "Models for Claude Code", "Default model for new sessions",
                         "claude-bedrock --models", "claude-bedrock --model mistral-large-3", "Budget for this session"),
         "code-workspace": ("cfg.workspace", '"./stack code status"', "Ctrl/⌘+P", "Ctrl/⌘+Shift+F", "Ctrl/⌘+K", "Preview", "Mermaid",
-                           "Memory (CLAUDE.md)", "./stack code enable --workspace DIR"),
+                           "Memory (CLAUDE.md)", "./stack code enable --workspace DIR", "Projects", "New project"),
         "code-context": ('code("@file#L5-10")', "Alt+K", '"@terminal"', '"@diff"', '"@problems"', "Comment on lines", "Keep planning"),
         "code-clone": ("Git: clone a repository…", "Ctrl/⌘+K", "Ctrl/⌘+Shift+G", "while the workspace is not a repository yet",
-                       'openGit("clone")', "Submodules are not cloned"),
+                       'openGit("clone")', "Submodules are not cloned", "a project of its own"),
         "code-review": ("Review", "Ctrl/⌘+Shift+D", "Keep", "Undo", "Stage", "Commit", "Write message", "no git hooks", "Fetch", "Pull",
                         "Push", "Publish branch", "Open a pull request"),
         "code-run": ("Run & test", "Alt+R", "package.json", "Makefile", "pyproject.toml", "Problems", "Ask Claude", "Ports & previews",

@@ -6,6 +6,32 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Projects in the Code page.** A project is a folder of the workspace the page works in: the sidebar's Sessions
+  tab is now **Projects** (each project with its sessions, the open ones grouped Needs you, Working, Done), and the
+  top bar's **project chip** shows and switches it (on a phone: ☰ or the project's name at the top). New sessions
+  start in the project's folder, so Claude Code reads its `CLAUDE.md` and `.claude/` settings; the file tree,
+  Search, the `@` picker, the Git panel, Review, Run & test, launch.json, the watchlist and Memory follow it. **New
+  project**: an empty folder (`git init` ticked by default), a clone (the Git panel's Clone dialog and Git hosts), or
+  a folder of the workspace. A project's ⋯: *New session*, *Open a terminal here*, *Connect a git repository* (`git
+  init` if needed, then its remote), *Rename*, *Remove from Code…* (the record only; the folder goes to the trash only
+  when ticked and named again). **Add to project…** lists a session (or several) in another project; it still runs
+  in its own folder. The command palette has *New session in …* and *Switch project: …*; `?project=<id>` links pick
+  a project of the list and never create one. Sessions from before are under the **Workspace** (`/workspace`, always
+  there); the limits on open sessions are for all projects together. The records are kept by the code container
+  (`code-state` volume), not in the workspace. A project is not a boundary: every project is in the one sandbox
+  ([docs/security.md](docs/security.md#projects)).
+
+### Changed
+
+- The Git panel's repository picker lists projects; a clone becomes a project of its own; a repository in a folder
+  that is not a project has *Open as a project*.
+- bn-coded's file, search, git, Run & test, launch.json, watchlist and Permissions ops take a project's folder as
+  their root (checked in the sandbox: a real folder of `/workspace`; every path still confined to `/workspace`, also
+  through symlinks); sessions are listed from every `/workspace` folder's transcript store, each by its own checked
+  working folder, and resume there. The session list holds up to 300 sessions.
+
 ## [0.16.0] - 2026-10-18
 
 ### Added

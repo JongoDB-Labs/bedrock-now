@@ -868,9 +868,11 @@ spawn server, Claude Code or any file at will.
   `/workspace` (Node has no `openat`/`RESOLVE_BENEATH`: a check-then-open in the code container would race a sandbox
   that swaps a folder for a symlink; in there, a symlink only leads where the sandbox can go anyway). Reads are
   regular files only (`O_NONBLOCK`, `O_NOFOLLOW`: a FIFO or device cannot hang or feed it), writes go through a
-  temporary file and a rename, deletes move into `/workspace/.bedrock-now-trash/`. The memory editor reaches two fixed
-  files only (`/workspace/CLAUDE.md` and the sandbox's own `~/.claude/CLAUDE.md`, never through a link, ≤ 1 MiB); the
-  `@` search is a bounded walk of `/workspace` (20,000 entries, depth 12, no links followed, build and dependency
+  temporary file and a rename, deletes move into `/workspace/.bedrock-now-trash/` (in a [project](#projects): its
+  folder's `.bedrock-now-trash/`). The memory editor reaches two fixed files only (the project's `CLAUDE.md` —
+  `/workspace/CLAUDE.md` for the Workspace — and the sandbox's own `~/.claude/CLAUDE.md`, never through a link, ≤ 1
+  MiB); the `@` search is a bounded walk of `/workspace` or the project's folder (20,000 entries, depth 12, no links
+  followed, build and dependency
   folders such as `node_modules`, `dist`, `build`, `target`, `.venv` skipped); file checkpoints are Claude Code's own
   backups in the sandbox (`rewindFiles`), restored only after a dry run you saw — never while Claude is working, and
   checked again when Claude worked since that dry run.
@@ -883,7 +885,8 @@ spawn server, Claude Code or any file at will.
   `git.test` and `git.broker` (below, "Git remotes and Git hosts"), and Search's `fs.grep` (below: fixed arguments, no program from the repository's configuration), and the
   Permissions view's, *Open in the terminal*'s and the resume check's ops (`perm.read`, `perm.remove`,
   `terminal.resume`, `sessions.running`: below, "Budgets, Permissions, Open in the terminal, links"), and @terminal's
-  read-only `terminal.capture` (below, "Context mentions and plan comments"). Claude Code's
+  read-only `terminal.capture` (below, "Context mentions and plan comments"), and the projects' `project.create`,
+  `project.check`, `git.init` and `terminal.window` (below, "Projects"). Claude Code's
   arguments must start with the SDK's fixed stream-json prefix and every other one must be on an allowlist in
   `--name=value` form (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`, `--resume=<uuid>` …) or one of
   a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*; and two that only take
@@ -902,7 +905,8 @@ spawn server, Claude Code or any file at will.
   the connection is cut and the session's process fails) and every op's time; it checks every id (a session id
   `../../etc`, a tool id, a task id), every number (no `NaN`, nothing negative), caps every string and drops every
   field it does not know. A session's history is read from the end of its transcript only (the last 3 MiB, at most
-  20,000 entries and 50 compaction boundaries; at most 2,000 messages per request), and the session list stops at 200.
+  20,000 entries and 50 compaction boundaries; at most 2,000 messages per request), and the session list stops at 300
+  (from at most 200 store folders and 20,000 transcripts).
   Costs from Claude Code itself (`total_cost_usd`, which a stand-in set to −1 in the spike) are never shown. Of the
   SDK's host callbacks only `canUseTool` is registered: forged `hook_callback`/`mcp_message` requests get errors from
   the SDK. The e2e suite starts a hostile stand-in on the socket (markup everywhere, bogus ids, an oversized frame, an
@@ -1208,6 +1212,54 @@ folder; they run in the sandbox either way.
 above) and serve script on the code origin — the same standing as the other app hosts: the cookies it could
 target are `HttpOnly`, the portal checks the Origin of every change, and only the portal may frame it. Pinning the
 page's script hashes in Caddy's CSP would take even that away (an open question).
+
+### Projects
+
+A project is a record of the Code page: a name and a folder of the workspace (the **Workspace**, `/workspace` itself,
+is always there and has no record). The records are kept by the code container in its volume
+(`<project>_code-state`, `projects/projects.json`: mode 600 in a folder of mode 700), never in the workspace or the
+sandbox. At most 64; a folder is 1 to 4 names, none starting with `.`, at most 160 bytes, no control or
+direction-changing character; a record that does not fit (a file someone changed) is dropped, never trusted.
+
+- [x] **A project is not a boundary.** Every project is in the one sandbox: the same user, the same workspace, the
+  same key and budget. A session started in one folder can read and change every other (Claude Code's working folder
+  is where it starts, not a limit; `--add-dir` stays refused). Projects organise your work; they do not isolate it.
+- [x] **The page names a project by its id, never by a folder.** Every call that works in a project takes
+  `?project=<id>` (`ws`, or `p_` and 8 hex digits). The code container looks the id up in its own records and sends
+  bn-coded that record's folder as the op's root (`root: /workspace/<folder>`); a malformed id is refused (400), one
+  the records do not have too (404). A `?project=` link only picks a project of the list (an unknown id is said); it
+  never creates one. Calls for the Workspace send no root at all: the same ops as before projects.
+- [x] **Every path stays in the workspace, whatever the root.** bn-coded takes a root only when it is a real folder
+  (not a link) under `/workspace`, at most 8 levels down and not a trash folder. A relative path resolves against the
+  root and may not leave it by `..`; an absolute `/workspace/…` path is allowed (the page uses one for a file of
+  another project). The result, resolved by the sandbox's `realpath`, must be in `/workspace`: a link from one
+  project into another is followed (the sandbox can go there anyway), a link out of the workspace is refused, as are
+  NUL bytes and names over the limits. `/workspace`, a root itself and a trash folder are never deleted or renamed;
+  a delete in a project goes to its folder's `.bedrock-now-trash/`. git runs with the root as its repository (its
+  parent as `GIT_CEILING_DIRECTORIES`): a repository above the project is not used. The watchlist, Run & test,
+  launch.json and the Permissions view read the root's files. Tests: `code/test/bn-coded-projects.test.mjs`.
+- [x] **Sessions are placed by their folder, checked twice.** Claude Code keeps a conversation in
+  `~/.claude/projects/<its folder, every character but letters and digits as ->/`, a lossy name (`/workspace/a-b` and
+  `/workspace/a/b` share one). bn-coded reads only the `-workspace` and `-workspace-*` store folders (real folders,
+  not links) and takes a transcript's own working folder only when it is a folder of `/workspace` (no `.` or `..`)
+  whose name encodes back to that store folder; anything else is skipped. The code container checks it again, keeps
+  it by session id and resumes the session there (the transcript must be in that folder's store); the page drops a
+  row with any other folder. A session's project is the one you added it to (*Add to project*: a label by id in the
+  same file), else the deepest project whose folder holds its folder, else the Workspace. Nothing the sandbox says
+  creates a project or moves a session into one.
+- [x] **New project and Remove from Code.** *An empty folder*: bn-coded makes it (its parent a real folder, the name
+  not there yet) and, ticked, runs `git init` with no template (no hooks) and the Git panel's neutral configuration.
+  *A folder in the workspace*: the folders `project.check` reports as real folders (at most 64 asked at once; a link
+  is never offered). *Clone*: the Git panel's clone ([below](#git-remotes-and-git-hosts)), then the record. *Remove
+  from Code* removes the record and its labels only. The folder moves to the workspace trash only when you tick it and
+  type its name again, and not while a session runs in it (409).
+- [x] **Open a terminal here** asks bn-coded for a new window of the terminal's tmux session in the root
+  (`terminal.window`, the root checked as above); nothing is typed into it.
+- [x] **The page checks what it is sent.** Records and sessions from the backend are checked again (ids, folders,
+  names of one line without control or direction-changing characters, shown as text); the folder the page shows is
+  made from the record's folder, never taken from the backend's text. The browser checks against a mock run a hostile
+  backend (records outside the workspace, bad ids, markup, sessions that claim `/etc`, a session added to a project
+  that is not there): each is dropped or shown as text.
 
 ### Budgets, Permissions, Open in the terminal, links
 

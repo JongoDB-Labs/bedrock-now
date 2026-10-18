@@ -561,13 +561,14 @@ sessions in progress drop for a few seconds. Details and what was weighed:
 ```
 
 The **Code** tab sits in the portal directly under Chat (on a phone: **More → Code**, full screen): Claude Code
-in an IDE-like page instead of a terminal — an explorer of the workspace on the left, an editor (CodeMirror) in the
-middle, the chat on the right and the sandbox's terminal in a bottom panel (`Ctrl+\``); on a tablet the chat and
-one of explorer/editor, on a phone the chat first with files, editor and diffs as sheets. Pane sizes are remembered
-per browser.
+in an IDE-like page instead of a terminal — your projects and an explorer of the shown project's folder on the
+left, an editor (CodeMirror) in the middle, the chat on the right and the sandbox's terminal in a bottom panel
+(`Ctrl+\``); on a tablet the chat and one of explorer/editor, on a phone the chat first with files, editor and diffs
+as sheets. Pane sizes are remembered per browser.
 
 In this section: [turning it on and off](#turning-the-code-page-on-and-off) ·
-[chat and sessions](#chat-and-sessions) (with @-mentions of context) · [models](#models-for-claude-code) ·
+[chat and sessions](#chat-and-sessions) (with @-mentions of context) · [projects](#projects) ·
+[models](#models-for-claude-code) ·
 [permissions and modes](#permissions-and-modes) (with comments on a plan's lines) ·
 [files, search and previews](#files-search-and-previews-of-files) ·
 [review changes, Git, Run & test](#review-changes-git-run--test) ·
@@ -625,7 +626,7 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   pasted or dropped (sent to Claude, scaled to 1568 px), other files are uploaded into the workspace and mentioned. A
   prompt typed while Claude works waits below the answer and runs next (or, when Claude Code takes it into the running
   turn between tool calls, as the terminal does, it shows there). `/clear` (`/new`, `/reset`) starts a new session
-  with the same model, mode and effort; `/resume` opens the session list. Claude's latest to-do list stays pinned
+  with the same model, mode and effort; `/resume` opens the Projects tab. Claude's latest to-do list stays pinned
   above the prompt; the conversation can be exported as Markdown (the whole transcript, not only what the page shows);
   notifications when a prompt waits or a turn ends are opt-in (⋯ menu).
 - **@-mentions of context.** `@terminal` (the last 200 lines of the terminal panel's current window — `@terminal:500`
@@ -652,18 +653,19 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   again, without a prompt), never while Claude is working, and with a fresh dry run if Claude worked since. *Fork* on
   a prompt starts a new session with the conversation before it and puts the prompt back in the box to change, as the
   terminal's rewind does.
-- **Sessions.** Listed with search; resume, fork (also from any of your messages), rename — also from the Terminal
-  tab's `claude --resume`, which shares them. The open ones are grouped as Claude Code's agent view does: **Needs
-  you** (a permission card, a question or a plan waiting), **Working**, **Done** — with a dot on one that finished
-  while you were looking at another (or away), and the tab's title says `(2) waiting`. On a phone, the session list
-  opens first while a session waits for you. A session's title is the one Claude Code wrote (a rename, or its own
-  summary or title when a transcript has one — Claude Code writes those only with its non-essential traffic on, which
-  the sandbox turns off), else its first prompt. **Open in the terminal** (a session's ⋯, or ⋯ → *Continue this
-  session in the terminal*) ends the page's process for it and types `claude-bedrock --resume <id>` into a new window
-  of the terminal panel; until Claude Code exits there, the page refuses to resume it (two processes would both write
-  the conversation). A session keeps working when you close the tab or reload: the page re-attaches and shows what it
-  missed, nothing twice. At most 4 sessions run at once (each Claude Code process takes ~220 MB of the sandbox's
-  memory); an idle one stops after 30 minutes and your next prompt resumes it.
+- **Sessions.** Listed by project in the **Projects** tab ([Projects](#projects)), with search; resume, fork (also from
+  any of your messages), rename — also from the Terminal tab's `claude --resume`, which shares them. The open ones are
+  grouped as Claude Code's agent view does: **Needs you** (a permission card, a question or a plan waiting),
+  **Working**, **Done** — with a dot on one that finished while you were looking at another (or away), and the tab's
+  title says `(2) waiting`. On a phone, the Projects sheet opens first while a session waits for you. A session's title
+  is the one Claude Code wrote (a rename, or its own summary or title when a transcript has one — Claude Code writes
+  those only with its non-essential traffic on, which the sandbox turns off), else its first prompt. **Open in the
+  terminal** (a session's ⋯, or ⋯ → *Continue this session in the terminal*) ends the page's process for it and types
+  `claude-bedrock --resume <id>` into a new window of the terminal panel; until Claude Code exits there, the page
+  refuses to resume it (two processes would both write the conversation). A session keeps working when you close the tab
+  or reload: the page re-attaches and shows what it missed, nothing twice. At most 4 sessions run at once (each Claude
+  Code process takes ~220 MB of the sandbox's memory); an idle one stops after 30 minutes and your next prompt resumes
+  it.
 - **Links into the page.** `code.<host>/?session=<id>` shows (or resumes) that session; `?prompt=<text>` puts the text
   into the prompt box as a **draft marked as coming from a link** (how many lines and characters, the site it was
   opened from) — never sent by itself, at most 4,000 characters, invisible characters shown — so read it before you
@@ -699,6 +701,47 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   (`Alt+P`), the permission mode (`Shift+Tab`, `Alt+M`) and the model — 28 px buttons (40 px on a touch screen) with an
   icon and a label (on a tablet the less used ones as icons), each with a tip that says what it does and its shortcut,
   on hover and on keyboard focus. On a phone they are in the ⋯ sheet, as 48 px rows.
+
+#### Projects
+
+A **project** is a folder of the workspace that the Code page works in. Pick one in the **project chip** of the top
+bar (its name, folder and branch) or in the **Projects** tab of the sidebar (on a phone: ☰, the project's name at
+the top, or ⋯ → *Projects*). The **Workspace** (`/workspace`, the whole folder, as before projects) is always there;
+sessions from before projects are listed under it.
+
+- **What follows the project.** New sessions start in its folder, so Claude Code reads that folder's `CLAUDE.md` and
+  `.claude/` settings. The file tree, Search in files, the `@` picker, the Git panel, Review, Run & test,
+  `.claude/launch.json`'s dev servers, the watchlist and ⋯ › *Memory (CLAUDE.md)* work on its folder. An `@`-mention
+  is written relative to the session's folder (a file of another project: its full path in `/workspace`).
+- **The Projects tab.** Each project with its sessions: the open ones grouped **Needs you**, **Working**, **Done**,
+  then the others it ran (resume, fork, rename, search). The project shown is unfolded. A project's ⋯: *New session*,
+  *Open a terminal here*, *Connect a git repository*, *Rename*, *Remove from Code…*. The limits on open sessions
+  (4 running, an idle one stops after 30 minutes) are for all projects together.
+- **New project** (the tab's *New project*, the chip, ⋯ › *New project…*, or the command palette):
+  - *An empty folder in the workspace*: a new folder, with *Start a git repository (git init)* ticked by default.
+  - *Clone a repository*: the Git panel's Clone dialog
+    ([remote repositories](#remote-repositories-git-hosts-clone-push-and-pull)); the new folder becomes a project.
+  - *A folder in the workspace*: one that is there already.
+
+  A project's folder is 1 to 4 levels below `/workspace`, no name in it starts with `.`, at most 160 bytes. At most
+  64 projects.
+- **Add to project…** (a session's ⋯; or the tick button above the list, pick several, then *Add to project…*): the
+  session is listed in that project from then on. It still runs in its own folder (Claude Code keeps a conversation by
+  the folder it started in).
+- **Connect a git repository** shows the project's Git panel. A folder that is no repository yet gets `git init`
+  first; then add or change its remote's URL, with [Git hosts](#remote-repositories-git-hosts-clone-push-and-pull)
+  for a private one.
+- **Open a terminal here**: a new window of the terminal panel, in the project's folder.
+- **Remove from Code…** takes the record away; the folder and its sessions stay (listed where their folder is). Tick
+  *Also move its folder to the workspace trash* and type the folder's name to move the folder to
+  `.bedrock-now-trash/` too (refused while a session runs there).
+- **Command palette and links.** *New session in …*, *Switch project: …*, *New project…*, *Open a terminal in this
+  project*. `code.<host>/?project=<id>` shows that project; a link only picks one of the list (an id it does not have
+  is said), it never creates one.
+
+The records (names and folders, and the sessions you added to a project) are kept by the code container, in its
+volume `<project>_code-state`, not in the workspace. A project is not a boundary: every project is in the same sandbox,
+and a session in one can read and change the others. Details: [docs/security.md](docs/security.md#projects).
 
 #### Models for Claude Code
 
@@ -820,11 +863,12 @@ maps to it).
 
 #### Files, search and previews of files
 
-- **Files.** The workspace's tree (new file/folder, rename, delete into `.bedrock-now-trash/`, upload by drag and
-  drop, download); files open in the editor and save with a "changed on disk" check; Claude's edits open as a
-  side-by-side diff, and an open file that Claude changed reloads (or says it changed under your unsaved edits).
+- **Files.** The shown project's tree (new file/folder, rename, delete into `.bedrock-now-trash/` of its folder,
+  upload by drag and drop, download); files open in the editor and save with a "changed on disk" check; Claude's
+  edits open as a side-by-side diff, and an open file that Claude changed reloads (or says it changed under your
+  unsaved edits).
 - **Search in files** (the explorer's **Search** tab, `Ctrl/⌘+Shift+F`; a sheet on a phone): text — or, with **.\***,
-  a regular expression (ripgrep's syntax, linear time) — in the workspace's files, any case unless **Aa**, with files
+  a regular expression (ripgrep's syntax, linear time) — in the project's files, any case unless **Aa**, with files
   to include/exclude (`src/**, *.ts`); results by file and line, a line opens the file there. It skips `.git`,
   dependencies and build output and honours `.gitignore`; at most 2,000 results (100 per file), files up to 1 MB, 10
   seconds.
@@ -865,22 +909,22 @@ maps to it).
 
 #### Review changes, Git, Run & test
 
-- **Review changes.** **Review** in the top bar (with the pending `+N −M`; `Ctrl/⌘+Shift+D`) lists every file
-  changed: when the workspace is a git repository, git's view since the last commit — so changes made by commands
-  (Bash, `sed`, a formatter) count as much as Claude's edits, which are marked — first the files of this session, all
-  of them one click away; without git, Claude's own edits in this session. Each change has **Keep** (reviewed: out of
-  the list while it stays as it is) and **Undo** (a reverse patch, written only while the file is still as the review
-  saw it — a file changed since is left alone and you are told; a new file goes to the workspace trash, a deleted one
-  is written back), each file too, and **Undo all** asks first. With git, the pane compares with the last commit, so it
-  can also hold changes that are not Claude's (a command's, yours, older uncommitted work): those are marked, undoing
-  a file Claude edited reverses only Claude's own edits, and undoing anything else asks first (Undo all leaves it
-  unless you tick it in); files that run on your computer (git hooks, `package.json`, `.vscode`, `.claude` …) are
-  marked too, and their watchlist card comes right after an Undo. Binary files, links and changes too large to show in
-  full are listed but undone in the terminal. Any line can take a **comment**: it waits as a chip in the prompt box and
-  goes with your next prompt as `path:line — comment` (remove a chip to drop it). Large diffs show 20 files and a few
-  hundred lines at a time. git runs read-only and runs no program a repository's configuration names (hooks, filters,
-  external diffs, fsmonitor …): [docs/security.md](docs/security.md#review-changes-and-search-in-files).
-- **Git** (the explorer's **Git** tab, `Ctrl/⌘+Shift+G`; on a phone ⋯ → *Git*), when the workspace is a git
+- **Review changes.** **Review** in the top bar (with the pending `+N −M`; `Ctrl/⌘+Shift+D`) lists every file changed:
+  when the project's folder is a git repository, git's view since the last commit — so changes made by commands (Bash,
+  `sed`, a formatter) count as much as Claude's edits, which are marked — first the files of this session, all of them
+  one click away; without git, Claude's own edits in this session. Each change has **Keep** (reviewed: out of the list
+  while it stays as it is) and **Undo** (a reverse patch, written only while the file is still as the review saw it — a
+  file changed since is left alone and you are told; a new file goes to the project's trash, a deleted one is written
+  back), each file too, and **Undo all** asks first. With git, the pane compares with the last commit, so it can also
+  hold changes that are not Claude's (a command's, yours, older uncommitted work): those are marked, undoing a file
+  Claude edited reverses only Claude's own edits, and undoing anything else asks first (Undo all leaves it unless you
+  tick it in); files that run on your computer (git hooks, `package.json`, `.vscode`, `.claude` …) are marked too, and
+  their watchlist card comes right after an Undo. Binary files, links and changes too large to show in full are listed
+  but undone in the terminal. Any line can take a **comment**: it waits as a chip in the prompt box and goes with your
+  next prompt as `path:line — comment` (remove a chip to drop it). Large diffs show 20 files and a few hundred lines at
+  a time. git runs read-only and runs no program a repository's configuration names (hooks, filters, external diffs,
+  fsmonitor …): [docs/security.md](docs/security.md#review-changes-and-search-in-files).
+- **Git** (the explorer's **Git** tab, `Ctrl/⌘+Shift+G`; on a phone ⋯ → *Git*), when the project's folder is a git
   repository: the branch and how far it is ahead of / behind its upstream (as the sandbox last fetched it); the
   changed files grouped **Staged**, **Changes** and **Untracked** (and conflicts during a merge) with their `+/−` —
   a file opens its staged or unstaged diff in the editor area; **Stage** / **Unstage** per file or per group;
@@ -894,8 +938,8 @@ maps to it).
   whatever the repository configures — your computer's git would run its hooks, so staged files that run on your
   computer are marked. Fetch, pull, push, clone and branches: [Remote repositories](#remote-repositories-git-hosts-clone-push-and-pull)
   below. [docs/security.md](docs/security.md#the-git-panel)
-- **Run & test** (*Run* in the status bar, ⋯ → *Run & test*, or the command palette). The workspace's tasks, read from
-  the files in its top folder — `package.json`'s scripts, the targets of the Makefile `make` would read (its `name:`
+- **Run & test** (*Run* in the status bar, ⋯ → *Run & test*, or the command palette). The project's tasks, read from
+  the files in its folder — `package.json`'s scripts, the targets of the Makefile `make` would read (its `name:`
   lines, run by the sandbox image's own GNU `make`), `pyproject.toml`'s entry points (`[project.scripts]`,
   `[tool.poetry.scripts]`) — and `.claude/launch.json`'s dev servers (*Start*, as in Ports), each with what it runs.
   **Run** shows the task in full first — each argument of its fixed wrapper (`npm run -- <name>`, `make -- <target>`,
@@ -971,8 +1015,9 @@ credentials ever being kept in the sandbox.
   while the workspace folder is not a repository itself): a URL, a new folder of the workspace (named after the
   repository; or the workspace folder itself while it is empty) and, if you like, only the latest commit. A public
   repository needs no git host; a private one needs its host connected. Submodules are not cloned and no hook of the
-  repository runs. The panel then shows the new repository: a **repository picker** at its top lists the workspace
-  folder and the repositories in it (two levels down).
+  repository runs. The new folder becomes a [project](#projects) of its own, and the page shows it. The picker at
+  the top of the Git panel lists the projects; a repository in a folder that is not a project yet (two levels down)
+  has *Open as a project*.
 - **Fetch, pull, push.** Under the branch, the panel shows the remote (`origin → github.com/owner/repo`, with the Git
   host whose credential it uses) and **Fetch**, **Pull** (with how many commits are new there) and **Push** (with how
   many are yours) — or **Publish branch** for a branch that is not on the remote yet. Before anything is sent the page

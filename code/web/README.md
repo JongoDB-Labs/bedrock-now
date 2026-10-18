@@ -206,10 +206,11 @@ page error or dialog fails a check. Screenshots and `results.json` go to `e2e/ou
 | `src/fuzzy.ts` | the command palette's matcher (linear time: a greedy pass and KMP, inputs capped) |
 | `src/budget.ts` | a session's budget (levels crossed, this browser's copy), the cold prompt cache's line, the Opus hint |
 | `src/groups.ts` | the session list's groups (Needs you, Working, Done) and the tab title |
-| `src/deeplink.ts` | `?session=` / `?prompt=` (a draft marked as from a link: capped, visible characters, linear time) |
+| `src/projects.ts` | projects: the backend's list checked (folders of the workspace, names of one line), which project a session is shown in, the Projects tab's grouping, @-mentions relative to a session's folder |
+| `src/deeplink.ts` | `?session=` / `?prompt=` (a draft marked as from a link: capped, visible characters, linear time), `?project=` (an id's shape only) |
 | `src/shortcuts.ts` | every keyboard shortcut, in one list (the shortcut sheet, the empty editor, the palette's hints) |
 | `src/questions.ts` | AskUserQuestion: questions from the tool's input, answers from your picks |
 | `src/forms.ts` | small parsers for the MCP form (KEY=value, Name: value) |
-| `src/components/` | Shell (layouts, top bar, status bar, terminal, global keys), Chat, MessageList, ToolCard, PermissionCard (incl. the question form and plan line comments), Composer (with the comment and @-mention chips), FileTree, EditorArea, SessionList, Pickers, Plugins (dialog), Mcp (panel), Memory (CLAUDE.md dialog), Review (pane), Search (panel), CommandPalette, Budget (dialog), Permissions (dialog), Guards (the lines above the prompt box) |
+| `src/components/` | Shell (layouts, top bar, status bar, terminal, global keys), Chat, MessageList, ToolCard, PermissionCard (incl. the question form and plan line comments), Composer (with the comment and @-mention chips), FileTree, EditorArea, Projects (the Projects tab, the project chip, New project, Add to project), Pickers, Plugins (dialog), Mcp (panel), Memory (CLAUDE.md dialog), Review (pane), Search (panel), CommandPalette, Budget (dialog), Permissions (dialog), Guards (the lines above the prompt box) |
 | `dev/` | the mock backend and `npm run dev`; `preview-fixtures.mjs` (the previews' fixtures, also written to `tests/e2e/browser/fixtures/previews`; `office-fixtures.mjs`: part 2's, made byte by byte) |
 | `e2e/` | the browser checks |

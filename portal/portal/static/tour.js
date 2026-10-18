@@ -561,7 +561,7 @@
         list("ol", [
           [b("Open Code"), " and unlock it with the portal password (it stays unlocked for 12 hours in this browser)."],
           ["Type in the prompt box and press ", kbd("Enter"), ": the answer streams in, each command and file change as a card; ", b("Stop"), " (or ", kbd("Esc"), ") interrupts."],
-          [b("New session"), " (+) starts another; the session list groups them as ", b("Needs you"), ", ", b("Working"), " and ", b("Done"),
+          [b("New session"), " (+) starts another; the ", b("Projects"), " tab lists them by project, the open ones as ", b("Needs you"), ", ", b("Working"), " and ", b("Done"),
             ". A session keeps working when you close the tab, and Home's Code card lists the ones that need you."]]),
         note("Every prompt is billed on the terminal's key (", code("claude-code-terminal"), "). A new session first writes Claude Code's prompt cache: about $0.004 on Haiku 5.5, $0.08 on Sonnet 5.5, $0.16 on Opus 5.5."),
       ],
@@ -605,6 +605,7 @@
         cfg && cfg.workspace ? p("Claude sees one folder of this computer: ", code(cfg.workspace), " (", code("/workspace"), " in the sandbox) — nothing else of yours.")
           : p("Claude sees one folder of this computer, its workspace (", code("/workspace"), " in the sandbox; ", code("./stack code status"), " names it) — nothing else of yours."),
         list("ul", [
+          [b("Projects"), ": a folder of the workspace each. The project chip at the top switches; ", b("New project"), " makes one (an empty folder with git init, a clone, or a folder already there). New sessions, the explorer, search, Git and Run & test follow it."],
           ["The explorer: new file or folder, rename, delete (into ", code(".bedrock-now-trash/"), "), drag files in to upload them."],
           [kbd("Ctrl/⌘+P"), " goes to a file, ", kbd("Ctrl/⌘+Shift+F"), " searches in files, ", kbd("Ctrl/⌘+K"), " opens the command palette (every action, session and file)."],
           [b("Preview"), " shows Markdown (with Mermaid diagrams), PDF, Word, Excel, CSV, notebooks, images, and HTML in a sandboxed viewer; ", b("Source"), " is the editor."],
@@ -636,7 +637,7 @@
           ["A public repository needs no git host; a private one needs its host connected (", b("Connect a git host"), ", above)."],
           ["Nothing is fetched before you confirm where it clones from, and with which credential."],
           ["Submodules are not cloned, and no hook of the repository runs."],
-          ["The repository picker at the top of the Git panel switches between the workspace folder and its clones."]]),
+          ["The clone becomes a project of its own: the project chip at the top switches between it, your other projects and the Workspace."]]),
       ],
       actions: () => [openGit("clone")],
     },
