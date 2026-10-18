@@ -24,8 +24,8 @@
 //                   a new project's folder (and `git init`, no template: no hook); whether the project folders the code
 //                   container names are there (a real folder, a git repository; where they lead; their Claude Code
 //                   settings' hash); a project's folder itself into the workspace trash (Remove from Code, named again:
-//                   never through a link); a folder's own Claude Code settings and .mcp.json, as Claude Code would read
-//                   them (the page shows them before they apply)
+//                   never through a link); a folder's own Claude Code configuration (everything under .claude/, and
+//                   .mcp.json), as Claude Code would read it (the page shows it before it applies)
 //   git.diff        what changed in /workspace since its last commit (the Review pane): read-only git with fixed
 //                   arguments and an environment of its own, so that no program a repository's configuration names runs
 //   git.status / git.log / git.file / git.stage / git.unstage / git.commit / git.discard
@@ -1754,46 +1754,82 @@ export function projectCheck(req) {
   }) };
 }
 
-// --- a folder's own Claude Code settings (project.settings): what Claude Code started there reads of it ---
-// .claude/settings.json and settings.local.json (hooks, permission rules, env, …) and .mcp.json (MCP servers it starts):
-// a cloned repository's can run commands or silence the page's permission cards, so the code container applies them
-// only once you trusted exactly these files (their hash). Read as Claude Code reads them — through links, but only
-// what is in the workspace (a link out of it is named, never read); a FIFO or device is never opened.
-export const SETTINGS_FILES = Object.freeze(['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']);
-const SETTINGS_MAX = 8 << 20, SETTINGS_TEXT = 256 << 10;
-// settingsFiles(abs, {text}) -> {files: [{name, type: missing|file|link|big|other, size, sha256, target, text}], hash,
-// verifiable}: hash: the SHA-256 of what is there (null when none of them is); verifiable: every one there was read
-// whole as text (≤ 256 KiB of UTF-8) — a link out of the workspace, a big file, a FIFO or a folder is not, and so can
-// never be trusted (its hash does not cover what Claude Code would read)
+// --- a folder's own Claude Code configuration (project.settings): what Claude Code started there reads of it ---
+// Everything under .claude/ — settings.json and settings.local.json (hooks, permission rules, env, …), and the skills,
+// commands, agents, output styles … whose front matter can grant tools (allowed-tools), declare hooks or MCP servers —
+// and .mcp.json (MCP servers it starts): a cloned repository's can run commands or silence the page's permission cards,
+// so the code container applies them only once you trusted exactly these files (their hash). Read as Claude Code reads
+// them — through links, but only what is in the workspace (a link out of it is named, never read); a FIFO or device is
+// never opened. Bounded: at most CONFIG_FILES files, CONFIG_BYTES in all, CONFIG_FILE each, CONFIG_DEPTH folders deep —
+// beyond that it cannot be verified (and is never trusted).
+export const CONFIG_FILES = 500, CONFIG_BYTES = 2 << 20, CONFIG_FILE = 256 << 10, CONFIG_DEPTH = 12, CONFIG_SHOWN = 3 << 20;
+// settingsFiles(abs, {text}) -> {files: [{name, type: file|link|big|other, size, sha256, target, text}], hash,
+// verifiable, over}: every file under abs/.claude and abs/.mcp.json (names relative to abs, sorted); hash: the
+// SHA-256 of what is there (null when nothing is); verifiable: each was read whole as text and the bounds held (a
+// link out of the workspace, a big file, a FIFO, a link to a folder, a .claude that is a link are not: their hash does
+// not cover what Claude Code would read); over: why the bounds did not hold (null when they did)
 export function settingsFiles(abs, { text = false } = {}) {
-  const files = SETTINGS_FILES.map((name) => {
-    const p = path.join(abs, name);
+  const files = [];
+  let over = null, bytes = 0, shown = 0;
+  const one = (name, p) => {
     let lst;
-    try { lst = fs.lstatSync(p); } catch { lst = null; }
+    try { lst = fs.lstatSync(p); } catch { return; }
+    const target = lst.isSymbolicLink() ? (() => { try { return printable(fs.readlinkSync(p), 1000); } catch { return '?'; } })() : null;
     const real = confine(p);
-    if (!lst && !real) return { name, type: 'missing' };
-    const target = lst?.isSymbolicLink() ? (() => { try { return printable(fs.readlinkSync(p), 1000); } catch { return '?'; } })() : null;
-    // through a link (or a .claude that is one): only what is in the workspace is read
     let st = null;
     try { st = real ? fs.statSync(real) : null; } catch { st = null; }
-    if (!real || !st) return { name, type: 'link', target: target ?? '(out of the workspace)', sha256: sha256(`link:${target}`) };
-    if (!st.isFile()) return { name, type: 'other', target, sha256: sha256('other') };
-    if (st.size > SETTINGS_MAX) return { name, type: 'big', target, size: st.size, sha256: sha256(`big:${st.size}:${st.mtimeMs}`) };
-    const b = readRegular(real, SETTINGS_MAX);
-    if (!b) return { name, type: 'other', target, sha256: sha256('other') };
-    const shown = b.length <= SETTINGS_TEXT && isUtf8Buf(b);
-    const out = { name, type: target ? 'link' : 'file', target, size: b.length, sha256: sha256(b), readable: shown };
-    if (text) out.text = shown ? b.toString('utf8') : null;
-    return out;
-  });
-  const present = files.filter((f) => f.type !== 'missing');
-  const hash = present.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null;
-  const verifiable = present.every((f) => f.readable === true);
+    if (target !== null && (!real || !st)) { files.push({ name, type: 'link', target, sha256: sha256(`link:${target}`) }); return; }
+    if (!st || !st.isFile()) { files.push({ name, type: 'other', target, sha256: sha256(`other:${target ?? ''}`) }); return; }
+    if (st.size > CONFIG_FILE) { files.push({ name, type: 'big', target, size: st.size, sha256: sha256(`big:${st.size}:${st.mtimeMs}`) }); return; }
+    const b = readRegular(real, CONFIG_FILE);
+    if (!b) { files.push({ name, type: 'other', target, sha256: sha256(`other:${target ?? ''}`) }); return; }
+    bytes += b.length;
+    if (bytes > CONFIG_BYTES) over ??= `more than ${CONFIG_BYTES >> 20} MiB in all`;
+    const readable = isUtf8Buf(b);
+    const row = { name, type: target ? 'link' : 'file', target, size: b.length, sha256: sha256(b), readable };
+    if (text) {
+      row.text = null;
+      if (readable && !over) {
+        const t = b.toString('utf8');
+        shown += JSON.stringify(t).length;
+        if (shown > CONFIG_SHOWN) over ??= 'too much to show'; else row.text = t;
+      }
+    }
+    files.push(row);
+  };
+  const walk = (dir, rel, depth) => {
+    let list;
+    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { over ??= 'a folder that could not be read'; return; }
+    for (const d of list.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      if (over) return;
+      const name = `${rel}/${d.name}`, p = path.join(dir, d.name);
+      if (d.isDirectory()) {
+        if (depth >= CONFIG_DEPTH) { over = `folders more than ${CONFIG_DEPTH} deep`; return; }
+        walk(p, name, depth + 1);
+        continue;
+      }
+      if (files.length >= CONFIG_FILES) { over = `more than ${CONFIG_FILES} files`; return; }
+      one(name, p);
+    }
+  };
+  // .claude: a folder is walked; anything else there (a link, a file) is one entry — never trustable
+  let c;
+  try { c = fs.lstatSync(path.join(abs, '.claude')); } catch { c = null; }
+  if (c?.isDirectory()) walk(path.join(abs, '.claude'), '.claude', 1);
+  else if (c?.isSymbolicLink()) {
+    const target = (() => { try { return printable(fs.readlinkSync(path.join(abs, '.claude')), 1000); } catch { return '?'; } })();
+    files.push({ name: '.claude', type: 'link', target, sha256: sha256(`link:${target}`) });
+  } else if (c) files.push({ name: '.claude', type: 'other', target: null, sha256: sha256('other:') });
+  one('.mcp.json', path.join(abs, '.mcp.json'));
+  files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const hash = files.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null;
+  const verifiable = !over && files.every((f) => f.readable === true);
   for (const f of files) delete f.readable;
-  return { files, hash, verifiable };
+  return { files, hash, verifiable, over };
 }
 const isUtf8Buf = (b) => { try { new TextDecoder('utf-8', { fatal: true }).decode(b); return true; } catch { return false; } };
-// project.settings {root?} -> {files (with their text, ≤ 256 KiB each), hash}: a project's folder (none: the workspace)
+// project.settings {root?} -> {files (with their text, ≤ 256 KiB each), hash, verifiable, over}: a project's folder
+// (none: the workspace)
 export function projectSettings(req) {
   return settingsFiles(rootArg(req?.root).abs, { text: true });
 }
