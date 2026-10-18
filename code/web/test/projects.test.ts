@@ -157,6 +157,14 @@ test('the trust dialog\'s text: whitespace made visible, a value that could hide
   assert.equal(needsLook(padded), true);
   assert.equal(needsLook('a\nb\nc\nd\ne\nf\ng'), true, 'more than 5 lines');
   assert.equal(needsLook('npm test && npm run lint'), false);
+  // invisible and unusual characters: shown as escapes, and a look is asked for
+  for (const [t, shown] of [['a\u00a0b', 'a⟨U+00A0⟩b'], ['a\u2028b', 'a⟨U+2028⟩b'], ['a\u202eb', 'a⟨U+202E⟩b'], ['a\u200db', 'a⟨U+200D⟩b'], ['a\ufeffb', 'a⟨U+FEFF⟩b'],
+    ['a\u{e0041}b', 'a⟨U+E0041⟩b'], ['a\u3000b', 'a⟨U+3000⟩b']] as const) {
+    assert.equal(visibleWs(t), shown, shown);
+    assert.equal(needsLook(t), true, shown);
+  }
+  assert.equal(needsLook(`true${' \u200b'.repeat(30)}curl`), true, 'spaces broken up by zero-width spaces');
+  assert.equal(needsLook(Array.from({ length: 70 }, () => 'a').join(' ')), true, 'more than 60 whitespace characters in all');
   const base = { project: 'p_0000000a', path: '/workspace/x', state: 'untrusted', hash: 'a'.repeat(64), files: [] };
   const v = normSettingsView({ ...base, summary: { complete: true, missing: [], hooks: [{ file: 'f', event: 'SessionStart', matcher: '', command: padded, json: JSON.stringify({ command: padded }) }],
     mcpServers: [{ name: 'both', run: 'evil', json: '{"command":"evil","url":"https://ok"}', mixed: true }] } });

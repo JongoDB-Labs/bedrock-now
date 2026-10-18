@@ -198,12 +198,20 @@ export interface SettingsSummary {
   missing: string[];
 }
 
-/** A value that could hide something in plain sight: a run of 20+ whitespace characters, or more than 5 lines (the
- *  backend's rule too): the dialog shows it folded until you open it in full, and Trust waits for that. */
-export const needsLook = (t: string): boolean => /\s{20,}/.test(t) || (t.match(/\n/g) ?? []).length > 5;
-/** Whitespace made visible (the trust dialog): ⏎ for a line break, → for a tab, · for each space of a run of 3 or more
- *  — so nothing goes on a line out of sight. */
-export const visibleWs = (t: string): string => t.replace(/\r/g, '␍').replace(/\n/g, '⏎').replace(/\t/g, '→').replace(/ {3,}/g, (m) => '·'.repeat(m.length));
+// an invisible or direction-changing character: Unicode's format characters (zero-width ones, bidi controls, tags, the
+// BOM), line and paragraph separators, and any whitespace but a plain space, tab or line break
+const ODD_CHAR = /[\p{Cf}\u2028\u2029]|(?![ \t\n\r])\s/u;
+/** A value that could hide something in plain sight (the backend's rule too, trust.mjs careful): such a character, a
+ *  run of 20+ whitespace characters (format characters between them do not break it), more than 60 of them in all, or
+ *  more than 5 lines. The dialog shows it folded until you open it in full, and Trust waits for that. */
+export const needsLook = (t: string): boolean => ODD_CHAR.test(t) || /\s{20,}/u.test(t.replace(/\p{Cf}/gu, ''))
+  || (t.match(/\s/gu) ?? []).length > 60 || (t.match(/\n/g) ?? []).length > 5;
+/** Whitespace and invisible characters made visible (the trust dialog): ⟨U+XXXX⟩ for each invisible, direction-changing
+ *  or unusual whitespace character, ⏎ for a line break, → for a tab, · for each space of a run of 3 or more — so nothing
+ *  hides on a line out of sight or behind a character you cannot see. */
+export const visibleWs = (t: string): string => t
+  .replace(/[\p{Cf}\u2028\u2029]|(?![ \t\n\r])\s/gu, (c) => `⟨U+${(c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}⟩`)
+  .replace(/\r/g, '␍').replace(/\n/g, '⏎').replace(/\t/g, '→').replace(/ {3,}/g, (m) => '·'.repeat(m.length));
 export interface SettingsView {
   project: string;
   path: string;
