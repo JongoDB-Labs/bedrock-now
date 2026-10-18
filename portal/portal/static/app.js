@@ -487,8 +487,8 @@ function openVersion(ev) {
 }
 
 function renderUpdate(u) {
-  // A summary asked for before a check ended can arrive after the answer of a click's (updatecheck.js): the newer wins.
-  if (u && lastUpdate && !u.checking && Date.parse(u.checked_at) < Date.parse(lastUpdate.checked_at)) u = lastUpdate;
+  // A summary asked for while a click's check ran can land after the click's answer: that answer stays (updatecheck.js)
+  if (window.bnUpdateCheck && window.bnUpdateCheck.fresher) u = window.bnUpdateCheck.fresher(u);
   lastUpdate = u;  // placeHelperOff (below) puts the "one-click updates are off" hint where it is seen
   renderVersion(u);
   // Home's "Up to date · checked 12 min ago · Check for updates" line, and Settings' (updatecheck.js)

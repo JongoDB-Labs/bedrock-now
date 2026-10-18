@@ -25,6 +25,7 @@
   #update-link { display: inline-block; min-height: 44px; line-height: 44px; }
   .chip, .quiet { padding-inline: 14px; }
   .release-line .rl-check, .release-line .rl-link { display: inline-flex; align-items: center; min-height: 44px; }
+  .release-line .rl-more > summary { padding-block: 12px; }
   .popout { width: 44px; height: 44px; }
   .tab { min-height: 44px; }
 }

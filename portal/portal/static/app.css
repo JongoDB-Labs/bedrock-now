@@ -33,6 +33,10 @@ body.shell { height: 100vh; display: grid; grid-template-columns: 200px minmax(0
 .release-line[data-state="failed"] .rl-state { color: var(--warn); }
 .release-line .rl-link { color: var(--accent); font-weight: 500; }
 .release-line .rl-check[aria-disabled="true"] { color: var(--muted); text-decoration: none; cursor: default; }
+/* About this check: why the line says what it says, and that nothing about this install is sent (also the button's description) */
+.release-line .rl-more > summary { cursor: pointer; color: var(--muted); }
+.release-line .rl-more[open] { flex-basis: 100%; }
+.release-line .rl-why { display: block; max-width: 70ch; margin-top: 2px; }
 .quiet { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 6px; padding: 3px 10px; font-size: 13px; }
 .banner { max-width: 1180px; margin: 16px 0 0; padding: 10px 14px; border-radius: 8px; border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 

@@ -376,9 +376,16 @@ def update_check_button(ctx):
         text = state(want)
         expect(text.startswith("Up to date · checked just now"), f"line {text!r}")
         btn = page.locator("#release-line .rl-check")
-        tip = btn.get_attribute("title") or ""
-        expect("public list of bedrock-now releases" in tip and "sends nothing about this install" in tip, f"tooltip {tip!r}")
         expect(page.locator("#release-line .rl-state[aria-live=polite]").count() == 1, "the result is not announced")
+        # why, and that nothing about this install is sent: under About this check (visible, by touch and keyboard too),
+        # and the button's description
+        page.click("#release-line .rl-more summary")
+        why = page.locator("#release-line .rl-why")
+        wtext = why.inner_text() if why.is_visible() else ""
+        expect("is the newest release" in wtext and "public list of bedrock-now releases" in wtext
+               and "sends nothing about this install" in wtext, f"About this check: {wtext!r}")
+        expect(btn.get_attribute("aria-describedby") == why.get_attribute("id"), "the button is not described by About this check")
+        page.click("#release-line .rl-more summary")
         shot(page, "04b-home-update-check-up-to-date")
         states.append(f"{want}: {text}")
         # 2. a click: Checking… while the portal asks (the answer held here), then a newer release — the card, scrolled to
@@ -438,6 +445,15 @@ def update_check_button(ctx):
         page.wait_for_timeout(500)
         expect(len(rec.responses(r"/api/update/check$")) == seen, "a click while GitHub's limit holds was sent")
         shot(page, "04e-home-update-check-limit")
+        # Ctrl+K's Check for updates while it holds: says why, sends nothing
+        page.keyboard.press("Control+k")
+        page.wait_for_selector("#search[open]", timeout=5000)
+        page.fill("#search-input", "check for updates")
+        page.locator("#search-list .search-opt", has_text="Check for updates").first.wait_for(timeout=10000)
+        page.keyboard.press("Enter")
+        page.locator("#toast.show", has_text="GitHub's limit for this hour").wait_for(timeout=5000)
+        page.wait_for_timeout(500)
+        expect(len(rec.responses(r"/api/update/check$")) == seen, "Ctrl+K's Check for updates was sent under GitHub's limit")
         real = page.evaluate("""() => fetch('/api/update/check', {method: 'POST', headers: {'X-Requested-With': 'bedrock-now'}})
             .then(async (r) => ({status: r.status, retry: r.headers.get('Retry-After'), body: await r.json()}))""")
         b = real["body"]
@@ -474,9 +490,12 @@ def update_check_button(ctx):
         states.append("Settings row")
         # 8. Ctrl+K: "Check for updates" runs it from anywhere, on Home (the answer from the route)
         _write_json(up, current)
+        page.evaluate("() => refresh()")   # (Home's summary, as every 30 s: GitHub's limit is over)
+        row.locator('.release-line[data-state="current"]').wait_for(timeout=10000)
         cur = {**summary()["update"], "checking": False}
-        page.route(api, lambda route: route.fulfill(status=200, content_type="application/json",
-                                                    body=json.dumps({"started": True, "checking": False, "update": cur})))
+        routed = []
+        page.route(api, lambda route: (routed.append(1), route.fulfill(status=200, content_type="application/json",
+                                       body=json.dumps({"started": True, "checking": False, "update": cur}))))
         page.keyboard.press("Control+k")
         page.wait_for_selector("#search[open]", timeout=5000)
         page.fill("#search-input", "check for updates")
@@ -484,6 +503,7 @@ def update_check_button(ctx):
         page.keyboard.press("Enter")
         page.wait_for_selector("#home:not([hidden])", timeout=10000)
         text = state(want)
+        expect(len(routed) == 1, f"Ctrl+K's Check for updates sent {len(routed)} requests")
         expect(page.evaluate("document.activeElement && document.activeElement.classList.contains('rl-check')"), "⌘K did not lead to the line")
         page.unroute(api)
         states.append(f"Ctrl+K → Home: {text}")
