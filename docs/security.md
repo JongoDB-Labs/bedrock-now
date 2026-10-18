@@ -1242,6 +1242,39 @@ direction-changing character; a record that does not fit (a file someone changed
   hooks, `.envrc`, `.vscode`, `.claude` … — what runs when you open the workspace on your computer) and the project's
   folder, whose files the cards name as paths of the workspace (`app/.envrc`); Revert puts each back in its own
   folder. Other projects' folders are checked by their own sessions' turns, not this one's.
+- [x] **A project's own Claude Code settings apply only once you trusted them, as they are.** Claude Code started
+  by the SDK applies the `.claude/settings.json`, `settings.local.json` and `.mcp.json` of its folder with no trust
+  step (the terminal's `claude` asks whether to trust a folder first): a cloned repository's `SessionStart` hook would
+  run, its allow rules would silence the permission cards, its `env` would change what runs, its MCP servers would
+  start. So a process in a project's folder starts with your own settings only (`settingSources: user` — the
+  sandbox's `~/.claude`; the project's `CLAUDE.md`, commands and agents are not read either) and, of MCP servers, only
+  the stack's own (`--strict-mcp-config`), and the session says so, until you trusted those three files exactly as
+  they are: the project's ⋯ › *Claude Code settings…* (also shown before a new session there) lists what they set —
+  hooks with their commands, allow/ask/deny rules, the default mode, extra folders, environment variables, programs
+  they name (`apiKeyHelper` …), MCP servers with everything they say, and every other key — and the project's record
+  keeps the hash of what you trusted. Changed since: not applied until you look again. Trusting works from anywhere
+  the page does (like answering a permission card: it runs things in the sandbox, not on your computer).
+  - *Only what you were shown.* The code container recomputes the hash from the texts it showed (each text's own
+    SHA-256 checked against the sandbox's); a file that cannot be read whole as text — a link out of the workspace,
+    over 256 KiB, a FIFO — is *unverifiable*, and a summary that cannot show every key and value whole (more than 200
+    entries in a section, a value over 2,000 characters, a control character, invalid JSON) gets no hash to trust:
+    neither is ever trusted. The page cuts nothing silently either.
+  - *Every start decides, and fails closed.* A decision is made for each process start — a new session, a resume, a
+    prompt that restarts one, a switch to *Bypass permissions*, a file restore, *Allow once*, a new conversation Claude
+    Code started — and taken by that start only; a start without one gets your own settings only. A decision that
+    changed (you trusted them, stopped trusting them, or they changed) restarts the session's process at its next
+    prompt.
+  - *What was checked is what applies — as far as a check can tell.* Claude Code reads the files itself after the
+    check. A process started with trusted settings is checked again once Claude Code has read them (its
+    initialization): changed in between, it is closed at once and the next start does not apply them. Hooks that ran
+    in that moment (a `SessionStart` hook) ran: only something already running in the sandbox can change the files
+    that fast, and that can write your own settings (`~/.claude/settings.json`, always applied) just as well — the
+    sandbox is one trust domain. Passing the checked settings to Claude Code instead of letting it read them would
+    need bn-coded to accept `--settings` and an MCP configuration from the code container, which it refuses on
+    purpose.
+  - *The Workspace keeps applying its own*, as before projects: it is the folder you chose for the sandbox, and
+    turning its settings off would change existing installs silently. A folder with none of these files needs
+    nothing. *Open in the terminal* runs the terminal's `claude`, which asks its own folder-trust question.
 - [x] **Sessions are placed by their folder, checked twice.** Claude Code keeps a conversation in
   `~/.claude/projects/<its folder, every character but letters and digits as ->/`, a lossy name (`/workspace/a-b` and
   `/workspace/a/b` share one). bn-coded reads only the `-workspace` and `-workspace-*` store folders (real folders,

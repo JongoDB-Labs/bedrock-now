@@ -1831,7 +1831,9 @@ def ui_projects(ctx):
     own; a Haiku session started in it runs in its folder (pwd), is closed, then resumed from the Projects tab (its
     transcript found under that folder); Open a terminal here: a terminal window in its folder; Add to project: the
     session shown in the empty project (it still runs in the clone); Remove from Code: the record goes, the folder
-    stays, the session is shown where its folder is again."""
+    stays, the session is shown where its folder is again. The clone's own Claude Code settings (a SessionStart hook
+    written into it) are shown before its first session and not applied there (the hook does not run); trusted, the
+    resumed session runs it."""
     if not GIT_SERVER:
         raise Skip("needs the suite's git server (tests/e2e/run.sh with E2E_GIT_SERVER=1)")
     need_haiku()
@@ -1898,11 +1900,30 @@ def ui_projects(ctx):
         clone = ids()[PROJ_CLONE]
         expect(clone["git"] is True, f"the clone: {clone}")
         cwd = f"/workspace/{PROJ_CLONE}"
-        # a Haiku session in it: it runs in the clone's folder
+        # the clone gets Claude Code settings of its own (as a repository could bring): a SessionStart hook leaving a mark
+        marker = ".e2e-hook-ran"
+        c.api("POST", "/api/fs/mkdir", {"path": f"{PROJ_CLONE}/.claude"})
+        hook = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": f"touch {cwd}/{marker}"}]}]}}
+        r = c.api("PUT", f"/api/fs/file?path={PROJ_CLONE}/.claude/settings.json", {"text": json.dumps(hook)})
+        expect(r["status"] == 200, f"write the clone's settings: {r['status']} {r['text'][:100]}")
+
+        def marked():
+            return marker in {e["name"] for e in (c.api("GET", f"/api/fs?path={PROJ_CLONE}")["json"] or {}).get("entries", [])}
+        page.reload()
+        see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+        c = Code.on(page, rec, goto=False)
+        expect(ids()[PROJ_CLONE]["settings"] == "untrusted", f"the clone's own settings: {ids()[PROJ_CLONE]}")
+        # a Haiku session in it: its own settings are shown first; started without them, it runs in the clone's folder
+        # and the hook does not run
         page.get_by_test_id("side-sessions").click()
         page.get_by_test_id("model-picker").click()
         page.get_by_test_id("model-haiku").click()
         proj(clone["id"]).get_by_test_id("project-new-session").click()
+        sdlg = page.get_by_test_id("settings-dialog")
+        see(sdlg.get_by_test_id("settings-hooks")).to_contain_text(f"SessionStart: touch {cwd}/{marker}", timeout=30000)
+        shot(page, "p1b-code-project-settings")
+        page.get_by_test_id("settings-start-without").click()
+        see(sdlg).to_have_count(0, timeout=30000)
         ask(page, "Use the Bash tool to run exactly this command, then reply with exactly what it printed and nothing else: pwd")
         page.wait_for_function(f"(t) => !!document.querySelector('[data-testid=permission]') || ({ANSWERED})(t)", arg=_asked[id(page)], timeout=120000)
         if page.get_by_test_id("perm-once").count():
@@ -1912,6 +1933,15 @@ def ui_projects(ctx):
         sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
         st = state_of(c, sid)
         expect(st.get("cwd") == cwd and st.get("project") == clone["id"], f"the session's folder: {st}")
+        expect((st.get("settings") or {}).get("state") == "untrusted", f"its folder's settings: {st.get('settings')}")
+        see(page.get_by_test_id("settings-guard")).to_be_visible(timeout=30000)
+        expect(not marked(), "the untrusted SessionStart hook ran")
+        # trusted (⋯ › Claude Code settings…): the resumed session below starts with them — its hook runs
+        proj(clone["id"]).get_by_test_id("project-menu").click()
+        page.get_by_test_id("project-menu-settings").click()
+        page.get_by_test_id("settings-trust").click()
+        see(sdlg).to_have_count(0, timeout=30000)
+        expect(ids()[PROJ_CLONE]["settings"] == "trusted", f"after Trust: {ids()[PROJ_CLONE]}")
         see(srow(clone["id"], sid)).to_have_count(1, timeout=30000)
         shot(page, "p2-code-project-session")
         # closed, then resumed from the Projects tab (a new page: nothing but the backend remembers it)
@@ -1930,6 +1960,7 @@ def ui_projects(ctx):
         ask(page, "Which folder did pwd print in this conversation? Reply with that path only.")
         answered(page)
         expect(cwd in last_answer(page), f"after the resume: {last_answer(page)!r}")
+        expect(marked(), "the trusted SessionStart hook did not run at the resume")
         expect(state_of(c, page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")).get("cwd") == cwd, "the resumed session's folder")
         sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
         # Open a terminal here: a window of the terminal in the clone's folder
@@ -1988,7 +2019,8 @@ def ui_projects(ctx):
         except Exception:  # noqa: BLE001 — cleanup never hides the failure
             pass
     return (f"New project › an empty folder with git init ({PROJ_NEW}/) and › a clone over https ({PROJ_CLONE}/): both in the chip "
-            f"and the Projects tab; a Haiku session there ran in {cwd} (pwd), was closed and resumed from the Projects tab; "
+            f"and the Projects tab; the clone's own SessionStart hook shown first, not run untrusted, run once trusted; "
+            f"a Haiku session there ran in {cwd} (pwd), was closed and resumed from the Projects tab; "
             "Open a terminal here showed a window in that folder; Add to project showed the session in the empty project; "
             "Remove from Code took the record only (the folder stayed); no CSP violations")
 

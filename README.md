@@ -716,7 +716,8 @@ sessions from before projects are listed under it.
   project: its full path in `/workspace`).
 - **The Projects tab.** Each project with its sessions: the open ones grouped **Needs you**, **Working**, **Done**,
   then the others it ran (resume, fork, rename, search). The project shown is unfolded. A project's ⋯: *New session*,
-  *Open a terminal here*, *Connect a git repository*, *Rename*, *Remove from Code…*. The limits on open sessions
+  *Open a terminal here*, *Connect a git repository*, *Claude Code settings…*, *Rename*, *Remove from Code…*. The
+  limits on open sessions
   (4 running, an idle one stops after 30 minutes) are for all projects together.
 - **New project** (the tab's *New project*, the chip, ⋯ › *New project…*, or the command palette):
   - *An empty folder in the workspace*: a new folder, with *Start a git repository (git init)* ticked by default.
@@ -726,6 +727,14 @@ sessions from before projects are listed under it.
 
   A project's folder is 1 to 4 levels below `/workspace`, no name in it starts with `.`, at most 160 bytes. At most
   64 projects.
+- **A project's own Claude Code settings** (`.claude/settings.json`, `settings.local.json`, `.mcp.json` — a cloned
+  repository may bring them) apply only once you trusted them as they are: until then a session there runs with your
+  own settings only and, of MCP servers, only the stack's own, and says so above the prompt (*Review them…*). The
+  project's ⋯ › *Claude Code settings…* — shown by itself before a new session there — lists what they set (hooks and
+  their commands, permission rules, environment, MCP servers, every other key), with *Trust this project's Claude Code
+  settings* (or *Start without them*). Changed since: asked again. Settings the page cannot show in full (a link out
+  of the workspace, a very long value) are never trusted. The Workspace's own apply as before.
+  [docs/security.md](docs/security.md#projects)
 - **Add to project…** (a session's ⋯; or the tick button above the list, pick several, then *Add to project…*): the
   session is listed in that project from then on. It still runs in its own folder (Claude Code keeps a conversation by
   the folder it started in).

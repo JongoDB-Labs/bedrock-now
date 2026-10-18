@@ -22,11 +22,23 @@ All notable changes to bedrock-now are documented here. The format follows
   there); the limits on open sessions are for all projects together. The records are kept by the code container
   (`code-state` volume), not in the workspace. A project is not a boundary: every project is in the one sandbox
   ([docs/security.md](docs/security.md#projects)).
+- **A project's own Claude Code settings apply only once you trusted them.** A cloned repository's
+  `.claude/settings.json`, `settings.local.json` and `.mcp.json` (hooks, permission rules, env, MCP servers) are shown
+  first — the project's ⋯ › *Claude Code settings…*, and before a new session there — with *Trust this project's Claude
+  Code settings* or *Start without them*; until trusted (or once they changed) a session there runs with your own
+  settings only and only the stack's MCP server, and says so. Settings the page cannot show in full are never
+  trusted. The Workspace's own apply as before.
 
 ### Changed
 
 - The Git panel's repository picker lists projects; a clone becomes a project of its own; a repository in a folder
   that is not a project has *Open as a project*.
+- A session in a project checks the watched files of the workspace's own top folder too (its git hooks, `.envrc`,
+  `.vscode`, `.claude`), not only its project's.
+- tmux's `-c` gets every `#` doubled (a folder named like a tmux format is that folder); *Remove from Code* with the
+  folder never moves anything through a link and counts sessions open through one; a project records file that
+  cannot be read no longer breaks the session list; names and folders also refuse line separators, invisible
+  operators and tag characters.
 - bn-coded's file, search, git, Run & test, launch.json, watchlist and Permissions ops take a project's folder as
   their root (checked in the sandbox: a real folder of `/workspace`; every path still confined to `/workspace`, also
   through symlinks); sessions are listed from every `/workspace` folder's transcript store, each by its own checked

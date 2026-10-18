@@ -61,7 +61,8 @@
 //   workspace, as before projects):
 //   GET    /api/projects                   {projects: [{id, name, root (its folder in the workspace; "" the Workspace),
 //                                           path, created, workspace, folder: dir|missing|link|other|null, git:
-//                                           bool|null, settings: workspace|none|trusted|untrusted|changed|null}], max} —
+//                                           bool|null, settings: workspace|none|trusted|untrusted|changed|unverifiable|
+//                                           null}], max} —
 //                                           the Workspace first; folder/git: what the sandbox says (null: not said);
 //                                           settings: its own Claude Code settings (trust.mjs)
 //   POST   /api/projects {kind: new|folder, folder, name?, git?}   {project, git, gitError?} — new: the folder made in
@@ -81,10 +82,13 @@
 //                                           no template); 409 it is one already
 //   GET    /api/projects/ID/settings       {project, path, state, hash, trustedAt, files: [{name, type, size, target}],
 //                                           summary: {hooks, allow, ask, deny, defaultMode, directories, env, commands,
-//                                           mcp, mcpServers, other, notes}} — its own .claude/settings.json,
-//                                           settings.local.json and .mcp.json: what they set (text), and their hash
+//                                           mcp, mcpServers, other, notes, complete, missing}} — its own
+//                                           .claude/settings.json, settings.local.json and .mcp.json: what they set
+//                                           (text), and the hash to trust — null unless the summary shows all of it
+//                                           (complete) and every file could be read whole (not unverifiable)
 //   POST   /api/projects/ID/trust {hash}   the same view — those files applied to sessions there from now on, while
-//                                           they stay as shown (409: changed since, or none); not the Workspace (400:
+//                                           they stay as shown (409: changed since, none, unverifiable or not shown in
+//                                           full); not the Workspace (400:
 //                                           its own always apply). Open sessions there restart with them at their next
 //                                           prompt. DELETE: no longer (sessions there restart without them)
 //   GET    /api/permissions?project=ID     {user, project, local: {path, exists, error, sha256, allow, ask, deny, other,
