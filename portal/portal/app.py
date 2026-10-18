@@ -407,7 +407,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _unlock_page(settings, rem, "That password is not right. It is the portal password (PORTAL_PASSWORD in .env).", app=app, next_link=nxt)
         throttle.success()
         log.warning("%s unlocked%s", app, " (remote)" if rem else "")
-        # a deep link (rebuilt from what checks out: same host, the root path, ?session / ?prompt only) or the page
+        # a deep link (rebuilt from what checks out: same host, the root path, ?session / ?prompt / ?git only) or the page
         resp = RedirectResponse(nxt or "/", status_code=303)
         c = unlock_cookie_params(app, rem)
         resp.set_cookie(c["key"], unlocks[app].issue(session_login(request.headers, settings)), max_age=TERMINAL_MAX_AGE,

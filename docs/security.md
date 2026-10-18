@@ -325,6 +325,12 @@ you type into the search travels from your device to the portal, as every reques
   - portal → Code page `{type: "bn-portal-open", path}`: the Code page opens that file in its editor only if the path
     passes its own checks (`exactPath` and `cleanPath`, as every open there) — it reads a file of the workspace the
     page can already read; it never runs anything.
+  - portal → Code page `{type: "bn-portal-git", dialog}` (Settings › Claude Code › Git hosts, an Activity item, the
+    walkthrough's *Open Git hosts* and *Clone a repository*): the Code page opens its Git panel with that dialog, only
+    `hosts` or `clone`, empty — nothing else of the message is used, nothing is cloned, added or changed. It is sent
+    only to a Code tab whose page has reported since it loaded (so it is unlocked and listening), and asks in place:
+    the page is not reloaded, so unsaved edits in its editor stay. Otherwise (not loaded, locked, a phone) the portal
+    opens `code.<host>/?git=hosts` or `?git=clone` instead, a deep link kept through the unlock (below).
   A frame that is locked, not loaded (a phone, a browser that never opened Code) or the plain page answers nothing:
   the search then says where to look instead.
 - **Chat conversations** come from Open WebUI's own search API, asked by the portal server (`GET /api/search/chats`):

@@ -8,6 +8,10 @@
 //                    truncated, error?}
 //   portal -> page  {type: 'bn-portal-open', path}       a workspace file: opened in the editor as if clicked in the explorer
 //                                                       (the same path checks as every other open: cleanPath)
+//   portal -> page  {type: 'bn-portal-git', dialog}      the Git panel with its Git hosts or Clone dialog open, empty
+//                                                       (dialog: 'hosts' or 'clone', nothing else; Settings › Claude
+//                                                       Code › Git hosts, Activity, the walkthrough) — in place, so the
+//                                                       page is not reloaded and no unsaved edit is lost
 //
 // Titles and paths are this workspace's (sandbox data): the portal shows them as text, with invisible and
 // direction-changing characters made visible. Searching is the session list's own fuzzy matching (fuzzy.ts: linear,
@@ -22,10 +26,11 @@ const MAX_SESSIONS = 20;
 const MAX_FILES = 30;
 
 export interface PortalRequest {
-  kind: 'search' | 'open';
+  kind: 'search' | 'open' | 'git';
   id?: string;
   q?: string;
   path?: string;
+  dialog?: 'hosts' | 'clone';
 }
 
 /** A message from the portal, checked: who sent it (ORIGIN must be the portal's, SOURCE the parent window) and its
@@ -42,6 +47,10 @@ export function takeRequest(data: unknown, origin: string, source: unknown, port
     const p = exactPath(d.path);
     if (p === null || p.endsWith('/') || cleanPath(p) !== p) return null;
     return { kind: 'open', path: p };
+  }
+  if (d.type === 'bn-portal-git') {
+    if (d.dialog !== 'hosts' && d.dialog !== 'clone') return null;
+    return { kind: 'git', dialog: d.dialog };
   }
   return null;
 }
@@ -66,6 +75,8 @@ export interface BridgeDeps {
   sessions: () => { id: string; title: string; firstPrompt?: string }[];
   find: (q: string, limit: number) => Promise<{ paths: string[]; truncated: boolean }>;
   openFile: (path: string) => unknown;
+  /** the Git panel with that dialog open (empty) */
+  openGit?: (dialog: 'hosts' | 'clone') => unknown;
 }
 
 function originOf(o: string | null): string | null {
@@ -119,5 +130,6 @@ export function listenPortal(deps: BridgeDeps, win: Window = window): void {
     if (!req || !portal) return;
     if (req.kind === 'search') void answer(req.id as string, req.q as string, portal);
     else if (req.kind === 'open' && req.path) void deps.openFile(req.path);
+    else if (req.kind === 'git' && req.dialog && deps.openGit) void deps.openGit(req.dialog);
   });
 }

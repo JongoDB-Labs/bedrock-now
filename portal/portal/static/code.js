@@ -204,8 +204,8 @@
     openSession: (id) => { if (typeof id === "string" && UUID.test(id)) openLink({ session: id }); },
     // Settings › Claude Code › Git hosts, an Activity item of one, the walkthrough: the Code page's Git hosts — and its
     // Clone dialog (the walkthrough; empty: nothing is cloned by a link)
-    openGitHosts: () => openLink({ git: "hosts" }),
-    openClone: () => openLink({ git: "clone" }),
+    openGitHosts: () => openGit("hosts"),
+    openClone: () => openGit("clone"),
     // how many Git hosts the Code page last said are connected, or null (it has not said: not loaded in this browser)
     gitHosts: () => (reported && Number.isInteger(reported.hosts) ? reported.hosts : null),
     openFile: (path) => {
@@ -217,6 +217,22 @@
       f.contentWindow.postMessage({ type: "bn-portal-open", path }, origin);
     },
   };
+
+  // The Git panel's Git hosts or Clone dialog. A Code tab whose page is running (it reported since it loaded) is asked
+  // in place — {type: "bn-portal-git", dialog}, to the code host's origin only; the page takes it only from the portal
+  // it was told about and from window.parent (portalbridge.ts) — so it is not reloaded and no unsaved edit is lost.
+  // Otherwise (not loaded yet, locked, a phone) its address with ?git= (a deep link, kept through the unlock).
+  function openGit(dialog) {
+    const f = document.querySelector('#frames iframe[data-app="code"]');
+    let origin = "";
+    try { origin = new URL(appUrl("code")).origin; } catch (_) { return; }
+    if (f && window.bnCode.ready() && !window.matchMedia("(max-width: 767.98px)").matches) {
+      showTab("code");
+      f.contentWindow.postMessage({ type: "bn-portal-git", dialog }, origin);
+      return;
+    }
+    openLink({ git: dialog });
+  }
 
   // The badge needs the page running: its frame, hidden, once the portal has nothing else to do — only in a browser
   // that has used the Code page (else the code host would answer its locked form, unasked), and not on a phone (there
