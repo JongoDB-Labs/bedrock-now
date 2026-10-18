@@ -18,7 +18,7 @@ import { str, short, isUuid, isId } from './validate.mjs';
 import { commandsOf, mcpOf, pluginsOf } from './normalize.mjs';
 import { GitHosts, HostError } from './githosts.mjs';
 import { makeGitRemote, NEVER_ASKS, sandboxWords } from './gitremote.mjs';
-import { Projects, ProjectError, projectIdOk, WS } from './projects.mjs';
+import { Projects, ProjectError, projectIdOk, WS, absOf } from './projects.mjs';
 import { makeTrust } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -187,7 +187,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   });
   function onStateBoth(a, b) { toAll(stateMsg(a)); toAll(stateMsg(b)); }
   const api = makeApi({ call, sessions: mgr, projects: { list: () => proj().list(), get: (id) => proj().get(id), add: (b) => proj().add(b), rename: (id, n) => proj().rename(id, n),
-    remove: (id) => proj().remove(id), file: (ids, pid) => proj().file(ids, pid), placer: () => proj().placer() }, reloadPollMs, reloadMaxMs, log: logger });
+    remove: (id) => proj().remove(id), file: (ids, pid) => proj().file(ids, pid), placer: () => proj().placer() }, reloadPollMs, reloadMaxMs, log: logger,
+    settingsKnown: (id) => trust.known(id) });
   // rootFor(v) -> the project a request names (?project= or {project}): its {id, rel, abs} from the records — never a
   // folder the page names; null (none, or the Workspace): the workspace, as every call was before projects
   const rootFor = (v) => {
@@ -324,10 +325,13 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       if (what === 'trust' && (m === 'POST' || m === 'DELETE')) {
         const rec = recordOf(id);
         if (rec.id === 'ws') throw new HttpError(400, 'the Workspace\'s own settings always apply (as they did before projects)');
-        if (m === 'DELETE') { await trust.untrust(rec); return send(res, 200, await trust.view(proj().get(id))); }
+        // (its open sessions there restart at their next prompt, with the configuration decided anew)
+        const dirty = () => { for (const s of mgr.sessions.values()) if (s.open && s.cwd === absOf(rec.root)) s.settingsDirty = true; };
+        if (m === 'DELETE') { await trust.untrust(rec); dirty(); return send(res, 200, await trust.view(proj().get(id))); }
         const b = await readJson(req);
         const r = await trust.trust(rec, typeof b.hash === 'string' ? b.hash : '');
         if (r.conflict) throw new HttpError(409, r.conflict);
+        dirty();
         return send(res, 200, await trust.view(proj().get(id)));
       }
       if (!what && m === 'POST') return send(res, 200, api.renameProject(id, await readJson(req)));
@@ -554,9 +558,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
           const check = s.resumeCheck = (s.resumeCheck ?? Promise.resolve()).catch(() => {}).then(() => (s.open ? null : api.notRunning(s.id)));
           await check;
         }
-        // its folder's own settings decided again (changed since its process started: it restarts without them;
-        // trusted meanwhile: with them)
-        await mgr.prepare(s.cwd);
+        // a process may start for it (resumed, restarted for its budget or its folder's configuration): what of the
+        // folder's own configuration it gets, decided now
+        if (!s.open || s.budgetRestart() || s.settingsRestart()) await mgr.prepare(s.cwd);
         s.prompt({ text: m.text, images: m.images ?? [], uuid: m.uuid });
         c.attached.add(s.id);
         return reply({});
@@ -582,7 +586,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'allow_blocked': {
         if (!isUuid(m.id)) throw new SessionError('bad blocked-action id');
         const bs = sessionOf(m);
-        await mgr.prepare(bs.cwd);   // (its retry is a prompt: it may start a process)
+        if (!bs.open || bs.budgetRestart() || bs.settingsRestart()) await mgr.prepare(bs.cwd);   // (its retry is a prompt)
         bs.allowBlocked(m.id);
         return reply({});
       }

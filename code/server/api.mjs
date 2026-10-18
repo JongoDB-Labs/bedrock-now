@@ -18,7 +18,6 @@ import { reasonOf, GIT_LOG_FAILED } from './gitreasons.mjs';
 import { watched } from './watch.mjs';
 import { WS, WORKSPACE_ID, PROJECTS_MAX, absOf, cwdOk, nameOk, rootOk } from './projects.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
-import { stateOf } from './trust.mjs';
 
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -78,7 +77,7 @@ export const rootField = (root) => (root?.rel ? { root: root.abs } : {});
 // a path bn-coded answered relative to a root, as a path of the workspace (the page's)
 export const inRoot = (root, p) => (root?.rel ? `${root.rel}/${p}` : p);
 
-export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, reloadMaxMs = 10000, log = () => {} }) {
+export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, reloadMaxMs = 10000, log = () => {}, settingsKnown = () => null }) {
   const need = (v, what) => { if (v === null) throw new HttpError(400, `bad ${what}`); return v; };
   const okPath = (v) => short(v, 4096);
 
@@ -678,18 +677,14 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
       list.forEach((p, i) => {
         const r = rows[i];
         if (!r || r.root !== absOf(p.root)) return;
-        // its own Claude Code settings (trust.mjs): none, trusted as they are, never trusted, changed since; an older
-        // sandbox that does not say: null
-        const hash = r.settings === null || /^[0-9a-f]{64}$/.test(r.settings ?? '') ? r.settings : undefined;
-        const settings = hash === undefined ? null : stateOf({ workspace: p.id === WORKSPACE_ID, present: hash !== null, hash, trust: p.trust,
-          verifiable: r.settingsVerifiable === true });
-        out.set(p.id, { folder: oneOf(r.type, ['dir', 'missing', 'link', 'other'], 'other'), git: r.git === true, settings });
+        out.set(p.id, { folder: oneOf(r.type, ['dir', 'missing', 'link', 'other'], 'other'), git: r.git === true });
       });
     } catch { /* not said */ }
     return out;
   }
   const projectOut = (p, f) => ({ id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created ?? null, workspace: p.id === WORKSPACE_ID,
-    folder: f?.folder ?? null, git: f?.git ?? null, settings: f?.settings ?? null });
+    // its own Claude Code configuration (trust.mjs): as last looked at (a session's start, the dialog); null: not yet
+    folder: f?.folder ?? null, git: f?.git ?? null, settings: p.id === WORKSPACE_ID ? 'workspace' : f?.settings ?? settingsKnown(p.id) });
   async function listProjects() {
     const list = store().list();
     const f = await folders(list);

@@ -23,7 +23,7 @@ export const FILES_MAX = 500;
 // a name bn-coded may list: .mcp.json, or a .claude (the root's or one below it: a link, not a folder) or a path under
 // one — relative, one line, no "." or ".." part
 const nameOk = (n) => typeof n === 'string' && n.length <= 1024 && !/[\x00-\x1f\x7f]/.test(n)
-  && (n === '.mcp.json' || (n.split('/').includes('.claude') && n.split('/').every((x) => x !== '' && x !== '.' && x !== '..')));
+  && (n.toLowerCase() === '.mcp.json' || (n.toLowerCase().split('/').includes('.claude') && n.split('/').every((x) => x !== '' && x !== '.' && x !== '..')));
 
 /** checkFiles(project.settings' RESULT) -> {files: [{name, type, size, sha256, target, text}], ok}: ok false when the
  *  list does not fit what bn-coded lists (a bad name, the same name twice, out of order, too many): then unverifiable */
@@ -132,10 +132,13 @@ export function summarize(files) {
   };
   for (const f of files) {
     const note = (t) => out.notes.push({ file: f.name, note: t });
-    const settings = f.name === '.mcp.json' || SETTINGS_FILES.includes(f.name);
-    // every other file under a .claude/ is listed — a .md file with the front matter keys that grant something
+    // (names as a case-insensitive workspace reads them: .CLAUDE/settings.json is .claude/settings.json)
+    const lower = f.name.toLowerCase();
+    const settings = lower === '.mcp.json' || SETTINGS_FILES.includes(lower);
+    // every other file under a .claude/ is listed — each text file with the front matter keys that grant something,
+    // whatever its name (one that starts with --- but does not read plainly: not trustable)
     if (!settings) {
-      const fm = f.text !== null && /\.md$/i.test(f.name) ? frontMatter(f.text) : { grants: [], plain: true };
+      const fm = f.text !== null ? frontMatter(f.text) : { grants: [], plain: true };
       if (!fm.plain) { note('front matter this page cannot read the way Claude Code does (only `key: value` lines and `- item` lists)'); incomplete('front matter beyond plain key: value lines'); }
       out.files.push({ name: text(f.name), size: f.size, grants: fm.grants.map((g) => ({ key: text(g.key), value: text(g.value) })) });
     }
@@ -147,7 +150,7 @@ export function summarize(files) {
     let v;
     try { v = JSON.parse(f.text); } catch { note('not valid JSON (Claude Code may still read parts of it)'); incomplete('a file that is not valid JSON'); continue; }
     if (!obj(v)) { note('not a JSON object'); incomplete('a file that is not a JSON object'); continue; }
-    if (f.name === '.mcp.json') {
+    if (lower === '.mcp.json') {
       if (v.mcpServers !== undefined && !obj(v.mcpServers)) add('other', { file: f.name, key: 'mcpServers', value: text(v.mcpServers) });
       for (const [name, c] of Object.entries(obj(v.mcpServers) ?? {})) {
         const sv = obj(c);
@@ -231,6 +234,10 @@ export function withheldText(d) {
 /** makeTrust({call, store, log}) — what a Claude Code process started in a folder gets of the folder's own settings
  *  (decided anew before every start: never cached), the page's view of a project's settings, trust and untrust. */
 export function makeTrust({ call, store, log = () => {} }) {
+  // each project's state as last looked at (a start's decision, the dialog, a trust) — for the list only; a decision is
+  // always made anew
+  const known = new Map();
+  const note = (id, state) => { if (id && id !== WORKSPACE_ID) { if (known.size >= 500 && !known.has(id)) known.clear(); known.set(id, state); } };
   const recordAt = (cwd) => store().list().find((p) => p.id !== WORKSPACE_ID && absOf(p.root) === cwd) ?? null;
   // read(abs) -> {files, present, hash, verifiable}: the hash recomputed here from what was shown — each text's own
   // SHA-256 checked against the one the sandbox gave — so a trusted hash covers exactly the texts the page showed
@@ -253,6 +260,7 @@ export function makeTrust({ call, store, log = () => {} }) {
       rec = recordAt(cwd);
       const r = await read(cwd);
       const state = stateOf({ present: r.present, hash: r.hash, trust: rec?.trust, verifiable: r.verifiable });
+      note(rec?.id, state);
       // (not applied: your own settings, and of MCP servers only the stack's own — whatever Claude Code would read)
       return { state, project: rec?.id ?? null, sources: APPLIED.includes(state) ? ALL_SOURCES : USER_SOURCES, strictMcp: !APPLIED.includes(state), hash: r.hash };
     } catch (e) {
@@ -267,6 +275,7 @@ export function makeTrust({ call, store, log = () => {} }) {
     const state = stateOf({ workspace: rec.id === WORKSPACE_ID, present: r.present, hash: r.hash, trust: rec.trust, verifiable: r.verifiable });
     const summary = summarize(r.files);
     if (r.over) { summary.complete = false; summary.missing.push(r.over); }
+    note(rec.id, state);
     return {
       // (a hash to trust only for settings the summary shows whole: nothing you were not shown can apply)
       project: rec.id, path: abs, state, hash: state === 'workspace' || !summary.complete ? null : r.hash, trustedAt: rec.trust?.at ?? null,
@@ -284,8 +293,9 @@ export function makeTrust({ call, store, log = () => {} }) {
     const sm = summarize(r.files);
     if (!sm.complete) return { conflict: `its settings cannot all be shown here (${sm.missing.join('; ')}): they are not trusted — shorten them, or use the folder without them` };
     store().trust(rec.id, hash);
+    note(rec.id, 'trusted');
     return { conflict: null };
   }
-  const untrust = async (rec) => { store().trust(rec.id, null); };
-  return { decide, view, trust, untrust };
+  const untrust = async (rec) => { store().trust(rec.id, null); known.delete(rec.id); };
+  return { decide, view, trust, untrust, known: (id) => known.get(id) ?? null };
 }

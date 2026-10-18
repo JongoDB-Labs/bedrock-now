@@ -321,12 +321,12 @@ test('project.settings: everything under a folder\'s .claude/ and its .mcp.json,
   assert.deepEqual(r.files.map((f) => f.name), ['.claude/settings.json', '.claude/skills/setup/SKILL.md', '.mcp.json'], 'sorted by name');
   assert.equal(r.verifiable, true);
   assert.equal(by(r)['.claude/settings.json'].text, hooks);
-  const check = async () => (await call({ op: 'project.check', roots: [D] })).roots[0];
-  assert.equal((await check()).settings, r.hash, 'project.check names the same hash');
+  const hashNow = async () => (await call({ op: 'project.settings', root: D })).hash;
+  assert.equal(await hashNow(), r.hash, 'the same files: the same hash');
   // any file anywhere under .claude/ changes it (a pull adding an agent)
   fs.mkdirSync(path.join(D, '.claude/agents'));
   fs.writeFileSync(path.join(D, '.claude/agents/helper.md'), '---\nname: helper\ntools: Bash\nmcpServers: [evil]\n---\n');
-  assert.notEqual((await check()).settings, r.hash);
+  assert.notEqual(await hashNow(), r.hash);
   // a link is followed only into the workspace; one out of it is named, never read
   fs.symlinkSync(path.join(OUT, 'secret.txt'), path.join(D, '.claude/settings.local.json'));
   r = await call({ op: 'project.settings', root: D });
@@ -336,7 +336,6 @@ test('project.settings: everything under a folder\'s .claude/ and its .mcp.json,
   assert.equal(out.size, undefined, 'nothing of the file outside: not even its size');
   assert.equal(out.sha256, crypto.createHash('sha256').update(`link:${out.target}`).digest('hex'), 'its hash: the link\'s, not the file\'s');
   assert.equal(r.verifiable, false, 'its hash does not cover what Claude Code would read: never trustable');
-  assert.equal((await check()).settingsVerifiable, false);
   fs.rmSync(path.join(D, '.claude/settings.local.json'));
   fs.symlinkSync(path.join(D, '.claude/settings.json'), path.join(D, '.claude/settings.local.json'));
   r = await call({ op: 'project.settings', root: D });
@@ -374,29 +373,44 @@ test('project.settings: everything under a folder\'s .claude/ and its .mcp.json,
   assert.deepEqual([r.verifiable, r.over], [false, 'folders more than 12 deep']);
   fs.rmSync(path.join(D, '.claude/d'), { recursive: true });
   assert.equal((await call({ op: 'project.settings', root: D })).verifiable, true, 'within the bounds again');
-  // .claude/ folders below the root count too (Claude Code finds skills there); never in .git, node_modules or the trash
+  // .claude/ folders below the root count too (Claude Code finds skills there) — in node_modules, in a folder named
+  // .git that is not the repository's own, in any case; only the repository's own top .git is not looked in
   fs.mkdirSync(path.join(D, 'packages/app/.claude/commands'), { recursive: true });
   fs.writeFileSync(path.join(D, 'packages/app/.claude/commands/deploy.md'), '---\nallowed-tools: Bash(*)\n---\n');
-  for (const skip of ['node_modules/pkg', '.git/x', '.bedrock-now-trash/t']) {
-    fs.mkdirSync(path.join(D, skip, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(D, skip, '.claude/x.md'), 'x');
+  for (const where of ['src/node_modules/pkg/.claude', 'a/.git/.claude', 'lib/.Claude', '.git/hooks/.claude']) {
+    fs.mkdirSync(path.join(D, where), { recursive: true });
+    fs.writeFileSync(path.join(D, where, 'x.md'), 'x');
   }
   r = await call({ op: 'project.settings', root: D });
-  assert.ok(r.files.some((f) => f.name === 'packages/app/.claude/commands/deploy.md'), 'a nested .claude/');
-  assert.ok(!r.files.some((f) => /node_modules|\.git\/|bedrock-now-trash/.test(f.name)), 'not in .git, node_modules or the trash');
+  const names = r.files.map((f) => f.name);
+  for (const n of ['packages/app/.claude/commands/deploy.md', 'src/node_modules/pkg/.claude/x.md', 'a/.git/.claude/x.md', 'lib/.Claude/x.md']) assert.ok(names.includes(n), n);
+  assert.ok(!names.some((n) => n.startsWith('.git/')), 'the repository\'s own .git: not looked in');
   assert.equal(r.verifiable, true);
+  // a link to a folder anywhere below the root: a .claude could hide behind it — never trustable
+  fs.symlinkSync(path.join(WS, 'p2'), path.join(D, 'src/elsewhere'));
+  r = await call({ op: 'project.settings', root: D });
+  assert.deepEqual([r.verifiable, r.over], [false, 'a link to a folder below the root (src/elsewhere)']);
+  fs.rmSync(path.join(D, 'src/elsewhere'));
+  for (const where of ['src', 'a', 'lib', '.git']) fs.rmSync(path.join(D, where), { recursive: true });
+  // the root's own .claude and .mcp.json in any case (a case-insensitive workspace reads .CLAUDE as .claude)
+  const C = path.join(WS, 'cased');
+  fs.mkdirSync(path.join(C, '.CLAUDE/skills/x'), { recursive: true });
+  fs.writeFileSync(path.join(C, '.CLAUDE/skills/x/SKILL.md'), '---\nallowed-tools: Bash(*)\n---\n');
+  fs.writeFileSync(path.join(C, '.MCP.json'), '{}');
+  r = await call({ op: 'project.settings', root: C });
+  assert.deepEqual(r.files.map((f) => f.name), ['.CLAUDE/skills/x/SKILL.md', '.MCP.json']);
+  fs.rmSync(C, { recursive: true });
   // a project with only a nested .claude/ needs trust too
   const N = path.join(WS, 'nested-only');
   fs.mkdirSync(path.join(N, 'sub/.claude/skills/x'), { recursive: true });
   fs.writeFileSync(path.join(N, 'sub/.claude/skills/x/SKILL.md'), '---\nname: x\n---\n');
   assert.match((await call({ op: 'project.settings', root: N })).hash, /^[0-9a-f]{64}$/);
-  // too many folders to look in, or too deep: unverifiable
-  fs.mkdirSync(path.join(N, ...Array(11).fill('deep')), { recursive: true });
-  assert.deepEqual([(await call({ op: 'project.settings', root: N })).verifiable, (await call({ op: 'project.settings', root: N })).over],
-    [false, 'folders more than 10 deep to look for .claude/ in']);
+  // too deep to look in: unverifiable (too many: NESTED_DIRS, the same check)
+  fs.mkdirSync(path.join(N, 'deep'), { recursive: true });
   fs.rmSync(path.join(N, 'deep'), { recursive: true });
-  for (let i = 0; i < 3001; i++) fs.mkdirSync(path.join(N, 'many', `d${i}`), { recursive: true });
-  assert.equal((await call({ op: 'project.settings', root: N })).over, 'more than 3000 folders to look for .claude/ in');
+  fs.mkdirSync(path.join(N, ...Array(25).fill('deep')), { recursive: true });
+  assert.deepEqual([(await call({ op: 'project.settings', root: N })).verifiable, (await call({ op: 'project.settings', root: N })).over],
+    [false, 'folders more than 24 deep to look for .claude/ in']);
   fs.rmSync(N, { recursive: true });
   fs.rmSync(path.join(D, 'packages'), { recursive: true });
   // a .claude that is a link: one entry, never walked, never trustable

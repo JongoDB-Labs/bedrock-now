@@ -1921,7 +1921,8 @@ def ui_projects(ctx):
         page.reload()
         see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
         c = Code.on(page, rec, goto=False)
-        expect(ids()[PROJ_CLONE]["settings"] == "untrusted", f"the clone's own settings: {ids()[PROJ_CLONE]}")
+        sv = c.api("GET", f"/api/projects/{clone['id']}/settings")["json"] or {}
+        expect(sv.get("state") == "untrusted", f"the clone's own configuration: {sv.get('state')} {sv.get('summary', {}).get('missing')}")
         # a Haiku session in it: its own settings are shown first; started without them, it runs in the clone's folder
         # and the hook does not run
         page.get_by_test_id("side-sessions").click()

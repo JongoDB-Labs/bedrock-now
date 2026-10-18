@@ -1246,7 +1246,8 @@ direction-changing character; a record that does not fit (a file someone changed
   by the SDK applies what it finds in its folder with no trust step (the terminal's `claude` asks whether to trust a
   folder first): everything under `.claude/` — `settings.json` and `settings.local.json`, and the skills, commands,
   agents and output styles whose front matter can grant tools (`allowed-tools`), declare hooks or MCP servers; also
-  in `.claude/` folders below the project's root, where Claude Code finds skills and commands too — and `.mcp.json`. A cloned repository's `SessionStart` hook would run, its allow rules or a skill's `allowed-tools` would
+  in `.claude/` folders below the project's root, where Claude Code finds skills and commands too — and `.mcp.json`. A
+  cloned repository's `SessionStart` hook would run, its allow rules or a skill's `allowed-tools` would
   silence the permission cards, its `env` would change what runs, its MCP servers would start. So a process in a
   project's folder starts with your own settings only (`settingSources: user` — the sandbox's `~/.claude`; the
   project's `CLAUDE.md`, skills, commands and agents are not read either) and, of MCP servers, only the stack's own
@@ -1263,12 +1264,16 @@ direction-changing character; a record that does not fit (a file someone changed
   - *What you were shown, and what not.* The code container recomputes the hash from the texts it read (each text's
     own SHA-256 checked against the sandbox's; the list itself checked: names under `.claude/` only, sorted, once
     each). bn-coded reads at most 500 files, 2 MiB in all, 256 KiB each, 12 folders deep, and looks for nested
-    `.claude/` folders in at most 3,000 folders, 10 deep (never in `.git`, `node_modules` or the trash, never through
-    a link); beyond that, or a file that cannot be read whole as text — a link out of the workspace, a link to a
-    folder, a FIFO, a `.claude` that is a link — it is *unverifiable* and never trusted. Front matter is read strictly:
+    `.claude/` folders — in any case (a macOS workspace reads `.Claude` as `.claude`), in `node_modules` too, anywhere
+    but the repository's own top `.git` and the workspace's trash — in at most 20,000 folders, 24 deep. Beyond that,
+    a link to a folder anywhere below the root (a `.claude` could hide behind it), or a file that cannot be read whole
+    as text — a link out of the workspace, a link to a folder in a `.claude/`, a FIFO, a `.claude` that is a link —
+    and it is *unverifiable*, never trusted. Front matter — of every text file under a `.claude/`, whatever its name —
+    is read strictly:
     only top-level `key: value` lines and `- item` lists, a grant key's value a plain scalar (its key in any case);
     anything a YAML parser could read differently — flow style, quotes, anchors and aliases, tags, explicit keys,
-    block scalars, a key twice, no closing `---` — leaves the summary incomplete, never trusted. The settings files and `.mcp.json` are summarised whole or not at all:
+    block scalars, a key twice, no closing `---` — leaves the summary incomplete, never trusted. The settings files and
+    `.mcp.json` are summarised whole or not at all:
     more than 200 entries in a section, a value over 2,000 characters or invalid JSON leave no hash to trust. Each
     hook and MCP server is shown whole (its entry as JSON with sorted keys, beside a friendly line; one naming more
     than one of a command, a URL and a prompt is marked); every character but printable ASCII, a tab or a line break

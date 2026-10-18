@@ -64,7 +64,8 @@
 //                                           bool|null, settings: workspace|none|trusted|untrusted|changed|unverifiable|
 //                                           null}], max} —
 //                                           the Workspace first; folder/git: what the sandbox says (null: not said);
-//                                           settings: its own Claude Code settings (trust.mjs)
+//                                           settings: its own Claude Code configuration as last looked at (a start,
+//                                           the dialog; trust.mjs), null: not yet
 //   POST   /api/projects {kind: new|folder, folder, name?, git?}   {project, git, gitError?} — new: the folder made in
 //                                           the sandbox (not there yet, its parent a real folder) and, git: true, `git
 //                                           init` in it (no template); folder: one that is there. folder: 1–4 names,

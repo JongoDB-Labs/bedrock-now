@@ -24,7 +24,7 @@ import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from '
 import { pageTitle, waitingSessions } from './groups';
 import { parseDeepLink, withoutDeepLink } from './deeplink';
 import { sessionCost } from './spend';
-import { WORKSPACE, WORKSPACE_ID, inProject, mentionPath, projectFor, projectIdOk, projectOfCwd, type Project, type Where } from './projects';
+import { WORKSPACE, WORKSPACE_ID, inProject, mentionPath, projectFor, projectIdOk, projectOfCwd, settingsApplied, type Project, type SettingsState, type Where } from './projects';
 
 export interface Toast {
   id: number;
@@ -1148,15 +1148,30 @@ export interface NewSessionOptions {
 
 export function newSession(opts: NewSessionOptions = {}): Promise<string | null> {
   if (get().opening) return Promise.resolve(null);
-  // a project whose own Claude Code settings are there but not trusted (as they are now): shown first — trust them,
-  // or start without them
   const s = get();
   const proj = s.projects.find((p) => p.id === (opts.project ?? s.project));
-  if (!opts.noAsk && proj && !proj.workspace && (proj.settings === 'untrusted' || proj.settings === 'changed' || proj.settings === 'unverifiable')) {
-    openProjectDialog({ kind: 'settings', id: proj.id, start: { ...opts, project: proj.id } });
-    return Promise.resolve(null);
-  }
+  if (!opts.noAsk && proj && !proj.workspace) return whileOpening(askThenOpen(proj.id, opts));
   return whileOpening(openNew(opts));
+}
+/** A project's own Claude Code configuration, looked at before a new session there: not applied as it is (never
+ *  trusted, changed, cannot be checked) — shown first, to trust or to start without; else the session starts. */
+async function askThenOpen(id: string, opts: NewSessionOptions): Promise<string | null> {
+  let state: SettingsState | null = null;
+  try {
+    state = (await api.getProjectSettings(id)).state;
+    noteProjectSettings(id, state);
+  } catch {
+    state = null;   // (not said: the backend decides at the start, and a session without them says so)
+  }
+  if (state && !settingsApplied(state)) {
+    openProjectDialog({ kind: 'settings', id, start: { ...opts, project: id } });
+    return null;
+  }
+  return openNew(opts);
+}
+/** What a project's own configuration was when last looked at (the Projects tab's marker). */
+export function noteProjectSettings(id: string, state: SettingsState): void {
+  set((x) => ({ ...x, projects: x.projects.map((p) => (p.id === id && !p.workspace && p.settings !== state ? { ...p, settings: state } : p)) }));
 }
 
 async function openNew(opts: NewSessionOptions): Promise<string | null> {
@@ -1840,11 +1855,14 @@ export async function createProject(b: { kind: 'new' | 'folder'; folder: string;
 /** A project that came with Claude Code settings of its own (a clone, a folder that was there): said once — they apply
  *  only once you trusted them. */
 function settingsHint(id: string): void {
-  const p = get().projects.find((x) => x.id === id);
-  if (p && (p.settings === 'untrusted' || p.settings === 'changed' || p.settings === 'unverifiable')) {
-    toast(`${p.name} has Claude Code settings of its own (.claude/, .mcp.json): sessions there run without them until you trust them.`, 'ok',
-      { label: 'Review them', run: () => openProjectDialog({ kind: 'settings', id }) });
-  }
+  void api.getProjectSettings(id).then((v) => {
+    noteProjectSettings(id, v.state);
+    const p = get().projects.find((x) => x.id === id);
+    if (p && !settingsApplied(v.state)) {
+      toast(`${p.name} has a Claude Code configuration of its own (.claude/, .mcp.json): sessions there run without it until you trust it.`, 'ok',
+        { label: 'Review it', run: () => openProjectDialog({ kind: 'settings', id }) });
+    }
+  }, () => undefined);
 }
 
 /** Trust a project's own Claude Code settings as shown (hash: what the dialog showed) — or, trust false, no longer.

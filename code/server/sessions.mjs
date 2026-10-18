@@ -141,13 +141,9 @@ export class Session {
   }
   /** {state, project} of the running (or last) process's folder settings (trust.mjs), or null */
   settingsInfo() { return this.settings ? { state: this.settings.state, project: this.settings.project ?? null } : null; }
-  /** the folder's settings decision (made just before, mgr.prepare) differs from this process's (you trusted them, they
-   *  changed, you stopped trusting them): restart */
-  settingsRestart() {
-    const d = this.mgr.peekSettings(this.cwd);
-    return Boolean(d && this.settings && (d.sources.join() !== this.settings.sources.join() || Boolean(d.strictMcp) !== Boolean(this.settings.strictMcp)
-      || (d.state === 'trusted' && d.hash !== this.settings.hash)));
-  }
+  /** its process restarts at the next prompt to take the folder's own configuration anew (you trusted it, or stopped
+   *  trusting it: settingsDirty, set by main.mjs) */
+  settingsRestart() { return this.settingsDirty === true; }
 
   // --- the budget ---
   /** What is left of the budget: its amount less the larger of the page's figure and Claude Code's estimate. */
@@ -220,6 +216,7 @@ export class Session {
     // — the decision made for this start (mgr.prepare); none: not applied
     const settings = this.mgr.takeSettings(this.cwd);
     this.settings = settings;
+    this.settingsDirty = false;
     const options = {
       cwd: this.cwd,
       pathToClaudeCodeExecutable: '/usr/local/bin/claude',   // a path in the sandbox: only the arguments travel

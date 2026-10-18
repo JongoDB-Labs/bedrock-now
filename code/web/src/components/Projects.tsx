@@ -16,6 +16,7 @@ import {
   createProject,
   currentProject,
   newSession,
+  noteProjectSettings,
   openGitDialog,
   openInTerminal,
   openProjectDialog,
@@ -595,7 +596,7 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
   const [opened, setOpened] = useState<Set<string>>(new Set());
   useEffect(() => {
     let live = true;
-    api.getProjectSettings(id).then((x) => live && setV(x), (e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    api.getProjectSettings(id).then((x) => { if (live) { setV(x); noteProjectSettings(id, x.state); } }, (e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => { live = false; };
   }, [id]);
   if (!p) return null;

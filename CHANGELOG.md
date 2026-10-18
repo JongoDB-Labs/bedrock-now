@@ -23,7 +23,8 @@ All notable changes to bedrock-now are documented here. The format follows
   (`code-state` volume), not in the workspace. A project is not a boundary: every project is in the one sandbox
   ([docs/security.md](docs/security.md#projects)).
 - **A project's own Claude Code configuration applies only once you trusted it.** Everything under a project's
-  `.claude/` (settings, skills, commands, agents …, also in `.claude/` folders below it) and its `.mcp.json` — hooks, permission rules, granted tools, env,
+  `.claude/` (settings, skills, commands, agents …, also in `.claude/` folders below it) and its `.mcp.json` — hooks,
+  permission rules, granted tools, env,
   MCP servers — is shown first (the project's ⋯ › *Claude Code settings…*, and before a new session there), with
   *Trust this project's Claude Code settings* or *Start without them*; until trusted (or once it changed — a pull
   adding a skill too) a session there runs with your own settings only and only the stack's MCP server, and says so.

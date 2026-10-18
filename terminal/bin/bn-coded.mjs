@@ -22,8 +22,8 @@
 //                   a bounded walk (literal text only); caps on hits, file size and time
 //   project.create / project.check / project.trash / project.settings
 //                   a new project's folder (and `git init`, no template: no hook); whether the project folders the code
-//                   container names are there (a real folder, a git repository; where they lead; their Claude Code
-//                   settings' hash); a project's folder itself into the workspace trash (Remove from Code, named again:
+//                   container names are there (a real folder, a git repository; where they lead); a project's folder
+//                   itself into the workspace trash (Remove from Code, named again:
 //                   never through a link); a folder's own Claude Code configuration (everything under .claude/, and
 //                   .mcp.json), as Claude Code would read it (the page shows it before it applies)
 //   git.diff        what changed in /workspace since its last commit (the Review pane): read-only git with fixed
@@ -1724,7 +1724,8 @@ export async function projectCreate(req, { git = GIT } = {}) {
 }
 // project.check {roots: [abs…]} -> {roots: [{root, type: dir|missing|link|other|bad, git, real}]}: whether the folders
 // the code container names (projects', open sessions') are there — a real folder (never through a link) — a git
-// repository (a .git in it), and where each leads (real: its realpath when that is in the workspace, else null)
+// repository (a .git in it), and where each leads (real: its realpath when that is in the workspace, else null). Quick:
+// a folder's own Claude Code configuration is project.settings' (a walk of the whole folder)
 export const CHECK_ROOTS = 64;
 // rootType(r) -> dir | missing | link | other: what a workspace-relative folder is, every part looked at (lstat)
 function rootType(r) {
@@ -1741,16 +1742,15 @@ function rootType(r) {
 export function projectCheck(req) {
   const list = Array.isArray(req?.roots) ? req.roots.slice(0, CHECK_ROOTS) : [];
   return { roots: list.map((v) => {
-    if (typeof v !== 'string') return { root: '', type: 'bad', git: false, real: null, settings: null, settingsVerifiable: null };
+    if (typeof v !== 'string') return { root: '', type: 'bad', git: false, real: null };
     const r = v === WORKSPACE ? '' : v.startsWith(`${WORKSPACE}/`) ? v.slice(WORKSPACE.length + 1) : null;
-    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false, real: null, settings: null, settingsVerifiable: null };
+    if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false, real: null };
     const type = rootType(r);
     let isGit = false;
     if (type === 'dir') { try { fs.lstatSync(path.join(WORKSPACE, r, '.git')); isGit = true; } catch { /* none */ } }
     let real = null;
     try { const x = fs.realpathSync(path.join(WORKSPACE, r)); real = inside(x) ? x : null; } catch { /* not there */ }
-    const st = type === 'dir' ? settingsFiles(path.join(WORKSPACE, r)) : null;
-    return { root: v, type, git: isGit, real, settings: st?.hash ?? null, settingsVerifiable: st ? st.verifiable : null };
+    return { root: v, type, git: isGit, real };
   }) };
 }
 
@@ -1763,11 +1763,11 @@ export function projectCheck(req) {
 // never opened. Bounded: at most CONFIG_FILES files, CONFIG_BYTES in all, CONFIG_FILE each, CONFIG_DEPTH folders deep —
 // beyond that it cannot be verified (and is never trusted).
 export const CONFIG_FILES = 500, CONFIG_BYTES = 2 << 20, CONFIG_FILE = 256 << 10, CONFIG_DEPTH = 12, CONFIG_SHOWN = 3 << 20;
-// .claude/ folders below the root too (Claude Code finds skills and commands in nested ones): looked for in at most
-// NESTED_DIRS folders, NESTED_DEPTH deep, never in .git, node_modules or the trash, never through a link — beyond
-// that it cannot be verified
-export const NESTED_DIRS = 3000, NESTED_DEPTH = 10;
-const NESTED_SKIP = new Set(['.git', 'node_modules', TRASH, '.claude']);
+// .claude/ folders below the root too (Claude Code finds skills and commands in nested ones), whatever their case (a
+// macOS workspace is case-insensitive): looked for in every folder — node_modules too — but the repository's own top
+// .git and the workspace's trash, in at most NESTED_DIRS folders, NESTED_DEPTH deep; a link to a folder anywhere below
+// the root, or more than that, and it cannot be verified (a .claude could hide there)
+export const NESTED_DIRS = 20000, NESTED_DEPTH = 24;
 // nestedClaude(abs) -> {dirs: [rel …] of the .claude entries below abs (a folder, or anything else named so), over}
 function nestedClaude(abs) {
   const dirs = [];
@@ -1776,13 +1776,21 @@ function nestedClaude(abs) {
   while (queue.length && !over) {
     const [dir, rel, depth] = queue.shift();
     let list;
-    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { over = 'a folder that could not be read'; break; }
     for (const d of list) {
       const name = rel ? `${rel}/${d.name}` : d.name;
-      if (d.name === '.claude') { if (rel) dirs.push(name); continue; }
-      if (!d.isDirectory() || NESTED_SKIP.has(d.name)) continue;
+      const lower = d.name.toLowerCase();
+      if (!rel && (lower === '.git' || (abs === WORKSPACE && d.name === TRASH))) continue;   // (the repository's own, the trash)
+      if (lower === '.claude') { if (rel) dirs.push(name); continue; }                       // (the root's own: walked as such)
+      if (d.isSymbolicLink()) {
+        let st;
+        try { st = fs.statSync(path.join(dir, d.name)); } catch { st = null; }
+        if (st?.isDirectory()) { over = `a link to a folder below the root (${printable(name, 200)})`; break; }
+        continue;
+      }
+      if (!d.isDirectory()) continue;
       if (depth + 1 > NESTED_DEPTH) { over = `folders more than ${NESTED_DEPTH} deep to look for .claude/ in`; break; }
-      if (++seen > NESTED_DIRS) { over = `more than ${NESTED_DIRS} folders to look for .claude/ in`; break; }
+      if (++seen > NESTED_DIRS) { over = `more than ${NESTED_DIRS.toLocaleString('en')} folders to look for .claude/ in`; break; }
       queue.push([path.join(dir, d.name), name, depth + 1]);
     }
   }
@@ -1848,11 +1856,14 @@ export function settingsFiles(abs, { text = false } = {}) {
       files.push({ name: rel, type: 'link', target, sha256: sha256(`link:${target}`) });
     } else if (c) files.push({ name: rel, type: 'other', target: null, sha256: sha256('other:') });
   };
-  tree('.claude');
+  // the root's own .claude and .mcp.json, in any case (a case-insensitive workspace reads .Claude as .claude)
+  let top;
+  try { top = fs.readdirSync(abs); } catch { top = []; }
+  for (const n of top.filter((x) => x.toLowerCase() === '.claude').sort()) tree(n);
   const nested = nestedClaude(abs);
   if (nested.over) over ??= nested.over;
   for (const rel of nested.dirs) { if (over) break; tree(rel); }
-  one('.mcp.json', path.join(abs, '.mcp.json'));
+  for (const n of top.filter((x) => x.toLowerCase() === '.mcp.json').sort()) one(n, path.join(abs, n));
   files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const hash = files.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null;
   const verifiable = !over && files.every((f) => f.readable === true);
