@@ -1582,8 +1582,9 @@ operation you started, sent only where you saw it go.
   never shown again (*Replace it* takes a new one; replace-only); an SSH key is an ed25519 key made there, whose
   private half never leaves it — the page sees the public half and the fingerprint. Adding a host, a sign-in, a token
   or a key, trusting a host key and turning on Claude's use of a host work only from the computer running
-  bedrock-now: the code container refuses them with Caddy's `X-Bn-Remote: 1` (its remote sites set it; a client's copy is stripped before
-  it gets there). Removing a host and turning Claude's use off work everywhere. `./stack uninstall` removes the volume.
+  bedrock-now: the code container refuses them with Caddy's `X-Bn-Remote: 1` (its remote sites set it; a client's copy
+  is stripped before it gets there). Removing a host and turning Claude's use off work everywhere. `./stack uninstall`
+  removes the volume.
   **The tokens and SSH private keys are stored unencrypted** (the file's mode 600 is the protection): whoever can read
   the `code-state` volume — Docker on this computer, its disk, a backup of Docker's own data, root — can read them. If
   that may have been exposed, revoke the tokens and remove the keys on the hosts, then connect them again.

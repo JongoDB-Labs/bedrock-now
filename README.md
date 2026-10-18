@@ -928,12 +928,13 @@ credentials ever being kept in the sandbox.
     app](#your-own-app-for-sign-in) until bedrock-now's are), for `https://` URLs. The dialog shows a code, large, with
     *Copy*; open the host's page it links to (*Open github.com/login/device*), enter the code there and approve. The
     page never opens it for you, and your browser never talks to the host about it: the code container asks the host
-    for the code and waits for your approval, through the sandbox's own way out. On GitHub it signs in with a GitHub App, which reaches only the
-    repositories you install it on (*Choose repositories* in the host's row), with *Contents: Read and write*; its
-    token lasts 8 hours and renews itself when an operation needs it (the sign-in lasts 6 months). On GitLab it asks
-    for `read_repository`, `write_repository` and `read_user`: every project your account can reach; its token renews
-    itself too. A GitLab of your own, or GitHub Enterprise: its address (`gitlab.example.com`), the application ID of
-    an app you registered there, and its CA under *More* when a private CA signed its certificate. When a sign-in ends
+    for the code and waits for your approval, through the sandbox's own way out. On GitHub it signs in with a GitHub
+    App, which reaches only the repositories you install it on (*Choose repositories* in the host's row), with
+    *Contents: Read and write*; its token lasts 8 hours and renews itself when an operation needs it (the sign-in lasts
+    6 months). On GitLab it asks for `read_repository`, `write_repository` and `read_user`: every project your account
+    can reach; its token renews itself too. A GitLab of your own, or GitHub Enterprise: its address
+    (`gitlab.example.com`), the application ID of an app you registered there, and its CA under *More* when a private
+    CA signed its certificate. When a sign-in ends
     (revoked on the host, or too old to renew), the host's row says so and **Sign in again** keeps the host and its
     settings.
   - **An access token**, for `https://` URLs. The dialog links to the place to create one: on GitHub a
