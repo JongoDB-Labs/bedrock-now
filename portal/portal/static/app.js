@@ -487,8 +487,12 @@ function openVersion(ev) {
 }
 
 function renderUpdate(u) {
+  // A summary asked for before a check ended can arrive after the answer of a click's (updatecheck.js): the newer wins.
+  if (u && lastUpdate && !u.checking && Date.parse(u.checked_at) < Date.parse(lastUpdate.checked_at)) u = lastUpdate;
   lastUpdate = u;  // placeHelperOff (below) puts the "one-click updates are off" hint where it is seen
   renderVersion(u);
+  // Home's "Up to date · checked 12 min ago · Check for updates" line, and Settings' (updatecheck.js)
+  if (window.bnUpdateCheck && window.bnUpdateCheck.render) window.bnUpdateCheck.render(u);
   // Home opened with an old release check, and the portal is running a new one: its answer in a few seconds
   clearTimeout(renderUpdate.again);
   if (u && u.checking) renderUpdate.again = setTimeout(refresh, 6000);
@@ -810,7 +814,7 @@ async function refresh() {
   try {
     const d = await api("/api/summary");
     renderSpend(d.spend); renderOpenRouter(d.spend.openrouter, d.spend.openrouter_usage); renderServices(d.services); renderModels(d.models, d.prices); renderVoice(d.voice);
-    renderUpdate(d.update); lastUpdate = d.update;
+    renderUpdate(d.update);
     lastSummary = d;
     document.dispatchEvent(new CustomEvent("bn:summary", { detail: d }));   // (code.js: the Code card's key budget)
     const cb = d.claude && d.claude.command; if (cb) $("#claude-cmd").textContent = cb;

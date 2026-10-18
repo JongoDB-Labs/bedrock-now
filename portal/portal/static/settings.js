@@ -618,6 +618,8 @@
       main.append(el("p", { class: "note", text: "Switched on, not in effect: the Code page is not reachable over remote access (REMOTE_TERMINAL=true), or remote access has no names yet (./stack up)." }));
     }
     if (k.key === "MODELS_HIDDEN") setValue(k.value ? k.value.split(",").map(modelName).join(", ") : "None hidden");
+    // the last release check and Check for updates (updatecheck.js): a click asks once, also with the daily check off
+    if (k.key === "UPDATE_CHECK" && window.bnUpdateCheck && window.bnUpdateCheck.line) main.append(window.bnUpdateCheck.line("settings"));
     if (k.key === "BACKUP_HOUR" && keys.AUTO_UPDATE && keys.AUTO_UPDATE.value === "on") {
       const h = keys.AUTO_UPDATE_HOUR && /^\d+$/.test(keys.AUTO_UPDATE_HOUR.value || "") ? Number(keys.AUTO_UPDATE_HOUR.value) : 3;
       main.append(el("p", { class: "note set-extra", text: `Automatic updates are on: nightly backups use their window (${hourRange(h)}) instead.` }));

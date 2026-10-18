@@ -57,7 +57,7 @@ test("hostile input stays fast: 5,000 long near-miss candidates, a long query of
 });
 
 test("no regular expression is built from input in the portal's scripts", () => {
-  for (const f of ["fuzzy.js", "activity.js", "search.js", "code.js", "app.js", "settings.js", "tour.js"]) {
+  for (const f of ["fuzzy.js", "activity.js", "search.js", "code.js", "app.js", "settings.js", "tour.js", "updatecheck.js"]) {
     assert.ok(!/new RegExp\s*\(/.test(source(f)), `${f} builds a RegExp`);
   }
 });

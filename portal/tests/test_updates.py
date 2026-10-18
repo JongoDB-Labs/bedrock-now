@@ -804,3 +804,23 @@ def test_check_for_updates_works_over_remote_access(settings, paths):
         assert r.status_code == 200 and r.json()["update"]["latest"] == "v0.9.0"   # reading releases is harmless
     assert asked(gh) == 1
 
+
+def test_the_page_offers_check_for_updates_on_home_settings_and_search():
+    from pathlib import Path
+    static = Path(__file__).parent.parent / "portal" / "static"
+    html = (static / "index.html").read_text()
+    js = (static / "updatecheck.js").read_text()
+    # Home's header: the line, its result announced
+    assert 'id="release-line"' in html and 'src="/static/updatecheck.js"' in html
+    assert html.index('src="/static/app.js"') < html.index('src="/static/updatecheck.js"') < html.index('src="/static/search.js"')
+    assert '"aria-live": "polite"' in js and "Check for updates" in js
+    assert 'fetch("/api/update/check"' in js and 'method: "POST"' in js and '"X-Requested-With": "bedrock-now"' in js
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
+        assert sink not in js, sink
+    # it sends nothing about this install: GitHub's public release list, the tooltip says so
+    assert "sends nothing about this install" in js
+    # Settings › Updates & backups › Daily release check, and Ctrl/⌘+K
+    assert 'k.key === "UPDATE_CHECK"' in (static / "settings.js").read_text()
+    assert "Check for updates" in (static / "search.js").read_text()
+    assert "Check for updates" in (static / "tour.js").read_text()
+    assert "bnUpdateCheck" in (static / "app.js").read_text()

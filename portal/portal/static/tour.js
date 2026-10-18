@@ -801,6 +801,7 @@
       body: () => [
         list("ul", [
           ["When a release is out, Home shows an ", b("update card"), " with each release's notes; ", b("Update now"), " backs up, updates and restarts (a few minutes)."],
+          [b("Check for updates"), " at the top of Home (and in ", settings("Updates & backups", "UPDATE_CHECK"), ") asks GitHub now instead of waiting for the daily check."],
           [settings("Updates & backups"), ": ", b("Automatic updates"), " at night, ", b("Nightly backups"), ", ", b("Back up now"), " and the list of backups."],
           ["A new version misbehaves? ", b("Roll back"), " on Home, or ", code("./stack rollback"), ", goes back to the version before, with its data."]]),
         cfg && !cfg.helper ? p("These buttons, and changes in Settings, need the update helper:") : p("In a terminal, the same:"),

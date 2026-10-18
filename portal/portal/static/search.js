@@ -1,7 +1,7 @@
 // Search: Ctrl+K (⌘K on a Mac) anywhere in the portal, the search box at the top of the sidebar (desktop, tablet) or
 // More → Search (phone). One box, results grouped, keyboard-driven (↑ ↓ Enter Esc), matched by fuzzy.js (linear time,
 // capped inputs). What it looks through:
-//   Pages               the portal's tabs, Activity and the walkthrough
+//   Pages               the portal's tabs, Activity, the walkthrough and Check for updates (a release check now)
 //   Settings            every section and setting of the Settings page (/api/search/index: catalog/settings-layout.tsv
 //                       and the settings' labels); Enter opens #settings/<KEY> (the section, the setting lit up)
 //   Code sessions       the Code page's sessions — asked from the Code tab's frame when this browser has it open or
@@ -148,6 +148,8 @@
     out.push(tab("settings", "Settings", "Passwords, keys, budgets, voice, the Code page, updates", "preferences"));
     if (window.bnActivity && window.bnActivity.open) out.push({ group: "pages", key: "page:activity", title: "Activity", sub: "Budgets, updates, jobs, Code sessions that need you", alt: "notifications bell", run: () => window.bnActivity.open() });
     if (window.bnTour && window.bnTour.open) out.push({ group: "pages", key: "page:tour", title: "Walkthrough", sub: "Set up, Chat, Code, your own tools", alt: "tour", run: () => window.bnTour.open() });
+    // a command: Home, and a release check now (updatecheck.js; the result is said there)
+    if (window.bnUpdateCheck && window.bnUpdateCheck.run) out.push({ group: "pages", key: "page:update-check", title: "Check for updates", sub: "Ask GitHub now whether a newer bedrock-now is out", alt: "update release new version upgrade", run: () => window.bnUpdateCheck.run({ home: true }) });
     return out;
   }
   function openTab(id) {
