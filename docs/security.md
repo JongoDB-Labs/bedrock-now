@@ -1776,8 +1776,9 @@ default).
   end), labelled *git in the sandbox said:*, under one fixed line:
   "bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it."
   The box scrolls, so however long the words are (invisible characters — also Hangul fillers, the soft hyphen and
-  variation selectors — are shown as ⟨U+202E⟩: up to ~2,700 characters) the line stays in view — in the toast, the Git
-  panel, a diff, the Review pane, the Clone dialog, Test connection's result and Recent use. The same for what git
+  variation selectors other than an emoji's — are shown as ⟨U+202E⟩: up to ~2,700 characters) the line stays in
+  view — in the toast, the Git panel, a diff, the Review pane, the Clone dialog, Test connection's result and Recent
+  use. The same for what git
   reports in an answer rather than a failure — why a folder is not a repository, a log it could not read: anything but
   bn-coded's own fixed texts is "git could not answer" (or "git could not read the log") with the words apart, in the
   same box. bn-coded's own fixed texts read plainly, as before: its reasons ("not a git repository", "git did not

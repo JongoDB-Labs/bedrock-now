@@ -8,8 +8,9 @@
 const BIDI = /[\u202a-\u202e\u2066-\u2069\u200b-\u200f\u061c\u2028\u2029\u2060-\u2064\ufeff\u{e0000}-\u{e007f}]/gu;
 /** More invisible characters, made visible in labels (one line: a name, a title, an error, the sandbox's words in a
  *  box): Hangul fillers, the Mongolian vowel separator, the combining grapheme joiner, the soft hyphen and variation
- *  selectors — not in visible() (Claude's answers): an emoji's variation selector (U+FE0F) belongs there. */
-const LABEL_INVISIBLE = /[\u00ad\u034f\u115f\u1160\u180e\u3164\uffa0\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/gu;
+ *  selectors — but not the text/emoji presentation selectors U+FE0E/U+FE0F (harmless: "⚠️" stays an emoji), and none
+ *  of these in visible() (Claude's answers). */
+const LABEL_INVISIBLE = /[\u00ad\u034f\u115f\u1160\u180e\u3164\uffa0\ufe00-\ufe0d\u{e0100}-\u{e01ef}]/gu;
 /** C0/C1 controls except tab and newline (and CR, which we drop). */
 const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 /** ANSI escape sequences (colours in Bash output): CSI … final byte, and OSC … BEL/ST. */
