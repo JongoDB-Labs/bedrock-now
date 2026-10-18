@@ -301,7 +301,7 @@ test('run.start: the task\'s fixed wrapper in a new tmux window (the session mad
   assert.ok(inner.includes('NPM_CONFIG_USERCONFIG=/dev/null') && inner.includes('NPM_CONFIG_GLOBALCONFIG=/nonexistent/npmrc'));
   assert.ok(!inner.some((a) => /^(NODE_OPTIONS|BASH_ENV|LD_[A-Z_]+|npm_config_[a-z_]+|PYTHON[A-Z]*)=/i.test(a) && !/^NPM_CONFIG_(USERCONFIG|GLOBALCONFIG|UPDATE_NOTIFIER)=/.test(a)), inner.join(' '));
   const rec = JSON.parse(fs.readFileSync(path.join(RUNS, `${r.id}.json`), 'utf8'));
-  assert.deepEqual({ ...rec, startedAt: 0 }, { id: r.id, source: 'npm', name: 'test', command: `${P.node} ${P.npm} run -- test`, startedAt: 0, window: '@7' });
+  assert.deepEqual({ ...rec, startedAt: 0 }, { id: r.id, source: 'npm', name: 'test', command: `${P.node} ${P.npm} run -- test`, startedAt: 0, window: '@7', root: '' });
   // refused: a digest that is not the task's now, a changed file, names and sources that are not listed
   for (const [req, why] of [
     [{ source: 'npm', name: 'test', digest: 'a'.repeat(64) }, /changed since it was shown: review it again/],
@@ -625,6 +625,10 @@ test('the code container passes only the fixed wrappers and checked runs to the 
   const run = api.runResultRow({ id: 'a'.repeat(16), source: 'npm', name: 'test\u001b[31m', command: 'npm run -- test', window: '@7;x', startedAt: 1, state: 'done',
     exitCode: 300, signal: 'KILL', error: 7, endedAt: 2, bytes: -1, tail: 'y'.repeat(70000), cut: 'yes' }, 4096);
   assert.deepEqual({ ...run, tail: run.tail.length }, { id: 'a'.repeat(16), source: 'npm', name: 'test [31m', command: 'npm run -- test', window: null, startedAt: 1, state: 'done',
-    exitCode: null, signal: null, error: null, endedAt: 2, bytes: null, tail: 4096, cut: true });
+    root: '', exitCode: null, signal: null, error: null, endedAt: 2, bytes: null, tail: 4096, cut: true });
+  // the project's folder a run ran in: one a project may have, else the workspace's ('')
+  const row = (root) => api.runResultRow({ id: 'b'.repeat(16), source: 'npm', name: 'test', command: 'npm run -- test', startedAt: 1, state: 'running', root }, 10);
+  assert.equal(row('apps/web').root, 'apps/web');
+  for (const bad of ['../etc', '/etc', 'a/.git', 7, null]) assert.equal(row(bad).root, '', String(bad));
   for (const bad of [{ id: 'x' }, { id: 'a'.repeat(16), source: 'npm', state: 'weird' }, { id: 'a'.repeat(16), source: 'sh', state: 'done' }, null, 'x']) assert.equal(api.runResultRow(bad), null);
 });

@@ -1499,32 +1499,9 @@ def palette(page, text):
     page.get_by_test_id("cp-input").press("Enter")
 
 
-@check("browser", "code-ui-git-remotes")
-@saved
-def ui_git_remotes(ctx):
-    """The Git panel's remotes against the suite's own git server (run.sh E2E_GIT_SERVER=1: tests/e2e/gitsrv on the
-    sandbox's network, the sandbox on TERMINAL_EGRESS=host; never a real host): Git hosts with an access token (the
-    server's own CA) and with an SSH key made by the Code page (the server takes any key; Test connection learns its
-    host key); a clone over https into a folder of the workspace, a commit, Push with its confirmation, a new branch
-    published with Open a pull request; a second clone over ssh, then a pull of the first one's push (a fast-forward).
-    The token is never on the page or in an answer; the sandbox never has it on disk. No model calls."""
-    if not GIT_SERVER:
-        raise Skip("needs the suite's git server (tests/e2e/run.sh with E2E_GIT_SERVER=1)")
-    need_on()
-    token = os.environ.get("E2E_GIT_TOKEN", "")
-    ca = base64.b64decode(os.environ.get("E2E_GIT_CA_B64", "")).decode()
-    expect(len(token) >= 20 and "BEGIN CERTIFICATE" in ca, "no token or CA from run.sh")
-    page, rec = ui_page(ctx, "code-ui-git-remotes")
-    c = Code.on(page, rec, goto=False)
-    https_url, ssh_url = "https://gitsrv:8443/e2e/demo.git", "ssh://git@gitsrv:2222/srv/git/e2e/demo.git"
-    a, b = "e2e-remote-a", "e2e-remote-b"
-    there = {e["name"] for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", [])}
-    for d in (a, b):
-        if d in there:
-            c.api("DELETE", f"/api/fs?path={d}")
-    page.keyboard.press("Control+Shift+G")
-    see(page.get_by_test_id("git-panel")).to_be_visible(timeout=30000)
-    # Git hosts: the https one (kind GitHub, for its pull request link), with the token and the server's CA
+def _gitsrv_https_host(page, token, ca, https_url):
+    """Git hosts › Add: the suite's git server over https (kind GitHub), its token and CA; Test connection works.
+    -> the Git hosts dialog, still open."""
     palette(page, "git: git hosts")
     dlg = page.get_by_test_id("git-hosts-dialog")
     see(dlg).to_be_visible(timeout=30000)
@@ -1542,6 +1519,44 @@ def ui_git_remotes(ctx):
     tok.get_by_test_id("git-host-test-url").fill(https_url)
     tok.get_by_test_id("git-host-test").click()
     see(tok.get_by_test_id("git-host-test-result")).to_contain_text("It works", timeout=90000)
+    return dlg
+
+
+def _drop_projects(c, roots):
+    """The project records of these folders (record only: the folders stay)."""
+    for x in (c.api("GET", "/api/projects")["json"] or {}).get("projects", []):
+        if x.get("root") in roots:
+            c.api("DELETE", f"/api/projects/{x['id']}")
+
+
+@check("browser", "code-ui-git-remotes")
+@saved
+def ui_git_remotes(ctx):
+    """The Git panel's remotes against the suite's own git server (run.sh E2E_GIT_SERVER=1: tests/e2e/gitsrv on the
+    sandbox's network, the sandbox on TERMINAL_EGRESS=host; never a real host): Git hosts with an access token (the
+    server's own CA) and with an SSH key made by the Code page (the server takes any key; Test connection learns its
+    host key); a clone over https into a folder of the workspace (a project of its own), a commit, Push with its confirmation, a new branch
+    published with Open a pull request; a second clone over ssh, then a pull of the first one's push (a fast-forward).
+    The token is never on the page or in an answer; the sandbox never has it on disk. No model calls."""
+    if not GIT_SERVER:
+        raise Skip("needs the suite's git server (tests/e2e/run.sh with E2E_GIT_SERVER=1)")
+    need_on()
+    token = os.environ.get("E2E_GIT_TOKEN", "")
+    ca = base64.b64decode(os.environ.get("E2E_GIT_CA_B64", "")).decode()
+    expect(len(token) >= 20 and "BEGIN CERTIFICATE" in ca, "no token or CA from run.sh")
+    page, rec = ui_page(ctx, "code-ui-git-remotes")
+    c = Code.on(page, rec, goto=False)
+    https_url, ssh_url = "https://gitsrv:8443/e2e/demo.git", "ssh://git@gitsrv:2222/srv/git/e2e/demo.git"
+    a, b = "e2e-remote-a", "e2e-remote-b"
+    there = {e["name"] for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", [])}
+    _drop_projects(c, (a, b))
+    for d in (a, b):
+        if d in there:
+            c.api("DELETE", f"/api/fs?path={d}")
+    page.keyboard.press("Control+Shift+G")
+    see(page.get_by_test_id("git-panel")).to_be_visible(timeout=30000)
+    # Git hosts: the https one (kind GitHub, for its pull request link), with the token and the server's CA
+    dlg = _gitsrv_https_host(page, token, ca, https_url)
     # the ssh one: a key made by the Code page; Test connection learns the server's host key (shown)
     page.get_by_test_id("git-host-add").click()
     page.get_by_test_id("git-host-kind").select_option("other")
@@ -1648,10 +1663,14 @@ def ui_git_remotes(ctx):
     for f in (f"{a}/.git/config", f"{b}/.git/config"):
         r = c.api("GET", f"/api/fs/file?path={f}")
         expect(r["status"] == 200 and token not in r["text"], f"{f}: {r['status']}")
-    # clean up: the hosts, the clones
+    # each clone became a project of its own (the repository picker lists projects)
+    roots = {x["root"] for x in c.api("GET", "/api/projects")["json"]["projects"]}
+    expect({a, b} <= roots, f"the clones are not projects: {sorted(roots)}")
+    # clean up: the hosts, the clones and their project records
     for h in c.api("GET", "/api/git/hosts")["json"]["hosts"]:
         c.api("DELETE", f"/api/git/hosts/{h['id']}")
     page.get_by_test_id("git-repo").select_option("")
+    _drop_projects(c, (a, b))
     for d in (a, b):
         c.api("DELETE", f"/api/fs?path={d}")
     csp_clean(page, rec, [r"^400 POST .*/api/git/", r"console.error Failed to load resource.*400"])
@@ -1697,6 +1716,7 @@ def ui_git_oauth(ctx):
     d = "e2e-oauth"
     for h in c.api("GET", "/api/git/hosts")["json"]["hosts"]:
         c.api("DELETE", f"/api/git/hosts/{h['id']}")
+    _drop_projects(c, (d,))
     if d in {e["name"] for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", [])}:
         c.api("DELETE", f"/api/fs?path={d}")
     page.keyboard.press("Control+Shift+G")
@@ -1790,6 +1810,7 @@ def ui_git_oauth(ctx):
     expect(r["json"]["revoked"] is True, f"Remove: {r['json']}")
     expect(git_admin("/_e2e/log")["revokes"] == log3["revokes"] + 1, "no revocation sent")
     page.get_by_test_id("git-repo").select_option("")
+    _drop_projects(c, (d,))   # (the clone became a project of its own)
     c.api("DELETE", f"/api/fs?path={d}")
     csp_clean(page, rec, [r"^409 POST .*/api/git/run$", r"console.error Failed to load resource.*409"])
     return (f"Sign in with GitLab (gitsrv:8443, its application ID and CA): the code shown and entered at the provider, the host row "
@@ -1797,6 +1818,179 @@ def ui_git_oauth(ctx):
             f"{log2['refreshes']} renewals), the server never saw a stale token; its refresh token revoked: the fetch said Sign in "
             "again, so did the row; Sign in again, then a fetch worked; removed and revoked at the provider; no token in an answer; "
             "no model calls; no CSP violations")
+
+
+PROJ_NEW, PROJ_CLONE = "e2e-proj-new", "e2e-proj-clone"
+
+
+@check("browser", "code-ui-projects")
+@saved
+def ui_projects(ctx):
+    """Projects on Haiku, against the suite's git server (run.sh E2E_GIT_SERVER=1): New project › An empty folder (git
+    init) shows it in the chip and the Projects tab; New project › Clone a repository: the clone is a project of its
+    own; a Haiku session started in it runs in its folder (pwd), is closed, then resumed from the Projects tab (its
+    transcript found under that folder); Open a terminal here: a terminal window in its folder; Add to project: the
+    session shown in the empty project (it still runs in the clone); Remove from Code: the record goes, the folder
+    stays, the session is shown where its folder is again."""
+    if not GIT_SERVER:
+        raise Skip("needs the suite's git server (tests/e2e/run.sh with E2E_GIT_SERVER=1)")
+    need_haiku()
+    token = os.environ.get("E2E_GIT_TOKEN", "")
+    ca = base64.b64decode(os.environ.get("E2E_GIT_CA_B64", "")).decode()
+    expect(len(token) >= 20 and "BEGIN CERTIFICATE" in ca, "no token or CA from run.sh")
+    page, rec = ui_page(ctx, "code-ui-projects")
+    c = Code.on(page, rec, goto=False)
+    https_url = "https://gitsrv:8443/e2e/demo.git"
+    there = {e["name"] for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", [])}
+    _drop_projects(c, (PROJ_NEW, PROJ_CLONE))
+    for d in (PROJ_NEW, PROJ_CLONE):
+        if d in there:
+            c.api("DELETE", f"/api/fs?path={d}")
+    page.reload()
+    see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+    def ids():
+        return {x["root"]: x for x in c.api("GET", "/api/projects")["json"]["projects"]}
+
+    def proj(pid):
+        return page.locator(f"[data-testid=project][data-project='{pid}']")
+
+    def srow(pid, sid):
+        return proj(pid).locator(f"[data-testid=session-row][data-session='{sid}']")
+
+    def unfold(pid):
+        t = proj(pid).get_by_test_id("project-toggle")
+        if t.get_attribute("aria-expanded") == "false":
+            t.click()
+
+    chip = page.get_by_test_id("project-chip-name")
+    tf, sid = None, None
+    try:
+        # New project › An empty folder, git init: shown at once (the chip, the Projects tab, the Git panel)
+        page.get_by_test_id("side-sessions").click()
+        page.get_by_test_id("new-project").click()
+        dlg = page.get_by_test_id("new-project-dialog")
+        page.get_by_test_id("new-project-name").fill("../escape")
+        expect(page.get_by_test_id("new-project-create").is_disabled(), "a folder outside the workspace was taken")
+        page.get_by_test_id("new-project-name").fill(PROJ_NEW)
+        expect(page.get_by_test_id("new-project-git").is_checked(), "git init is not the default")
+        shot(page, "p1-code-new-project")
+        page.get_by_test_id("new-project-create").click()
+        see(dlg).to_have_count(0, timeout=30000)
+        see(chip).to_have_text(PROJ_NEW, timeout=30000)
+        empty = ids()[PROJ_NEW]
+        expect(empty["folder"] == "dir" and empty["git"] is True, f"the empty project: {empty}")
+        see(proj(empty["id"])).to_have_count(1)
+        page.keyboard.press("Control+Shift+G")
+        see(page.get_by_test_id("git-repo")).to_have_value(PROJ_NEW, timeout=30000)
+        # New project › Clone a repository: the Git panel's Clone dialog (Git hosts first: the server's token and CA)
+        _gitsrv_https_host(page, token, ca, https_url).get_by_role("button", name="Close").click()
+        page.get_by_test_id("side-sessions").click()
+        page.get_by_test_id("new-project").click()
+        page.get_by_test_id("new-project-clone").check()
+        page.get_by_test_id("new-project-create").click()
+        page.get_by_test_id("git-clone-url").fill(https_url)
+        page.get_by_test_id("git-clone-target").fill(PROJ_CLONE)
+        page.get_by_test_id("git-clone-next").click()
+        see(page.get_by_test_id("git-plan-summary")).to_contain_text(f"into {PROJ_CLONE}/", timeout=30000)
+        page.get_by_test_id("git-plan-run").click()
+        see(page.get_by_test_id("toast").last).to_contain_text("Cloned", timeout=120000)
+        see(chip).to_have_text(PROJ_CLONE, timeout=30000)
+        clone = ids()[PROJ_CLONE]
+        expect(clone["git"] is True, f"the clone: {clone}")
+        cwd = f"/workspace/{PROJ_CLONE}"
+        # a Haiku session in it: it runs in the clone's folder
+        page.get_by_test_id("side-sessions").click()
+        page.get_by_test_id("model-picker").click()
+        page.get_by_test_id("model-haiku").click()
+        proj(clone["id"]).get_by_test_id("project-new-session").click()
+        ask(page, "Use the Bash tool to run exactly this command, then reply with exactly what it printed and nothing else: pwd")
+        page.wait_for_function(f"(t) => !!document.querySelector('[data-testid=permission]') || ({ANSWERED})(t)", arg=_asked[id(page)], timeout=120000)
+        if page.get_by_test_id("perm-once").count():
+            page.get_by_test_id("perm-once").click()
+        answered(page)
+        expect(cwd in last_answer(page), f"pwd in the project's session: {last_answer(page)!r}")
+        sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+        st = state_of(c, sid)
+        expect(st.get("cwd") == cwd and st.get("project") == clone["id"], f"the session's folder: {st}")
+        see(srow(clone["id"], sid)).to_have_count(1, timeout=30000)
+        shot(page, "p2-code-project-session")
+        # closed, then resumed from the Projects tab (a new page: nothing but the backend remembers it)
+        expect(c.api("DELETE", f"/api/sessions/{sid}")["status"] == 200, "close")
+        page.reload()
+        see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+        c = Code.on(page, rec, goto=False)
+        row = next((x for x in c.api("GET", "/api/sessions")["json"]["sessions"] if x["id"] == sid), None)
+        expect(row and row.get("cwd") == cwd and row.get("project") == clone["id"], f"the saved session: {row}")
+        page.get_by_test_id("side-sessions").click()
+        see(chip).to_have_text(PROJ_CLONE, timeout=30000)
+        srow(clone["id"], sid).locator(".sess-main").click()
+        # (its transcript shown first: the prompt then goes to it, not to a new session)
+        see(page.get_by_test_id("msg-user").filter(has_text="reply with exactly what it printed")).to_be_visible(timeout=60000)
+        settled(page, "msg-user")
+        ask(page, "Which folder did pwd print in this conversation? Reply with that path only.")
+        answered(page)
+        expect(cwd in last_answer(page), f"after the resume: {last_answer(page)!r}")
+        expect(state_of(c, page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")).get("cwd") == cwd, "the resumed session's folder")
+        sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+        # Open a terminal here: a window of the terminal in the clone's folder
+        proj(clone["id"]).get_by_test_id("project-menu").click()
+        page.get_by_test_id("project-menu-terminal").click()
+        see(page.get_by_test_id("toast").last).to_contain_text(f"A terminal window in {cwd}", timeout=30000)
+        see(page.get_by_test_id("terminal")).to_be_visible()
+        tf = _terminal_frame(page)
+        if tf.locator("h1", has_text="Unlock the terminal").count():
+            tf.fill("#password", ENV["PORTAL_PASSWORD"])
+            tf.click("form[action='/.bn/unlock'] button[type=submit]")
+            tf = _terminal_frame(page)
+        tf.locator(".xterm").wait_for(timeout=30000)
+        _term_wait(tf, re.escape(cwd) + r" \$\s*$", 60)
+        shot(page, "p3-code-project-terminal")
+        # Add to project: the session shown in the empty project (it still runs in the clone's folder)
+        r = srow(clone["id"], sid)
+        r.hover()
+        r.get_by_test_id("session-menu").click()
+        page.get_by_test_id("session-add-to-project").click()
+        page.get_by_test_id("file-dialog").locator(f"[data-testid=file-dialog-item][data-project='{empty['id']}']").click()
+        see(page.get_by_test_id("file-dialog")).to_have_count(0, timeout=30000)
+        unfold(empty["id"])
+        see(srow(empty["id"], sid)).to_have_count(1, timeout=30000)
+        see(srow(clone["id"], sid)).to_have_count(0)
+        row = next((x for x in c.api("GET", "/api/sessions")["json"]["sessions"] if x["id"] == sid), None)
+        expect(row and row["project"] == empty["id"] and row["cwd"] == cwd, f"after Add to project: {row}")
+        # Remove from Code: the record goes, the folder stays; the session is shown where its folder is again
+        proj(empty["id"]).get_by_test_id("project-menu").click()
+        page.get_by_test_id("project-menu-remove").click()
+        see(page.get_by_test_id("remove-project-dialog")).to_be_visible(timeout=10000)
+        shot(page, "p4-code-remove-project")
+        page.get_by_test_id("remove-project-go").click()
+        see(proj(empty["id"])).to_have_count(0, timeout=30000)
+        expect(PROJ_NEW not in ids(), "the record is still there")
+        expect(PROJ_NEW in {e["name"] for e in c.api("GET", "/api/fs?path=.")["json"]["entries"]}, "the folder went with the record")
+        row = next((x for x in c.api("GET", "/api/sessions")["json"]["sessions"] if x["id"] == sid), None)
+        expect(row and row["project"] == clone["id"], f"after the removal: {row}")
+        unfold(clone["id"])
+        see(srow(clone["id"], sid)).to_have_count(1, timeout=30000)
+        csp_clean(page, rec, [r"^400 POST .*/api/git/", r"console.error Failed to load resource.*400"])
+    finally:
+        # clean up: the terminal window (its shell exits), the session, the host, the records, the folders
+        try:
+            if tf is not None:
+                tf.locator(".xterm-helper-textarea").focus()
+                page.keyboard.type("exit")
+                page.keyboard.press("Enter")
+            if sid:
+                c.api("DELETE", f"/api/sessions/{sid}")
+            for h in (c.api("GET", "/api/git/hosts")["json"] or {}).get("hosts", []):
+                c.api("DELETE", f"/api/git/hosts/{h['id']}")
+            _drop_projects(c, (PROJ_NEW, PROJ_CLONE))
+            for d in (PROJ_NEW, PROJ_CLONE):
+                c.api("DELETE", f"/api/fs?path={d}")
+        except Exception:  # noqa: BLE001 — cleanup never hides the failure
+            pass
+    return (f"New project › an empty folder with git init ({PROJ_NEW}/) and › a clone over https ({PROJ_CLONE}/): both in the chip "
+            f"and the Projects tab; a Haiku session there ran in {cwd} (pwd), was closed and resumed from the Projects tab; "
+            "Open a terminal here showed a window in that folder; Add to project showed the session in the empty project; "
+            "Remove from Code took the record only (the folder stayed); no CSP violations")
 
 
 @check("browser", "code-ui-phone")

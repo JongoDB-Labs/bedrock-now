@@ -42,8 +42,10 @@
 #                    (whose checks are the proxy's) skips. browser/code-ui-git-remotes then connects both kinds of Git
 #                    host, clones, pushes, publishes, pulls; browser/code-ui-git-oauth signs in with GitLab at its
 #                    stand-in OAuth provider (its HTTPS also on a free port of 127.0.0.1, where the check plays the
-#                    user), clones and pushes with renewals, signs in again. Never a real git host or provider; no
-#                    model calls.
+#                    user), clones and pushes with renewals, signs in again (no model calls); browser/code-ui-projects
+#                    makes an empty project and one by a clone, runs and resumes a Haiku session there, opens a
+#                    terminal window in it, files a session (Add to project), removes a record. Never a real git host
+#                    or provider.
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
