@@ -33,11 +33,15 @@ All notable changes to bedrock-now are documented here. The format follows
 - **The walkthrough's Connect a git host** and Settings' Git hosts row mention Sign in with GitHub / GitLab;
   `./stack git-host import` points to it (gh: it reaches less; glab's OAuth login: sign in with GitLab instead).
 - **What git in the sandbox says when a Git panel operation fails** (push, pull, fetch, clone, Test connection,
-  stage, unstage, discard, commit, status, log, diff, branches, remotes; Claude Code's words for Write message) is
-  never shown as a sentence of ours: the toast says what failed, and the words are in a box of their own, labelled
-  *git in the sandbox said:*, under the line "bedrock-now never asks you to enter a code except in Git hosts › Sign in,
-  right after you press it." — the box scrolls, so the line stays in view. A hostile sandbox cannot word its text as a
-  message from bedrock-now asking for a code.
+  stage, unstage, discard, commit, status, log, diff, branches, remotes; Claude Code's words for Write message), and
+  git's own words where it says why a folder is not a repository or a log could not be read (bn-coded's own fixed
+  reasons and refusals read as they are), are never shown as a sentence of ours: the toast or the panel says what
+  failed, and the words are in a box of their own, labelled *git in the sandbox said:*, under the line "bedrock-now
+  never asks you to enter a code except in Git hosts › Sign in, right after you press it." — the box scrolls, so the
+  line stays in view. A hostile sandbox cannot word its text as a message from bedrock-now asking for a code.
+- **Names, titles and errors on the Code page show more invisible characters** as `⟨U+…⟩`: Hangul fillers (U+115F,
+  U+1160, U+3164, U+FFA0), the Mongolian vowel separator, the combining grapheme joiner, the soft hyphen and
+  variation selectors (Claude's answers keep an emoji's).
 
 ## [0.15.0] - 2026-10-18
 

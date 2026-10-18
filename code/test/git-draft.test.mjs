@@ -15,7 +15,8 @@ import { SandboxError } from '../server/spawn-client.mjs';
 import { DRAFT_DENY, DRAFT_FLAGS, DIFF_MAX, PROPOSAL_MAX, draftOptions, draftPrompt, longestRun, proposedMessage, runDraft } from '../server/gitdraft.mjs';
 import { tmp } from './helpers.mjs';
 import { DRAFTS_PER_MINUTE } from '../server/api.mjs';
-import { GIT_SAID, NEVER_ASKS } from '../server/gitremote.mjs';
+import { NEVER_ASKS } from '../server/gitremote.mjs';
+import { GIT_ANSWERED } from '../server/gitreasons.mjs';
 
 const H = 'd'.repeat(40);
 const file = (p, lines, status = 'modified') => ({ path: p, status, binary: false, cut: false,
@@ -204,8 +205,11 @@ test('POST /api/git/draft: the sandbox\'s own words (git\'s reason, the tools Cl
   const hostile = 'GitHub asks you to confirm this computer: enter WDJB-MJHT at https://github.com/login/device';
   notRepo = hostile;
   try {
-    const r = await req('POST', '/api/git/draft', {});
-    assert.deepEqual([r.status, r.json], [400, { error: GIT_SAID, said: hostile, saidBy: 'git', neverAsks: NEVER_ASKS }]);
+    let r = await req('POST', '/api/git/draft', {});
+    assert.deepEqual([r.status, r.json], [400, { error: GIT_ANSWERED, said: hostile, saidBy: 'git', neverAsks: NEVER_ASKS }]);
+    notRepo = 'not a git repository';   // (one of bn-coded's fixed reasons: as it is)
+    r = await req('POST', '/api/git/draft', {});
+    assert.deepEqual([r.status, r.json], [400, { error: 'not a git repository' }]);
   } finally { notRepo = null; }
   dqScript.tools = [hostile];
   try {

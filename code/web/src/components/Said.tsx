@@ -5,9 +5,9 @@ import { NEVER_ASKS, SAID_BY } from '../git';
 import { label } from '../text';
 import type { SandboxWords } from '../types';
 
-// (the words come normalized — label(…, 300) in api.ts, invisible characters shown as ⟨U+202E⟩ —, so up to ~2,400
-// characters: shown whole, in their box that scrolls)
-const SHOWN = 2400;
+// (the words come normalized — label(…, 300) in api.ts, invisible characters shown as ⟨U+202E⟩ or ⟨U+E0100⟩ —, so up
+// to ~2,700 characters: shown whole, in their box that scrolls)
+const SHOWN = 3000;
 
 export function SandboxSaid({ words, compact = false, never = true }: { words: SandboxWords; compact?: boolean; never?: boolean }) {
   return (

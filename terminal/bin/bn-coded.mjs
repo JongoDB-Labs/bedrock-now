@@ -624,6 +624,25 @@ const GIT_PATCH_MAX = 6 << 20, GIT_NAMES_MAX = 2000, GIT_UNTRACKED_TEXT = 256 <<
 // what the RESULT's two lists may take (their paths and fields): far below a frame (4 MiB) whatever the names' length
 const GIT_LIST_BYTES = 1 << 20;
 const GIT_DEADLINE = 20000;
+// The git ops' fixed reasons (no repository, no answer): every one bn-coded sends, word for word — the code container
+// shows these as they are (code/server/gitreasons.mjs keeps the same list; code/test checks the two are equal and that
+// no reason here is written another way); any other reason carries git's own words (gitWhy), shown apart there.
+export const GIT_REASONS = Object.freeze({
+  missing: 'git is not installed in the sandbox',
+  noAnswer: 'git did not answer in time',
+  notRepo: 'not a git repository',
+  notTop: 'that folder is not the top of a git repository',
+  notWorkspace: 'the repository is not the workspace folder itself',
+  noGitDir: 'git: no git folder',
+  configNoAnswer: 'git config: no answer in time',
+  configTooMuch: 'git config: too much configuration',
+  tooManyDrivers: 'the repository defines too many diff or filter drivers to check',
+  tooManyDriversOrHooks: 'the repository defines too many diff or filter drivers or hooks to check',
+  badHead: 'git: an unexpected HEAD',
+  statusNoAnswer: 'git status: no answer in time',
+  diffNoAnswer: 'git diff: no answer in time',
+  logNoAnswer: 'git log: no answer in time',
+});
 // the configuration every run gets (GIT_CONFIG_COUNT: above every file), before the per-driver overrides
 export const GIT_CONFIG = [
   ['core.fsmonitor', 'false'], ['core.hooksPath', '/dev/null'], ['core.pager', 'cat'], ['core.quotePath', 'false'],
@@ -730,26 +749,26 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
   const no = (reason) => ({ repo: false, reason });
   const why = (r) => printable((r.err || '').trim().split('\n').pop() || `exit ${r.code}`, 200);
   let r = await run(GIT_ARGS.toplevel, { maxOut: 8192 });
-  if (r.missing) return no('git is not installed in the sandbox');
-  if (r.timedOut) return no('git did not answer in time');
-  if (r.code !== 0) return no(/not a git repository/i.test(r.err) ? 'not a git repository' : `git: ${why(r)}`);
+  if (r.missing) return no(GIT_REASONS.missing);
+  if (r.timedOut) return no(GIT_REASONS.noAnswer);
+  if (r.code !== 0) return no(/not a git repository/i.test(r.err) ? GIT_REASONS.notRepo : `git: ${why(r)}`);
   const [top, format] = r.out.toString('utf8').split('\n');
   let realTop = '';
   try { realTop = fs.realpathSync(top); } catch { /* below */ }
-  if (realTop !== fs.realpathSync(WORKSPACE)) return no('the repository is not the workspace folder itself');
+  if (realTop !== fs.realpathSync(WORKSPACE)) return no(GIT_REASONS.notWorkspace);
   // every filter and diff driver the configuration defines, switched off
   r = await run(GIT_ARGS.drivers, { maxOut: 1 << 20 });
-  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return no(`git config: ${r.timedOut ? 'no answer in time' : r.cut ? 'too much configuration' : why(r)}`);
+  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return no(r.timedOut ? GIT_REASONS.configNoAnswer : r.cut ? GIT_REASONS.configTooMuch : `git config: ${why(r)}`);
   const ov = driverOverrides(r.out.toString('utf8'));
-  if (!ov) return no('the repository defines too many diff or filter drivers to check');
+  if (!ov) return no(GIT_REASONS.tooManyDrivers);
   extra = ov;
   r = await run(GIT_ARGS.head, { maxOut: 4096 });
   const head = r.code === 0 ? r.out.toString('utf8').trim() : null;
-  if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return no('git: an unexpected HEAD');
+  if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return no(GIT_REASONS.badHead);
   const base = head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'];
   // the changed paths (exact, NUL-separated), then the patch
   r = await run(GIT_ARGS.names(base), { maxOut: namesMax });
-  if (r.timedOut || (r.code !== 0 && !r.cut)) return no(`git diff: ${r.timedOut ? 'no answer in time' : why(r)}`);
+  if (r.timedOut || (r.code !== 0 && !r.cut)) return no(r.timedOut ? GIT_REASONS.diffNoAnswer : `git diff: ${why(r)}`);
   let truncated = r.cut;
   const nameList = r.out.toString('utf8').split('\0');
   if (r.cut) nameList.pop();   // (the last name of a cut list may be cut too)
@@ -932,23 +951,23 @@ async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '
   const run = (args, { env: more = {}, config = [], add: plus = {}, ...opts } = {}) => runCapped(git, [...GIT_PANEL_PRE, ...args],
     { cwd: root.abs, env: gitEnv([...extra, ...config], more, { ceiling, add: { ...add, ...plus } }), timeoutMs: left(), ...opts });
   let r = await run(GIT_PANEL_ARGS.top, { maxOut: 16384 });
-  if (r.missing) return { no: 'git is not installed in the sandbox' };
-  if (r.timedOut) return { no: 'git did not answer in time' };
-  if (r.code !== 0) return { no: /not a git repository/i.test(r.err) ? 'not a git repository' : `git: ${gitWhy(r)}` };
+  if (r.missing) return { no: GIT_REASONS.missing };
+  if (r.timedOut) return { no: GIT_REASONS.noAnswer };
+  if (r.code !== 0) return { no: /not a git repository/i.test(r.err) ? GIT_REASONS.notRepo : `git: ${gitWhy(r)}` };
   const [top, format, gitdir] = r.out.toString('utf8').split('\n');
   let realTop = '';
   try { realTop = fs.realpathSync(top); } catch { /* below */ }
-  if (realTop !== fs.realpathSync(root.abs)) return { no: root.rel ? 'that folder is not the top of a git repository' : 'the repository is not the workspace folder itself' };
-  if (!gitdir || !path.isAbsolute(gitdir)) return { no: 'git: no git folder' };
+  if (realTop !== fs.realpathSync(root.abs)) return { no: root.rel ? GIT_REASONS.notTop : GIT_REASONS.notWorkspace };
+  if (!gitdir || !path.isAbsolute(gitdir)) return { no: GIT_REASONS.noGitDir };
   r = await run(GIT_PANEL_ARGS.config, { maxOut: 1 << 20 });
-  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return { no: `git config: ${r.timedOut ? 'no answer in time' : r.cut ? 'too much configuration' : gitWhy(r)}` };
+  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return { no: r.timedOut ? GIT_REASONS.configNoAnswer : r.cut ? GIT_REASONS.configTooMuch : `git config: ${gitWhy(r)}` };
   const ov = panelOverrides(r.out.toString('utf8'));
-  if (!ov) return { no: 'the repository defines too many diff or filter drivers or hooks to check' };
+  if (!ov) return { no: GIT_REASONS.tooManyDriversOrHooks };
   extra = [...GIT_PANEL_CONFIG, ...ov];
   r = await run(GIT_ARGS.head, { maxOut: 4096 });
-  if (r.timedOut) return { no: 'git did not answer in time' };
+  if (r.timedOut) return { no: GIT_REASONS.noAnswer };
   const head = r.code === 0 ? r.out.toString('utf8').trim() : null;
-  if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return { no: 'git: an unexpected HEAD' };
+  if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return { no: GIT_REASONS.badHead };
   const ws = (p) => (root.rel ? `${root.rel}/${p}` : p);
   return { run, head, base: head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'], gitdir, left, t0, procDir, root, ws, format };
 }
@@ -1046,7 +1065,7 @@ export async function gitStatus({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, li
   const g = await gitPrep({ git, deadlineMs, root });
   if (g.no) return { repo: false, reason: g.no };
   let r = await g.run(GIT_PANEL_ARGS.status, { maxOut: 4 << 20 });
-  if (r.timedOut || (r.code !== 0 && !r.cut)) return { repo: false, reason: `git status: ${r.timedOut ? 'no answer in time' : gitWhy(r)}` };
+  if (r.timedOut || (r.code !== 0 && !r.cut)) return { repo: false, reason: r.timedOut ? GIT_REASONS.statusNoAnswer : `git status: ${gitWhy(r)}` };
   let truncated = r.cut;
   const recs = r.out.toString('utf8');
   const st = parseStatusV2(r.cut ? recs.slice(0, recs.lastIndexOf('\0') + 1) : recs);
@@ -1083,7 +1102,7 @@ export async function gitLog({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, root 
   if (g.no) return { repo: false, reason: g.no };
   if (!g.head) return { repo: true, commits: [] };
   const r = await g.run(GIT_PANEL_ARGS.log(g.head), { maxOut: 1 << 20 });
-  if (r.timedOut || (r.code !== 0 && !r.cut)) return { repo: true, commits: [], error: `git log: ${r.timedOut ? 'no answer in time' : gitWhy(r)}` };
+  if (r.timedOut || (r.code !== 0 && !r.cut)) return { repo: true, commits: [], error: r.timedOut ? GIT_REASONS.logNoAnswer : `git log: ${gitWhy(r)}` };
   const f = r.out.toString('utf8').split('\0');
   const commits = [];
   // five fields a commit; a record that does not read as one ends the list (a crafted commit cannot shift the rest)
@@ -1118,7 +1137,7 @@ export async function gitFile(send, req, { git = GIT, deadlineMs = GIT_PANEL_DEA
     send(T.STDOUT, d); sent += d.length;
     return true;
   } });
-  if (!r.stopped && (r.timedOut || r.code !== 0)) return { repo: false, reason: `git diff: ${r.timedOut ? 'no answer in time' : gitWhy(r)}` };
+  if (!r.stopped && (r.timedOut || r.code !== 0)) return { repo: false, reason: r.timedOut ? GIT_REASONS.diffNoAnswer : `git diff: ${gitWhy(r)}` };
   return { repo: true, scope, path: p, mtimeMs: st?.mtimeMs ?? null, truncated: r.stopped === true };
 }
 
@@ -1604,7 +1623,7 @@ export async function gitRemoteState({ git = GIT, deadlineMs = GIT_PANEL_DEADLIN
   const g = await gitPrep({ git, deadlineMs, root });
   if (g.no) return { repo: false, reason: g.no };
   const r = await g.run(['config', '-z', '--get-regexp', '^(remote|branch|url)\\.'], { maxOut: 1 << 20 });
-  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return { repo: false, reason: `git config: ${r.timedOut ? 'no answer in time' : r.cut ? 'too much configuration' : gitWhy(r)}` };
+  if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return { repo: false, reason: r.timedOut ? GIT_REASONS.configNoAnswer : r.cut ? GIT_REASONS.configTooMuch : `git config: ${gitWhy(r)}` };
   const remotes = new Map(), branchCfg = new Map();
   let rewrites = 0;
   for (const rec of r.out.toString('utf8').split('\0')) {

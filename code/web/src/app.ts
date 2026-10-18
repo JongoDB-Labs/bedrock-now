@@ -2728,10 +2728,10 @@ export function refreshGit(repos = false): Promise<void> {
             }
             throw e;
           }
-          const log = status.repo ? await api.getGitLog(repo) : { commits: [] as GitCommit[], error: null };
+          const log = status.repo ? await api.getGitLog(repo) : { commits: [] as GitCommit[], error: null, said: null };
           const remote = status.repo ? await api.getGitRemote(repo).catch(() => null) : null;
           if (get().git.repo !== repo) continue;
-          setGit((g) => ({ ...g, status, commits: log.commits, error: log.error, errorSaid: null, remote }));
+          setGit((g) => ({ ...g, status, commits: log.commits, error: log.error, errorSaid: log.error ? log.said : null, remote }));
         } catch (e) {
           // (two reads run already: the next refresh has the answer)
           if (!(e instanceof api.ApiError && e.status === 429)) setGit((g) => ({ ...g, error: errText(e), errorSaid: api.saidOf(e) }));
@@ -2867,7 +2867,7 @@ export async function gitHostChange(fn: () => Promise<unknown>, done = ''): Prom
     if (done) toast(done, 'ok');
     return true;
   } catch (e) {
-    toast(errText(e), 'error');
+    toast(errText(e), 'error', undefined, api.saidOf(e));
     return false;
   } finally {
     await loadGitHosts();
@@ -2888,14 +2888,15 @@ export async function gitNet(action: 'fetch' | 'pull' | 'push' | 'publish', remo
     gitFailed(e, (m) => m, `${NET_VERB[action]} failed`);
   }
 }
-/** A clone: what it would do (the dialog then shows it for your confirmation). */
-export async function planClone(url: string, target: string, depth: number | null): Promise<string> {
+/** A clone: what it would do (the dialog then shows it for your confirmation) — or why not: ours, and the sandbox's
+ *  own words apart (said) when they are in them. */
+export async function planClone(url: string, target: string, depth: number | null): Promise<{ text: string; said: SandboxWords | null } | null> {
   try {
     const plan = await api.gitClonePlan(url, target, depth);
     setGit((x) => ({ ...x, plan }));
-    return '';
+    return null;
   } catch (e) {
-    return errText(e);
+    return { text: errText(e), said: api.saidOf(e) };
   }
 }
 export function cancelGitPlan(): void {
@@ -2967,7 +2968,7 @@ export async function loadGitDiff(key: string): Promise<void> {
   updateTab(key, (x) => (x.kind === 'gitdiff' ? { ...x, loading: true, error: null, said: null, n } : x));
   try {
     const d = await api.getGitFile(t.scope, t.path, t.repo);
-    updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: d.repo ? null : d.reason || 'not a git repository', file: d.files[0] ?? null } : x));
+    updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: d.repo ? null : d.reason || 'not a git repository', said: d.repo ? null : d.said ?? null, file: d.files[0] ?? null } : x));
   } catch (e) {
     updateTab(key, (x) => (x.kind === 'gitdiff' && x.n === n ? { ...x, loading: false, error: errText(e), said: api.saidOf(e) } : x));
   }

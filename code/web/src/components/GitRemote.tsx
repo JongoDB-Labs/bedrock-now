@@ -272,11 +272,11 @@ function CloneDialog({ onClose }: { onClose: () => void }) {
   const [touched, setTouched] = useState(false);
   const [here, setHere] = useState(false);
   const [shallow, setShallow] = useState(false);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<{ text: string; said: SandboxWords | null } | null>(null);
   const [waiting, setWaiting] = useState(false);
   const target = touched ? folder : cloneTarget(url);
   const go = async () => {
-    setErr('');
+    setErr(null);
     setWaiting(true);
     const e = await planClone(url.trim(), here ? '' : target.trim(), shallow ? 1 : null);
     setWaiting(false);
@@ -308,7 +308,12 @@ function CloneDialog({ onClose }: { onClose: () => void }) {
         A private repository needs its host connected (Git hosts): an https:// URL with a sign-in or an access token, an ssh one with an SSH key. Submodules
         are not cloned, and no hook of the repository runs.
       </p>
-      {err && <p class="plg-err small" role="alert" data-testid="git-clone-error">{label(err, 300)}</p>}
+      {err && (
+        <div class="plg-err small" role="alert" data-testid="git-clone-error">
+          {label(err.text, 300)}
+          {err.said && <SandboxSaid words={err.said} />}
+        </div>
+      )}
       <div class="dlg-actions">
         <button type="button" class="btn" onClick={() => openGitDialog('hosts')}>
           Git hosts…

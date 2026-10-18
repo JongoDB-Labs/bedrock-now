@@ -3654,6 +3654,19 @@ def git_sandbox_said(browser):
     assert ev.evaluate("(d) => d.querySelector('[data-testid=git-events-never]').compareDocumentPosition(d.querySelector('ul')) & 4") != 0, "the line above the list"
     p.shot("git-sandbox-said-hosts.png")
     post(NORMAL + "/__mock/git-said")
+    dlg.get_by_role("button", name="Close").click()
+    # git's reason for no repository: bn-coded's own as it is (no box); in the sandbox's own words: apart, under the line
+    post(NORMAL + "/__mock/git?repo=0")
+    page.get_by_test_id("git-refresh").click()
+    expect(page.get_by_test_id("git-norepo")).to_contain_text("not a git repository", timeout=10_000)
+    expect(page.get_by_test_id("git-norepo").get_by_test_id("sandbox-said")).to_have_count(0)
+    post(NORMAL + "/__mock/git?repo=0&reason=" + urllib.parse.quote(hostile))
+    page.get_by_test_id("git-refresh").click()
+    nr = page.get_by_test_id("git-norepo")
+    expect(nr).to_contain_text("git could not answer", timeout=10_000)
+    box_ok(nr.get_by_test_id("sandbox-said"), hostile)
+    p.shot("git-sandbox-said-norepo.png")
+    post(NORMAL + "/__mock/git")
     p.assert_clean()
     p.close()
 

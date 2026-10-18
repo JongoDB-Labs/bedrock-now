@@ -75,7 +75,9 @@ test('reviewOf: only the files bn-coded listed, untracked ones as new, the rest 
   assert.deepEqual(r.files.map((f) => [f.path, f.status, f.untracked, f.cut, f.mtimeMs, f.hunks.length]),
     [['x.txt', 'modified', false, false, 1.5, 1], ['gone.txt', 'deleted', false, true, null, 0], ['n.txt', 'added', true, false, 2, 1], ['huge.bin', 'added', true, true, 3, 0]]);
   assert.equal(r.head, 'a'.repeat(40));
-  assert.deepEqual(reviewOf({ repo: false, reason: '<b>not\na repo</b>' }, ''), { repo: false, reason: '<b>not a repo</b>', head: null, files: [], truncated: false, timedOut: false });
+  // (a reason not one of bn-coded's fixed ones: git's own words, apart — gitreasons.mjs; a fixed one as it is)
+  assert.deepEqual(reviewOf({ repo: false, reason: '<b>not\na repo</b>' }, ''), { repo: false, reason: 'git could not answer', said: '<b>not a repo</b>', saidBy: 'git', head: null, files: [], truncated: false, timedOut: false });
+  assert.deepEqual(reviewOf({ repo: false, reason: 'not a git repository' }, ''), { repo: false, reason: 'not a git repository', head: null, files: [], truncated: false, timedOut: false });
   assert.equal(reviewOf({ repo: true, head: 'zz', files: [] }, '').head, null);
 });
 

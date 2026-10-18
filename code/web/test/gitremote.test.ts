@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, SAID_BY, signInLife, signInReach, signInReady, syncState, within } from '../src/git';
-import { ApiError, normGitEvent, normGitHost, normGitPlan, normGitRemoteState, normSignInConfig, normSignInFlow, repoPath, isBranchName, saidOf, signInLink } from '../src/api';
+import { ApiError, normGitFileDiff, normGitLog, normGitReview, normGitStatus, normGitEvent, normGitHost, normGitPlan, normGitRemoteState, normSignInConfig, normSignInFlow, repoPath, isBranchName, saidOf, signInLink } from '../src/api';
 import type { GitHostView } from '../src/types';
 
 const host = (over: Record<string, unknown> = {}) => ({ id: 'h_0123456789ab', kind: 'github', label: 'GitHub', host: 'github.com', port: null, auth: 'ssh', username: 'git',
@@ -184,6 +184,14 @@ test('the sandbox\'s own words: only from the server\'s said (never the message)
   const ev = normGitEvent({ id: 'abcdef012345', at: 5, who: 'you', action: 'push', host: 'h', target: 't', ok: false, text: 'git in the sandbox refused', said: hostile });
   assert.deepEqual([ev?.text, ev?.said], ['git in the sandbox refused', hostile]);
   assert.equal(normGitEvent({ id: 'abcdef012345', at: 5, action: 'push', text: 'x', said: 7 })?.said, null);
+  // a reason (or the log's error) in the sandbox's words: apart, only when not a repository / with the error
+  assert.deepEqual(normGitStatus({ repo: false, reason: 'git could not answer', said: hostile, saidBy: 'git' }).said, { said: hostile, by: 'git' });
+  assert.equal(normGitStatus({ repo: false, reason: 'not a git repository' }).said, null);
+  assert.equal(normGitStatus({ repo: true, said: hostile }).said, null);
+  assert.deepEqual(normGitLog({ repo: true, commits: [], error: 'git could not read the log', said: hostile }).said, { said: hostile, by: 'git' });
+  assert.equal(normGitLog({ repo: true, commits: [], said: hostile }).said, null);
+  assert.deepEqual(normGitFileDiff({ repo: false, reason: 'git could not answer', said: hostile }, 'staged', null).said, { said: hostile, by: 'git' });
+  assert.deepEqual(normGitReview({ repo: false, reason: 'git could not answer', said: hostile }).said, { said: hostile, by: 'git' });
   // the labels and the fixed line, word for word (the server's and the mock's the same: tests/test_code.sh)
   assert.deepEqual(SAID_BY, { git: 'git in the sandbox said:', claude: 'Claude Code in the sandbox said:' });
   assert.equal(NEVER_ASKS, 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.');

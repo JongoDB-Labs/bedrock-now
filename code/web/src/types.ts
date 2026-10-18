@@ -514,6 +514,8 @@ export interface GitReview {
   /** false: not a git repository here (or no git): `reason` says why */
   repo: boolean;
   reason: string;
+  /** the reason's (or the log's error's) words from git in the sandbox, when not one of bn-coded's fixed ones: apart */
+  said?: SandboxWords | null;
   head: string | null;
   files: GitFile[];
   truncated: boolean;
@@ -542,6 +544,8 @@ export interface GitIdentity {
 export interface GitStatus {
   repo: boolean;
   reason: string;
+  /** the reason's (or the log's error's) words from git in the sandbox, when not one of bn-coded's fixed ones: apart */
+  said?: SandboxWords | null;
   /** the repository folder of the workspace this is ('' : the workspace folder itself) */
   root: string;
   branch: string | null;
@@ -760,6 +764,8 @@ export interface GitRunResult {
 export interface GitFileDiff {
   repo: boolean;
   reason: string;
+  /** the reason's (or the log's error's) words from git in the sandbox, when not one of bn-coded's fixed ones: apart */
+  said?: SandboxWords | null;
   scope: GitScope;
   path: string | null;
   files: GitFile[];

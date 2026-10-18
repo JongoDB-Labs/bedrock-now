@@ -105,7 +105,7 @@ export function ReviewPane({ active }: { active: boolean }) {
               : st.loading
                 ? 'Asking git what changed…'
                 : "Claude's own edits in this session."}
-        {source !== 'git' && !(st.git && !st.git.repo) && st.error && st.errorSaid && <SandboxSaid words={st.errorSaid} />}
+        {source !== 'git' && (st.git && !st.git.repo ? st.git.said && <SandboxSaid words={st.git.said} /> : st.error && st.errorSaid && <SandboxSaid words={st.errorSaid} />)}
         {git?.truncated && <span class="warn-text"> Not every change could be listed (the diff is larger than 6 MB): the rest is in the terminal (git diff).</span>}
         {git?.timedOut && <span class="warn-text"> git took too long: the list may be incomplete.</span>}
       </div>

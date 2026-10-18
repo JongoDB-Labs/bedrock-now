@@ -106,9 +106,10 @@ function resetFs() {
   gitCommits = MOCK_COMMITS();
   gitAhead = 0;
 }
-// the workspace's "last commit" (GET /api/git/diff compares with it); /__mock/git?repo=0 makes it no repository
+// the workspace's "last commit" (GET /api/git/diff compares with it); /__mock/git?repo=0 makes it no repository (&reason=…: git's reason in a hostile sandbox's words)
 let gitHead = new Map();
 let gitRepo = true;
+let gitNoRepoSaid = '';
 // the Git panel: the index (what is staged) between the last commit and the files, the log, commits not pushed yet
 let gitIndex = new Map();
 let gitCommits = [];
@@ -408,9 +409,11 @@ async function gitPanel(p, m, url, req) {
   const remote = await gitRemotePanel(p, m, url, req);
   if (remote) return remote;
   if (!gitRepo) {
-    if (p === '/api/git/status') return [200, { repo: false, reason: 'not a git repository', staged: [], unstaged: [], untracked: [], conflicts: [] }];
-    if (p === '/api/git/log') return [200, { repo: false, reason: 'not a git repository', commits: [] }];
-    if (p === '/api/git/file') return [200, { repo: false, reason: 'not a git repository', files: [] }];
+    // (/__mock/git?repo=0&reason=…: git's reason in a hostile sandbox's words — answered as gitreasons.mjs does)
+    const why = gitNoRepoSaid ? { reason: 'git could not answer', said: gitNoRepoSaid, saidBy: 'git' } : { reason: 'not a git repository' };
+    if (p === '/api/git/status') return [200, { repo: false, ...why, staged: [], unstaged: [], untracked: [], conflicts: [] }];
+    if (p === '/api/git/log') return [200, { repo: false, ...why, commits: [] }];
+    if (p === '/api/git/file') return [200, { repo: false, ...why, files: [] }];
     return [400, { error: 'not a git repository' }];
   }
   if (p === '/api/git/status' && m === 'GET') return [200, gitStatusMock()];
@@ -489,7 +492,7 @@ async function gitPanel(p, m, url, req) {
     const x = b.path;
     if (!relOk(x)) return [400, { error: 'bad path' }];
     const f = fsState.get(x), i = gitIndex.get(x);
-    if (b.ifMtimeMs !== undefined && b.ifMtimeMs !== null && (f ? f.mtimeMs : null) !== b.ifMtimeMs) return [409, sandboxWords('changed on disk since it was shown')];
+    if (b.ifMtimeMs !== undefined && b.ifMtimeMs !== null && (f ? f.mtimeMs : null) !== b.ifMtimeMs) return [409, { error: 'changed on disk since it was shown' }];   // (one of bn-coded's fixed refusals: plainly)
     const stamp = Date.now().toString(36);
     const trash = () => {
       fsState.set(`.bedrock-now-trash/${stamp}/${x}`, f);
@@ -2343,6 +2346,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (url.pathname === '/__mock/git') {
         gitRepo = url.searchParams.get('repo') !== '0';
+        gitNoRepoSaid = (url.searchParams.get('reason') || '').slice(0, 300);
         if (url.searchParams.get('commit') === '1') {
           gitHead = new Map([...fsState].map(([p2, e]) => [p2, e.data]));
           gitIndex = new Map(gitHead);
@@ -2389,6 +2393,7 @@ const server = http.createServer(async (req, res) => {
         beacons.length = 0;
         resetFs();
         gitRepo = true;
+        gitNoRepoSaid = '';
         resetPlugins();
         resetBudget();
         locked = false;

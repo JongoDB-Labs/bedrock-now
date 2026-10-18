@@ -12,6 +12,7 @@ import { makeOAuth } from './oauth.mjs';
 import { agentAnswer, FAILURE, knownHostFingerprint, KNOWN_HOSTS } from './sshagent.mjs';
 import { short, int } from './validate.mjs';
 import { SandboxError } from './spawn-client.mjs';
+import { plainRefusal, reasonOf } from './gitreasons.mjs';
 
 // --- the URL rules (bn-coded's parseRemoteUrl, the same: the sandbox checks again, and re-reads the URL itself) ---
 const HOST_NAME = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$/;
@@ -86,7 +87,7 @@ export function reposOf(r) {
 const urlList = (v) => (Array.isArray(v) ? v.slice(0, 16).filter((u) => typeof u === 'string' && u.length <= 1200).map((u) => short(u, 1200)) : []);
 // remoteStateOf(r) -> git.remote.state as the code container keeps it (every name, URL and count checked)
 export function remoteStateOf(r) {
-  if (!r || r.repo !== true) return { repo: false, reason: short(r?.reason, 300) || 'git is not available' };
+  if (!r || r.repo !== true) return { repo: false, ...reasonOf(r?.reason) };
   const remotes = [];
   for (const x of Array.isArray(r.remotes) ? r.remotes.slice(0, 32) : []) {
     if (!x || !REMOTE_NAME.test(x.name || '') || remotes.some((y) => y.name === x.name)) continue;
@@ -127,12 +128,14 @@ export class SandboxSaid extends HostError {
     this.saidBy = by === 'claude' ? 'claude' : 'git';
   }
 }
-// sandboxFailure(e) -> the sandbox's refusal (its ERROR, in its own words) as SandboxSaid; anything else as it is —
-// ours (a timeout, an unreachable socket, a malformed answer: main.mjs's sandboxStatus)
+// sandboxFailure(e) -> the sandbox's refusal (its ERROR) read plainly when it is one of bn-coded's fixed texts
+// (gitreasons.mjs), else in its own words as SandboxSaid; anything else as it is — ours (a timeout, an unreachable
+// socket, a malformed answer: main.mjs's sandboxStatus)
 export function sandboxFailure(e) {
   if (!(e instanceof SandboxError) || e.kind !== 'refused') return e;
   if (/ENOENT/.test(e.message)) return err(404, 'no such file or folder');
-  return new SandboxSaid(/changed on disk|exists already/.test(e.message) ? 409 : 400, e.message);
+  const status = /changed on disk|exists already/.test(e.message) ? 409 : 400;
+  return plainRefusal(e.message) ? err(status, e.message) : new SandboxSaid(status, e.message);
 }
 // sandboxWords(e, path) -> {error, said, saidBy} when a failure on the Git panel's routes (/api/git/…) is in the
 // sandbox's words (main.mjs answers the fixed sentence, its words apart and NEVER_ASKS), else null
@@ -314,7 +317,7 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
     if (!['fetch', 'pull', 'push', 'publish'].includes(action)) throw err(400, 'action: fetch, pull, push or publish');
     if (b.remote !== undefined && b.remote !== null && !REMOTE_NAME.test(b.remote)) throw err(400, 'not a remote name');
     const st = await state(repo);
-    if (!st.repo) throw err(400, st.reason);
+    if (!st.repo) throw st.said ? new SandboxSaid(400, st.said, 'git', st.reason) : err(400, st.reason);   // (git's own words apart)
     const push = action === 'push' || action === 'publish';
     if (st.state && action !== 'fetch') throw err(400, `a ${st.state} is in progress: finish it in the terminal`);
     const cur = st.branch;

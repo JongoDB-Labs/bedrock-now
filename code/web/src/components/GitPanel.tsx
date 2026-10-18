@@ -72,6 +72,7 @@ export function GitPanel() {
         <div class="pane-msg" data-testid="git-norepo">
           <Icon name="branch" size={22} />
           <div>{label(st.reason, 300) || 'Not a git repository'}</div>
+          {st.said && <SandboxSaid words={st.said} />}
           <div class="muted small">Clone one here, or `git init` in the terminal makes this folder a repository.</div>
           <NoRepoActions />
         </div>

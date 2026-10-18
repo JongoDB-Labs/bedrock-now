@@ -11,6 +11,7 @@ import { SessionError } from './sessions.mjs';
 import { isUuid, relPath, fileName, short, str, int, num, oneOf, isFullModel } from './validate.mjs';
 import { DraftError, draftPrompt, runDraft } from './gitdraft.mjs';
 import { repoOk, SandboxSaid } from './gitremote.mjs';
+import { reasonOf, GIT_LOG_FAILED } from './gitreasons.mjs';
 import { watched } from './watch.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
@@ -362,7 +363,8 @@ export function makeApi({ call, sessions, reloadPollMs = 1000, reloadMaxMs = 100
     try {
       const repo = repoOf(body?.repo);
       const st = await gitStatus(repo);
-      if (!st.repo) throw new SandboxSaid(400, st.reason || 'not a git repository');   // (git's reason: its words, apart)
+      // (git's reason: bn-coded's fixed one as it is, git's own words apart)
+      if (!st.repo) throw st.said ? new SandboxSaid(400, st.said, 'git', st.reason) : new HttpError(400, st.reason);
       if (!st.staged.length) throw new HttpError(400, 'nothing is staged');
       const f = await gitFile({ scope: 'staged', repo });
       const r = await runDraft({ query: sessions.query, spawn: sessions.spawn, model, prompt: draftPrompt(st.staged, f.files), log: sessions.log ?? (() => {}), signal });
@@ -789,7 +791,7 @@ export function parseGitDiff(text) {
 const mtime = (v) => num(v, 0, 1e14);
 // reviewOf(result, patch) -> what GET /api/git/diff answers: {repo, reason, head, files, truncated, timedOut}
 export function reviewOf(r, patch) {
-  if (!r || r.repo !== true) return { repo: false, reason: short(r?.reason, 300) || 'git is not available', head: null, files: [], truncated: false, timedOut: false };
+  if (!r || r.repo !== true) return { repo: false, ...reasonOf(r?.reason), head: null, files: [], truncated: false, timedOut: false };
   const parsed = parseGitDiff(patch);
   const files = [];
   const seen = new Set();
@@ -856,7 +858,7 @@ const gitWatchOf = (x) => {
 export function gitStatusOf(r) {
   const lists = { staged: [], unstaged: [], untracked: [], conflicts: [] };
   if (!r || r.repo !== true) {
-    return { repo: false, reason: short(r?.reason, 300) || 'git is not available', branch: null, detached: false, head: null, upstream: null, ahead: null, behind: null,
+    return { repo: false, ...reasonOf(r?.reason), branch: null, detached: false, head: null, upstream: null, ahead: null, behind: null,
       state: null, identity: null, ...lists, truncated: false };
   }
   let n = 0;
@@ -890,18 +892,21 @@ export function gitStatusOf(r) {
 }
 // gitLogOf(result) -> what GET /api/git/log answers: the last 20 commits
 export function gitLogOf(r) {
-  if (!r || r.repo !== true) return { repo: false, reason: short(r?.reason, 300) || 'git is not available', commits: [], error: null };
+  if (!r || r.repo !== true) return { repo: false, ...reasonOf(r?.reason), commits: [], error: null };
   const commits = [];
   for (const c of Array.isArray(r.commits) ? r.commits.slice(0, 20) : []) {
     if (!c || typeof c !== 'object' || typeof c.hash !== 'string' || !GIT_HEX.test(c.hash)) continue;
     commits.push({ hash: c.hash, author: short(c.author, 200), email: short(c.email, 200), time: int(c.time, 0, 1e11), subject: short(c.subject, 300) });
   }
-  return { repo: true, reason: null, commits, error: short(r.error, 300) || null };
+  // (the log's error: bn-coded's fixed one as it is, git's own words apart)
+  if (!r.error) return { repo: true, reason: null, commits, error: null };
+  const { reason: error, ...said } = reasonOf(r.error, { other: GIT_LOG_FAILED });
+  return { repo: true, reason: null, commits, error, ...said };
 }
 // gitFileOf(result, patch, path, scope) -> what GET /api/git/file answers: the file's changes (one; or every staged one)
 // as the Review parses them — only the file asked for, when one was
 export function gitFileOf(r, patch, path, scope) {
-  if (!r || r.repo !== true) return { repo: false, reason: short(r?.reason, 300) || 'git is not available', scope, path, files: [], mtimeMs: null, truncated: false };
+  if (!r || r.repo !== true) return { repo: false, ...reasonOf(r?.reason), scope, path, files: [], mtimeMs: null, truncated: false };
   const parsed = parseGitDiff(patch);
   const cut = r.truncated === true;
   const pick = (f) => ({ path: f.path, status: f.status, binary: f.binary, symlink: f.symlink, modeChange: f.modeChange, hunks: f.hunks, cut: f.cut || cut, bad: f.bad, watch: gitWatchOf(f) });

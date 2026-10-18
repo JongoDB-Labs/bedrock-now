@@ -385,6 +385,10 @@ test('the routes: a failure in git in the sandbox\'s words — a fixed sentence,
   const id = r.json.host.id;
   const words = { error: GIT_SAID, said: HOSTILE, saidBy: 'git', neverAsks: NEVER_ASKS };
   try {
+    // (a plan, when git's reason for no repository is in its words: those apart too)
+    fakeSandbox.hostile = (q) => (q.op === 'git.remote.state' ? { result: { repo: false, reason: HOSTILE } } : null);
+    r = await req('POST', '/api/git/plan', { action: 'push' });
+    assert.deepEqual([r.status, r.json], [400, { ...words, error: 'git could not answer' }]);
     fakeSandbox.hostile = (q) => { if (q.op === 'git.net' || q.op === 'git.branch') throw new SandboxError(HOSTILE, 'refused'); };
     const p = await req('POST', '/api/git/plan', { action: 'push' });
     r = await req('POST', '/api/git/run', { planId: p.json.planId });

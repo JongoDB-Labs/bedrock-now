@@ -1002,6 +1002,7 @@ export function normGitReview(o: Obj): GitReview {
   return {
     repo: o.repo === true,
     reason: label(o.reason, 300),
+    said: o.repo === true ? null : wordsOf(o),
     head: typeof o.head === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(o.head) ? o.head : null,
     files,
     truncated: o.truncated === true,
@@ -1059,6 +1060,7 @@ export function normGitStatus(o: Obj): GitStatus {
   return {
     repo: o.repo === true,
     reason: label(o.reason, 300),
+    said: o.repo === true ? null : wordsOf(o),
     root: repoPath(o.root) ?? '',
     branch: o.branch ? label(o.branch, 250) || null : null,
     detached: o.detached === true,
@@ -1080,7 +1082,7 @@ export function normGitStatus(o: Obj): GitStatus {
 export async function getGitStatus(repo = ''): Promise<GitStatus> {
   return normGitStatus(await request('GET', '/api/git/status' + q({ repo: repo || undefined })));
 }
-export function normGitLog(o: Obj): { repo: boolean; reason: string; commits: GitCommit[]; error: string | null } {
+export function normGitLog(o: Obj): { repo: boolean; reason: string; commits: GitCommit[]; error: string | null; said: SandboxWords | null } {
   const commits = arr(o.commits, 100)
     .map((v) => {
       const c = obj(v);
@@ -1089,10 +1091,10 @@ export function normGitLog(o: Obj): { repo: boolean; reason: string; commits: Gi
     })
     .filter((c): c is GitCommit => c !== null)
     .slice(0, 20);
-  return { repo: o.repo === true, reason: label(o.reason, 300), commits, error: o.error ? label(o.error, 300) : null };
+  return { repo: o.repo === true, reason: label(o.reason, 300), commits, error: o.error ? label(o.error, 300) : null, said: o.repo !== true || o.error ? wordsOf(o) : null };
 }
 /** HEAD's last 20 commits. */
-export async function getGitLog(repo = ''): Promise<{ repo: boolean; reason: string; commits: GitCommit[]; error: string | null }> {
+export async function getGitLog(repo = ''): Promise<{ repo: boolean; reason: string; commits: GitCommit[]; error: string | null; said: SandboxWords | null }> {
   return normGitLog(await request('GET', '/api/git/log' + q({ repo: repo || undefined })));
 }
 export function normGitFileDiff(o: Obj, scope: GitScope, path: string | null): GitFileDiff {
@@ -1100,7 +1102,7 @@ export function normGitFileDiff(o: Obj, scope: GitScope, path: string | null): G
   const files = arr(o.files, 2000)
     .map(normGitFile)
     .filter((f): f is GitFile => f !== null && (path === null || f.path === path) && !seen.has(f.path) && !!seen.add(f.path));
-  return { repo: o.repo === true, reason: label(o.reason, 300), scope, path, files, truncated: o.truncated === true };
+  return { repo: o.repo === true, reason: label(o.reason, 300), said: o.repo === true ? null : wordsOf(o), scope, path, files, truncated: o.truncated === true };
 }
 /** A file's staged or unstaged changes (or a new file's); scope staged without a path: every staged change. */
 export async function getGitFile(scope: GitScope, path: string | null, repo = ''): Promise<GitFileDiff> {
