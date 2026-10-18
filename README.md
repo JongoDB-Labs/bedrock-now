@@ -668,8 +668,10 @@ Service to define and approve) or `code.<your domain>` ([Remote access](#remote-
   opened from) — never sent by itself, at most 4,000 characters, invisible characters shown — so read it before you
   send it: anyone can make such a link. The prompt box is not focused, Enter does not send it until you press **I
   have read it** (the Send button does), and it always goes into a **new session in Manual mode** — never into the
-  session shown, never in the mode you last used. Both leave the address bar
-  at once (a reload does not bring the draft back), and they survive the unlock. Home's Code card uses them.
+  session shown, never in the mode you last used. `?git=hosts` and `?git=clone` open the Git panel's Git hosts or
+  (empty) Clone dialog — Settings › Claude Code › Git hosts, Activity and the walkthrough use them. All of them leave
+  the address bar at once (a reload does not bring the draft back), and they survive the unlock. Home's Code card uses
+  the first two.
 - **Model, effort, cost.** You pick the model — [any chat model of the catalog](#models-for-claude-code), Bedrock's
   and OpenRouter's, with this stack's prices — and the effort; the meter shows each turn's and the session's cost and
   the context window's use. A switch Claude Code refuses is taken back and said ("Still on …"); the page lists the

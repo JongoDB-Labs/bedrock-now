@@ -291,6 +291,12 @@ def test_deep_links_are_rebuilt_from_what_checks_out():
     assert dl("/?prompt=%3Cimg%20src%3Dx%3E%0Anext") == "/?prompt=%3Cimg+src%3Dx%3E%0Anext"
     assert dl("/?other=1&prompt=hi") == "/?prompt=hi"                     # unknown parameters dropped
     assert dl("/?prompt=a&prompt=b") == "/?prompt=a"                      # once each
+    # the Git panel's dialogs (Settings › Claude Code › Git hosts, Activity, the walkthrough): hosts or clone, nothing else
+    assert dl("/?git=hosts") == "/?git=hosts" and dl("/?git=clone") == "/?git=clone"
+    assert dl("/?git=clone&git=hosts") == "/?git=clone"
+    for bad in ("/?git=", "/?git=push", "/?git=HOSTS", "/?git=hosts%00", "/?git=../x"):
+        assert dl(bad) is None, bad
+    assert dl("/?git=clone&url=https://evil.example/x.git") == "/?git=clone"   # (no URL travels with it)
     for bad in (None, "", "/", "/api/state?session=x", "//evil.example/?prompt=x", "/x?prompt=a", "?prompt=a", "/?session=../../etc",
                 "/?prompt=", "/?prompt=a%00b", "/?" + "a=1&" * 20, "/?prompt=" + "a" * 70000):
         assert dl(bad) is None, bad
@@ -313,6 +319,9 @@ def test_the_unlock_form_carries_a_deep_link_and_unlocking_goes_there(cc):
                 headers={"Host": CODE_HOST, "Origin": CODE, "Cookie": f"{COOKIE}={tok}"})
     cc.cookies.clear()
     assert r.status_code == 303 and r.headers["location"] == f"/?session={SID}&prompt=hi%0Athere"
+    r = cc.post("/auth/code-unlock", data={"password": PW, "next": "/?git=hosts"}, headers={"Host": CODE_HOST, "Origin": CODE, "Cookie": f"{COOKIE}={tok}"})
+    cc.cookies.clear()
+    assert r.status_code == 303 and r.headers["location"] == "/?git=hosts"   # (Open Git hosts on a locked Code page)
     for bad in ("https://evil.example/?prompt=x", "//evil.example/?session=" + SID, "/\\evil.example", "/api/sessions?x=1", "javascript:alert(1)"):
         r = cc.post("/auth/code-unlock", data={"password": PW, "next": bad}, headers={"Host": CODE_HOST, "Origin": CODE, "Cookie": f"{COOKIE}={tok}"})
         cc.cookies.clear()

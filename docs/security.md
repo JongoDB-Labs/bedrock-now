@@ -1255,8 +1255,9 @@ page's script hashes in Caddy's CSP would take even that away (an open question)
   "Trojan Source" text), parsed in linear time (the query looked at only up to 64 KiB; unit tests time hostile inputs),
   and both parameters leave the address bar at once (`history.replaceState`), so a reload or a shared screenshot does
   not carry them on. The Code page's unlock form carries such a link through the password (a hidden field), and the
-  portal rebuilds it from what checks out — the root path, `session` (a UUID) and `prompt` (≤ 4,000 characters, no
-  NUL), once each, at most 6,000 characters encoded (a longer one keeps its session) — so the redirect after the unlock
+  portal rebuilds it from what checks out — the root path, `session` (a UUID), `prompt` (≤ 4,000 characters, no NUL)
+  and `git` (only `hosts` or `clone`: the Git panel's dialog, empty — nothing is cloned, added or changed by a link),
+  once each, at most 6,000 characters encoded (a longer one keeps its session) — so the redirect after the unlock
   never goes elsewhere (another host, another path, `//…`, `javascript:` all end at `/`). The terminal's unlock form
   carries none. Phishing remains possible in the sense that a link can suggest a harmful prompt: the banner and the
   rule that you send it yourself are the defence — read a draft from a link before you send it.

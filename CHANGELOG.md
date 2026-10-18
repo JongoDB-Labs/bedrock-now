@@ -41,6 +41,9 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Fixed
 
+- **Open Git hosts on a locked Code page** (Settings › Claude Code › Git hosts, an Activity item, the walkthrough)
+  opened the Code page without its Git hosts dialog: the unlock form kept `?session` and `?prompt` but not `?git`. It
+  keeps `?git=hosts` and `?git=clone` now (nothing else, and no URL with them).
 - **`./stack update`'s What's new** cut a long release title at 120 bytes — mid-word ("… credentials that never en"),
   and on a Mac possibly inside a character. It is now cut at a word, with "…".
 

@@ -156,7 +156,7 @@ def _unlock_page(s: Settings, rem: bool, error: str = "", status: int = 401, ret
     framers = portal + (f" {s.origin(CODE, rem)}" if app == TERMINAL and s.code_on(rem) else "")
     page = (STATIC / f"{app}-unlock.html").read_text(encoding="utf-8").replace("{{portal}}", html.escape(portal, quote=True))
     page = page.replace("{{error}}", f'<p class="error" role="alert">{html.escape(error)}</p>' if error else "")
-    # a deep link into the Code page (?session, ?prompt) goes on after the password (portal/code.py deep_link)
+    # a deep link into the Code page (?session, ?prompt, ?git) goes on after the password (portal/code.py deep_link)
     page = page.replace("{{next}}", f'<input type="hidden" name="next" value="{html.escape(next_link, quote=True)}">' if next_link else "")
     resp = HTMLResponse(page, status_code=status)
     resp.headers["Content-Security-Policy"] = (
