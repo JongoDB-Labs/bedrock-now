@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import { HostError, TOKEN, DEFAULTS, CLIENT_ID, SLUG, checkCa, httpsAuth } from './githosts.mjs';
 
 export const REFRESH_EARLY_MS = 5 * 60000;   // a token that expires within this is renewed before an operation
+const SAVE_TRIES = 4;                         // a renewed pair's save: tried this often before it is given up
 const MAX_BODY = 64 << 10, REQUEST_MS = 20000, MAX_FLOWS = 4, KEEP_DONE_MS = 10 * 60000, FAILURES_MAX = 5;
 const USER_CODE = /^[A-Za-z0-9-]{4,32}$/;
 const DEVICE_CODE = /^[\x21-\x7e]{8,2048}$/;
@@ -55,6 +56,39 @@ const printable = (s, n = 200) => String(s ?? '').replace(/[^\x20-\x7e]/g, '?').
 const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : null);
 const origin = (t) => `https://${t.host}${t.port && t.port !== 443 ? `:${t.port}` : ''}`;
 
+// What a failure says is always ours: the sandbox writes the tunnel's errors, and a server chooses its certificate's
+// names — either could word a phishing message ("enter ABCD-1234 at …") that would reach the Sign-in dialog, a plan's
+// error or Activity. So a failure is told by one of a few fixed phrases, picked by the code it names, never by its text.
+const WAY_OUT = 'Settings › Claude Code › Sandbox internet access';
+// tunnelWhy(e, host, port) -> why the sandbox's tunnel to host:port failed, in our words
+export function tunnelWhy(e, host, port) {
+  const t = String(e?.message ?? '');
+  const at = `the sandbox could not reach ${host}${port && port !== 443 ? `:${port}` : ''}`;
+  if (e?.kind === 'unreachable') return 'the Code page cannot reach its sandbox right now: try again in a moment';
+  if (e?.kind === 'timeout' || /\bETIMEDOUT\b/.test(t)) return `${at}: no answer in time (${WAY_OUT})`;
+  if (/egress proxy/.test(t)) return `${at}: its way out refused it (${WAY_OUT})`;
+  if (/\b(ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH)\b/.test(t)) return `${at}: no route to it, or no name lookup (${WAY_OUT})`;
+  if (/\bECONNREFUSED\b/.test(t)) return `${at}: nothing answered on its port`;
+  if (/^busy/.test(t)) return `${at}: too many connections at once — try again`;
+  return `${at}: the connection failed (${WAY_OUT})`;
+}
+// connWhy(e, host) -> why TLS or HTTP over the tunnel failed, in our words: by Node's error code alone
+const NODE_CODE = /^[A-Z][A-Z0-9_]{1,40}$/;
+export function connWhy(e, host) {
+  const code = typeof e?.code === 'string' && NODE_CODE.test(e.code) ? e.code : '';
+  if (/^(ERR_TLS_CERT|CERT_|UNABLE_TO_|SELF_SIGNED|DEPTH_ZERO|HOSTNAME_MISMATCH)/.test(code)) return `${host}: its certificate is not one this computer trusts for it (${code})`;
+  if (code === 'ECONNRESET' || code === 'EPIPE') return `${host}: the connection broke`;
+  return `${host}: the connection failed${code ? ` (${code})` : ''}`;
+}
+// the OAuth error codes a provider's answer may name in a message (RFC 6749, RFC 8628, GitHub's): any other is "an
+// error of its own"
+const KNOWN_ERRORS = new Set(['authorization_pending', 'slow_down', 'expired_token', 'access_denied', 'device_flow_disabled', 'incorrect_client_credentials',
+  'invalid_client', 'unauthorized_client', 'invalid_scope', 'unsupported_grant_type', 'incorrect_device_code', 'invalid_grant', 'bad_refresh_token',
+  'invalid_request', 'server_error', 'temporarily_unavailable', 'bad_verification_code']);
+// ours(e, fallback) -> an error's message only when it is one of ours (OAuthError, HostError: fixed words), else fallback
+const ours = (e, fallback) => (e instanceof OAuthError || e instanceof HostError ? e.message : fallback);
+const errorName = (code, status) => (KNOWN_ERRORS.has(code) ? code : code ? 'an error of its own' : `HTTP ${int(status, 100, 599) ?? '?'}`);
+
 // request(connect, target, opts) -> {status, headers, json}: one HTTPS request to target {host, port, ca} over a
 // connection connect(host, port) gives (the sandbox's tunnel), TLS here and strict: the certificate must chain to the
 // system's roots — or, for a server of your own whose CA you gave in Git hosts, to that CA alone — and name
@@ -62,15 +96,14 @@ const origin = (t) => `https://${t.host}${t.port && t.port !== 443 ? `:${t.port}
 // a failure is an error, never a retry without the check); no redirect followed; an answer of at most 64 KiB
 export async function request(connect, target, { method = 'POST', path = '/', form = null, bearer = null, accept = 'application/json', timeoutMs = REQUEST_MS } = {}) {
   let raw;
-  try { raw = await connect(target.host, target.port ?? 443); } catch (e) { throw new OAuthError(`${target.host} cannot be reached: ${printable(e.message, 200)}`, 'network'); }
+  try { raw = await connect(target.host, target.port ?? 443); } catch (e) { throw new OAuthError(tunnelWhy(e, target.host, target.port), 'network'); }
   return new Promise((resolve, reject) => {
     let done = false;
     const sock = tls.connect({ socket: raw, host: target.host, servername: net.isIP(target.host) ? undefined : target.host, ca: target.ca || undefined,
       minVersion: 'TLSv1.2', ALPNProtocols: ['http/1.1'], rejectUnauthorized: true });
     const end = (fn, v) => { if (done) return; done = true; clearTimeout(timer); try { sock.destroy(); } catch { /* gone */ } try { raw.destroy?.(); } catch { /* gone */ } fn(v); };
     const timer = setTimeout(() => end(reject, new OAuthError(`${target.host} did not answer in time`, 'network')), timeoutMs);
-    sock.on('error', (e) => end(reject, new OAuthError(`${target.host}: ${e.code === 'ERR_TLS_CERT_ALTNAME_INVALID' || /certificate|self.signed|issuer/i.test(e.message)
-      ? `its certificate is not one this computer trusts for it (${printable(e.code || e.message, 80)})` : printable(e.code || e.message, 120)}`, 'network')));
+    sock.on('error', (e) => end(reject, new OAuthError(connWhy(e, target.host), 'network')));
     const body = form ? new URLSearchParams(form).toString() : null;
     const headers = { Host: target.port && target.port !== 443 ? `${target.host}:${target.port}` : target.host, Accept: accept, 'User-Agent': 'bedrock-now',
       ...(body !== null ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) } : {}),
@@ -85,9 +118,9 @@ export async function request(connect, target, { method = 'POST', path = '/', fo
         try { const v = JSON.parse(text); json = v && typeof v === 'object' && !Array.isArray(v) ? v : Array.isArray(v) ? { list: v } : null; } catch { /* not JSON */ }
         end(resolve, { status: res.statusCode, headers: res.headers, json });
       });
-      res.on('error', (e) => end(reject, new OAuthError(`${target.host}: ${printable(e.code || e.message, 120)}`, 'network')));
+      res.on('error', (e) => end(reject, new OAuthError(connWhy(e, target.host), 'network')));
     });
-    req.on('error', (e) => end(reject, new OAuthError(`${target.host}: ${printable(e.code || e.message, 120)}`, 'network')));
+    req.on('error', (e) => end(reject, new OAuthError(connWhy(e, target.host), 'network')));
     req.end(body ?? undefined);
   });
 }
@@ -191,7 +224,7 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
     let r;
     try {
       r = await request(connect, target, { path: P.deviceCode, form: { client_id: clientId, scope: P.scope } });
-    } catch (e) { throw new HostError(502, `${P.name} sign-in: ${e.message}`); }
+    } catch (e) { throw new HostError(502, `${P.name} sign-in: ${ours(e, `${host}: the request failed`)}`); }
     const j = r.json || {};
     if (typeof j.error === 'string') throw new HostError(r.status === 404 ? 502 : 400, `${P.name} sign-in: ${refusal(provider, j.error, host)}`);
     if (r.status === 404) throw new HostError(502, `${P.name} sign-in: ${host} has no device sign-in (${provider === 'gitlab' ? 'GitLab 17.9 or later has it' : 'GitHub Enterprise Server 3.1 or later has it'})`);
@@ -205,7 +238,7 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
       verificationUri, verificationUriComplete: verificationUrl(j.verification_uri_complete, target), expiresAt: now() + expiresIn * 1000,
       interval: int(typeof j.interval === 'string' ? Number(j.interval) : j.interval, 1, 60) ?? 5, failures: 0, error: null, gitHost: null, timer: null, wake: null };
     flows.set(f.id, f);
-    void poll(f).catch((e) => end(f, 'failed', printable(e.message, 200)));
+    void poll(f).catch((e) => end(f, 'failed', ours(e, 'the sign-in failed')));
     return viewOf(f);
   }
 
@@ -219,7 +252,7 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
       try {
         r = await request(connect, f.target, { path: P.token, form: { client_id: f.clientId, device_code: f.deviceCode, grant_type: DEVICE_GRANT } });
       } catch (e) {
-        if (++f.failures >= FAILURES_MAX) end(f, 'failed', `${f.target.host} could not be reached ${FAILURES_MAX} times in a row (${e.message})`);
+        if (++f.failures >= FAILURES_MAX) end(f, 'failed', `${f.target.host} could not be reached ${FAILURES_MAX} times in a row (${ours(e, 'the request failed')})`);
         continue;
       }
       if (f.state !== 'pending') return;
@@ -249,8 +282,11 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
       refreshExpiresAt: t.refreshExpiresAt, account: who.account, scopes, app: who.app, appSlug: who.appSlug || (f.provider === 'github' && f.target.host === 'github.com' && f.clientId === app('github').clientId ? app('github').appSlug || null : null),
       installations: who.installations, signedInAt: now() };
     try {
+      const before = f.hostId ? store.get(f.hostId) : null;
       const h = f.hostId ? store.replaceOAuth(f.hostId, oauth)
         : store.addOAuth({ kind: f.provider, host: f.target.host, port: f.target.port, label: f.label || undefined, ca: f.target.ca, oauth });
+      // (Sign in again: the session it replaces is revoked at GitLab too — best effort, never in the way)
+      if (before?.auth === 'oauth') void revoke(before).catch(() => {});
       f.gitHost = h;
       end(f, 'done');
       event({ action: 'host', host: h.label, target: h.host, text: `${f.hostId ? 'signed in again' : 'connected with a sign-in'}${who.account ? ` as ${who.account}` : ''}` });
@@ -269,7 +305,7 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
       if (r.status === 200 && typeof name === 'string' && /^[A-Za-z0-9._@+-]{1,100}$/.test(name)) out.account = name;
       const sc = r.headers?.['x-oauth-scopes'];
       if (provider === 'github' && typeof sc === 'string') out.scopes = sc.split(/[\s,]+/).filter(Boolean).slice(0, 32);
-    } catch (e) { log(`git sign-in: the account of ${target.host}: ${printable(e.message, 120)}`); }
+    } catch (e) { log(`git sign-in: the account of ${target.host}: ${ours(e, 'the request failed')}`); }
     if (provider === 'github') {
       out.app = token.startsWith('ghu_') ? 'github-app' : token.startsWith('gho_') ? 'oauth-app' : null;
       if (out.app === 'github-app') {
@@ -280,7 +316,7 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
             .filter((i) => typeof i.account === 'string');
           const slug = list.find((i) => typeof i?.app_slug === 'string' && SLUG.test(i.app_slug))?.app_slug;
           if (slug) out.appSlug = slug;
-        } catch (e) { log(`git sign-in: the app's installations on ${target.host}: ${printable(e.message, 120)}`); }
+        } catch (e) { log(`git sign-in: the app's installations on ${target.host}: ${ours(e, 'the request failed')}`); }
       }
     }
     return out;
@@ -311,41 +347,58 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
     if (!p) { p = refresh(id).finally(() => inflight.delete(id)); inflight.set(id, p); }
     return p;
   }
+  // refresh(id): one renewal. Its result — the new pair, or "Sign in again" — is applied only while the host still
+  // has the refresh token that was sent (compare-and-swap: a Sign in again meanwhile, or another renewal, wins); the new
+  // pair is written before anything uses it, the save tried a few times (the provider has voided the old pair by then).
   async function refresh(id) {
     const h = store.get(id);
     if (!h || h.auth !== 'oauth' || !h.oauth.refreshToken) return h;
     const o = h.oauth, P = PROVIDERS[o.provider];
+    // (renewed meanwhile — by another process, or before this one was asked for: no second rotation)
+    if (!o.expiresAt || o.expiresAt - now() > REFRESH_EARLY_MS) return h;
+    const sent = o.refreshToken;
     const stillGood = () => o.expiresAt && o.expiresAt > now() + 15000;
-    if (!o.clientId) { if (stillGood()) return h; store.markSignIn(id, 'no application ID to renew it with'); throw signInAgain(h); }
+    const end = (why) => { store.markSignIn(id, why, { refreshToken: sent }); return signInAgain(store.get(id) || h, why); };
+    if (!o.clientId) { if (stillGood()) return h; throw end('no application ID to renew it with'); }
     let r;
     try {
-      r = await request(connect, { host: h.host, port: h.port ?? null, ca: h.ca || null }, { path: P.token, form: { client_id: o.clientId, grant_type: 'refresh_token', refresh_token: o.refreshToken } });
+      r = await request(connect, { host: h.host, port: h.port ?? null, ca: h.ca || null }, { path: P.token, form: { client_id: o.clientId, grant_type: 'refresh_token', refresh_token: sent } });
     } catch (e) {
-      log(`git sign-in ${h.host}: renewal failed: ${printable(e.message, 120)}`);
+      const why = ours(e, `${h.host}: the request failed`);
+      log(`git sign-in ${h.host}: renewal failed: ${why}`);
       if (stillGood()) return h;   // (the token it has is good for a while yet: the next operation tries again)
-      throw new HostError(503, `${h.label}: its sign-in could not be renewed (${e.message}): try again`);
+      throw new HostError(503, `${h.label}: its sign-in could not be renewed (${why}): try again`);
     }
     const j = r.json || {};
     if (typeof j.access_token === 'string') {
       let t;
-      try { t = tokensOf(j, now()); } catch (e) { store.markSignIn(id, e.message); throw signInAgain(h); }
+      try { t = tokensOf(j, now()); } catch (e) { const why = ours(e, 'the host answered with no usable token'); event({ action: 'host', host: h.label, target: h.host, ok: false, text: `its sign-in ended: ${why}` }); throw end(why); }
       // (a host that does not rotate it keeps the one it has)
-      const kept = store.setOAuthTokens(id, { accessToken: t.accessToken, refreshToken: t.refreshToken || o.refreshToken, expiresAt: t.expiresAt,
-        refreshExpiresAt: t.refreshToken ? t.refreshExpiresAt ?? o.refreshExpiresAt : o.refreshExpiresAt });
+      const pair = { accessToken: t.accessToken, refreshToken: t.refreshToken || sent, expiresAt: t.expiresAt,
+        refreshExpiresAt: t.refreshToken ? t.refreshExpiresAt ?? o.refreshExpiresAt : o.refreshExpiresAt };
+      let kept = null;
+      for (let i = 0; i < SAVE_TRIES && !kept; i++) {
+        try { kept = store.setOAuthTokens(id, pair, { refreshToken: sent }); } catch (e) {
+          if (e instanceof HostError && e.status === 409) return store.get(id);   // (signed in again meanwhile: that one stands)
+          if (i === SAVE_TRIES - 1) {
+            log(`git sign-in ${h.host}: the renewed pair could not be kept (${ours(e, 'a write failed')})`);
+            throw new HostError(500, `${h.label}: its renewed sign-in could not be kept on disk — Sign in again (Git hosts)`);
+          }
+          await new Promise((res) => { setTimeout(res, 100 * (i + 1)); });
+        }
+      }
       event({ action: 'host', host: kept.label, target: kept.host, text: 'its sign-in renewed' });
       return store.get(id);
     }
     const code = typeof j.error === 'string' && ERROR_CODE.test(j.error) ? j.error : '';
     if (!code && (r.status >= 500 || r.status === 429)) {
       if (stillGood()) return h;
-      throw new HostError(503, `${h.label}: its sign-in could not be renewed (HTTP ${r.status}): try again`);
+      throw new HostError(503, `${h.label}: its sign-in could not be renewed (HTTP ${int(r.status, 100, 599)}): try again`);
     }
-    const why = code === 'invalid_grant' || code === 'bad_refresh_token' ? 'the host no longer accepts it: revoked, or used up' : `the host refused to renew it: ${code || `HTTP ${r.status}`}`;
-    store.markSignIn(id, why);
+    const why = code === 'invalid_grant' || code === 'bad_refresh_token' ? 'the host no longer accepts it: revoked, or used up' : `the host refused to renew it: ${errorName(code, r.status)}`;
     event({ action: 'host', host: h.label, target: h.host, ok: false, text: `its sign-in ended: ${why} — Sign in again` });
-    throw signInAgain(h, why);
+    throw end(why);
   }
-
   // revoke(h) -> true when the provider took the revocation (GitLab: RFC 7009, a non-confidential application's own
   // token, without a secret), false when it did not, null when it cannot be revoked from here (GitHub: it needs the
   // app's client secret)
@@ -357,7 +410,7 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
       const r = await request(connect, { host: h.host, port: h.port ?? null, ca: h.ca || null }, { path: PROVIDERS.gitlab.revoke,
         form: { client_id: h.oauth.clientId, token }, timeoutMs: 10000 });
       return r.status === 200;
-    } catch (e) { log(`git sign-in ${h.host}: revoke: ${printable(e.message, 120)}`); return false; }
+    } catch (e) { log(`git sign-in ${h.host}: revoke: ${ours(e, 'the request failed')}`); return false; }
   }
 
   const close = () => { for (const f of flows.values()) end(f, 'cancelled'); };
@@ -375,6 +428,6 @@ function refusal(provider, code, host, status) {
   }
   if (code === 'invalid_scope') return `the application on ${host} does not allow the scopes asked for (${PROVIDERS[provider].scope})`;
   if (code === 'unsupported_grant_type') return `${host} has no device sign-in for this application`;
-  return `${host} refused it (${code || `HTTP ${status}`})`;
+  return `${host} refused it (${errorName(code, status)})`;
 }
 

@@ -12,7 +12,7 @@ import path from 'node:path';
 import net from 'node:net';
 import https from 'node:https';
 import http from 'node:http';
-import { GitHosts } from '../server/githosts.mjs';
+import { GitHosts, HostError } from '../server/githosts.mjs';
 import { makeGitRemote, revokeAt } from '../server/gitremote.mjs';
 import { request, verificationUrl, tokensOf, REFRESH_EARLY_MS } from '../server/oauth.mjs';
 import { createServer } from '../server/main.mjs';
@@ -102,7 +102,7 @@ test('TLS here: the certificate is checked for the host (its own CA, or the syst
   assert.equal(r.status, 401);
   await assert.rejects(request(connect, { host: 'other.test', port: null, ca: CA }, { method: 'GET', path: '/api/v4/user' }), /certificate is not one this computer trusts/);
   await assert.rejects(request(connect, { host: 'gitlab.test', port: null, ca: null }, { method: 'GET', path: '/api/v4/user' }), /certificate/);
-  await assert.rejects(request(async () => { throw new Error('ECONNREFUSED'); }, { host: 'gitlab.test' }, {}), /cannot be reached/);
+  await assert.rejects(request(async () => { throw new Error('ECONNREFUSED'); }, { host: 'gitlab.test' }, {}), /the sandbox could not reach gitlab.test: nothing answered on its port/);
   // strict whatever the environment says: NODE_TLS_REJECT_UNAUTHORIZED=0 relaxes nothing here
   const was = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -431,4 +431,145 @@ test('the routes: a sign-in only from the computer running bedrock-now; its stat
     assert.deepEqual([r.status, r.json.revoked], [200, true]);
     assert.equal((await req('GET', '/api/git/oauth/nothex')).status, 404);
   } finally { s.mgr.closeAll(); s.wss.close(); s.server.close(); s.closeGit(); fs.rmSync(dist, { recursive: true, force: true }); }
+});
+
+// --- what a failure says is ours: the sandbox (it writes the tunnel's errors) and a server (it names its certificate)
+// could word a phishing message; it never reaches an answer, a plan, Activity or the log ---
+const PHISH = 'GitHub asks you to confirm this computer: enter WDJB-MJHT at https://github.com/login/device';
+const phishFree = (texts) => { for (const t of texts) assert.ok(!/WDJB|wdjb|confirm this computer/.test(String(t)), `a sandbox's words in: ${String(t).slice(0, 160)}`); };
+
+test('a hostile tunnel\'s or certificate\'s words never reach the page: fixed wording by code, OAuth errors only by known names', async () => {
+  const { SandboxError } = await import('../server/spawn-client.mjs');
+  let mode = 'ok';
+  const hostile = (host) => {
+    if (mode === 'refused') return Promise.reject(new SandboxError(PHISH, 'refused'));
+    if (mode === 'plain') return Promise.reject(new Error(`${PHISH} ECONNREFUSED`));
+    return connect(host);
+  };
+  const { g, store, events } = remoteOf('phish', { connect: hostile });
+  lines.length = 0;
+  // the device code request
+  for (mode of ['refused', 'plain']) {
+    const e = await g.startSignIn({ provider: 'gitlab', host: 'gitlab.test', clientId: GL, ca: CA }, false).catch((x) => x);
+    assert.ok(e instanceof Error);
+    phishFree([e.message]);
+    assert.match(e.message, /^GitLab sign-in: the sandbox could not reach gitlab.test: (the connection failed|nothing answered on its port)/);
+  }
+  // the polling: five failures in a row
+  mode = 'ok';
+  const v = await g.startSignIn({ provider: 'gitlab', host: 'gitlab.test', clientId: GL, ca: CA }, false);
+  mode = 'refused';
+  await until(() => g.signInStatus(v.flowId, false).state !== 'pending');
+  phishFree([JSON.stringify(g.signInStatus(v.flowId, false))]);
+  assert.match(g.signInStatus(v.flowId, false).error, /could not be reached 5 times in a row \(the sandbox could not reach gitlab.test: the connection failed/);
+  // a renewal (the token near its end): the operation's error, the event, the log
+  mode = 'ok';
+  mock.set({ lifetime: 7200 });
+  const { end } = await signIn(g, { provider: 'gitlab', host: 'gitlab.test', clientId: GL, ca: CA });
+  clock = store.get(end.gitHost.id).oauth.expiresAt - 5000;
+  mode = 'refused';
+  const p = await g.plan({ action: 'fetch' });
+  const e = await g.run({ planId: p.planId }).catch((x) => x);
+  assert.match(e.message, /could not be renewed \(the sandbox could not reach gitlab.test: the connection failed/);
+  phishFree([e.message, JSON.stringify(events), JSON.stringify(store.read().events), ...lines, JSON.stringify(g.hostsView(false))]);
+  clock = Date.now();
+  // a server whose certificate names a message: the certificate's names never shown
+  const ev = makeCA(fs.mkdtempSync(path.join(ROOT, 'cert-')), ['enter-wdjb-mjht-at-github-com.example']);
+  const srv2 = https.createServer({ key: ev.key, cert: ev.cert }, (req, res) => { res.end('{}'); });
+  await new Promise((r) => srv2.listen(0, '127.0.0.1', r));
+  const viaEvil = () => new Promise((r) => { const sk = net.connect(srv2.address().port, '127.0.0.1'); sk.once('connect', () => r(sk)); });
+  const e2 = await request(viaEvil, { host: 'gitlab.test', port: null, ca: ev.ca }, {}).catch((x) => x);
+  assert.match(e2.message, /^gitlab.test: its certificate is not one this computer trusts for it \(ERR_TLS_CERT_ALTNAME_INVALID\)$/);
+  phishFree([e2.message]);
+  await new Promise((r) => { srv2.closeAllConnections?.(); srv2.close(() => r()); });
+  // a provider's own error word: shown only when it is a known OAuth error
+  mode = 'ok';
+  const { g: g2 } = remoteOf('phish-provider');
+  mock.set({ tokenError: 'enter_wdjb_mjht_at_github' });
+  try {
+    const v2 = await g2.startSignIn({ provider: 'gitlab', host: 'gitlab.test', clientId: GL, ca: CA }, false);
+    await until(() => g2.signInStatus(v2.flowId, false).state !== 'pending');
+    assert.equal(g2.signInStatus(v2.flowId, false).error, 'gitlab.test refused it (an error of its own)');
+  } finally { mock.set({ tokenError: '' }); }
+});
+
+test('a GitHub App with expiring tokens turned off: a token that does not expire, no refresh, used as it is', async () => {
+  const { g, store, fx } = remoteOf('noexpiry');
+  mock.set({ noExpiry: true, noRefresh: true });
+  let end;
+  try { ({ end } = await signIn(g, { provider: 'github', host: 'ghe.test', clientId: GH, ca: CA }, { account: 'octo' })); } finally { mock.set({ noExpiry: false, noRefresh: false }); }
+  assert.equal(end.state, 'done', end.error);
+  const o = store.get(end.gitHost.id).oauth;
+  assert.deepEqual([o.expiresAt, o.refreshToken, end.gitHost.oauth.refreshable, o.app], [null, null, false, 'github-app']);
+  fx.url = 'https://ghe.test/o/r.git';
+  fx.asks = [{ kind: 'cred', protocol: 'https', host: 'ghe.test' }];
+  clock += 365 * 86400000;   // (a year on: still no renewal, nothing ends)
+  const refreshes = mock.log.refreshes;
+  const p = await g.plan({ action: 'fetch' });
+  await g.run({ planId: p.planId });
+  assert.equal(fx.answers.at(-1)[0].password, o.accessToken);
+  assert.equal(mock.log.refreshes, refreshes);
+  clock = Date.now();
+  fx.url = 'https://gitlab.test/g/r.git';
+});
+
+test('renewals: applied only while the sign-in is still the one renewed (Sign in again meanwhile wins); the save tried again', async () => {
+  let hold = null;
+  const slow = (host) => (hold ? hold.then(() => connect(host)) : connect(host));
+  const { g, store, fx } = remoteOf('cas', { connect: slow });
+  mock.set({ lifetime: 7200 });
+  const { end } = await signIn(g, { provider: 'gitlab', host: 'gitlab.test', clientId: GL, ca: CA });
+  const id = end.gitHost.id;
+  // a renewal on its way while the host is signed in again: its answer never overwrites the new sign-in
+  clock = store.get(id).oauth.expiresAt - 60000;
+  let release;
+  hold = new Promise((r) => { release = r; });
+  fx.asks = [{ kind: 'cred', protocol: 'https', host: 'gitlab.test' }];
+  const p = await g.plan({ action: 'fetch' });
+  const running = g.run({ planId: p.planId });
+  await sleep(20);
+  const fresh = { provider: 'gitlab', source: 'signed-in', clientId: GL, accessToken: 'n'.repeat(40), refreshToken: 'm'.repeat(40), expiresAt: Date.now() + 7200000, account: 'alice' };
+  store.replaceOAuth(id, fresh);
+  hold = null; release();
+  await running;
+  assert.equal(store.get(id).oauth.accessToken, 'n'.repeat(40), 'the Sign in again stands');
+  assert.equal(fx.answers.at(-1)[0].password, 'n'.repeat(40));
+  // nor does a refused renewal end it (markSignIn only for the refresh token it sent)
+  store.markSignIn(id, 'x', { refreshToken: 'not-the-one' });
+  assert.equal(store.get(id).oauth.needsSignIn, false);
+  assert.throws(() => store.setOAuthTokens(id, { accessToken: 'q'.repeat(40) }, { refreshToken: 'not-the-one' }), (e) => e.status === 409);
+  // the save of a renewed pair fails twice: tried again, kept
+  const { g: g2, store: s2, fx: fx2 } = remoteOf('save');
+  const { end: e2 } = await signIn(g2, { provider: 'gitlab', host: 'gitlab.test', clientId: GL, ca: CA });
+  clock = s2.get(e2.gitHost.id).oauth.expiresAt - 60000;
+  const set = s2.setOAuthTokens.bind(s2);
+  let fails = 2;
+  s2.setOAuthTokens = (...a) => { if (fails-- > 0) throw new HostError(500, 'the Git hosts file cannot be written'); return set(...a); };
+  fx2.asks = [{ kind: 'cred', protocol: 'https', host: 'gitlab.test' }];
+  let p2 = await g2.plan({ action: 'fetch' });
+  await g2.run({ planId: p2.planId });
+  assert.equal(fx2.answers.at(-1)[0].password, s2.get(e2.gitHost.id).oauth.accessToken);
+  assert.ok(s2.get(e2.gitHost.id).oauth.refreshedAt);
+  // it never can be: said, plainly
+  clock = s2.get(e2.gitHost.id).oauth.expiresAt - 60000;
+  s2.setOAuthTokens = () => { throw new HostError(500, 'the Git hosts file cannot be written'); };
+  p2 = await g2.plan({ action: 'fetch' });
+  await assert.rejects(g2.run({ planId: p2.planId }), /its renewed sign-in could not be kept on disk — Sign in again/);
+  clock = Date.now();
+});
+
+test('Sign in again revokes the GitLab session it replaces (best effort)', async () => {
+  const { g, store } = remoteOf('again-revoke');
+  mock.set({ lifetime: 7200 });
+  const { end } = await signIn(g, { provider: 'gitlab', host: 'gitlab.test', clientId: GL, ca: CA });
+  const old = store.get(end.gitHost.id).oauth.accessToken;
+  const revokes = mock.log.revokes;
+  const again = await g.startSignIn({ provider: 'gitlab', hostId: end.gitHost.id }, false);
+  const polls = mock.log.polls;
+  await until(() => mock.log.polls > polls);
+  mock.approve(again.userCode, 'alice');
+  await until(() => g.signInStatus(again.flowId, false).state !== 'pending');
+  await until(() => mock.log.revokes > revokes);
+  assert.equal(mock.tokenAccount(old), null, 'the old session is void');
+  assert.equal(mock.tokenAccount(store.get(end.gitHost.id).oauth.accessToken), 'alice');
 });

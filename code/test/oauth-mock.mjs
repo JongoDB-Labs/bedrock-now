@@ -14,7 +14,9 @@ const USER_CODE = () => `${crypto.randomBytes(2).toString('hex').toUpperCase()}-
 //   approve(userCode, account), deny(userCode), revokeRefresh(account), tokenAccount(token), basic(header), log, set(cfg)}
 //   clients: {clientId: 'github' | 'gitlab'} — the applications it knows, and the flavor of each
 export function createOAuthMock({ clients = {}, lifetime = 3600, refreshLifetime = 86400 * 180, now = () => Date.now(), admin = '', expiresIn = 900, interval = 5 } = {}) {
-  const cfg = { lifetime, refreshLifetime, expiresIn, interval, slowDownOnce: false, noRefresh: false };
+  // (noExpiry: tokens without expires_in — a GitHub App with expiring tokens turned off; tokenError: the token endpoint
+  // answers this error code instead, for a test of what a provider's own words may become)
+  const cfg = { lifetime, refreshLifetime, expiresIn, interval, slowDownOnce: false, noRefresh: false, noExpiry: false, tokenError: '' };
   const devices = new Map();   // device_code -> {clientId, flavor, userCode, scope, state, account, polls, expiresAt, slowed}
   const access = new Map();    // token -> {account, clientId, expiresAt, void}
   const refresh = new Map();   // token -> {account, clientId, used, void, access}
@@ -24,8 +26,8 @@ export function createOAuthMock({ clients = {}, lifetime = 3600, refreshLifetime
   function issue(clientId, account, flavor) {
     const pre = flavor === 'github' ? ['gh', 'u_'].join('') : '';
     const t = `${pre}${rand(20)}`;
-    access.set(t, { account, clientId, expiresAt: now() + cfg.lifetime * 1000, void: false });
-    const out = { access_token: t, token_type: 'bearer', expires_in: cfg.lifetime, scope: flavor === 'github' ? '' : 'read_repository write_repository read_user', created_at: Math.floor(now() / 1000) };
+    access.set(t, { account, clientId, expiresAt: cfg.noExpiry ? Infinity : now() + cfg.lifetime * 1000, void: false });
+    const out = { access_token: t, token_type: 'bearer', ...(cfg.noExpiry ? {} : { expires_in: cfg.lifetime }), scope: flavor === 'github' ? '' : 'read_repository write_repository read_user', created_at: Math.floor(now() / 1000) };
     if (!cfg.noRefresh) {
       const r = `${flavor === 'github' ? ['gh', 'r_'].join('') : ''}${rand(20)}`;
       refresh.set(r, { account, clientId, used: false, void: false, access: t });
@@ -102,6 +104,7 @@ export function createOAuthMock({ clients = {}, lifetime = 3600, refreshLifetime
         const flavor = p === '/login/oauth/access_token' ? 'github' : 'gitlab';
         if (flavorOf(b.client_id) !== flavor) return oauthErr(flavor, flavor === 'github' ? 'incorrect_client_credentials' : 'invalid_client');
         if (b.client_secret) return oauthErr(flavor, 'invalid_request', { note: 'no secret expected' });
+        if (cfg.tokenError) return oauthErr(flavor, cfg.tokenError, { error_description: cfg.tokenError });
         if (b.grant_type === 'urn:ietf:params:oauth:grant-type:device_code') {
           log.polls++;
           const d = devices.get(String(b.device_code || ''));

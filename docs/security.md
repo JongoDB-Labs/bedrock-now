@@ -1744,12 +1744,14 @@ default).
   explicitly (`rejectUnauthorized`: not even `NODE_TLS_REJECT_UNAUTHORIZED=0` in the container's environment relaxes
   it, proven), TLS 1.2 or later, and a failed check is an error — never a retry without it. So the sandbox and the proxy
   only ever see ciphertext they cannot read or change (proven: a CONNECT proxy in the test never sees the refresh
-  token), and a sandbox that misbehaves can at worst drop or delay the connection: the sign-in or the renewal fails
-  (a renewal that fails this way leaves the sign-in as it was; the next operation tries again), no more. It cannot
-  stand in for the host without a certificate the code container trusts for that name. Only the Git
-  host's own name is asked for (and `api.github.com` for github.com); no redirect is followed; an answer is at most
-  64 KiB; a tunnel is at most 2 MiB each way and 2 minutes, four at once. This is the one thing bn-coded connects for
-  itself, and no new way out for the sandbox, which reaches the same addresses on its own.
+  token), and a sandbox that misbehaves can at worst drop or delay the connection: the sign-in or the renewal fails —
+  availability, never secrecy. One such case ends a sign-in: a renewal that reaches the host, which voids the old
+  pair as it answers, while the answer is dropped on its way back (by the sandbox, or a flaky network) — the next
+  renewal is then refused (`invalid_grant`) and the host asks you to sign in again. It cannot stand in for the host
+  without a certificate the code container trusts for that name. Only the Git host's own name is asked for (and
+  `api.github.com` for github.com); no redirect is followed; an answer is at most 64 KiB; a tunnel is at most 2 MiB each
+  way and 2 minutes, four at once. This is the one thing bn-coded connects for itself, and no new way out for the
+  sandbox, which reaches the same addresses on its own.
 - [x] **The code you enter, and where.** The dialog shows the user code, a countdown, and the host's page to enter it
   on as a link that you open — the page never opens it, and the browser never talks to the host about it. The code
   container checks first that the page the host named is `https://` on the Git host itself (its name and port): an
@@ -1761,12 +1763,21 @@ default).
   enter *their* code ("enter ABCD-1234 at github.com/login/device") gets a token of your account for *their* app.
   bedrock-now never sends you a code: you see one only in the Git hosts dialog, right after you pressed Sign in, and
   the dialog says so. GitHub and GitLab show the app's name before you approve: check it is the one you meant
-  (bedrock-now's, or your own).
+  (bedrock-now's, or your own). Nor can the sandbox put such a message in the dialog: a failure of the tunnel (whose
+  error text the sandbox writes) or of TLS (where a server names its certificate) is told in one of a few fixed
+  phrases of ours, chosen by the code it names — never its text — and a provider's error only by a known OAuth error
+  name ("an error of its own" otherwise), in the dialog, a plan's error, Activity and the log alike (proven with a
+  tunnel answering "enter WDJB-MJHT at https://github.com/login/device" and a certificate named like it).
 - [x] **Stored like a token.** The access token, the refresh token (when the host gives one), their expiry times, the
   account, the scopes or the GitHub App's installations, and the client ID are kept in Git hosts' file (mode 600,
   unencrypted: the same caveats as a token). The page sees the account, the scopes, the expiry and whether it renews
   itself — never a token, in no answer, event or log line. A GitHub App's user token reaches only the repositories the
-  app is installed on, with its permissions (8 hours, renewed for 6 months); a GitLab sign-in asks for
+  app is installed on, with its permissions — its token lasts 8 hours, renewed with a refresh token for 6 months,
+  without a client secret: GitHub's *Refreshing user access tokens*
+  (docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens) lists
+  `client_secret` as "Required unless the user access token was generated using the device flow" (an app with
+  expiring tokens turned off gives a token that does not expire and no refresh token: used as it is, proven); a
+  GitLab sign-in asks for
   `read_repository`, `write_repository` and `read_user` (the account's name), and reaches every project of the account.
 - [x] **Renewed before it is used, once.** Before an operation (and before Claude's git gets it, while that is on), a
   token that expires within 5 minutes is renewed with the refresh token, one renewal per host at a time (operations at
@@ -1775,11 +1786,16 @@ default).
   GitHub and GitLab void the old access token with the refresh token, so an operation that still holds the old one at
   that moment may fail (start it again). A renewal the host refuses (`invalid_grant`, `bad_refresh_token`: revoked,
   used up, expired) marks the host **Sign in again**: its tokens are dropped, the operation fails with that message,
-  and nothing is tried again until you sign in again. A renewal that cannot reach the host changes nothing (the token
-  is used while it has more than 15 s left; the next operation tries again). A host that gives no refresh token
-  (GitLab's device grant may not) asks you to sign in again once its token expired.
+  and nothing is tried again until you sign in again. A renewal's result — the new pair, or the end — is applied only
+  while the host still holds the refresh token that renewal sent (compare-and-swap: a Sign in again meanwhile, or
+  another renewal, is never overwritten or ended by an older one); its expiry is checked again just before (no second
+  rotation), and the new pair's save is tried four times before the host asks you to sign in again (the old pair is
+  void by then). A renewal that cannot reach the host is tried again by the next operation (the token is used while it
+  has more than 15 s left). A host that gives no refresh token (GitLab's device grant may not) asks you to sign in
+  again once its token expired.
 - [x] **Removing.** **Remove** forgets the sign-in here. A GitLab sign-in is revoked on GitLab too (RFC 7009: a
-  non-confidential application's own token, no secret). GitHub revokes a user token only for the app's client
+  non-confidential application's own token, no secret), and so is the session a **Sign in again** replaces (best
+  effort). GitHub revokes a user token only for the app's client
   secret, which bedrock-now never has: the page says where to do it (*Settings › Applications › Authorized GitHub
   Apps*).
 - **Proof** (`code/test/oauth.test.mjs`, against a stand-in provider over real TLS with a CA of the test's own,
@@ -1789,7 +1805,9 @@ default).
   again, never a second try; a renewal that cannot reach the host; a question for another host, port or protocol gets
   nothing; GitLab's sign-in revoked on Remove; the routes only locally; no token in any answer, event or log line;
   strict TLS (another name, the system's roots for a private CA's certificate, `NODE_TLS_REJECT_UNAUTHORIZED=0`: all
-  refused; a CA of yours for github.com or gitlab.com refused); `net.tunnel` directly and through a CONNECT proxy.
+  refused; a CA of yours for github.com or gitlab.com refused); a hostile tunnel's and certificate's words never shown;
+  a non-expiring GitHub App token; compare-and-swap renewals and their save tried again; `net.tunnel` directly and
+  through a CONNECT proxy.
   e2e `browser/code-ui-git-oauth` (`--git-server`): Sign in with GitLab against the suite's git server's provider, a
   clone and a push each renewing first, Sign in again after its refresh token was revoked there.
 

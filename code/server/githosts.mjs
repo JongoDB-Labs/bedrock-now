@@ -279,19 +279,22 @@ export class GitHosts {
       h.oauth = checkOAuth({ ...oauth, provider: h.kind }, this.now());
     });
   }
-  // setOAuthTokens(id, {accessToken, refreshToken, expiresAt, refreshExpiresAt}) -> the host (public): a refresh's new
-  // pair, written (a temporary file renamed over the old one) before anything uses it
-  setOAuthTokens(id, t) {
+  // setOAuthTokens(id, {accessToken, refreshToken, expiresAt, refreshExpiresAt}, {refreshToken: sent}) -> the host
+  // (public): a renewal's new pair, written (a temporary file renamed over the old one) before anything uses it — only
+  // while the host still has the refresh token that renewal sent (else 409: a Sign in again or another renewal won)
+  setOAuthTokens(id, t, { refreshToken: sent } = {}) {
     return this.change(id, (h) => {
       if (h.auth !== 'oauth') throw new HostError(400, 'that host is not signed in');
-      const o = checkOAuth({ ...h.oauth, ...t, needsSignIn: false, why: null, refreshedAt: this.now() }, this.now());
-      h.oauth = o;
+      if (sent !== undefined && h.oauth?.refreshToken !== sent) throw new HostError(409, 'that sign-in changed meanwhile');
+      h.oauth = checkOAuth({ ...h.oauth, ...t, needsSignIn: false, why: null, refreshedAt: this.now() }, this.now());
     });
   }
-  // the sign-in ended (its refresh token refused, or expired): "Sign in again" — the tokens are dropped
-  markSignIn(id, why) {
+  // the sign-in ended (its refresh token refused, or expired): "Sign in again" — the tokens are dropped; given the
+  // refresh token a renewal sent, only while the host still has it (a Sign in again meanwhile is never ended by it)
+  markSignIn(id, why, { refreshToken: sent } = {}) {
     return this.change(id, (h) => {
       if (h.auth !== 'oauth') return;
+      if (sent !== undefined && h.oauth?.refreshToken !== sent) return;
       h.oauth = { ...h.oauth, accessToken: null, refreshToken: null, needsSignIn: true, why: String(why || '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 200) };
     });
   }
