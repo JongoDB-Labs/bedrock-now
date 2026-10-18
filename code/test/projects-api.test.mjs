@@ -447,6 +447,30 @@ test('a project\'s own Claude Code settings: not applied until trusted as they a
     r = await req('POST', '/api/sessions', { project: website.id });
     assert.deepEqual(lastSources(), ['user'], 'a pulled agent: not applied until trusted again');
     srv.mgr.closeAll();
+    // front matter read strictly: a grant key in any case is shown; anything YAML could read differently (flow
+    // style, quotes, anchors and aliases, an explicit key, a block scalar, a key twice, no closing ---) leaves the
+    // summary incomplete — never trusted
+    state.settings[W] = fixture({}, { '.claude/commands/go.md': '---\nAllowed-Tools: Bash(*)\ndescription: Go: now\n---\nGo.\n' });
+    v = (await req('GET', `/api/projects/${website.id}/settings`)).json;
+    assert.deepEqual(v.summary.files[0].grants, [{ key: 'Allowed-Tools', value: 'Bash(*)' }]);
+    assert.equal(v.summary.complete, true);
+    for (const fm of ['allowed-tools: {Bash: "*"}', 'allowed-tools: "Bash(*)"', 'x: &a Bash(*)\nallowed-tools: *a', '? allowed-tools\n: Bash(*)', 'allowed-tools: |\n  Bash(*)',
+      'allowed-tools: Read\nallowed-tools: Bash(*)', '"allowed-tools": Bash(*)']) {
+      const fx = fixture({}, { '.claude/commands/go.md': `---\n${fm}\n---\nGo.\n` });
+      state.settings[W] = fx;
+      v = (await req('GET', `/api/projects/${website.id}/settings`)).json;
+      assert.equal(v.summary.complete, false, fm);
+      assert.equal(v.hash, null, fm);
+      assert.equal((await req('POST', `/api/projects/${website.id}/trust`, { hash: fx.hash })).status, 409, fm);
+    }
+    const open = fixture({}, { '.claude/commands/go.md': '---\nallowed-tools: Bash(*)\nGo.\n' });
+    state.settings[W] = open;
+    assert.equal((await req('GET', `/api/projects/${website.id}/settings`)).json.summary.complete, false, 'no closing ---');
+    // a .claude/ below the root: listed, and enough to need trust
+    state.settings[W] = fixture({}, { 'packages/app/.claude/commands/deploy.md': '---\nallowed-tools: Bash(*)\n---\n' });
+    v = (await req('GET', `/api/projects/${website.id}/settings`)).json;
+    assert.ok(['untrusted', 'changed'].includes(v.state), v.state);
+    assert.deepEqual(v.summary.files.map((f) => [f.name, f.grants]), [['packages/app/.claude/commands/deploy.md', [{ key: 'allowed-tools', value: 'Bash(*)' }]]]);
     // beyond bn-coded's bounds (more than 500 files …): unverifiable, never trusted
     state.settings[W] = { ...fixture({}, { '.claude/a.md': 'x' }), verifiable: false, over: 'more than 500 files' };
     v = (await req('GET', `/api/projects/${website.id}/settings`)).json;

@@ -727,8 +727,8 @@ sessions from before projects are listed under it.
 
   A project's folder is 1 to 4 levels below `/workspace`, no name in it starts with `.`, at most 160 bytes. At most
   64 projects.
-- **A project's own Claude Code configuration** (everything under `.claude/` — settings, skills, commands, agents —
-  and `.mcp.json`; a cloned repository may bring it) applies only once you trusted it as it is: until then a session
+- **A project's own Claude Code configuration** (everything under `.claude/` — settings, skills, commands, agents —,
+  also in `.claude/` folders below it, and `.mcp.json`; a cloned repository may bring it) applies only once you trusted it as it is: until then a session
   there runs with your own settings only and, of MCP servers, only the stack's own, and says so above the prompt
   (*Review them…*). The project's ⋯ › *Claude Code settings…* — shown by itself before a new session there — lists what
   it sets (hooks and their commands, permission rules, environment, MCP servers, every other key, and each skill's or

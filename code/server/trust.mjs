@@ -20,10 +20,10 @@ const SHA = /^[0-9a-f]{64}$/;
 export const SETTINGS_FILES = Object.freeze(['.claude/settings.json', '.claude/settings.local.json']);
 const TYPES = ['file', 'link', 'big', 'other'];
 export const FILES_MAX = 500;
-// a name bn-coded may list: .mcp.json, .claude itself (a link or not a folder), or a path under .claude/ — relative,
-// one line, no "." or ".." part
+// a name bn-coded may list: .mcp.json, or a .claude (the root's or one below it: a link, not a folder) or a path under
+// one — relative, one line, no "." or ".." part
 const nameOk = (n) => typeof n === 'string' && n.length <= 1024 && !/[\x00-\x1f\x7f]/.test(n)
-  && (n === '.mcp.json' || n === '.claude' || (n.startsWith('.claude/') && n.split('/').every((x) => x !== '' && x !== '.' && x !== '..')));
+  && (n === '.mcp.json' || (n.split('/').includes('.claude') && n.split('/').every((x) => x !== '' && x !== '.' && x !== '..')));
 
 /** checkFiles(project.settings' RESULT) -> {files: [{name, type, size, sha256, target, text}], ok}: ok false when the
  *  list does not fit what bn-coded lists (a bad name, the same name twice, out of order, too many): then unverifiable */
@@ -61,20 +61,45 @@ const looksHidden = (t) => NOT_PLAIN.test(t) || /\s{20,}/.test(t) || (t.match(/\
 // --- end of the rule ---
 export const careful = (t) => typeof t === 'string' && looksHidden(t);
 // the front matter keys of a skill, command, agent … that grant or change something (tools, hooks, MCP servers, the
-// permission mode, the model) — shown for every file under .claude/; the rest of such a file is instructions for Claude
-const GRANT_KEYS = new Set(['allowed-tools', 'allowedtools', 'disallowed-tools', 'disallowedtools', 'tools', 'hooks', 'mcpservers', 'mcp-servers',
-  'permissionmode', 'permission-mode', 'model']);
-/** frontMatter(text) -> [{key, value}] of those keys (a value with its indented lines) */
+// permission mode, the model) — shown for every .md file under a .claude/; the rest of such a file is instructions
+const GRANT_KEYS = new Set(['allowed-tools', 'allowedtools', 'allowed_tools', 'disallowed-tools', 'disallowedtools', 'disallowed_tools', 'tools', 'hooks',
+  'mcpservers', 'mcp-servers', 'mcp_servers', 'permissionmode', 'permission-mode', 'permission_mode', 'model']);
+// a plain YAML scalar this page shows as it is: no indicator first (flow, anchor, alias, tag, block, quote, comment,
+// directive …), no ": " or " #" inside, no tab — anything else a YAML parser could read differently
+const PLAIN = /^(?![-?:,[\]{}#&*!|>'"%@`])(?!.*(?:: | #|\t))[^\t]*$/;
+// a value that changes the structure YAML reads (a flow collection, a block scalar, an anchor, an alias, a tag, an
+// explicit key) — never plain, whatever its key
+const STRUCTURAL = /^[{[|>&*!?]|\t/;
+/** frontMatter(text) -> {grants: [{key, value}], plain}: the grant keys of a .md file's front matter (matched in any
+ *  case), each value as YAML gives it (a scalar, or a block list joined with ", "); plain false when the front matter
+ *  is anything but top-level `key: value` lines and `key:` with `  - item` lines — flow style, block scalars, anchors,
+ *  aliases, tags, explicit or quoted keys, multi-line scalars, a key twice, no closing --- — or a grant key's value is
+ *  not a plain scalar (quoted, ": " or " #" inside): then what Claude Code reads cannot be told here */
 export function frontMatter(t) {
-  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(t);
-  if (!m) return [];
-  const out = [];
-  let cur = null;
-  for (const line of m[1].split(/\r?\n/)) {
-    const k = /^([A-Za-z0-9_-]+)[ \t]*:(.*)$/.exec(line);
-    if (k) { cur = { key: k[1], value: k[2].trim() }; out.push(cur); } else if (cur && /^[ \t]/.test(line)) cur.value += `\n${line}`;
+  if (!/^\uFEFF?---[ \t]*\r?\n/.test(t)) return { grants: [], plain: true };
+  const m = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(t);
+  if (!m) return { grants: [], plain: false };
+  const keys = [];
+  let cur = null, plain = true;
+  for (const raw of m[1].split(/\r?\n/)) {
+    const line = raw.replace(/[ ]+$/, '');
+    if (!line || /^[ ]*#/.test(line)) continue;
+    const k = /^([A-Za-z][A-Za-z0-9_-]*):(?: (.*))?$/.exec(line);
+    if (k) {
+      const v = (k[2] ?? '').trim();
+      const grant = GRANT_KEYS.has(k[1].toLowerCase());
+      if (keys.some((x) => x.key.toLowerCase() === k[1].toLowerCase()) || STRUCTURAL.test(v) || (grant && v && !PLAIN.test(v))) plain = false;
+      cur = { key: k[1], value: v, list: v === '' ? [] : null };
+      keys.push(cur);
+      continue;
+    }
+    const item = /^[ ]+- (.*)$/.exec(line);
+    const iv = item ? item[1].trim() : '';
+    if (item && cur?.list && !STRUCTURAL.test(iv) && (!GRANT_KEYS.has(cur.key.toLowerCase()) || PLAIN.test(iv))) { cur.list.push(iv); continue; }
+    plain = false;   // a continuation, an indented mapping, a tab, a flow collection …
   }
-  return out.filter((x) => GRANT_KEYS.has(x.key.toLowerCase()));
+  const grants = keys.filter((x) => GRANT_KEYS.has(x.key.toLowerCase())).map((x) => ({ key: x.key, value: x.list?.length ? x.list.join(', ') : x.value }));
+  return { grants, plain };
 }
 // canonical(v) -> JSON with sorted keys (every field, whatever the friendly line shows)
 const canonical = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
@@ -108,8 +133,12 @@ export function summarize(files) {
   for (const f of files) {
     const note = (t) => out.notes.push({ file: f.name, note: t });
     const settings = f.name === '.mcp.json' || SETTINGS_FILES.includes(f.name);
-    // every other file under .claude/ is listed, with the front matter keys that grant something
-    if (!settings) out.files.push({ name: text(f.name), size: f.size, grants: f.text === null ? [] : frontMatter(f.text).map((g) => ({ key: text(g.key), value: text(g.value) })) });
+    // every other file under a .claude/ is listed — a .md file with the front matter keys that grant something
+    if (!settings) {
+      const fm = f.text !== null && /\.md$/i.test(f.name) ? frontMatter(f.text) : { grants: [], plain: true };
+      if (!fm.plain) { note('front matter this page cannot read the way Claude Code does (only `key: value` lines and `- item` lists)'); incomplete('front matter beyond plain key: value lines'); }
+      out.files.push({ name: text(f.name), size: f.size, grants: fm.grants.map((g) => ({ key: text(g.key), value: text(g.value) })) });
+    }
     if (f.type === 'link') note(`a link to ${f.target ?? '?'}${f.text === null ? ' (not read: outside the workspace, or not a file)' : ''}`);
     if (f.type === 'big') { note('too large to show (over 256 KiB)'); incomplete('a file too large to show'); continue; }
     if (f.type === 'other') { note('not a file it could read (a FIFO, a folder through a link …)'); incomplete('a file that could not be read'); continue; }
