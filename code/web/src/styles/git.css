@@ -97,6 +97,15 @@
 .gitr-result { overflow-wrap: anywhere; }
 .gitr-add { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
 .gitr-imported { display: grid; gap: 2px; }
+/* a sign-in: the code to enter (large, its letters apart), its page as a link, the countdown */
+.gitr-signin { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.gitr-code-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.gitr-code { padding: 6px 12px; border: 1px dashed var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: 600 26px/1.2 var(--mono);
+  letter-spacing: 0.12em; user-select: all; overflow-wrap: anywhere; }
+.gitr-signin-link { justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitr-oauth, .gitr-oauth-new { display: grid; gap: 4px; }
+.gitr-oauth-new .banner, .gitr-signin-again { margin: 0; }
+.gitr-signin-again { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .gitr-import code { overflow-wrap: anywhere; }
 .gitr-events { margin-top: 12px; }
 .gitr-events ul { margin: 6px 0 0; padding-left: 16px; display: grid; gap: 2px; }

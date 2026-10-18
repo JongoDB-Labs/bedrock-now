@@ -32,6 +32,9 @@
 // /__mock/watch-incomplete?on=1 is a sandbox that could not list every watched file (the cards say so).
 // /__mock/git-import?source=gh|glab&account= adds a Git host as ./stack git-host import would (an access token of gh's or
 // glab's login, its account and scopes).
+// /__mock/git-signin?action=approve|deny|expire|end&account= plays the user (and the provider) for the Git hosts
+// dialog's sign-in in progress: approved (as account), declined, expired; end: a signed-in host's sign-in ended (Sign in
+// again); /__mock/git-signin?app=0 is a stack with no GitHub App set up.
 // /__mock/spend?session=&add= books more spend for a session (its budget's warnings); /__mock/age?session=&ms= makes a
 // session's last activity that long ago (the cold-cache line); /__mock/terminal-exit?session= is Claude Code exiting in
 // the terminal after "Open in the terminal" (until then a resume here is refused); GET /__mock/terminal-log lists what
@@ -239,14 +242,28 @@ let gitBranchesMock = [{ name: 'main', upstream: { remote: 'origin', branch: 'ma
 let gitCurrent = 'main';
 const gitPlans = new Map();
 const hostId = () => `h_${crypto.randomBytes(6).toString('hex')}`;
-const hostView = (h) => ({ id: h.id, kind: h.kind, label: h.label, host: h.host, port: h.port ?? null, auth: h.auth, username: h.username, hasToken: h.auth === 'token',
-  tokenSetAt: h.createdAt, imported: h.imported ?? null, publicKey: h.publicKey ?? null, fingerprint: h.fingerprint ?? null, keySetAt: h.auth === 'ssh' ? h.createdAt : null, knownHosts: [],
+const hostView = (h) => ({ id: h.id, kind: h.kind, label: h.label, host: h.host, port: h.port ?? null, auth: h.auth, username: h.username, hasToken: h.auth !== 'ssh' && !h.oauth?.needsSignIn,
+  tokenSetAt: h.createdAt, imported: h.imported ?? null, oauth: h.oauth ?? null, publicKey: h.publicKey ?? null, fingerprint: h.fingerprint ?? null, keySetAt: h.auth === 'ssh' ? h.createdAt : null, knownHosts: [],
   builtinHostKeys: ['github.com', 'gitlab.com', 'bitbucket.org'].includes(h.host), ca: false, claude: h.claude === true, claudeSince: null, createdAt: h.createdAt });
 const gitEvent = (e) => { const ev = { id: crypto.randomBytes(6).toString('hex'), at: Date.now(), who: 'you', ok: true, text: '', ...e }; gitEventsMock.unshift(ev); return ev; };
-const mockHost = (scheme) => gitHostsMock.find((h) => h.host === 'github.com' && h.auth === (scheme === 'https' ? 'token' : 'ssh')) || null;
+const mockHost = (scheme) => gitHostsMock.find((h) => h.host === 'github.com' && (scheme === 'https' ? h.auth === 'token' || h.auth === 'oauth' : h.auth === 'ssh')) || null;
+// Sign in with GitHub / GitLab: the flows (the device code never leaves the "code container"), and whether an app is set
+const signInFlows = new Map();
+let signInApp = true;
+const signInConfig = () => ({ github: { host: 'github.com', clientId: signInApp ? 'Iv23mockclient000000' : null, appSlug: signInApp ? 'bedrock-now' : null, configured: signInApp },
+  gitlab: { host: 'gitlab.com', clientId: null, configured: false } });
+const flowView = (f) => ({ flowId: f.id, provider: f.provider, host: f.host, port: null, label: f.label, state: f.state, userCode: f.state === 'pending' ? f.userCode : null,
+  verificationUri: f.provider === 'github' ? `https://${f.host}/login/device` : `https://${f.host}/oauth/device`, verificationUriComplete: null, expiresAt: f.expiresAt, interval: 5,
+  error: f.error ?? null, gitHost: f.gitHost ? hostView(f.gitHost) : null, again: Boolean(f.hostId) });
+const oauthOf = (provider, account) => ({ provider, source: 'signed-in', clientId: provider === 'github' ? 'Iv23mockclient000000' : 'gl-mock-app', account,
+  scopes: provider === 'github' ? [] : ['read_repository', 'write_repository', 'read_user'], app: provider === 'github' ? 'github-app' : null, appSlug: provider === 'github' ? 'bedrock-now' : null,
+  installations: provider === 'github' ? [{ account, selection: 'selected' }] : [], expiresAt: Date.now() + 8 * 3600000, refreshExpiresAt: Date.now() + 180 * 86400000, refreshable: true,
+  needsSignIn: false, why: null, signedInAt: Date.now(), refreshedAt: null });
 const MOCK_URL = 'https://github.com/mock/app.git';
 function resetGitRemote() {
   gitHostsMock = [];
+  signInFlows.clear();
+  signInApp = true;
   gitEventsMock.length = 0;
   gitRemoteBranches = ['main'];
   gitBranchesMock = [{ name: 'main', upstream: { remote: 'origin', branch: 'main' } }];
@@ -255,8 +272,7 @@ function resetGitRemote() {
 }
 function gitRemoteMock() {
   const h = mockHost('https');
-  const ref = { url: MOCK_URL, ok: true, display: 'github.com/mock/app', scheme: 'https',
-    host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.imported ? { source: h.imported.source, account: h.imported.account } : {}) } : null };
+  const ref = { url: MOCK_URL, ok: true, display: 'github.com/mock/app', scheme: 'https', host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.oauth ? { account: h.oauth.account } : h.imported ? { source: h.imported.source, account: h.imported.account } : {}) } : null };
   return { repo: true, root: '', branch: gitCurrent, detached: false, head: gitCommits[0]?.hash ?? null, state: null, rewrites: 0,
     remotes: [{ name: 'origin', urls: [MOCK_URL], pushUrls: [], multiple: false, fetch: ref, push: ref }],
     branches: gitBranchesMock.map((b) => ({ name: b.name, head: gitCommits[0]?.hash ?? null, upstream: b.upstream, ahead: b.upstream ? (b.name === gitCurrent ? gitAhead : 0) : null, behind: b.upstream ? 0 : null, gone: false })),
@@ -264,7 +280,29 @@ function gitRemoteMock() {
 }
 async function gitRemotePanel(p, m, url, req) {
   if (p === '/api/git/repos' && m === 'GET') return [200, { repos: gitRepo ? [{ path: '' }] : [] }];
-  if (p === '/api/git/hosts' && m === 'GET') return [200, { hosts: gitHostsMock.map(hostView), events: gitEventsMock.slice(0, 50), local: true }];
+  if (p === '/api/git/hosts' && m === 'GET') return [200, { hosts: gitHostsMock.map(hostView), events: gitEventsMock.slice(0, 50), local: true, signIn: signInConfig() }];
+  if (p === '/api/git/oauth' && m === 'POST') {
+    const b = await jsonBody(req);
+    if (b.provider !== 'github' && b.provider !== 'gitlab') return [400, { error: 'provider: github or gitlab' }];
+    let host = String(b.host || (b.provider === 'github' ? 'github.com' : 'gitlab.com')).toLowerCase();
+    const again = b.hostId ? gitHostsMock.find((x) => x.id === b.hostId) : null;
+    if (b.hostId && !again) return [400, { error: 'that git host was not connected by a sign-in' }];
+    if (again) host = again.host;
+    const clientId = String(b.clientId || '') || (host === 'github.com' && b.provider === 'github' && signInApp ? 'Iv23mockclient000000' : '');
+    if (!clientId && !again) return [400, { error: host === 'github.com' || host === 'gitlab.com' ? `no ${b.provider === 'github' ? 'GitHub' : 'GitLab'} app is set up for bedrock-now yet: register one (README › Remote repositories) and enter its client ID — or connect with an access token or an SSH key` : `the application (client) ID of your app on ${host}, please` }];
+    if (!again && gitHostsMock.some((x) => x.host === host && x.auth !== 'ssh')) return [409, { error: `${host} is connected with an access token already: remove it first to sign in instead` }];
+    const f = { id: crypto.randomBytes(16).toString('hex'), provider: b.provider, host, label: b.label || '', state: 'pending', hostId: again?.id ?? null,
+      userCode: `${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`, expiresAt: Date.now() + 900000 };
+    signInFlows.set(f.id, f);
+    return [200, flowView(f)];
+  }
+  let fm = p.match(/^\/api\/git\/oauth\/([0-9a-f]{32})$/);
+  if (fm) {
+    const f = signInFlows.get(fm[1]);
+    if (!f) return [404, { error: 'no such sign-in (it ended, or this page started none)' }];
+    if (m === 'DELETE') { if (f.state === 'pending') f.state = 'cancelled'; return [200, flowView(f)]; }
+    return [200, flowView(f)];
+  }
   if (p === '/api/git/hosts' && m === 'POST') {
     const b = await jsonBody(req);
     if (!['github', 'gitlab', 'other'].includes(b.kind) || !['token', 'ssh'].includes(b.auth)) return [400, { error: 'kind and auth, please' }];
@@ -284,9 +322,9 @@ async function gitRemotePanel(p, m, url, req) {
     if (!h) return [404, { error: 'no such git host' }];
     if (!mm[2] && m === 'DELETE') {
       gitHostsMock = gitHostsMock.filter((x) => x !== h);
-      const revokeAt = h.auth !== 'token' || h.kind === 'other' ? null : h.kind === 'github' ? `https://${h.host}/settings/${h.imported?.source === 'gh' ? 'applications' : 'personal-access-tokens'}`
-        : `https://${h.host}/-/user_settings/personal_access_tokens`;
-      return [200, { host: hostView(h), revokeAt }];
+      const revokeAt = h.auth === 'ssh' || h.kind === 'other' ? null : h.auth === 'oauth' ? (h.kind === 'github' ? `https://${h.host}/settings/apps/authorizations` : null)
+        : h.kind === 'github' ? `https://${h.host}/settings/${h.imported?.source === 'gh' ? 'applications' : 'personal-access-tokens'}` : `https://${h.host}/-/user_settings/personal_access_tokens`;
+      return [200, { host: hostView(h), revoked: h.auth === 'oauth' && h.kind === 'gitlab' ? true : null, revokeAt }];
     }
     const b = m === 'POST' ? await jsonBody(req) : {};
     if (mm[2] === 'claude') { h.claude = b.on === true; return [200, { host: hostView(h) }]; }
@@ -314,7 +352,8 @@ async function gitRemotePanel(p, m, url, req) {
     const cur = gitBranchesMock.find((x) => x.name === gitCurrent);
     const dst = action === 'publish' ? gitCurrent : cur?.upstream?.branch ?? gitCurrent;
     if (action === 'push' && !cur?.upstream) return [400, { error: `${gitCurrent} tracks no branch of origin yet: publish it` }];
-    const via = h ? `HTTPS token '${h.label}'${h.imported ? ` (${h.imported.source}'s login${h.imported.account ? `, ${h.imported.account}` : ''})` : ''}` : 'no credential (a public repository)';
+    const via = !h ? 'no credential (a public repository)' : h.auth === 'oauth' ? `sign-in '${h.label}'${h.oauth?.account ? ` as ${h.oauth.account}` : ''}`
+      : `HTTPS token '${h.label}'${h.imported ? ` (${h.imported.source}'s login${h.imported.account ? `, ${h.imported.account}` : ''})` : ''}`;
     const display = action === 'clone' ? String(b.url || '').replace(/^https:\/\//, '').replace(/\.git$/, '') : 'github.com/mock/app';
     const newBranch = !gitRemoteBranches.includes(dst);
     const summary = action === 'clone' ? `Clone ${display} into ${b.target ? `${b.target}/` : 'the workspace folder'} via ${via}`
@@ -323,8 +362,8 @@ async function gitRemotePanel(p, m, url, req) {
     const planId = crypto.randomBytes(16).toString('hex');
     gitPlans.set(planId, { action, dst, target: b.target ?? '' });
     return [200, { planId, action, repo: '', remote: action === 'clone' ? null : 'origin', url: action === 'clone' ? b.url : MOCK_URL, display, scheme: 'https', branch: action === 'clone' ? null : gitCurrent,
-      dst: action === 'clone' ? null : dst, newBranch: action !== 'clone' && newBranch,
-      host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.imported ? { source: h.imported.source, account: h.imported.account } : {}) } : null, auth: h ? 'token' : 'none', summary,
+      dst: action === 'clone' ? null : dst, newBranch: action !== 'clone' && newBranch, host: h ? { id: h.id, label: h.label, kind: h.kind, auth: h.auth, ...(h.oauth ? { account: h.oauth.account } : h.imported ? { source: h.imported.source, account: h.imported.account } : {}) } : null,
+      auth: h ? h.auth : 'none', summary,
       confirm: true, target: action === 'clone' ? b.target ?? '' : null, depth: b.depth ?? null }];
   }
   if (p === '/api/git/run') {
@@ -2167,7 +2206,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/__mock/git-import') {
         const source = url.searchParams.get('source') === 'glab' ? 'glab' : 'gh';
         const host = source === 'gh' ? 'github.com' : 'gitlab.com';
-        if (gitHostsMock.some((x) => x.host === host && x.auth === 'token')) return json(res, 409, { error: `${host} is connected with a token already` });
+        if (gitHostsMock.some((x) => x.host === host && x.auth !== 'ssh')) return json(res, 409, { error: `${host} is connected already` });
         const account = url.searchParams.get('account') || 'mock-user';
         const h = { id: hostId(), kind: source === 'gh' ? 'github' : 'gitlab', label: source === 'gh' ? 'GitHub' : 'GitLab', host, port: null, auth: 'token',
           username: source === 'gh' ? 'x-access-token' : 'oauth2', createdAt: Date.now(),
@@ -2176,6 +2215,35 @@ const server = http.createServer(async (req, res) => {
         gitHostsMock.push(h);
         gitEvent({ action: 'host', host: h.label, target: host, text: `connected with ${source}'s login as ${account} (./stack git-host import)` });
         return json(res, 200, { ok: true });
+      }
+      if (url.pathname === '/__mock/git-signin') {
+        const action = url.searchParams.get('action');
+        if (url.searchParams.has('app')) signInApp = url.searchParams.get('app') !== '0';
+        const f = [...signInFlows.values()].reverse().find((x) => x.state === 'pending');
+        if (action === 'end') {
+          const h = gitHostsMock.find((x) => x.auth === 'oauth');
+          if (h) h.oauth = { ...h.oauth, needsSignIn: true, why: 'the host no longer accepts it: revoked, or used up', refreshable: false };
+          return json(res, h ? 200 : 404, { ok: Boolean(h) });
+        }
+        if (action && !f) return json(res, 404, { error: 'no sign-in in progress' });
+        if (action === 'approve') {
+          const account = url.searchParams.get('account') || 'mock-user';
+          if (f.hostId) {
+            const h = gitHostsMock.find((x) => x.id === f.hostId);
+            h.oauth = oauthOf(f.provider, account);
+            f.gitHost = h;
+          } else {
+            const label = f.label || (f.host === 'github.com' ? 'GitHub' : f.host === 'gitlab.com' ? 'GitLab' : f.host);
+            const h = { id: hostId(), kind: f.provider, label, host: f.host, port: null, auth: 'oauth', username: f.provider === 'gitlab' ? 'oauth2' : 'x-access-token', createdAt: Date.now(),
+              oauth: oauthOf(f.provider, account) };
+            gitHostsMock.push(h);
+            gitEvent({ action: 'host', host: label, target: f.host, text: `connected with a sign-in as ${account}` });
+            f.gitHost = h;
+          }
+          f.state = 'done';
+        } else if (action === 'deny') { f.state = 'denied'; f.error = 'the sign-in was declined'; }
+        else if (action === 'expire') { f.state = 'expired'; f.error = 'the code expired before it was entered: start again'; }
+        return json(res, 200, { ok: true, userCode: f?.userCode ?? null });
       }
       if (url.pathname === '/__mock/watch-incomplete') {
         watchIncomplete = url.searchParams.get('on') === '1';

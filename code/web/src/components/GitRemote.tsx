@@ -2,12 +2,13 @@
 // (where it is, and with which Git host's credential), Fetch / Pull / Push / Publish — each one's destination shown
 // before anything is sent (a push or publish every time, a fetch or pull the first time per remote URL) —, the link to
 // open a pull request after a push, Clone, a remote's URL, and Git hosts: the git servers you connect (GitHub, GitLab
-// or any https/ssh host) with an access token or an SSH key made here, kept by the code container — never in the
-// sandbox, never shown again; or a gh / glab login imported by ./stack git-host import, which the dialog names —, Test
-// connection, and whether Claude's own git may use a host (off by default). The
+// or any https/ssh host) with a sign-in (GitHub's or GitLab's device flow: the code shown here, entered by you on the
+// host's own page, which you open — never the page), an access token (or a gh / glab login imported by ./stack git-host
+// import, which the dialog names) or an SSH key made here, kept by the code container — never in the sandbox, never
+// shown again —, Test connection, and whether Claude's own git may use a host (off by default). The
 // Hosts button is labelled, and a one-line hint offers "Connect a git host" while no connected host covers the remote
 // (or none is connected at all). Every text from the sandbox or a server is shown as text (label).
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import {
   store,
@@ -24,11 +25,17 @@ import {
   toast,
 } from '../app';
 import * as api from '../api';
-import type { GitHostView, GitPlan, GitRemoteState, GitStatus } from '../types';
-import { cloneTarget, compareHint, hostHint, hostLinks, importCommand, importedReach, remoteFor, remoteRef, syncState } from '../git';
+import type { GitAuth, GitHostKind, GitHostView, GitPlan, GitRemoteState, GitSignInConfig, GitSignInFlow, GitStatus } from '../types';
+import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, remoteFor, remoteRef, signInLife, signInReach, signInReady, syncState } from '../git';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
 import { Dialog } from './ui';
+
+/** How a credential is named: "HTTPS token", "SSH key", "sign-in". */
+const authName = (auth: GitAuth): string => (auth === 'token' ? 'HTTPS token' : auth === 'ssh' ? 'SSH key' : 'sign-in');
+/** What follows its name: an imported login's source and account ("(gh's login, octocat)"), a sign-in's account. */
+const credSuffix = (r: { source?: string; account?: string | null }): string =>
+  r.source ? ` (${r.source}'s login${r.account ? `, ${label(r.account, 100)}` : ''})` : r.account ? ` (${label(r.account, 100)})` : '';
 
 /** The repository folder the panel shows, when the workspace has more than one (or the shown one is a folder in it). */
 export function RepoPicker() {
@@ -75,7 +82,7 @@ export function RemoteBar({ st }: { st: GitStatus }) {
           <span class="gitr-where small" title={ref ? `${label(r.name, 64)}: ${label(ref.url, 600)}` : ''} data-testid="git-remote">
             {label(r.name, 40)} → {ref?.ok ? label(ref.display, 120) : <span class="warn-text">{label(ref?.why || 'a URL the panel does not use', 160)}</span>}{' '}
             {ref?.ok && ref.host && (
-              <span class="pill gitr-host" title={`${ref.host.auth === 'token' ? 'HTTPS token' : 'SSH key'} of the Git host '${label(ref.host.label, 60)}'${ref.host.source ? ` (${ref.host.source}'s login${ref.host.account ? `, ${label(ref.host.account, 100)}` : ''})` : ''}`}>
+              <span class="pill gitr-host" title={`${authName(ref.host.auth)} of the Git host '${label(ref.host.label, 60)}'${credSuffix(ref.host)}`}>
                 <Icon name="check" size={11} /> {label(ref.host.label, 40)}
               </span>
             )}
@@ -88,15 +95,15 @@ export function RemoteBar({ st }: { st: GitStatus }) {
             </button>
           </span>
         )}
-        <button type="button" class="btn small ghost gitr-hosts-btn" title="Git hosts: tokens and SSH keys for push, pull and clone" onClick={() => openGitDialog('hosts')} data-testid="git-hosts-open">
+        <button type="button" class="btn small ghost gitr-hosts-btn" title="Git hosts: tokens and SSH keys for push, pull and clone — or sign in with GitHub or GitLab" onClick={() => openGitDialog('hosts')} data-testid="git-hosts-open">
           <Icon name="server" size={13} /> Hosts
         </button>
       </div>
       {hint && (
-        <div class="gitr-hint small" title="Git hosts keep a token or an SSH key for push, pull and clone. A public repository fetches without one." data-testid="git-host-hint">
+        <div class="gitr-hint small" title="Git hosts keep a sign-in, a token or an SSH key for push, pull and clone. A public repository fetches without one." data-testid="git-host-hint">
           <span>
             {hint.kind === 'uncovered'
-              ? `${label(hint.host, 120)} is not a connected git host: pushing needs its ${hint.scheme === 'ssh' ? 'SSH key' : 'access token'}.`
+              ? `${label(hint.host, 120)} is not a connected git host: pushing needs ${hint.scheme === 'ssh' ? 'its SSH key' : 'a sign-in or an access token'}.`
               : 'No git host is connected: pushing needs one.'}
           </span>
           <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} data-testid="git-connect-host">
@@ -181,7 +188,7 @@ export function NoRepoActions() {
       <button type="button" class="btn small primary" onClick={() => openGitDialog('clone')} data-testid="git-clone-open">
         <Icon name="download" size={13} /> Clone a repository…
       </button>
-      <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} title="Git hosts: tokens and SSH keys for push, pull and clone" data-testid="git-hosts-open">
+      <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} title="Git hosts: tokens and SSH keys for push, pull and clone — or sign in with GitHub or GitLab" data-testid="git-hosts-open">
         <Icon name="server" size={13} /> {hosts && !hosts.hosts.length ? 'Connect a git host…' : 'Git hosts…'}
       </button>
     </div>
@@ -208,7 +215,7 @@ const VERB: Record<GitPlan['action'], string> = { fetch: 'Fetch', pull: 'Pull', 
 /** What a remote operation will do — where, which branch, with which credential — before anything is sent. */
 function PlanDialog({ plan }: { plan: GitPlan }) {
   const title = plan.action === 'clone' ? `Clone ${label(plan.display, 80)}?` : `${VERB[plan.action]} ${plan.action === 'fetch' || plan.action === 'pull' ? 'from' : 'to'} ${label(plan.display, 80)}?`;
-  const cred = plan.host ? `${plan.host.auth === 'token' ? 'the HTTPS token' : 'the SSH key'} of '${label(plan.host.label, 60)}'${plan.host.source ? ` (${plan.host.source}'s login${plan.host.account ? `, ${label(plan.host.account, 100)}` : ''})` : ''}`
+  const cred = plan.host ? `the ${authName(plan.host.auth)} of '${label(plan.host.label, 60)}'${credSuffix(plan.host)}`
     : 'none (a public repository works without one)';
   return (
     <Dialog title={title} onClose={cancelGitPlan} testid="git-plan-dialog">
@@ -297,8 +304,8 @@ function CloneDialog({ onClose }: { onClose: () => void }) {
         </label>
       </div>
       <p class="muted small">
-        A private repository needs its host connected (Git hosts): an https:// URL with an access token, an ssh one with an SSH key. Submodules are not
-        cloned, and no hook of the repository runs.
+        A private repository needs its host connected (Git hosts): an https:// URL with a sign-in or an access token, an ssh one with an SSH key. Submodules
+        are not cloned, and no hook of the repository runs.
       </p>
       {err && <p class="plg-err small" role="alert" data-testid="git-clone-error">{label(err, 300)}</p>}
       <div class="dlg-actions">
@@ -336,7 +343,7 @@ function RemoteUrlDialog({ onClose }: { onClose: () => void }) {
         </label>
       </div>
       <p class="muted small">
-        https:// (with an access token in Git hosts) or ssh (git@host:owner/repo.git, with an SSH key). Never a password in the URL: the host's credential
+        https:// (with a sign-in or an access token in Git hosts) or ssh (git@host:owner/repo.git, with an SSH key). Never a password in the URL: the host's credential
         is kept apart. To publish to a new repository, create it on the host first (empty), then put its URL here.
       </p>
       <div class="dlg-actions">
@@ -413,12 +420,13 @@ export function GitHostsDialog({ onClose }: { onClose: () => void }) {
   return (
     <Dialog title="Git hosts" onClose={onClose} wide testid="git-hosts-dialog">
       <p class="muted small">
-        The git servers you push to, pull and clone from — with an access token (https) or an SSH key made here. The Code page keeps them, apart from the
-        sandbox: one operation you start gets its host's credential while it runs, and Claude's own git gets none unless you let it below.
+        The git servers you push to, pull and clone from — signed in with GitHub or GitLab, with an access token (https) or an SSH key made here. The Code
+        page keeps them, apart from the sandbox: one operation you start gets its host's credential while it runs, and Claude's own git gets none unless you
+        let it below.
       </p>
       {!local && view && (
         <div class="banner warn small" data-testid="git-hosts-remote">
-          Over remote access: adding a host, a token or a key, trusting a host key and letting Claude use a host work only from the computer running
+          Over remote access: adding a host, signing in, a token or a key, trusting a host key and letting Claude use a host work only from the computer running
           bedrock-now. Removing a host and turning Claude's use off work here too.
         </div>
       )}
@@ -434,7 +442,7 @@ export function GitHostsDialog({ onClose }: { onClose: () => void }) {
           {!view.hosts.length && <li class="muted small">No git host is connected yet.</li>}
         </ul>
       )}
-      {local && (adding ? <AddHost onDone={() => setAdding(false)} /> : (
+      {local && (adding ? <AddHost onDone={() => setAdding(false)} signIn={view?.signIn ?? null} /> : (
         <button type="button" class="btn small" onClick={() => setAdding(true)} data-testid="git-host-add">
           <Icon name="plus" size={13} /> Connect a git host…
         </button>
@@ -464,13 +472,25 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
   const [replacing, setReplacing] = useState(false);
   const [claudeAsk, setClaudeAsk] = useState(false);
   const [keys, setKeys] = useState('');
+  const [again, setAgain] = useState<GitSignInFlow | null>(null);
+  const [againErr, setAgainErr] = useState('');
   const links = hostLinks(h, remote);
-  // (where to revoke it on the host: gh's login at GitHub's authorized OAuth apps, a token where you made it)
+  const o = h.oauth;
+  const signInAgain = async () => {
+    setAgainErr('');
+    try {
+      setAgain(await api.startGitSignIn({ provider: o?.provider ?? 'github', hostId: h.id }));
+    } catch (e) {
+      setAgainErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+  // (a GitLab sign-in is revoked there too; anything else: where to revoke it yourself)
   const remove = async () => {
     let text = '';
     const ok = await gitHostChange(async () => {
       const r = await api.removeGitHost(h.id);
-      text = r.revokeAt ? `Removed ${label(h.label, 60)} — revoke it on the host too: ${r.revokeAt}` : `Removed ${label(h.label, 60)} (revoke its token or key on the host too)`;
+      text = r.revoked ? `Removed ${label(h.label, 60)}, and its sign-in revoked on ${label(h.host, 120)}`
+        : r.revokeAt ? `Removed ${label(h.label, 60)} — revoke it on the host too: ${r.revokeAt}` : `Removed ${label(h.label, 60)} (revoke its token or key on the host too)`;
     });
     if (ok && text) toast(text, 'ok');
   };
@@ -494,7 +514,8 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
         <strong>{label(h.label, 60)}</strong>
         <span class="muted small">
           {label(h.host, 120)}
-          {h.port ? `:${h.port}` : ''} · {h.auth === 'token' ? (h.imported ? `HTTPS access token, imported from ${h.imported.source}` : 'HTTPS access token') : 'SSH key'} · {KIND_LABEL[h.kind]}
+          {h.port ? `:${h.port}` : ''} · {h.auth === 'token' ? (h.imported ? `HTTPS access token, imported from ${h.imported.source}` : 'HTTPS access token') : h.auth === 'ssh' ? 'SSH key'
+            : `Signed in with ${o?.provider === 'gitlab' ? 'GitLab' : 'GitHub'}`} · {KIND_LABEL[h.kind]}
         </span>
         <button type="button" class="btn small ghost danger gitr-remove" onClick={() => void remove()} data-testid="git-host-remove">
           <Icon name="trash" size={13} /> Remove
@@ -510,7 +531,49 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
           <div data-testid="git-host-reach">Reaches: {importedReach(h)}</div>
         </div>
       )}
-      {h.auth === 'token' ? (
+      {h.auth === 'oauth' && o ? (
+        <div class="small gitr-oauth" data-testid="git-host-oauth">
+          <div>
+            {o.account ? <>Signed in as <strong data-testid="git-host-account">{label(o.account, 100)}</strong></> : 'Signed in'}
+            {o.signedInAt ? <span class="muted"> ({ago(o.signedInAt)})</span> : null}; its token is never shown. Sent as user <code>{label(h.username, 60)}</code>.
+          </div>
+          <div data-testid="git-host-reach">
+            Reaches: {signInReach(h)}{' '}
+            {chooseRepos(h) && (
+              <a href={chooseRepos(h) ?? ''} target="_blank" rel="noopener noreferrer" data-testid="git-host-choose-repos">
+                Choose repositories ↗
+              </a>
+            )}
+          </div>
+          {o.needsSignIn ? (
+            <div class="banner warn small gitr-signin-again" role="status" data-testid="git-host-signin-again">
+              <span>{signInLife(h)} Push, pull and clone with it wait until you sign in again.</span>
+              {local && !again && (
+                <button type="button" class="btn small" onClick={() => void signInAgain()} data-testid="git-host-signin-again-btn">
+                  Sign in again
+                </button>
+              )}
+            </div>
+          ) : (
+            <div class="muted" data-testid="git-host-life">
+              {signInLife(h)}
+              {local && !again && (
+                <button type="button" class="linkish gitr-gap" onClick={() => void signInAgain()} data-testid="git-host-signin-again-btn">
+                  Sign in again
+                </button>
+              )}
+            </div>
+          )}
+          {againErr && <p class="plg-err small" role="alert">{label(againErr, 300)}</p>}
+          {again && (
+            <SignInPanel flow={again} onEnd={(f) => {
+              setAgain(null);
+              if (f.state === 'done') void gitHostChange(async () => {}, `Signed in again${f.gitHost?.oauth?.account ? ` as ${f.gitHost.oauth.account}` : ''}`);
+              else if (f.state !== 'cancelled') setAgainErr(f.error || 'The sign-in did not finish.');
+            }} />
+          )}
+        </div>
+      ) : h.auth === 'token' ? (
         <div class="small">
           A token is set{h.tokenSetAt ? ` (${ago(h.tokenSetAt)})` : ''}; it is never shown again. Sent as user <code>{label(h.username, 60)}</code>.
           {local && !replacing && (
@@ -568,7 +631,7 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
         </div>
       )}
       <div class="gitr-inline small">
-        <input type="text" value={testUrl} spellcheck={false} placeholder={h.auth === 'token' ? `https://${h.host}/owner/repo.git` : `git@${h.host}:owner/repo.git`}
+        <input type="text" value={testUrl} spellcheck={false} placeholder={h.auth === 'ssh' ? `git@${h.host}:owner/repo.git` : `https://${h.host}${h.port ? `:${h.port}` : ''}/owner/repo.git`}
           onInput={(e) => setTestUrl((e.currentTarget as HTMLInputElement).value)} aria-label="A repository to test with" data-testid="git-host-test-url" />
         <button type="button" class="btn small" disabled={!testUrl.trim() || testing} onClick={() => void test()} data-testid="git-host-test">
           {testing ? <Spinner size={12} /> : <Icon name="play" size={13} />} Test connection
@@ -581,7 +644,7 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
           <i />
         </button>
         <span>
-          Let Claude use this host {h.claude ? <strong>(on{h.claudeSince ? `, since ${ago(h.claudeSince)}` : ''})</strong> : '(off)'} — its own git in the sandbox gets this {h.auth === 'token' ? 'token' : 'key\'s logins'} too, each use in Activity.
+          Let Claude use this host {h.claude ? <strong>(on{h.claudeSince ? `, since ${ago(h.claudeSince)}` : ''})</strong> : '(off)'} — its own git in the sandbox gets this {h.auth === 'token' ? 'token' : h.auth === 'oauth' ? 'sign-in\'s token' : 'key\'s logins'} too, each use in Activity.
           {!local && !h.claude && <span class="muted"> Turned on only from the computer running bedrock-now.</span>}
         </span>
       </div>
@@ -589,7 +652,7 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
         <Dialog title={`Let Claude use ${label(h.label, 60)}?`} onClose={() => setClaudeAsk(false)} testid="git-claude-dialog">
           <p>
             Claude's own git commands — and anything that runs in the sandbox, or text Claude reads and follows — could then push to, or read, <strong>any repository this
-            {h.auth === 'token' ? ' token' : ' key'} reaches</strong> on {label(h.host, 120)}, while this is on.
+            {h.auth === 'token' ? ' token' : h.auth === 'oauth' ? ' sign-in' : ' key'} reaches</strong> on {label(h.host, 120)}, while this is on.
           </p>
           {h.imported?.source === 'gh' && h.imported.tokenType !== 'fine-grained' && (
             <p class="warn-text" data-testid="git-claude-imported">
@@ -600,8 +663,9 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
             </p>
           )}
           <p class="small">
-            The {h.auth === 'token' ? 'token' : 'key'} itself stays here (the sandbox asks for it each time; a token, once given to git there, is in that process's memory). Every use is listed
-            in Activity. Prefer a fine-grained token or a deploy key that reaches only the repositories Claude should touch. You can turn it off any time, from anywhere.
+            The {h.auth === 'ssh' ? 'key' : 'token'} itself stays here (the sandbox asks for it each time; a token, once given to git there, is in that process's memory). Every use is listed
+            in Activity. Prefer a fine-grained token, a GitHub App installed on only the repositories Claude should touch, or a deploy key. You can turn it off any time,
+            from anywhere.
           </p>
           <div class="dlg-actions">
             <button type="button" class="btn" onClick={() => setClaudeAsk(false)}>
@@ -617,6 +681,83 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
   );
 }
 
+const PROVIDER_NAME = { github: 'GitHub', gitlab: 'GitLab' } as const;
+/** A sign-in on its way: the code to enter on the host's page (which you open: the page never does), a countdown, and
+ *  the code container's polling of the provider, followed here every 2 s. Closing it cancels the sign-in. */
+export function SignInPanel({ flow: first, onEnd }: { flow: GitSignInFlow; onEnd: (f: GitSignInFlow) => void }) {
+  const [flow, setFlow] = useState(first);
+  const [copied, setCopied] = useState(false);
+  const [, tick] = useState(0);
+  const latest = useRef(flow);
+  latest.current = flow;
+  useEffect(() => {
+    const i = setInterval(() => tick((n) => n + 1), 1000);
+    return () => { clearInterval(i); if (latest.current.state === 'pending') void api.cancelGitSignIn(latest.current.flowId).catch(() => {}); };
+  }, []);
+  useEffect(() => {
+    if (flow.state !== 'pending') return undefined;
+    let stop = false;
+    const t = setTimeout(async () => {
+      let f: GitSignInFlow;
+      try { f = await api.getGitSignIn(flow.flowId); } catch (e) { f = { ...flow, state: 'failed', error: e instanceof Error ? e.message : String(e) }; }
+      if (stop) return;
+      latest.current = f;
+      setFlow(f);
+      if (f.state !== 'pending') onEnd(f);
+    }, 2000);
+    return () => { stop = true; clearTimeout(t); };
+  }, [flow]);
+  const name = PROVIDER_NAME[flow.provider];
+  const where = `${flow.host}${flow.port ? `:${flow.port}` : ''}`;
+  const cancel = async () => {
+    try { await api.cancelGitSignIn(flow.flowId); } catch { /* ended already */ }
+    const f = { ...flow, state: 'cancelled' as const };
+    latest.current = f;
+    setFlow(f);
+    onEnd(f);
+  };
+  if (flow.state !== 'pending') {
+    return (
+      <div class="gitr-signin small" role="status" data-testid="git-signin" data-state={flow.state}>
+        {flow.state === 'done' ? `Signed in${flow.gitHost?.oauth?.account ? ` as ${label(flow.gitHost.oauth.account, 100)}` : ''}.` : label(flow.error || `The sign-in ${flow.state === 'cancelled' ? 'was cancelled' : 'did not finish'}.`, 300)}
+      </div>
+    );
+  }
+  const left = flow.expiresAt ? countdown(flow.expiresAt) : '';
+  return (
+    <div class="gitr-signin" data-testid="git-signin" data-state="pending">
+      <p class="small">
+        {flow.again ? 'Sign in again: open' : 'Open'} {name}'s page on <strong>{label(where, 120)}</strong> and enter this code there:
+      </p>
+      <div class="gitr-code-row">
+        <output class="gitr-code" aria-label="The code to enter" data-testid="git-signin-code">{label(flow.userCode ?? '', 32)}</output>
+        <button type="button" class="btn small" onClick={() => { void navigator.clipboard?.writeText(flow.userCode ?? ''); setCopied(true); }} data-testid="git-signin-copy">
+          <Icon name="copy" size={13} /> {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      {flow.verificationUri ? (
+        <a class="btn small primary gitr-signin-link" href={flow.verificationUri} target="_blank" rel="noopener noreferrer" data-testid="git-signin-link">
+          <Icon name="external" size={13} /> Open {label(flow.verificationUri.replace(/^https:\/\//, ''), 200)}
+        </a>
+      ) : (
+        <p class="plg-err small" role="alert">The host named no page of its own to enter the code on: cancel, and use an access token instead.</p>
+      )}
+      <p class="small" role="status">
+        <Spinner size={12} /> Waiting for you to approve it there… The code expires in <span data-testid="git-signin-countdown">{left}</span>.
+      </p>
+      <p class="muted small">
+        Enter the code only on {label(where, 120)}'s own page, opened from here — no one from bedrock-now ever asks you for it. Approving signs this
+        computer's bedrock-now in to your {name} account.
+      </p>
+      <div class="dlg-actions">
+        <button type="button" class="btn" onClick={() => void cancel()} data-testid="git-signin-cancel">
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** For people who use gh or glab already: the command that imports that login (on the computer running bedrock-now). */
 function ImportHint({ kind, host }: { kind: 'github' | 'gitlab'; host: string }) {
   const cmd = importCommand(kind, host);
@@ -628,27 +769,42 @@ function ImportHint({ kind, host }: { kind: 'github' | 'gitlab'; host: string })
         {copied ? 'Copied' : 'Copy'}
       </button>{' '}
       — run in the bedrock-now folder, it imports that login (
-      {kind === 'github' ? "gh's token reaches every repository your account can, and gh goes on using it" : "a personal access token only: an OAuth login of glab's is refused"}).
+      {kind === 'github' ? "gh's token reaches every repository your account can, and gh goes on using it" : "a personal access token only; an OAuth login of glab's: sign in here instead"}).
     </p>
   );
 }
 
-function AddHost({ onDone }: { onDone: () => void }) {
-  const [kind, setKind] = useState<'github' | 'gitlab' | 'other'>('github');
+function AddHost({ onDone, signIn }: { onDone: () => void; signIn: GitSignInConfig | null }) {
+  const [kind, setKind] = useState<GitHostKind>('github');
   const [host, setHost] = useState('');
-  const [auth, setAuth] = useState<'token' | 'ssh'>('token');
+  const [auth, setAuth] = useState<GitAuth>(signInReady(signIn, 'github', '') ? 'oauth' : 'token');
   const [token, setToken] = useState('');
   const [username, setUsername] = useState('');
   const [labelText, setLabel] = useState('');
   const [port, setPort] = useState('');
   const [ca, setCa] = useState('');
   const [keys, setKeys] = useState('');
+  const [clientId, setClientId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [flow, setFlow] = useState<GitSignInFlow | null>(null);
+  const [err, setErr] = useState('');
+  const [chosen, setChosen] = useState(false);
   const hint = compareHint(kind, host);
+  const provider = kind === 'gitlab' ? 'gitlab' : 'github';
+  const ready = signInReady(signIn, kind, host);
+  // (the hosts' view arrives after the form opened: its default follows it until you choose)
+  useEffect(() => { if (!chosen && kind !== 'other') setAuth(ready ? 'oauth' : 'token'); }, [ready]);
+  const choose = (a: GitAuth) => { setChosen(true); setAuth(a); };
+  const defaultHost = !host.trim() || host.trim().toLowerCase() === (kind === 'gitlab' ? 'gitlab.com' : 'github.com');
+  const pickKind = (k: GitHostKind) => {
+    setKind(k);
+    if (k === 'other' && auth === 'oauth') setAuth('token');
+    else if (k !== 'other' && auth === 'token' && !token && signInReady(signIn, k, host)) setAuth('oauth');
+  };
   const add = async () => {
     setBusy(true);
     const ok = await gitHostChange(
-      () => api.addGitHost({ kind, auth, ...(kind === 'other' || host ? { host: host.trim() } : {}), ...(labelText.trim() ? { label: labelText.trim() } : {}),
+      () => api.addGitHost({ kind, auth: auth === 'ssh' ? 'ssh' : 'token', ...(kind === 'other' || host ? { host: host.trim() } : {}), ...(labelText.trim() ? { label: labelText.trim() } : {}),
         ...(port.trim() ? { port: Number(port.trim()) } : {}), ...(username.trim() ? { username: username.trim() } : {}),
         ...(auth === 'token' ? { token, ...(ca.trim() ? { ca } : {}) } : keys.trim() ? { knownHosts: keys } : {}) }),
       auth === 'token' ? 'Connected (the token is kept by the Code page, never shown again)' : 'Connected: now add its public key on the host',
@@ -656,36 +812,95 @@ function AddHost({ onDone }: { onDone: () => void }) {
     setBusy(false);
     if (ok) onDone();
   };
+  const start = async () => {
+    setErr('');
+    setBusy(true);
+    try {
+      const where = `${host.trim()}${port.trim() ? `:${port.trim()}` : ''}`;
+      setFlow(await api.startGitSignIn({ provider, ...(where ? { host: where } : {}), ...(clientId.trim() ? { clientId: clientId.trim() } : {}),
+        ...(labelText.trim() ? { label: labelText.trim() } : {}), ...(ca.trim() ? { ca } : {}) }));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (flow) {
+    return (
+      <div class="gitr-add" data-testid="git-host-form">
+        <SignInPanel flow={flow} onEnd={(f) => {
+          if (f.state === 'done') {
+            void gitHostChange(async () => {}, `Signed in${f.gitHost?.oauth?.account ? ` as ${f.gitHost.oauth.account}` : ''}: ${f.gitHost?.label ?? 'the host'} is connected (its token is kept by the Code page, never shown)`);
+            onDone();
+          } else {
+            setFlow(null);
+            if (f.state !== 'cancelled') setErr(f.error || 'The sign-in did not finish.');
+          }
+        }} />
+      </div>
+    );
+  }
   return (
     <div class="gitr-add" data-testid="git-host-form">
       <div class="gitr-form">
         <label>
           Host
-          <select value={kind} onChange={(e) => setKind((e.currentTarget as HTMLSelectElement).value as 'github' | 'gitlab' | 'other')} data-testid="git-host-kind">
+          <select value={kind} onChange={(e) => pickKind((e.currentTarget as HTMLSelectElement).value as GitHostKind)} data-testid="git-host-kind">
             <option value="github">GitHub</option>
             <option value="gitlab">GitLab</option>
             <option value="other">Another git server (Gitea, Bitbucket, your own …)</option>
           </select>
         </label>
         <label>
-          {kind === 'other' ? 'Its name' : 'Its name (blank: the usual one)'}
+          {kind === 'other' ? 'Its name' : auth === 'oauth' ? `Its address (blank: ${kind === 'gitlab' ? 'gitlab.com' : 'github.com'}; or your own ${KIND_LABEL[kind]})` : 'Its name (blank: the usual one)'}
           <input type="text" value={host} spellcheck={false} maxLength={253} placeholder={kind === 'github' ? 'github.com' : kind === 'gitlab' ? 'gitlab.com' : 'git.example.com'}
             onInput={(e) => setHost((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-name" />
         </label>
         <fieldset class="wide gitr-auth">
           <legend>Connect with</legend>
+          {kind !== 'other' && (
+            <label class="gitr-check">
+              <input type="radio" name="gitr-auth" checked={auth === 'oauth'} onChange={() => choose('oauth')} data-testid="git-host-auth-oauth" /> Sign in with {KIND_LABEL[kind]}
+              {ready ? ' (recommended)' : ''}: a code you enter on {KIND_LABEL[kind]}'s own page
+            </label>
+          )}
           <label class="gitr-check">
-            <input type="radio" name="gitr-auth" checked={auth === 'token'} onChange={() => setAuth('token')} data-testid="git-host-auth-token" /> An access token (for https:// URLs)
+            <input type="radio" name="gitr-auth" checked={auth === 'token'} onChange={() => choose('token')} data-testid="git-host-auth-token" /> An access token (for https:// URLs)
           </label>
           <label class="gitr-check">
-            <input type="radio" name="gitr-auth" checked={auth === 'ssh'} onChange={() => setAuth('ssh')} data-testid="git-host-auth-ssh" /> An SSH key made here (for git@… URLs; you add its public key on the host)
+            <input type="radio" name="gitr-auth" checked={auth === 'ssh'} onChange={() => choose('ssh')} data-testid="git-host-auth-ssh" /> An SSH key made here (for git@… URLs; you add its public key on the host)
           </label>
         </fieldset>
-        {auth === 'token' && kind !== 'other' && <ImportHint kind={kind} host={host} />}
+        {auth === 'oauth' && kind !== 'other' && (
+          <div class="wide small gitr-oauth-new" data-testid="git-host-oauth-form">
+            {!ready && defaultHost && (
+              <p class="banner warn small" data-testid="git-host-no-app">
+                bedrock-now has no {kind === 'github' ? 'GitHub App' : 'gitlab.com application'} set up for signing in yet. Register one of your own (README › Remote
+                repositories: Your own app — a minute, no secret) and enter its {kind === 'github' ? 'client ID' : 'application ID'} below, or in Settings › Claude
+                Code › More — or connect with an access token or an SSH key.
+              </p>
+            )}
+            {(!ready || !defaultHost) && (
+              <label class="wide">
+                {defaultHost ? `Your ${kind === 'github' ? "GitHub App's client ID" : "application's ID"}` : `The application (client) ID of your ${KIND_LABEL[kind]} app on ${label(host.trim(), 120)}`}
+                <input type="text" value={clientId} spellcheck={false} maxLength={128} placeholder={kind === 'github' ? 'Iv23…' : 'the application ID (64 characters)'}
+                  onInput={(e) => setClientId((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-client-id" />
+              </label>
+            )}
+            <p class="muted">
+              {kind === 'github'
+                ? 'A GitHub App reaches only the repositories you install it on (Choose repositories, after signing in), with Contents: Read and write. Its token renews itself every 8 hours.'
+                : 'The sign-in asks for read_repository, write_repository and read_user: every project your account can reach, as you. Its token renews itself.'}{' '}
+              The code container asks {KIND_LABEL[kind]} for a code and waits for your approval; you enter the code on {KIND_LABEL[kind]}'s page in your browser.
+            </p>
+            <ImportHint kind={provider} host={host} />
+          </div>
+        )}
         {auth === 'token' && (
+          <>
           <label class="wide">
             The token (kept here, never shown again)
-            <input type="password" value={token} autocomplete="off" spellcheck={false} maxLength={1024} onInput={(e) => setToken((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-token" />
+            <input type="password" value={token} autocomplete="off" spellcheck={false} maxLength={1024} onInput={(e) => { setChosen(true); setToken((e.currentTarget as HTMLInputElement).value); }} data-testid="git-host-token" />
             {hint.token && (
               <span class="muted">
                 {hint.tokenText}{' '}
@@ -695,24 +910,34 @@ function AddHost({ onDone }: { onDone: () => void }) {
               </span>
             )}
           </label>
+          {kind !== 'other' && <ImportHint kind={provider} host={host} />}
+          </>
         )}
         <details class="wide">
-          <summary class="small">More: a name for it, the user, a port{auth === 'token' ? ', a CA certificate' : ', its host key'}</summary>
+          <summary class="small">More: a name for it, {auth === 'oauth' ? 'a port, a CA certificate' : `the user, a port${auth === 'token' ? ', a CA certificate' : ', its host key'}`}{auth === 'oauth' && ready ? ', your own app' : ''}</summary>
           <div class="gitr-form">
             <label>
               A name for it
               <input type="text" value={labelText} maxLength={60} onInput={(e) => setLabel((e.currentTarget as HTMLInputElement).value)} />
             </label>
+            {auth !== 'oauth' && (
+              <label>
+                {auth === 'token' ? 'User name sent with the token' : 'SSH user'}
+                <input type="text" value={username} maxLength={100} spellcheck={false} placeholder={auth === 'ssh' ? 'git' : kind === 'github' ? 'x-access-token' : kind === 'gitlab' ? 'oauth2' : 'your user name'}
+                  onInput={(e) => setUsername((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-user" />
+              </label>
+            )}
             <label>
-              {auth === 'token' ? 'User name sent with the token' : 'SSH user'}
-              <input type="text" value={username} maxLength={100} spellcheck={false} placeholder={auth === 'ssh' ? 'git' : kind === 'github' ? 'x-access-token' : kind === 'gitlab' ? 'oauth2' : 'your user name'}
-                onInput={(e) => setUsername((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-user" />
-            </label>
-            <label>
-              Port (blank: {auth === 'token' ? '443' : '22'})
+              Port (blank: {auth === 'ssh' ? '22' : '443'})
               <input type="text" inputMode="numeric" value={port} maxLength={5} onInput={(e) => setPort((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-port" />
             </label>
-            {auth === 'token' ? (
+            {auth === 'oauth' && ready && defaultHost && (
+              <label class="wide">
+                Your own app's {kind === 'github' ? 'client ID' : 'application ID'} (blank: bedrock-now's)
+                <input type="text" value={clientId} spellcheck={false} maxLength={128} onInput={(e) => setClientId((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-client-id" />
+              </label>
+            )}
+            {auth !== 'ssh' ? (
               <label class="wide">
                 Its CA certificate (PEM; only for a server whose certificate a private CA signed)
                 <textarea rows={3} value={ca} spellcheck={false} onInput={(e) => setCa((e.currentTarget as HTMLTextAreaElement).value)} data-testid="git-host-ca" />
@@ -726,13 +951,20 @@ function AddHost({ onDone }: { onDone: () => void }) {
           </div>
         </details>
       </div>
+      {err && <p class="plg-err small" role="alert" data-testid="git-host-error">{label(err, 400)}</p>}
       <div class="dlg-actions">
         <button type="button" class="btn" onClick={onDone}>
           Cancel
         </button>
-        <button type="button" class="btn primary" disabled={busy || (auth === 'token' && !token) || (kind === 'other' && !host.trim())} onClick={() => void add()} data-testid="git-host-save">
-          {busy ? <Spinner size={12} /> : null} Connect
-        </button>
+        {auth === 'oauth' && kind !== 'other' ? (
+          <button type="button" class="btn primary" disabled={busy || (!ready && !clientId.trim()) || (!defaultHost && !clientId.trim())} onClick={() => void start()} data-testid="git-host-signin">
+            {busy ? <Spinner size={12} /> : null} Sign in with {KIND_LABEL[kind]}
+          </button>
+        ) : (
+          <button type="button" class="btn primary" disabled={busy || (auth === 'token' && !token) || (kind === 'other' && !host.trim())} onClick={() => void add()} data-testid="git-host-save">
+            {busy ? <Spinner size={12} /> : null} Connect
+          </button>
+        )}
       </div>
     </div>
   );

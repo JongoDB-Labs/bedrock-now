@@ -570,7 +570,29 @@ export type GitScope = 'staged' | 'unstaged' | 'untracked';
 
 // --- the Git panel's remotes and Git hosts (GET /api/git/remote, /api/git/hosts …: code/server/gitremote.mjs) ---
 export type GitHostKind = 'github' | 'gitlab' | 'other';
-export type GitAuth = 'token' | 'ssh';
+export type GitAuth = 'token' | 'ssh' | 'oauth';
+/** A signed-in host's sign-in as the page sees it: never its tokens. */
+export interface GitOAuthView {
+  provider: 'github' | 'gitlab';
+  source: 'signed-in';
+  clientId: string | null;
+  account: string | null;
+  scopes: string[];
+  /** GitHub: a GitHub App's user token (reaches where the app is installed) or an OAuth app's (its scopes) */
+  app: 'github-app' | 'oauth-app' | null;
+  appSlug: string | null;
+  installations: { account: string; selection: 'all' | 'selected' }[];
+  /** ms; null: a token that does not expire */
+  expiresAt: number | null;
+  refreshExpiresAt: number | null;
+  /** renewed by itself before it expires */
+  refreshable: boolean;
+  /** the sign-in ended (renewal refused, or expired): Sign in again */
+  needsSignIn: boolean;
+  why: string | null;
+  signedInAt: number | null;
+  refreshedAt: number | null;
+}
 /** Where an imported access token came from: gh's or glab's login, its account, scopes and (glab) expiry. */
 export interface GitImported {
   source: 'gh' | 'glab';
@@ -594,6 +616,8 @@ export interface GitHostView {
   tokenSetAt: number | null;
   /** an access token imported from a gh / glab login on the computer running bedrock-now (./stack git-host import) */
   imported: GitImported | null;
+  /** auth 'oauth': the sign-in (account, scopes, expiry) */
+  oauth: GitOAuthView | null;
   /** an SSH host's public key ("ssh-ed25519 AAAA… comment"): to add to the repository or your account */
   publicKey: string | null;
   fingerprint: string | null;
@@ -624,9 +648,33 @@ export interface GitHostRef {
   label: string;
   kind: GitHostKind;
   auth: GitAuth;
-  /** an imported login's source and account */
+  /** an imported login's source and account; a sign-in's account (auth 'oauth') */
   source?: 'gh' | 'glab';
   account?: string | null;
+}
+/** Whether Sign in with GitHub / GitLab has an application ID for github.com / gitlab.com (Settings, or bedrock-now's own). */
+export interface GitSignInConfig {
+  github: { host: string; clientId: string | null; appSlug: string | null; configured: boolean };
+  gitlab: { host: string; clientId: string | null; configured: boolean };
+}
+export type GitSignInState = 'pending' | 'done' | 'denied' | 'expired' | 'failed' | 'cancelled';
+/** A sign-in on its way (the device flow): the code to enter, where, until when; the code container polls the provider. */
+export interface GitSignInFlow {
+  flowId: string;
+  provider: 'github' | 'gitlab';
+  host: string;
+  port: number | null;
+  state: GitSignInState;
+  /** while pending */
+  userCode: string | null;
+  verificationUri: string | null;
+  verificationUriComplete: string | null;
+  expiresAt: number | null;
+  interval: number;
+  error: string;
+  gitHost: GitHostView | null;
+  /** Sign in again for a host there already */
+  again: boolean;
 }
 export interface GitRemoteUrl {
   url: string;

@@ -41,6 +41,9 @@ import type {
   GitHostRef,
   GitHostView,
   GitImported,
+  GitOAuthView,
+  GitSignInConfig,
+  GitSignInFlow,
   GitIdentity,
   GitPlan,
   GitRemote,
@@ -1205,7 +1208,22 @@ export const isRemoteName = (v: unknown): v is string => typeof v === 'string' &
 const HOST_ID = /^h_[0-9a-f]{12}$/;
 const KINDS = ['github', 'gitlab', 'other'] as const;
 const hostKind = (v: unknown): GitHostView['kind'] => (KINDS.includes(v as (typeof KINDS)[number]) ? (v as GitHostView['kind']) : 'other');
-const authOf = (v: unknown): 'token' | 'ssh' => (v === 'ssh' ? 'ssh' : 'token');
+const authOf = (v: unknown): GitHostView['auth'] => (v === 'ssh' ? 'ssh' : v === 'oauth' ? 'oauth' : 'token');
+const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/;
+function normOAuth(v: unknown): GitOAuthView | null {
+  const o = obj(v);
+  if (!o) return null;
+  return {
+    provider: o.provider === 'gitlab' ? 'gitlab' : 'github', source: 'signed-in', clientId: typeof o.clientId === 'string' ? label(o.clientId, 128) : null,
+    account: typeof o.account === 'string' && ACCOUNT.test(o.account) ? o.account : null,
+    scopes: arr(o.scopes, 32).filter((x): x is string => typeof x === 'string').map((x) => label(x, 80)),
+    app: o.app === 'github-app' || o.app === 'oauth-app' ? o.app : null, appSlug: typeof o.appSlug === 'string' && SLUG.test(o.appSlug) ? o.appSlug : null,
+    installations: arr(o.installations, 10).map(obj).filter((x): x is Obj => x !== null && typeof x.account === 'string' && ACCOUNT.test(x.account))
+      .map((x) => ({ account: x.account as string, selection: x.selection === 'all' ? 'all' : 'selected' })),
+    expiresAt: msTime(o.expiresAt), refreshExpiresAt: msTime(o.refreshExpiresAt), refreshable: o.refreshable === true, needsSignIn: o.needsSignIn === true,
+    why: typeof o.why === 'string' && o.why ? label(o.why, 200) : null, signedInAt: msTime(o.signedInAt), refreshedAt: msTime(o.refreshedAt),
+  };
+}
 const msTime = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1e14 ? v : null);
 const ACCOUNT = /^[A-Za-z0-9._@+-]{1,100}$/;
 const importSource = (v: unknown): 'gh' | 'glab' | null => (v === 'gh' || v === 'glab' ? v : null);
@@ -1222,8 +1240,10 @@ function normImported(v: unknown): GitImported | null {
 function normHostRef(v: unknown): GitHostRef | null {
   const o = obj(v);
   if (!o || typeof o.id !== 'string' || !HOST_ID.test(o.id)) return null;
-  const source = importSource(o.source);
-  return { id: o.id, label: label(o.label, 60), kind: hostKind(o.kind), auth: authOf(o.auth),
+  const auth = authOf(o.auth);
+  const source = auth === 'token' ? importSource(o.source) : null;
+  return { id: o.id, label: label(o.label, 60), kind: hostKind(o.kind), auth,
+    ...(auth === 'oauth' ? { account: typeof o.account === 'string' && ACCOUNT.test(o.account) ? o.account : null } : {}),
     ...(source ? { source, account: typeof o.account === 'string' && ACCOUNT.test(o.account) ? o.account : null } : {}) };
 }
 export function normGitHost(v: unknown): GitHostView | null {
@@ -1232,7 +1252,8 @@ export function normGitHost(v: unknown): GitHostView | null {
   const pub = typeof o.publicKey === 'string' && /^ssh-ed25519 [A-Za-z0-9+/]{68}={0,2}( [\x21-\x7e]{1,100})?$/.test(o.publicKey) ? o.publicKey : null;
   return {
     id: o.id, kind: hostKind(o.kind), label: label(o.label, 60), host: label(o.host, 253), port: count(o.port) || null, auth: authOf(o.auth), username: label(o.username, 100),
-    hasToken: o.hasToken === true, tokenSetAt: msTime(o.tokenSetAt), imported: authOf(o.auth) === 'token' ? normImported(o.imported) : null, publicKey: pub, fingerprint: o.fingerprint ? label(o.fingerprint, 80) : null, keySetAt: msTime(o.keySetAt),
+    hasToken: o.hasToken === true, tokenSetAt: msTime(o.tokenSetAt), imported: authOf(o.auth) === 'token' ? normImported(o.imported) : null,
+    oauth: authOf(o.auth) === 'oauth' ? normOAuth(o.oauth) : null, publicKey: pub, fingerprint: o.fingerprint ? label(o.fingerprint, 80) : null, keySetAt: msTime(o.keySetAt),
     knownHosts: arr(o.knownHosts, 32).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ host: label(x.host, 260), type: label(x.type, 60), fingerprint: label(x.fingerprint, 80) })),
     builtinHostKeys: o.builtinHostKeys === true, ca: o.ca === true, claude: o.claude === true, claudeSince: msTime(o.claudeSince), createdAt: msTime(o.createdAt),
   };
@@ -1249,11 +1270,54 @@ export interface GitHostsView {
   events: GitEvent[];
   /** this page is on the computer running bedrock-now (not over remote access): hosts, tokens, keys can be added */
   local: boolean;
+  /** Sign in with GitHub / GitLab: whether github.com's and gitlab.com's applications are set */
+  signIn: GitSignInConfig;
+}
+const CLIENT_ID = /^[A-Za-z0-9._-]{1,128}$/;
+export function normSignInConfig(v: unknown): GitSignInConfig {
+  const o = obj(v) ?? {};
+  const gh = obj(o.github) ?? {}, gl = obj(o.gitlab) ?? {};
+  const id = (x: unknown) => (typeof x === 'string' && CLIENT_ID.test(x) ? x : null);
+  return { github: { host: 'github.com', clientId: id(gh.clientId), appSlug: typeof gh.appSlug === 'string' && SLUG.test(gh.appSlug) ? gh.appSlug : null, configured: gh.configured === true && !!id(gh.clientId) },
+    gitlab: { host: 'gitlab.com', clientId: id(gl.clientId), configured: gl.configured === true && !!id(gl.clientId) } };
 }
 export async function getGitHosts(): Promise<GitHostsView> {
   const o = await request('GET', '/api/git/hosts');
-  return { hosts: arr(o.hosts, 32).map(normGitHost).filter((h): h is GitHostView => h !== null), events: arr(o.events, 50).map(normGitEvent).filter((e): e is GitEvent => e !== null), local: o.local === true };
+  return { hosts: arr(o.hosts, 32).map(normGitHost).filter((h): h is GitHostView => h !== null), events: arr(o.events, 50).map(normGitEvent).filter((e): e is GitEvent => e !== null), local: o.local === true,
+    signIn: normSignInConfig(o.signIn) };
 }
+// signInLink(url, host, port) -> the provider's page to enter the code on, only when it is https on that Git host (the
+// code container checked it too); else null
+export function signInLink(url: unknown, host: string, port: number | null): string | null {
+  if (typeof url !== 'string' || url.length > 600) return null;
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && !u.username && !u.password && u.hostname === host && (u.port || null) === (port && port !== 443 ? String(port) : null) ? u.href : null;
+  } catch { return null; }
+}
+const FLOW_STATES = ['pending', 'done', 'denied', 'expired', 'failed', 'cancelled'] as const;
+export function normSignInFlow(o: Obj): GitSignInFlow {
+  if (typeof o.flowId !== 'string' || !/^[0-9a-f]{32}$/.test(o.flowId)) throw new ApiError(502, 'an unexpected answer');
+  const host = label(o.host, 253), port = count(o.port) || null;
+  return { flowId: o.flowId, provider: o.provider === 'gitlab' ? 'gitlab' : 'github', host, port,
+    state: FLOW_STATES.includes(o.state as (typeof FLOW_STATES)[number]) ? (o.state as GitSignInFlow['state']) : 'failed',
+    userCode: typeof o.userCode === 'string' && /^[A-Za-z0-9-]{4,32}$/.test(o.userCode) ? o.userCode : null,
+    verificationUri: signInLink(o.verificationUri, host, port), verificationUriComplete: signInLink(o.verificationUriComplete, host, port),
+    expiresAt: msTime(o.expiresAt), interval: count(o.interval) || 5, error: label(o.error, 300), gitHost: normGitHost(o.gitHost), again: o.again === true };
+}
+export interface NewSignIn {
+  provider: 'github' | 'gitlab';
+  host?: string;
+  clientId?: string;
+  label?: string;
+  ca?: string;
+  /** Sign in again: this host's sign-in replaced */
+  hostId?: string;
+}
+/** Start a sign-in (the device flow): the code to enter, where. Only from the computer running bedrock-now. */
+export const startGitSignIn = async (b: NewSignIn): Promise<GitSignInFlow> => normSignInFlow(await request('POST', '/api/git/oauth', b));
+export const getGitSignIn = async (id: string): Promise<GitSignInFlow> => normSignInFlow(await request('GET', `/api/git/oauth/${id}`));
+export const cancelGitSignIn = async (id: string): Promise<void> => void (await request('DELETE', `/api/git/oauth/${id}`));
 const hostOf = (o: Obj): GitHostView => {
   const h = normGitHost(o.host);
   if (!h) throw new ApiError(502, 'an unexpected answer');
@@ -1276,12 +1340,12 @@ export const newGitHostKey = async (id: string): Promise<GitHostView> => hostOf(
 export const setGitHostClaude = async (id: string, on: boolean): Promise<GitHostView> => hostOf(await request('POST', `/api/git/hosts/${id}/claude`, { on }));
 export const addGitHostKnown = async (id: string, lines: string): Promise<GitHostView> => hostOf(await request('POST', `/api/git/hosts/${id}/known`, { lines }));
 export const forgetGitHostKnown = async (id: string): Promise<GitHostView> => hostOf(await request('DELETE', `/api/git/hosts/${id}/known`));
-// (a page the page may link: GitHub's or GitLab's, https — the backend builds it; checked again)
+// (a link the page may show: GitHub's or GitLab's page on an https URL — the backend builds it; checked again)
 const HTTPS_LINK = /^https:\/\/[a-z0-9.-]{1,253}(:[0-9]{1,5})?\/[\x21-\x7e]{1,400}$/;
-/** Remove a host: revokeAt — where to revoke its token on the host yourself (null: an SSH key, another server). */
-export async function removeGitHost(id: string): Promise<{ revokeAt: string | null }> {
+/** Remove a host: revoked: GitLab took the sign-in's revocation; revokeAt: where to revoke the rest yourself. */
+export async function removeGitHost(id: string): Promise<{ revoked: boolean | null; revokeAt: string | null }> {
   const o = await request('DELETE', `/api/git/hosts/${id}`);
-  return { revokeAt: typeof o.revokeAt === 'string' && HTTPS_LINK.test(o.revokeAt) ? o.revokeAt : null };
+  return { revoked: typeof o.revoked === 'boolean' ? o.revoked : null, revokeAt: typeof o.revokeAt === 'string' && HTTPS_LINK.test(o.revokeAt) ? o.revokeAt : null };
 }
 export async function testGitHost(id: string, url: string): Promise<{ ok: boolean; branches: number | null; why: string; learned: { host: string; type: string; fingerprint: string }[]; host: GitHostView | null }> {
   const o = await request('POST', `/api/git/hosts/${id}/test`, { url });
@@ -1341,7 +1405,7 @@ export function normGitPlan(o: Obj): GitPlan {
   if (typeof o.planId !== 'string' || !/^[0-9a-f]{32}$/.test(o.planId) || !NET.includes(o.action as (typeof NET)[number])) throw new ApiError(502, 'an unexpected answer');
   return { planId: o.planId, action: o.action as GitPlan['action'], repo: repoPath(o.repo) ?? '', remote: isRemoteName(o.remote) ? o.remote : null, url: label(o.url, 1200),
     display: label(o.display, 300), scheme: o.scheme === 'ssh' ? 'ssh' : 'https', branch: isBranchName(o.branch) ? o.branch : null, dst: isBranchName(o.dst) ? o.dst : null,
-    newBranch: o.newBranch === true, host: normHostRef(o.host), auth: o.auth === 'token' || o.auth === 'ssh' ? o.auth : 'none', summary: label(o.summary, 600),
+    newBranch: o.newBranch === true, host: normHostRef(o.host), auth: o.auth === 'token' || o.auth === 'ssh' || o.auth === 'oauth' ? o.auth : 'none', summary: label(o.summary, 600),
     confirm: o.confirm !== false, target: repoPath(o.target), depth: count(o.depth) || null };
 }
 /** What a fetch, pull, push or publish of this repository would do (nothing is sent yet). */

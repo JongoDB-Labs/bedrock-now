@@ -3,8 +3,8 @@
 // the small model (src/git.ts): which remote, ahead/behind, a clone's folder name, where to make a token or add a key.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cloneTarget, compareHint, hostHint, hostLinks, importCommand, importedReach, remoteFor, remoteRef, syncState } from '../src/git';
-import { normGitEvent, normGitHost, normGitPlan, normGitRemoteState, repoPath, isBranchName } from '../src/api';
+import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, remoteFor, remoteRef, signInLife, signInReach, signInReady, syncState, within } from '../src/git';
+import { normGitEvent, normGitHost, normGitPlan, normGitRemoteState, normSignInConfig, normSignInFlow, repoPath, isBranchName, signInLink } from '../src/api';
 import type { GitHostView } from '../src/types';
 
 const host = (over: Record<string, unknown> = {}) => ({ id: 'h_0123456789ab', kind: 'github', label: 'GitHub', host: 'github.com', port: null, auth: 'ssh', username: 'git',
@@ -111,6 +111,59 @@ test('an imported login: where it came from, its account and scopes (never a tok
   assert.match(importedReach(gl, 500), /It expires on /);
   assert.deepEqual(normGitPlan({ planId: 'a'.repeat(32), action: 'push', auth: 'token', host: { id: 'h_0123456789ab', label: 'GitHub', kind: 'github', auth: 'token', source: 'gh', account: 'octocat' } }).host,
     { id: 'h_0123456789ab', label: 'GitHub', kind: 'github', auth: 'token', source: 'gh', account: 'octocat' });
+});
+
+// --- Git hosts' sign-in (auth 'oauth'): what the page keeps of it, the flow's view, the links it shows ---
+test('a signed-in host: its sign-in as the page may show it (never a token), the flow checked, links only to the host itself', () => {
+  const tok = ['secret', 'never', 'here'].join('-');
+  const h = normGitHost(host({ auth: 'oauth', username: 'x-access-token', publicKey: null, hasToken: true,
+    oauth: { provider: 'github', source: 'signed-in', clientId: 'Iv23abc', account: 'octo', scopes: ['repo', 'x y'], app: 'github-app', appSlug: 'bedrock-now', accessToken: tok, refreshToken: tok,
+      installations: [{ account: 'octo', selection: 'all' }, { account: '<b>', selection: 'all' }], expiresAt: Date.now() + 3600000, refreshable: true, needsSignIn: false } })) as GitHostView;
+  assert.equal(h.auth, 'oauth');
+  assert.ok(!JSON.stringify(h).includes(tok), 'a token sent by mistake is dropped');
+  assert.deepEqual(h.oauth?.installations, [{ account: 'octo', selection: 'all' }]);
+  assert.equal(h.oauth?.appSlug, 'bedrock-now');
+  assert.equal(chooseRepos(h), 'https://github.com/apps/bedrock-now/installations/new');
+  assert.equal(chooseRepos({ ...h, host: 'ghe.example', oauth: { ...h.oauth!, appSlug: null } }), 'https://ghe.example/settings/installations');
+  assert.equal(chooseRepos({ ...h, host: 'ghe.example' }), 'https://ghe.example/github-apps/bedrock-now/installations/new');
+  assert.match(signInReach(h), /^The repositories where the bedrock-now app is installed: octo \(all repositories\)/);
+  assert.match(signInLife(h), /^Its token lasts (1 h|60 min|59 min) more and renews itself when it is used near its end\.$/);
+  const ended = normGitHost(host({ auth: 'oauth', oauth: { provider: 'gitlab', source: 'signed-in', needsSignIn: true, why: 'revoked' } })) as GitHostView;
+  assert.equal(signInLife(ended), 'The sign-in ended (revoked).');
+  // an OAuth app's token (not a GitHub App's): what its scopes allow, no installations to choose
+  const oa = normGitHost(host({ auth: 'oauth', oauth: { provider: 'github', source: 'signed-in', scopes: ['repo'], app: 'oauth-app' } })) as GitHostView;
+  assert.equal(signInReach(oa), 'What its scopes allow (repo), on every repository your account can reach.');
+  assert.equal(signInLife(oa), 'Its token does not expire.');
+  assert.equal(chooseRepos(oa), null);
+  const gl = normGitHost(host({ auth: 'oauth', kind: 'gitlab', host: 'gitlab.com', oauth: { provider: 'gitlab', source: 'signed-in', scopes: ['read_repository'], expiresAt: Date.now() + 5400000, refreshable: false } })) as GitHostView;
+  assert.equal(signInLife(gl), 'Its token expires in 1 h 30 min; then Sign in again.');
+  // a plan's host names the sign-in's account
+  assert.deepEqual(normGitPlan({ planId: 'a'.repeat(32), action: 'push', auth: 'oauth', host: { id: 'h_0123456789ab', label: 'GitHub', kind: 'github', auth: 'oauth', account: 'octo', source: 'gh' } }).host,
+    { id: 'h_0123456789ab', label: 'GitHub', kind: 'github', auth: 'oauth', account: 'octo' }, 'a sign-in is never "imported"');
+});
+
+test('the sign-in in progress: the code, the page to enter it on (https, on that host only), the countdown; the config', () => {
+  const f = normSignInFlow({ flowId: 'f'.repeat(32), provider: 'gitlab', host: 'gitlab.example.com', port: null, state: 'pending', userCode: 'ABCD-1234',
+    verificationUri: 'https://gitlab.example.com/oauth/device', verificationUriComplete: 'https://evil.example/x', expiresAt: 5000, interval: 5, deviceCode: 'never' });
+  assert.deepEqual([f.userCode, f.verificationUri, f.verificationUriComplete, f.state], ['ABCD-1234', 'https://gitlab.example.com/oauth/device', null, 'pending']);
+  assert.ok(!JSON.stringify(f).includes('never'));
+  for (const bad of ['http://gitlab.example.com/x', 'https://gitlab.example.com.evil.example/x', 'javascript:alert(1)', 'https://u:p@gitlab.example.com/x', 'https://gitlab.example.com:444/x']) {
+    assert.equal(signInLink(bad, 'gitlab.example.com', null), null, bad);
+  }
+  assert.equal(signInLink('https://ghe.example:8443/login/device', 'ghe.example', 8443), 'https://ghe.example:8443/login/device');
+  assert.equal(normSignInFlow({ flowId: 'f'.repeat(32), state: 'weird', userCode: '<script>' }).state, 'failed');
+  assert.equal(normSignInFlow({ flowId: 'f'.repeat(32), state: 'pending', userCode: '<script>' }).userCode, null);
+  assert.throws(() => normSignInFlow({ flowId: '../x' }));
+  assert.equal(countdown(65000, 0), '1:05');
+  assert.equal(countdown(0, 5000), '0:00');
+  assert.equal(within(90 * 60000, 0), '1 h 30 min');
+  assert.equal(within(8 * 3600000 - 1000, 0), '8 h', 'never "7 h 60 min"');
+  const cfg = normSignInConfig({ github: { clientId: 'Iv23abc', appSlug: 'Bad Slug', configured: true }, gitlab: { clientId: 'x y', configured: true } });
+  assert.deepEqual(cfg, { github: { host: 'github.com', clientId: 'Iv23abc', appSlug: null, configured: true }, gitlab: { host: 'gitlab.com', clientId: null, configured: false } });
+  assert.equal(signInReady(cfg, 'github', ''), true);
+  assert.equal(signInReady(cfg, 'github', 'ghe.example'), false, 'another server: its own application ID');
+  assert.equal(signInReady(cfg, 'gitlab', ''), false);
+  assert.equal(signInReady(cfg, 'other', ''), false);
   assert.equal(importCommand('github'), './stack git-host import gh');
   assert.equal(importCommand('gitlab', 'gitlab.example.com'), './stack git-host import glab --host gitlab.example.com');
   assert.equal(importCommand('gitlab', 'evil; rm -rf'), './stack git-host import glab');

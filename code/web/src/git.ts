@@ -1,7 +1,7 @@
 // The Git panel's model, kept free of DOM and network (test/git.test.ts): the message "Write message" brings back, cleaned
 // once more for the commit box (the helper that drafts it, and its prompt, are the backend's: code/server/gitdraft.mjs),
 // the Commit blocker and small labels. Every scan here is linear in its input.
-import type { GitHostKind, GitHostView, GitRemote, GitRemoteState, GitStatus } from './types';
+import type { GitHostKind, GitHostView, GitRemote, GitRemoteState, GitSignInConfig, GitStatus } from './types';
 
 /** A proposal longer than this is cut (git takes 64 KiB; a commit message is a few lines). */
 export const PROPOSAL_MAX = 8_000;
@@ -133,6 +133,56 @@ export function hostLinks(h: GitHostView, r: GitRemoteState | null): { accountKe
   return { accountKey, deployKey };
 }
 
+// --- Git hosts' sign-in (auth 'oauth') ---
+
+/** in(ms) -> how long until then, in words: "45 s", "12 min", "7 h 40 min", "3 d" ('' once it is past). */
+export function within(ms: number, now = Date.now()): string {
+  const s = Math.round((ms - now) / 1000);
+  if (!Number.isFinite(s) || s <= 0) return '';
+  if (s < 90) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  if (s < 86400) { const min = Math.round(s / 60), h = Math.floor(min / 60), m = min % 60; return m ? `${h} h ${m} min` : `${h} h`; }
+  return `${Math.round(s / 86400)} d`;
+}
+/** A countdown: "14:05" (minutes:seconds), "0:00" once it is past. */
+export function countdown(ms: number, now = Date.now()): string {
+  const s = Math.max(0, Math.ceil((ms - now) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+const webOf = (h: Pick<GitHostView, 'host' | 'port'>) => `https://${h.host}${h.port && h.port !== 443 ? `:${h.port}` : ''}`;
+/** Where a signed-in GitHub App is installed on repositories (its "Choose repositories"): the app's install page, or
+ *  your installed apps when its name is not known. null for anything else. */
+export function chooseRepos(h: GitHostView): string | null {
+  if (h.auth !== 'oauth' || h.oauth?.provider !== 'github' || h.oauth.app !== 'github-app' || !HOSTNAME.test(h.host)) return null;
+  const slug = h.oauth.appSlug;
+  if (!slug) return `${webOf(h)}/settings/installations`;
+  return h.host === 'github.com' ? `https://github.com/apps/${slug}/installations/new` : `${webOf(h)}/github-apps/${slug}/installations/new`;
+}
+/** What a signed-in host's token reaches, in one line. */
+export function signInReach(h: GitHostView): string {
+  const o = h.oauth;
+  if (!o) return '';
+  if (o.provider === 'github' && o.app === 'github-app') {
+    const on = o.installations.map((i) => `${i.account} (${i.selection === 'all' ? 'all repositories' : 'selected repositories'})`);
+    return `The repositories where the ${o.appSlug ? `${o.appSlug} app` : 'app'} is installed${on.length ? `: ${on.join(', ')}` : ' — none yet'}, with its permissions.`;
+  }
+  const scopes = o.scopes.length ? ` (${o.scopes.join(', ')})` : '';
+  if (o.provider === 'gitlab') return `Every project your GitLab account can reach, as you${scopes}.`;
+  return `What its scopes allow${scopes || ' (none named)'}, on every repository your account can reach.`;
+}
+/** A signed-in host's token: how long it lasts, whether it renews itself. */
+export function signInLife(h: GitHostView, now = Date.now()): string {
+  const o = h.oauth;
+  if (!o) return '';
+  if (o.needsSignIn) return `The sign-in ended${o.why ? ` (${o.why})` : ''}.`;
+  if (!o.expiresAt) return 'Its token does not expire.';
+  const left = within(o.expiresAt, now);
+  if (o.refreshable) {
+    const end = o.refreshExpiresAt ? ` (the sign-in lasts until ${new Date(o.refreshExpiresAt).toLocaleDateString()})` : '';
+    return `Its token lasts ${left ? `${left} more` : 'a moment more'} and renews itself when it is used near its end${end}.`;
+  }
+  return left ? `Its token expires in ${left}; then Sign in again.` : 'Its token expired: Sign in again.';
+}
 // --- an access token imported from gh / glab (./stack git-host import) ---
 
 /** The CLI command that imports an existing gh / glab login (from the computer running bedrock-now). */
@@ -154,4 +204,11 @@ export function importedReach(h: GitHostView, now = Date.now()): string {
   }
   const api = o.scopes.includes('api') ? ' The api scope is full read and write access to GitLab\'s API as you, not only git.' : '';
   return `What this personal access token may do${scopes}, on every project your account can reach. glab uses the same token.${api}${until}`;
+}
+/** Whether Sign in is ready for a host the dialog names (blank: github.com / gitlab.com): that host's application ID
+ *  is known (Settings, or bedrock-now's own) — another server takes its own. */
+export function signInReady(cfg: GitSignInConfig | null | undefined, kind: GitHostKind, host: string): boolean {
+  if (!cfg || kind === 'other') return false;
+  const h = (host || '').trim().toLowerCase();
+  return (!h || h === cfg[kind].host) && cfg[kind].configured;
 }
