@@ -654,8 +654,10 @@ test_spawn_server_in_the_terminal_image() {
   assert_contains "$tc" "proxy = egressProxy()"
   assert_contains "$tc" "!HOST_NAME.test(host)"
   # a session may be switched to Bypass permissions (CODE_ALLOW_BYPASS), never started in it; the Git panel's
-  # Write-message helper may take tools away (--tools= empty only) and keep no transcript
-  assert_contains "$c" "'--include-hook-events', '--allow-dangerously-skip-permissions', '--no-session-persistence']"
+  # Write-message helper may take tools away (--tools= empty only) and keep no transcript; a session in a folder whose
+  # own settings are not trusted gets only the stack's MCP server (--strict-mcp-config: it only takes away)
+  assert_contains "$c" "'--include-hook-events', '--allow-dangerously-skip-permissions', '--no-session-persistence',"
+  assert_contains "$c" "  '--strict-mcp-config']);"
   assert_contains "$c" "'--tools': (v) => v === '',"
   assert_contains "$c" "'--permission-mode': oneOf('default', 'acceptEdits', 'plan', 'dontAsk'),"
   assert_contains "$c" "server.maxConnections = MAX_CONNECTIONS"
