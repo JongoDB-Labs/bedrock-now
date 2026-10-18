@@ -9,8 +9,8 @@
 #   gh    its OAuth token (gho_…; gh's default scopes are broad: repo, read:org, gist, often workflow) or a token it was
 #         given; it does not expire; gh goes on using the same token (removing it here does not sign gh out).
 #   glab  only a personal access token glab was given: an OAuth (browser or device) login of glab's has single-use
-#         refresh tokens — sharing it would break glab or this — and is refused (an access token in Git hosts instead).
-#         What cannot be told apart for sure is refused too.
+#         refresh tokens — sharing it would break glab or this — and is refused (Sign in with GitLab in Git hosts
+#         instead). What cannot be told apart for sure is refused too.
 
 githost_usage() {
   cat <<'EOF'
@@ -20,9 +20,9 @@ Usage: ./stack git-host import gh [--host HOST] [--yes]
   import gh     The GitHub CLI's login on this computer (gh auth login) as a Git host of the Code page
                 (github.com, or --host for GitHub Enterprise). gh's token reaches every repository your
                 account can, and gh goes on using it; revoke it at <host>/settings/applications (GitHub
-                CLI), which signs gh out too. A fine-grained access token in Git hosts reaches less.
+                CLI), which signs gh out too. Sign in with GitHub in Git hosts reaches less.
   import glab   The GitLab CLI's login (gitlab.com, or --host for your own GitLab) when it is a personal
-                access token; an OAuth login of glab's is refused: connect an access token in Git hosts.
+                access token; an OAuth login of glab's is refused: use Sign in with GitLab in Git hosts.
 
   The token is read from the CLI here and handed to the code container on stdin: never on a command
   line, in an environment variable or a file; nothing prints it. You confirm first (--yes: no question).
@@ -123,7 +123,7 @@ githost_import_gh() {
   { set +x; } 2>/dev/null   # (shell tracing would print the token: off from here, whatever the caller set)
   local host="$1" tok login headers raw scopes kind reach revoke expires exp_ms='' lifetime
   _gh_host_ok "$host" || die "--host: a host name (github.com, or github.example.com)"
-  command -v gh >/dev/null 2>&1 || die "gh (the GitHub CLI) is not installed on this computer — connect GitHub with an access token or an SSH key in the Code page's Git hosts instead"
+  command -v gh >/dev/null 2>&1 || die "gh (the GitHub CLI) is not installed on this computer — Sign in with GitHub in the Code page's Git hosts needs none"
   _githost_need_code
   tok="$(_gh auth token --hostname "$host" 2>/dev/null)" ||
     die "gh is not signed in to $host (gh auth login --hostname $host), or it is older than 2.17 (no gh auth token)"
@@ -153,7 +153,7 @@ githost_import_gh() {
   printf '  Scopes    %s\n' "${scopes:-none named}"
   printf '  This token reaches %s, and gh uses the same token — removing it here\n' "$reach"
   printf '  does not sign gh out; revoke it at %s.\n' "$revoke"
-  printf '  A fine-grained access token (Git hosts › Connect a git host) reaches only the repositories you pick.\n\n'
+  printf '  Sign in with GitHub in Git hosts reaches only the repositories you install its app on.\n\n'
   _githost_confirm "Import it?" || { printf 'Not imported.\n'; return 1; }
   _githost_send "{\"source\":\"gh\",\"host\":$(_gh_json_str "$host"),\"account\":$(_gh_json_str "$login"),\"scopes\":$(_gh_scopes_json "$scopes"),${exp_ms:+\"expiresAt\":$exp_ms,}\"token\":$(_gh_json_str "$tok")}"
   tok=''
@@ -168,25 +168,25 @@ githost_import_glab() {
   { set +x; } 2>/dev/null   # (shell tracing would print the token: off from here, whatever the caller set)
   local host="$1" oauth refresh tok info user scopes expires exp_ms=''
   _gh_host_ok "$host" || die "--host: a host name (gitlab.com, or gitlab.example.com)"
-  command -v glab >/dev/null 2>&1 || die "glab (the GitLab CLI) is not installed on this computer — connect GitLab with an access token or an SSH key in the Code page's Git hosts instead"
+  command -v glab >/dev/null 2>&1 || die "glab (the GitLab CLI) is not installed on this computer — Sign in with GitLab in the Code page's Git hosts needs none"
   _githost_need_code
   # glab's configuration, the keyring's token included — read with `glab config get … --host`; anything that does not
   # answer: refused
   oauth="$(_glab config get is_oauth2 --host "$host" 2>/dev/null)" ||
-    die "glab could not say how it is signed in to $host (glab config get is_oauth2 --host $host failed): not imported — connect an access token in Git hosts instead"
+    die "glab could not say how it is signed in to $host (glab config get is_oauth2 --host $host failed): not imported — Sign in with GitLab in Git hosts instead"
   refresh="$(_glab config get oauth2_refresh_token --host "$host" 2>/dev/null)" ||
-    die "glab could not say how it is signed in to $host: not imported — connect an access token in Git hosts instead"
+    die "glab could not say how it is signed in to $host: not imported — Sign in with GitLab in Git hosts instead"
   case "$oauth" in '' | false) ;; *) refresh="${refresh:-x}" ;; esac
   if [ -n "$refresh" ]; then
     refresh=''
-    die "glab is signed in to $host with OAuth (a browser or device login), whose refresh tokens work once: sharing it would break glab or the Code page. Not imported — connect GitLab with an access token in the Code page's Git hosts (or give glab a personal access token: glab auth login --stdin)"
+    die "glab is signed in to $host with OAuth (a browser or device login), whose refresh tokens work once: sharing it would break glab or the Code page. Not imported — use Sign in with GitLab in the Code page's Git hosts (or give glab a personal access token: glab auth login --stdin)"
   fi
   tok="$(_glab config get token --host "$host" 2>/dev/null)" || tok=''
   [ -n "$tok" ] || die "glab is not signed in to $host (glab auth login --hostname $host)"
   _gh_token_ok "$tok" || die "glab answered with something that is not a token git can send: not imported"
   # (a personal access token: GitLab says so — its scopes and expiry; an OAuth token has no such entry: refused)
   info="$(_glab api --hostname "$host" personal_access_tokens/self 2>/dev/null | tr -d '\n')" || info=''
-  case "$info" in *'"scopes":'*) ;; *) die "GitLab did not confirm that glab's token for $host is a personal access token (glab api personal_access_tokens/self): not imported — connect an access token in Git hosts instead" ;; esac
+  case "$info" in *'"scopes":'*) ;; *) die "GitLab did not confirm that glab's token for $host is a personal access token (glab api personal_access_tokens/self): not imported — use Sign in with GitLab in Git hosts" ;; esac
   scopes="$(_gh_scopes_list "$(printf '%s' "$info" | sed -n 's/.*"scopes": *\[\([^]]*\)\].*/\1/p' | tr -d '"')")"
   expires="$(printf '%s' "$info" | sed -n 's/.*"expires_at": *"\([0-9-]\{10\}\)".*/\1/p')"
   [ -z "$expires" ] || { exp_ms="$(date_to_epoch "$expires" 2>/dev/null)" && exp_ms="${exp_ms}000"; } || exp_ms=''
@@ -201,7 +201,8 @@ githost_import_glab() {
     printf '  not only git.\n' ;;
   esac
   printf '  It reaches what those scopes allow on every project your account can, and glab uses the same token —\n'
-  printf '  removing it here does not sign glab out; revoke it at https://%s/-/user_settings/personal_access_tokens.\n\n' "$host"
+  printf '  removing it here does not sign glab out; revoke it at https://%s/-/user_settings/personal_access_tokens.\n' "$host"
+  printf '  Sign in with GitLab in Git hosts is a sign-in of its own (it renews itself).\n\n'
   _githost_confirm "Import it?" || { printf 'Not imported.\n'; return 1; }
   _githost_send "{\"source\":\"glab\",\"host\":$(_gh_json_str "$host"),\"account\":$(_gh_json_str "$user"),\"scopes\":$(_gh_scopes_json "$scopes"),${exp_ms:+\"expiresAt\":$exp_ms,}\"token\":$(_gh_json_str "$tok")}"
   tok=''

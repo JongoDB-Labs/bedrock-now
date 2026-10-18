@@ -154,7 +154,7 @@ test_import_glab_refuses_an_oauth_login_and_what_it_cannot_tell() {
     if out="$(cmd_git_host import glab 2>&1)"; then echo "$mode: imported" >&2; return 1; fi
     case "$mode" in
       oauth | refresh) assert_contains "$out" "glab is signed in to gitlab.com with OAuth" || return 1
-        assert_contains "$out" "connect GitLab with an access token in the Code page's Git hosts" || return 1
+        assert_contains "$out" "use Sign in with GitLab in the Code page's Git hosts" || return 1
         # (its token never even read)
         assert_not_contains "$(cat "$T_LOG/glab.args")" "config get token" || return 1 ;;
       broken) assert_contains "$out" "glab could not say how it is signed in to gitlab.com" || return 1 ;;
