@@ -1597,6 +1597,7 @@ def ui_git_remotes(ctx):
     page.get_by_test_id("git-plan-run").click()
     pr = page.get_by_test_id("git-pr-link")
     see(pr).to_have_attribute("href", "https://gitsrv:8443/e2e/demo/pull/new/e2e/feature", timeout=120000)
+    pr_href = pr.get_attribute("href")
     shot(page, "r4-code-git-pr-link")
     # back on main; a second clone over ssh (the key's login signed by the code container), then a pull in it
     page.get_by_test_id("git-branches").click()
@@ -1655,7 +1656,7 @@ def ui_git_remotes(ctx):
     csp_clean(page, rec, [r"^400 POST .*/api/git/", r"console.error Failed to load resource.*400"])
     return ("Git hosts: a token (with the server's CA) and an SSH key made by the Code page (host key learned by Test connection); "
             f"clone over https into {a}/ (its plan first), a commit pushed after its confirmation, e2e/feature published with Open a pull request "
-            f"({pr.get_attribute('href')}), a clone over ssh into {b}/, a second push from {a}, fetch and a fast-forward pull in {b}; "
+            f"({pr_href}), a clone over ssh into {b}/, a second push from {a}, fetch and a fast-forward pull in {b}; "
             "the token in no answer, event or .git/config; no model calls; no CSP violations")
 
 
