@@ -4650,9 +4650,18 @@ def projects_desktop(browser):
     box.press("Tab")
     expect(box).to_have_value("look at @src/main.ts ")
     box.fill("")
-    # a new session in the project: it runs in its folder
+    # a new session in the project: its own Claude Code settings are shown first (not trusted yet); trusted, it starts
+    # in its folder with them
     page.get_by_test_id("side-sessions").click()
+    expect(proj(page, web).get_by_test_id("project-settings-flag")).to_have_count(1)
     proj(page, web).get_by_test_id("project-new-session").click()
+    dlg = page.get_by_test_id("settings-dialog")
+    expect(dlg).to_be_visible(timeout=10_000)
+    expect(dlg.get_by_test_id("settings-hooks")).to_contain_text("npm install --silent")
+    p.shot("project-settings.png")
+    page.get_by_test_id("settings-trust").click()
+    expect(dlg).to_have_count(0, timeout=10_000)
+    expect(proj(page, web).get_by_test_id("project-settings-flag")).to_have_count(0, timeout=10_000)
     send(page, "Explain how this project is organised")
     wait_turns(page, 1)
     st = mock_get(NORMAL, "/api/state")["sessions"]
@@ -4770,6 +4779,71 @@ def projects_desktop(browser):
     expect(page.get_by_test_id("project-chip-name")).to_have_text("website", timeout=10_000)
     assert "project=" not in page.url, page.url
     assert project_ids() == before, "a link made a project"
+    p.assert_clean()
+    p.close()
+
+
+@check("projects: a project's own Claude Code settings — shown before its first session (Start without them, Trust them and start), the marker, the line above the prompt; changed: asked again; a file that cannot be checked: never trusted")
+def projects_settings(browser):
+    post(NORMAL + "/__mock/reset")
+    post(NORMAL + "/__mock/projects?seed=1")
+    web = project_ids()["website"]
+    p = Page(browser, NORMAL, "projects-settings", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("side-sessions").click()
+    flag = proj(page, web).get_by_test_id("project-settings-flag")
+    expect(flag).to_have_count(1)
+    # New session there: what they set first — hooks, rules, env, MCP servers, as text
+    proj(page, web).get_by_test_id("project-new-session").click()
+    dlg = page.get_by_test_id("settings-dialog")
+    expect(dlg).to_be_visible(timeout=10_000)
+    expect(dlg.get_by_test_id("settings-state")).to_have_attribute("data-state", "untrusted")
+    expect(dlg.get_by_test_id("settings-hooks")).to_contain_text("SessionStart: npm install --silent")
+    expect(dlg.get_by_test_id("settings-hooks")).to_contain_text("PostToolUse (Edit): npx prettier --write .")
+    expect(dlg.get_by_test_id("settings-allow")).to_contain_text("Bash(npm run *)")
+    expect(dlg.get_by_test_id("settings-env")).to_contain_text("NODE_ENV=development")
+    expect(dlg.get_by_test_id("settings-mcp")).to_contain_text("docs: npx -y @acme/docs-mcp")
+    # Start without them: the session runs with your own settings only, and says so above the prompt
+    page.get_by_test_id("settings-start-without").click()
+    expect(dlg).to_have_count(0, timeout=10_000)
+    guard = page.get_by_test_id("settings-guard")
+    expect(guard).to_be_visible(timeout=10_000)
+    expect(guard).to_contain_text("not applied")
+    p.shot("project-settings-guard.png")
+    # Review them… from that line, then trust: the line goes, the marker too
+    page.get_by_test_id("settings-guard-review").click()
+    expect(dlg).to_be_visible(timeout=10_000)
+    page.get_by_test_id("settings-trust").click()
+    expect(dlg).to_have_count(0, timeout=10_000)
+    expect(guard).to_have_count(0, timeout=10_000)
+    expect(flag).to_have_count(0, timeout=10_000)
+    assert "trust website" in mock_get(NORMAL, "/__mock/project-log")["log"]
+    # they change in the sandbox: asked again before the next new session (changed since trusted)
+    post(NORMAL + "/__mock/projects?root=website&settings=change")
+    page.reload()
+    page.get_by_test_id("side-sessions").click()
+    expect(flag).to_have_count(1, timeout=10_000)
+    proj(page, web).get_by_test_id("project-new-session").click()
+    expect(dlg.get_by_test_id("settings-state")).to_have_attribute("data-state", "changed", timeout=10_000)
+    page.keyboard.press("Escape")
+    expect(dlg).to_have_count(0)
+    # a file that cannot be checked (a link out of the workspace): shown so, and no Trust button at all
+    post(NORMAL + "/__mock/projects?root=website&settings=unverifiable")
+    page.reload()
+    page.get_by_test_id("side-sessions").click()
+    proj(page, web).get_by_test_id("project-menu").click()
+    page.get_by_test_id("project-menu-settings").click()
+    expect(dlg.get_by_test_id("settings-state")).to_have_attribute("data-state", "unverifiable", timeout=10_000)
+    expect(page.get_by_test_id("settings-trust")).to_have_count(0)
+    expect(dlg.get_by_test_id("settings-notes")).to_contain_text("a link to /home/claude/elsewhere.json")
+    page.keyboard.press("Escape")
+    # the Workspace's own: always applied (no Trust, no Stop trusting)
+    proj(page, "ws").get_by_test_id("project-menu").click()
+    page.get_by_test_id("project-menu-settings").click()
+    expect(dlg.get_by_test_id("settings-state")).to_have_attribute("data-state", "workspace", timeout=10_000)
+    expect(page.get_by_test_id("settings-trust")).to_have_count(0)
+    expect(page.get_by_test_id("settings-untrust")).to_have_count(0)
+    page.keyboard.press("Escape")
     p.assert_clean()
     p.close()
 

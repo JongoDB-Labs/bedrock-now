@@ -701,6 +701,47 @@ const saved = new Map(); // id -> {id, title, firstPrompt, branch, modified, tra
 // repositories of their own (root -> {remote: url | null}); what the project endpoints were asked
 let projectsMock = [];
 const filedMock = new Map();
+// a project's own Claude Code settings (root -> {version, files: {name: text}}) and the versions you trusted (id -> version)
+const settingsMock = new Map();
+const trustMock = new Map();
+const settingsStateOf = (pr) => {
+  if (!pr || pr.id === 'ws') return 'workspace';
+  const st = settingsMock.get(pr.root);
+  if (!st) return 'none';
+  if (st.unverifiable) return 'unverifiable';
+  if (!trustMock.has(pr.id)) return 'untrusted';
+  return trustMock.get(pr.id) === st.version ? 'trusted' : 'changed';
+};
+const settingsHash = (pr) => crypto.createHash('sha256').update(`${pr.root}:${settingsMock.get(pr.root)?.version ?? 0}`).digest('hex');
+// what a session in that folder runs with (the backend decides at each start; here: at the start, and again at a prompt)
+const sessionSettings = (cwd) => {
+  if (cwd === WS) return { state: 'workspace', project: 'ws' };
+  const pr = projectsMock.find((x) => absOf(x.root) === cwd);
+  return pr ? { state: settingsStateOf(pr), project: pr.id } : { state: 'none', project: null };
+};
+function settingsView(pr) {
+  const st = settingsMock.get(pr.root);
+  const state = settingsStateOf(pr);
+  const files = ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json'].map((name) => (st?.files?.[name] !== undefined
+    ? { name, type: st.unverifiable && name === '.mcp.json' ? 'link' : 'file', size: Buffer.byteLength(st.files[name]), target: st.unverifiable && name === '.mcp.json' ? '/home/claude/elsewhere.json' : null }
+    : { name, type: 'missing', size: null, target: null }));
+  const summary = { hooks: [], allow: [], ask: [], deny: [], defaultMode: null, directories: [], env: [], commands: [], mcp: [], mcpServers: [], other: [], notes: [],
+    complete: true, missing: [] };
+  if (st) {
+    const set = JSON.parse(st.files['.claude/settings.json'] ?? '{}');
+    for (const [event, list] of Object.entries(set.hooks ?? {})) for (const mm of list) for (const h of mm.hooks) summary.hooks.push({ file: '.claude/settings.json', event, matcher: mm.matcher ?? '', command: h.command });
+    summary.allow = set.permissions?.allow ?? [];
+    summary.env = Object.entries(set.env ?? {}).map(([name, value]) => ({ file: '.claude/settings.json', name, value }));
+    for (const [name, c] of Object.entries(JSON.parse(st.files['.mcp.json'] ?? '{}').mcpServers ?? {})) summary.mcpServers.push({ name, run: [c.command, ...(c.args ?? [])].join(' ') });
+    if (st.unverifiable) {
+      summary.notes.push({ file: '.mcp.json', note: 'a link to /home/claude/elsewhere.json (not read: outside the workspace, or not a file)' });
+      summary.complete = false;
+      summary.missing.push('a file that could not be shown');
+    }
+  }
+  return { project: pr.id, path: absOf(pr.root), state, hash: st && !st.unverifiable ? settingsHash(pr) : null,
+    trustedAt: trustMock.has(pr.id) ? Date.now() - 60_000 : null, files, summary };
+}
 const projectGit = new Map();
 const projectLog = [];
 const WS = '/workspace';
@@ -722,15 +763,16 @@ const projectRoot = (url, body) => {
 };
 const isDir = (d) => d === '' || dirs().has(d) || extraDirs.has(d);
 function projectView(p) {
-  return { id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created, workspace: false, folder: isDir(p.root) ? 'dir' : 'missing', git: projectGit.has(p.root) };
+  return { id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created, workspace: false, folder: isDir(p.root) ? 'dir' : 'missing', git: projectGit.has(p.root),
+    settings: settingsStateOf(p) };
 }
 function projectsView() {
-  const list = [{ id: 'ws', name: 'Workspace', root: '', path: WS, created: null, workspace: true, folder: 'dir', git: gitRepo }, ...[...projectsMock].sort((a, b) => a.name.localeCompare(b.name)).map(projectView)];
+  const list = [{ id: 'ws', name: 'Workspace', root: '', path: WS, created: null, workspace: true, folder: 'dir', git: gitRepo, settings: 'workspace' }, ...[...projectsMock].sort((a, b) => a.name.localeCompare(b.name)).map(projectView)];
   if (HOSTILE_MODE) {
     // records a backend never sends: the page drops them (a folder outside the workspace, bad ids, the same folder twice)
     list.push({ id: 'p_0bad0bad', name: 'Outside', root: '../../etc', path: '/etc', folder: 'dir', git: false },
       { id: 'p_0bad0bae', name: 'Absolute', root: '/etc', path: '/etc' }, { id: '../../etc', name: 'bad id', root: 'x' }, { id: 'p_ZZZZZZZZ', name: 'bad id 2', root: 'y' },
-      { id: 'p_0bad0baf', name: HOSTILE.img, root: 'hostile', path: '/workspace/hostile', folder: 'dir', git: 'yes' },
+      { id: 'p_0bad0baf', name: HOSTILE.img, root: 'hostile', path: '/workspace/hostile', folder: 'dir', git: 'yes', settings: '<img src=x onerror=alert(1)>' },
       { id: 'p_0bad0bb0', name: `x${HOSTILE.bidi}`, root: 'hostile2', path: '/elsewhere', folder: 'gone' });
   }
   return { projects: list, max: 64 };
@@ -746,6 +788,12 @@ function seedProject() {
   const p = { id: `p_${crypto.randomBytes(4).toString('hex')}`, name: 'website', root: 'website', created: Date.now() - 86400e3 };
   projectsMock.push(p);
   projectGit.set('website', { remote: 'https://github.com/mock/website.git' });
+  // it came with Claude Code settings of its own: not applied until trusted
+  settingsMock.set('website', { version: 1, files: {
+    '.claude/settings.json': JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'npm install --silent' }] }], PostToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'npx prettier --write .' }] }] },
+      permissions: { allow: ['Bash(npm run *)', 'Bash(npx prettier *)'] }, env: { NODE_ENV: 'development' } }),
+    '.mcp.json': JSON.stringify({ mcpServers: { docs: { command: 'npx', args: ['-y', '@acme/docs-mcp'] } } }),
+  } });
   const mk = (title, ago) => {
     const id = crypto.randomUUID();
     saved.set(id, { id, title, firstPrompt: title, branch: 'main', modified: Date.now() - ago, cwd: `${WS}/website`,
@@ -964,7 +1012,8 @@ class Session {
     return { canRewind: true, error: '', filesChanged: [...first.keys()].map((p) => '/workspace/' + p), insertions, deletions, skippedLinks: 0 };
   }
   stateMsg() {
-    return { type: 'session_state', session: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, error: null, budget: this.budget, lastActive: this.lastActive };
+    return { type: 'session_state', session: this.id, state: this.state, model: this.model, mode: this.mode, effort: this.effort, error: null, budget: this.budget, lastActive: this.lastActive,
+      settings: this.settings ?? null };
   }
   resolvedModel() {
     if (this.overrideModel) return this.overrideModel;
@@ -1682,7 +1731,7 @@ async function api(req, res, url) {
       versions: { cli: '2.1.296', sdk: '0.3.296' },
       limits: { sessions: 4, upload: 25 * 1024 * 1024, image: 5 * 1024 * 1024, maxImages: LIMITS.maxImages },
       sessions: [...sessions.values()].map((s) => ({ id: s.id, state: s.state, model: s.model, mode: s.mode, effort: s.effort, title: s.title, pending: s.pending.size, open: true, error: null,
-        lastActive: s.lastActive, budget: s.budget, terminal: false, cwd: s.cwd, project: placeOf(s.id, s.cwd) })),
+        lastActive: s.lastActive, budget: s.budget, terminal: false, cwd: s.cwd, project: placeOf(s.id, s.cwd), settings: s.settings ?? null })),
       pending: totalPending(),
       bypass: { allowed: allowBypass },
       auto: { allowed: allowAuto },
@@ -1722,6 +1771,10 @@ async function api(req, res, url) {
     if (b.mode === 'bypassPermissions') return json(res, 400, { error: 'bad mode (readOnly, plan, default, acceptEdits, auto while allowed): a session never starts in bypassPermissions' });
     const s = new Session({ id, model: b.model, mode: b.mode, effort: b.effort, title });
     s.cwd = cwd;
+    s.settings = sessionSettings(cwd);
+    if (!['workspace', 'none', 'trusted'].includes(s.settings.state)) {
+      setTimeout(() => s.emit({ type: 'local', settings: s.settings.state, text: 'This project\'s own Claude Code settings are not applied in this session (mock): your own settings only.' }), 0);
+    }
     if (b.budget) {
       const bb = mockBudget(b.budget);
       if (bb === false) return json(res, 400, { error: 'budget: 0.01 to 999 USD' });
@@ -1848,11 +1901,28 @@ async function api(req, res, url) {
     projectLog.push(`add ${b.kind} ${folder}${git ? ' (git)' : ''}`);
     return json(res, 200, { project: projectView(pr), git, gitError: null });
   }
-  let pm = /^\/api\/projects\/(ws|p_[0-9a-f]{8})(?:\/(sessions|terminal|git-init))?$/.exec(p);
+  let pm = /^\/api\/projects\/(ws|p_[0-9a-f]{8})(?:\/(sessions|terminal|git-init|settings|trust))?$/.exec(p);
   if (pm) {
     const id = pm[1], what = pm[2] || '';
     const pr = id === 'ws' ? { id: 'ws', name: 'Workspace', root: '' } : projectsMock.find((x) => x.id === id);
     if (!pr) return json(res, 404, { error: 'no such project (it was removed?)' });
+    if (what === 'settings' && m === 'GET') return json(res, 200, settingsView(pr));
+    if (what === 'trust' && (m === 'POST' || m === 'DELETE')) {
+      if (id === 'ws') return json(res, 400, { error: 'the Workspace\'s own settings always apply (as they did before projects)' });
+      if (m === 'DELETE') trustMock.delete(id);
+      else {
+        const b = await jsonBody(req);
+        const st = settingsMock.get(pr.root);
+        if (!st) return json(res, 409, { error: 'this project has no settings of its own (nothing to trust)' });
+        if (st.unverifiable) return json(res, 409, { error: 'its settings cannot be checked: they are never trusted' });
+        if (b.hash !== settingsHash(pr)) return json(res, 409, { error: 'its settings changed since you looked: review them again' });
+        trustMock.set(id, st.version);
+      }
+      projectLog.push(`${m === 'DELETE' ? 'untrust' : 'trust'} ${pr.root}`);
+      // (the backend restarts its open sessions there at their next prompt: here, at once)
+      for (const x of sessions.values()) if (x.cwd === absOf(pr.root)) { x.settings = sessionSettings(x.cwd); x.broadcast(x.stateMsg()); }
+      return json(res, 200, settingsView(pr));
+    }
     if (!what && m === 'POST') {
       const b = await jsonBody(req);
       if (id === 'ws') return json(res, 400, { error: 'the Workspace keeps its name' });
@@ -2632,10 +2702,17 @@ const server = http.createServer(async (req, res) => {
       }
       if (url.pathname === '/__mock/projects') {
         const pr = url.searchParams.get('seed') === '1' ? seedProject() : null;
+        // a project's settings changed in the sandbox (?settings=change&root=…), or one of them made unverifiable
+        const root = url.searchParams.get('root');
+        const st = root ? settingsMock.get(root) : null;
+        if (st && url.searchParams.get('settings') === 'change') st.version++;
+        if (st && url.searchParams.get('settings') === 'unverifiable') st.unverifiable = true;
         return json(res, 200, { ok: true, project: pr ? projectView(pr) : null });
       }
       if (url.pathname === '/__mock/reset') {
         projectsMock = [];
+        settingsMock.clear();
+        trustMock.clear();
         filedMock.clear();
         projectGit.clear();
         projectLog.length = 0;

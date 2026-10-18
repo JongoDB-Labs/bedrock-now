@@ -16,7 +16,6 @@ export const USER_SOURCES = Object.freeze(['user']);
 const SHA = /^[0-9a-f]{64}$/;
 export const SETTINGS_FILES = Object.freeze(['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']);
 const TYPES = ['missing', 'file', 'link', 'big', 'other'];
-const CAP = 200;
 
 /** checkFiles(project.settings' RESULT) -> the three files, checked: {name, type, size, sha256, target, text} */
 export function checkFiles(r) {
@@ -32,65 +31,100 @@ export function checkFiles(r) {
 }
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
-const strs = (v, n = CAP) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(0, n).map((x) => str(x, 500)) : []);
-const shown = (v) => { try { return str(typeof v === 'string' ? v : JSON.stringify(v), 300); } catch { return '?'; } };
 // keys whose value is a program Claude Code runs (a string, or {command})
 const COMMAND_KEYS = ['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport', 'gcpAuthRefresh', 'otelHeadersHelper', 'statusLine', 'fileSuggestion',
   'subagentStatusLine'];
 const MCP_KEYS = ['enableAllProjectMcpServers', 'enabledMcpjsonServers', 'disabledMcpjsonServers'];
 const KNOWN = new Set(['$schema', 'hooks', 'permissions', 'env', ...COMMAND_KEYS, ...MCP_KEYS]);
+const PERM_KNOWN = new Set(['allow', 'ask', 'deny', 'defaultMode', 'additionalDirectories']);
+// what the page shows of them: at most this many entries per section, this many characters per value — beyond that
+// the summary is incomplete, and incomplete settings are never trusted (nothing you were not shown can apply)
+export const LIST_MAX = 200, TEXT_MAX = 2000;
+// eslint-disable-next-line no-control-regex
+const HIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
-/** summarize(files) -> what they set, for the page: {hooks: [{file, event, matcher, command}], allow, ask, deny,
- *  defaultMode, directories, env: [{file, name, value}], commands: [{file, key, command}], mcp: [{file, key, value}],
- *  mcpServers: [{name, run}], other: [{file, key, value}], notes: [{file, note}]} */
+/** summarize(files) -> what they set, all of it or said to be incomplete: {hooks: [{file, event, matcher, command}],
+ *  allow, ask, deny, defaultMode, directories, env: [{file, name, value}], commands: [{file, key, command}], mcp: [{file,
+ *  key, value}], mcpServers: [{file, name, run}], other: [{file, key, value}], notes: [{file, note}], complete, missing:
+ *  [why …]} — complete: every key and value of the files is in it, whole (no list or value cut, no hidden character, no
+ *  file that could not be read as JSON) */
 export function summarize(files) {
-  const out = { hooks: [], allow: [], ask: [], deny: [], defaultMode: null, directories: [], env: [], commands: [], mcp: [], mcpServers: [], other: [], notes: [] };
+  const out = { hooks: [], allow: [], ask: [], deny: [], defaultMode: null, directories: [], env: [], commands: [], mcp: [], mcpServers: [], other: [], notes: [],
+    complete: true, missing: [] };
+  const why = new Map();
+  const incomplete = (reason) => { out.complete = false; why.set(reason, (why.get(reason) ?? 0) + 1); };
+  // text(v) -> a value as the page shows it (a string as is; anything else as JSON), whole or said
+  const text = (v) => {
+    let t;
+    try { t = typeof v === 'string' ? v : JSON.stringify(v) ?? String(v); } catch { incomplete('a value that cannot be shown'); return '?'; }
+    if (HIDDEN.test(t)) incomplete('a value with control characters the page cannot show');
+    if (t.length > TEXT_MAX) { incomplete(`a value over ${TEXT_MAX.toLocaleString('en')} characters`); return `${t.slice(0, TEXT_MAX)}… (${t.length - TEXT_MAX} more characters not shown)`; }
+    return t;
+  };
+  const add = (section, item) => {
+    if (out[section].length >= LIST_MAX) { incomplete(`more than ${LIST_MAX} entries in one section`); return; }
+    out[section].push(item);
+  };
   for (const f of files) {
     if (f.type === 'missing') continue;
     const note = (t) => out.notes.push({ file: f.name, note: t });
     if (f.type === 'link') note(`a link to ${f.target ?? '?'}${f.text === null ? ' (not read: outside the workspace, or not a file)' : ''}`);
-    if (f.type === 'big') { note('too large to show (over 8 MiB)'); continue; }
-    if (f.type === 'other') { note('not a file it could read'); continue; }
-    if (f.text === null) { note('not shown (over 256 KiB, or not text)'); continue; }
+    if (f.type === 'big') { note('too large to show (over 8 MiB)'); incomplete('a file too large to show'); continue; }
+    if (f.type === 'other') { note('not a file it could read'); incomplete('a file that could not be read'); continue; }
+    if (f.text === null) { note('not shown (over 256 KiB, or not text)'); incomplete('a file that could not be shown'); continue; }
     let v;
-    try { v = JSON.parse(f.text); } catch { note('not valid JSON (Claude Code may still read parts of it)'); continue; }
-    if (!obj(v)) { note('not a JSON object'); continue; }
+    try { v = JSON.parse(f.text); } catch { note('not valid JSON (Claude Code may still read parts of it)'); incomplete('a file that is not valid JSON'); continue; }
+    if (!obj(v)) { note('not a JSON object'); incomplete('a file that is not a JSON object'); continue; }
     if (f.name === '.mcp.json') {
-      for (const [name, c] of Object.entries(obj(v.mcpServers) ?? {}).slice(0, CAP)) {
-        const s = obj(c) ?? {};
-        const run = typeof s.url === 'string' ? `${short(s.type, 20) || 'http'} ${str(s.url, 500)}`
-          : [s.command, ...(Array.isArray(s.args) ? s.args : [])].filter((x) => typeof x === 'string').map((x) => str(x, 300)).join(' ');
-        out.mcpServers.push({ name: short(name, 100), run: run || shown(s) });
+      if (v.mcpServers !== undefined && !obj(v.mcpServers)) add('other', { file: f.name, key: 'mcpServers', value: text(v.mcpServers) });
+      for (const [name, c] of Object.entries(obj(v.mcpServers) ?? {})) {
+        const sv = obj(c);
+        if (!sv) { add('mcpServers', { file: f.name, name: text(name), run: text(c) }); continue; }
+        const { command, args, url, ...rest } = sv;
+        const head = typeof url === 'string' ? url : [command, ...(Array.isArray(args) ? args : [args])].filter((x) => x !== undefined).map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+        add('mcpServers', { file: f.name, name: text(name), run: text(Object.keys(rest).length ? `${head}  ${JSON.stringify(rest)}` : head) });
       }
-      for (const k of Object.keys(v).filter((k) => k !== 'mcpServers').slice(0, 50)) out.other.push({ file: f.name, key: short(k, 100), value: shown(v[k]) });
+      for (const k of Object.keys(v).filter((k) => k !== 'mcpServers')) add('other', { file: f.name, key: text(k), value: text(v[k]) });
       continue;
     }
-    for (const [event, list] of Object.entries(obj(v.hooks) ?? {}).slice(0, 50)) {
-      for (const m of (Array.isArray(list) ? list : []).slice(0, 50)) {
-        for (const h of (Array.isArray(m?.hooks) ? m.hooks : []).slice(0, 50)) {
-          if (out.hooks.length >= CAP) break;
-          const what = typeof h?.command === 'string' ? h.command : typeof h?.url === 'string' ? h.url : typeof h?.prompt === 'string' ? `(prompt) ${h.prompt}` : shown(h);
-          out.hooks.push({ file: f.name, event: short(event, 60), matcher: typeof m?.matcher === 'string' ? short(m.matcher, 200) : '', command: str(what, 1000) });
+    if (v.hooks !== undefined && !obj(v.hooks)) add('other', { file: f.name, key: 'hooks', value: text(v.hooks) });
+    for (const [event, list] of Object.entries(obj(v.hooks) ?? {})) {
+      if (!Array.isArray(list)) { add('hooks', { file: f.name, event: text(event), matcher: '', command: text(list) }); continue; }
+      for (const m of list) {
+        const hs = Array.isArray(m?.hooks) ? m.hooks : null;
+        const matcher = m?.matcher === undefined ? '' : text(m.matcher);
+        if (!hs) { add('hooks', { file: f.name, event: text(event), matcher, command: text(m) }); continue; }
+        for (const h of hs) {
+          const o = obj(h);
+          // the command (or URL, or prompt) it runs; anything else it says, as JSON after it
+          const { type, command, url, prompt, ...rest } = o ?? {};
+          const head = typeof command === 'string' ? command : typeof url === 'string' ? url : typeof prompt === 'string' ? `(prompt) ${prompt}` : '';
+          const extra = { ...(type !== undefined && type !== 'command' ? { type } : {}), ...rest };
+          const all = !o ? h : !head ? o : Object.keys(extra).length ? `${head}  ${JSON.stringify(extra)}` : head;
+          add('hooks', { file: f.name, event: text(event), matcher, command: text(all) });
         }
       }
     }
+    if (v.permissions !== undefined && !obj(v.permissions)) add('other', { file: f.name, key: 'permissions', value: text(v.permissions) });
     const perms = obj(v.permissions) ?? {};
-    out.allow.push(...strs(perms.allow)); out.ask.push(...strs(perms.ask)); out.deny.push(...strs(perms.deny));
-    if (typeof perms.defaultMode === 'string') out.defaultMode = short(perms.defaultMode, 40);
-    out.directories.push(...strs(perms.additionalDirectories, 50));
-    for (const k of Object.keys(perms).filter((k) => !['allow', 'ask', 'deny', 'defaultMode', 'additionalDirectories'].includes(k)).slice(0, 20)) {
-      out.other.push({ file: f.name, key: `permissions.${short(k, 80)}`, value: shown(perms[k]) });
+    for (const k of ['allow', 'ask', 'deny']) {
+      if (perms[k] === undefined) continue;
+      if (!Array.isArray(perms[k])) { add('other', { file: f.name, key: `permissions.${k}`, value: text(perms[k]) }); continue; }
+      for (const r of perms[k]) add(k, text(r));
     }
-    for (const [name, value] of Object.entries(obj(v.env) ?? {}).slice(0, CAP)) out.env.push({ file: f.name, name: short(name, 200), value: shown(value) });
-    for (const k of COMMAND_KEYS) {
-      if (v[k] === undefined) continue;
-      const c = typeof v[k] === 'string' ? v[k] : typeof obj(v[k])?.command === 'string' ? v[k].command : shown(v[k]);
-      out.commands.push({ file: f.name, key: k, command: str(c, 1000) });
+    if (perms.defaultMode !== undefined) out.defaultMode = text(perms.defaultMode);
+    if (perms.additionalDirectories !== undefined) {
+      if (Array.isArray(perms.additionalDirectories)) for (const d of perms.additionalDirectories) add('directories', text(d));
+      else add('other', { file: f.name, key: 'permissions.additionalDirectories', value: text(perms.additionalDirectories) });
     }
-    for (const k of MCP_KEYS) if (v[k] !== undefined) out.mcp.push({ file: f.name, key: k, value: shown(v[k]) });
-    for (const k of Object.keys(v).filter((k) => !KNOWN.has(k)).slice(0, 50)) out.other.push({ file: f.name, key: short(k, 100), value: shown(v[k]) });
+    for (const k of Object.keys(perms).filter((k) => !PERM_KNOWN.has(k))) add('other', { file: f.name, key: `permissions.${text(k)}`, value: text(perms[k]) });
+    if (v.env !== undefined && !obj(v.env)) add('other', { file: f.name, key: 'env', value: text(v.env) });
+    for (const [name, value] of Object.entries(obj(v.env) ?? {})) add('env', { file: f.name, name: text(name), value: text(value) });
+    for (const k of COMMAND_KEYS) if (v[k] !== undefined) add('commands', { file: f.name, key: k, command: text(typeof v[k] === 'string' ? v[k] : v[k]) });
+    for (const k of MCP_KEYS) if (v[k] !== undefined) add('mcp', { file: f.name, key: k, value: text(v[k]) });
+    for (const k of Object.keys(v).filter((k) => !KNOWN.has(k))) add('other', { file: f.name, key: text(k), value: text(v[k]) });
   }
-  for (const k of ['allow', 'ask', 'deny']) out[k] = out[k].slice(0, CAP);
+  out.missing = [...why].map(([reason, n]) => (n > 1 ? `${reason} (${n} times)` : reason));
   return out;
 }
 
@@ -159,10 +193,12 @@ export function makeTrust({ call, store, log = () => {} }) {
     const abs = absOf(rec.root);
     const r = await read(abs);
     const state = stateOf({ workspace: rec.id === WORKSPACE_ID, present: r.present, hash: r.hash, trust: rec.trust, verifiable: r.verifiable });
+    const summary = summarize(r.files);
     return {
-      project: rec.id, path: abs, state, hash: state === 'workspace' ? null : r.hash, trustedAt: rec.trust?.at ?? null,
+      // (a hash to trust only for settings the summary shows whole: nothing you were not shown can apply)
+      project: rec.id, path: abs, state, hash: state === 'workspace' || !summary.complete ? null : r.hash, trustedAt: rec.trust?.at ?? null,
       files: r.files.map(({ name, type, size, target }) => ({ name, type, size, target })),
-      summary: summarize(r.files),
+      summary,
     };
   }
   /** trust(rec, hash) — only the files exactly as the page showed them (a conflict when they changed since, when there
@@ -172,6 +208,8 @@ export function makeTrust({ call, store, log = () => {} }) {
     if (!r.present) return { conflict: 'this project has no settings of its own (nothing to trust)' };
     if (!r.verifiable) return { conflict: 'its settings cannot be checked (a file there is a link out of the workspace, too large to show, or not a file): they are never trusted' };
     if (r.hash !== hash) return { conflict: 'its settings changed since you looked: review them again' };
+    const sm = summarize(r.files);
+    if (!sm.complete) return { conflict: `its settings cannot all be shown here (${sm.missing.join('; ')}): they are not trusted — shorten them, or use the folder without them` };
     store().trust(rec.id, hash);
     return { conflict: null };
   }

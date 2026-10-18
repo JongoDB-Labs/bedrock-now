@@ -4,7 +4,7 @@
 // the workspace by the same rules as the backend's, a name of one line), and a session is shown in the project the
 // backend says only when that is a project of the list — else in the Workspace: nothing a list says makes a project.
 // Kept free of DOM and network (test/projects.test.ts).
-import { label } from './text';
+import { label, safe } from './text';
 import type { SessionInfo } from './types';
 
 export const WORKSPACE_ID = 'ws';
@@ -186,6 +186,9 @@ export interface SettingsSummary {
   mcpServers: { name: string; run: string }[];
   other: { file: string; key: string; value: string }[];
   notes: { file: string; note: string }[];
+  /** every key and value of the files is above, whole (else: never trustable — what was left out, in `missing`) */
+  complete: boolean;
+  missing: string[];
 }
 export interface SettingsView {
   project: string;
@@ -198,33 +201,53 @@ export interface SettingsView {
   summary: SettingsSummary;
 }
 const FILE_TYPES = ['missing', 'file', 'link', 'big', 'other'];
-const rows = <T>(v: unknown, n: number, f: (o: Obj) => T | null): T[] => (Array.isArray(v) ? v.slice(0, n).map((x) => (obj(x) ? f(obj(x) as Obj) : null)).filter((x): x is T => x !== null) : []);
-const texts = (v: unknown, n = 200, max = 500): string[] => (Array.isArray(v) ? v.slice(0, n).filter((x) => typeof x === 'string').map((x) => label(x, max)) : []);
-const t = (v: unknown, max = 500): string => label(typeof v === 'string' ? v : '', max);
-/** The backend's view of a project's settings, checked (everything as text, capped); null when it does not fit. */
+// the backend shows at most 200 entries a section and 2,000 characters a value (with its own "… more characters not
+// shown"): anything beyond that here, too, makes the summary incomplete — never trustable
+const LIST_MAX = 200, TEXT_MAX = 2100;
+/** The backend's view of a project's settings, checked (everything as text); null when it does not fit. Nothing is cut
+ *  silently: whatever does not fit makes it incomplete. */
 export function normSettingsView(v: unknown): SettingsView | null {
   const o = obj(v);
   const state = settingsState(o?.state);
   if (!o || !state || !projectIdOk(o.project)) return null;
+  let cut = false;
+  const one = (x: unknown, max = 300): string => { if (typeof x !== 'string') return ''; if (x.length > max) cut = true; return label(x, max); };
+  const many = (x: unknown): string => { if (typeof x !== 'string') return ''; if (x.length > TEXT_MAX) cut = true; return safe(x, TEXT_MAX); };
+  const rows = <T>(x: unknown, f: (r: Obj) => T): T[] => {
+    if (!Array.isArray(x)) return [];
+    if (x.length > LIST_MAX) cut = true;
+    return x.slice(0, LIST_MAX).map((r) => (obj(r) ? f(obj(r) as Obj) : null)).filter((r): r is T => r !== null);
+  };
+  const texts = (x: unknown): string[] => {
+    if (!Array.isArray(x)) return [];
+    if (x.length > LIST_MAX) cut = true;
+    return x.slice(0, LIST_MAX).filter((r) => typeof r === 'string').map(many);
+  };
   const s = obj(o.summary) ?? {};
+  const summary: SettingsSummary = {
+    hooks: rows(s.hooks, (h) => ({ file: one(h.file, 60), event: one(h.event, 200), matcher: many(h.matcher), command: many(h.command) })),
+    allow: texts(s.allow), ask: texts(s.ask), deny: texts(s.deny),
+    defaultMode: typeof s.defaultMode === 'string' ? many(s.defaultMode) : null,
+    directories: texts(s.directories),
+    env: rows(s.env, (e) => ({ file: one(e.file, 60), name: many(e.name), value: many(e.value) })),
+    commands: rows(s.commands, (c) => ({ file: one(c.file, 60), key: one(c.key, 60), command: many(c.command) })),
+    mcp: rows(s.mcp, (c) => ({ file: one(c.file, 60), key: one(c.key, 60), value: many(c.value) })),
+    mcpServers: rows(s.mcpServers, (m) => ({ name: many(m.name), run: many(m.run) })),
+    other: rows(s.other, (x) => ({ file: one(x.file, 60), key: many(x.key), value: many(x.value) })),
+    notes: rows(s.notes, (x) => ({ file: one(x.file, 60), note: one(x.note, 500) })),
+    complete: false,
+    missing: Array.isArray(s.missing) ? s.missing.slice(0, 20).filter((x) => typeof x === 'string').map((x) => label(x, 200)) : [],
+  };
+  summary.complete = s.complete === true && !cut;
+  if (cut) summary.missing.push('more than this page shows');
   return {
     project: o.project, path: cwdOk(o.path) ? o.path : WORKSPACE_PATH, state,
-    hash: typeof o.hash === 'string' && /^[0-9a-f]{64}$/.test(o.hash) ? o.hash : null,
+    // (a hash to trust only with a summary shown whole)
+    hash: summary.complete && typeof o.hash === 'string' && /^[0-9a-f]{64}$/.test(o.hash) ? o.hash : null,
     trustedAt: typeof o.trustedAt === 'number' && Number.isFinite(o.trustedAt) && o.trustedAt > 0 ? o.trustedAt : null,
-    files: rows(o.files, 3, (f) => (typeof f.name === 'string' && FILE_TYPES.includes(f.type as string)
-      ? { name: t(f.name, 60), type: f.type as SettingsFile['type'], size: typeof f.size === 'number' && f.size >= 0 ? f.size : null, target: typeof f.target === 'string' ? t(f.target, 300) : null }
-      : null)),
-    summary: {
-      hooks: rows(s.hooks, 200, (h) => ({ file: t(h.file, 60), event: t(h.event, 60), matcher: t(h.matcher, 200), command: t(h.command, 1000) })),
-      allow: texts(s.allow), ask: texts(s.ask), deny: texts(s.deny),
-      defaultMode: typeof s.defaultMode === 'string' ? t(s.defaultMode, 40) : null,
-      directories: texts(s.directories, 50),
-      env: rows(s.env, 200, (e) => ({ file: t(e.file, 60), name: t(e.name, 200), value: t(e.value, 300) })),
-      commands: rows(s.commands, 50, (c) => ({ file: t(c.file, 60), key: t(c.key, 60), command: t(c.command, 1000) })),
-      mcp: rows(s.mcp, 50, (c) => ({ file: t(c.file, 60), key: t(c.key, 60), value: t(c.value, 300) })),
-      mcpServers: rows(s.mcpServers, 200, (m) => ({ name: t(m.name, 100), run: t(m.run, 600) })),
-      other: rows(s.other, 100, (x) => ({ file: t(x.file, 60), key: t(x.key, 100), value: t(x.value, 300) })),
-      notes: rows(s.notes, 20, (x) => ({ file: t(x.file, 60), note: t(x.note, 300) })),
-    },
+    files: Array.isArray(o.files) ? o.files.slice(0, 3).map((f) => obj(f)).filter((f): f is Obj => !!f && typeof f.name === 'string' && FILE_TYPES.includes(f.type as string))
+      .map((f) => ({ name: label(f.name, 60), type: f.type as SettingsFile['type'], size: typeof f.size === 'number' && f.size >= 0 ? f.size : null, target: typeof f.target === 'string' ? label(f.target, 300) : null }))
+      : [],
+    summary,
   };
 }

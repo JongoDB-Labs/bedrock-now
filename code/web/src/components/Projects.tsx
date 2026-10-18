@@ -626,7 +626,7 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
         <ul class="ps-list">{rows.slice(0, 200).map((r, i) => <li key={i}><code>{r}</code></li>)}</ul>
       </div>
     ) : null;
-  const canTrust = v && v.hash && (v.state === 'untrusted' || v.state === 'changed');
+  const canTrust = v && v.hash && v.summary.complete && (v.state === 'untrusted' || v.state === 'changed');
   return (
     <Dialog title={`${p.name}: its own Claude Code settings`} onClose={onClose} testid="settings-dialog">
       {!v && !err && <p class="muted small"><Spinner size={12} /> Reading them in the sandbox…</p>}
@@ -653,6 +653,12 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
               {section('Other settings', sm.other.map((o) => `${o.key}: ${o.value}`), 'settings-other')}
               {section('Notes', sm.notes.map((n) => `${n.file}: ${n.note}`), 'settings-notes')}
             </div>
+          )}
+          {!v.summary.complete && v.state !== 'workspace' && v.state !== 'none' && (
+            <p class="warn-text small" data-testid="settings-incomplete">
+              Not everything in them can be shown here ({label(v.summary.missing.join('; ') || 'not said', 400)}): they cannot be trusted. Shorten them, or use the
+              folder without them.
+            </p>
           )}
           {!settingsApplied(v.state) && (
             <p class="muted small">Until then a session here runs with your own settings only (the sandbox&apos;s ~/.claude) and, of MCP servers, the stack&apos;s own; this
