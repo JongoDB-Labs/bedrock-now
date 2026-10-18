@@ -22,7 +22,7 @@ import type { AvailablePlugin, BnModel, Compat, Catalog, KeyBudget, RuleLine, Cl
 import { MODES, COMPATS } from './types';
 import { normBudget, type Budget as SessionBudget } from './budget';
 import { promptTitle } from './mentions';
-import { cwdOk, normProject, normProjects, projectIdOk, WORKSPACE_ID, WORKSPACE_PATH, type Project } from './projects';
+import { cwdOk, normProject, normProjects, normSessionSettings, normSettingsView, projectIdOk, WORKSPACE_ID, WORKSPACE_PATH, type Project, type SettingsView } from './projects';
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : null);
@@ -461,7 +461,8 @@ export function normServerMsg(raw: string): ServerMsg | null {
       return session && state
         ? { kind: 'session_state', session, state, model: typeof o.model === 'string' && MODEL_ID.test(o.model) ? o.model : null, mode: mode(o.mode),
           // (an older backend says nothing about budgets: no key, not "none")
-          ...(o.budget === undefined ? {} : { budget: normBudget(o.budget) }), ...(time(o.lastActive) ? { lastActive: time(o.lastActive) } : {}) }
+          ...(o.budget === undefined ? {} : { budget: normBudget(o.budget) }), ...(time(o.lastActive) ? { lastActive: time(o.lastActive) } : {}),
+          ...(o.settings === undefined ? {} : { settings: normSessionSettings(o.settings) }) }
         : null;
     }
     case 'reset': {
@@ -585,6 +586,7 @@ function normOpen(v: unknown): OpenSession | null {
     terminal: o.terminal === true,
     cwd: cwdOk(o.cwd) ? o.cwd : WORKSPACE_PATH,
     project: projectIdOk(o.project) ? o.project : WORKSPACE_ID,
+    settings: normSessionSettings(o.settings),
   };
 }
 
@@ -803,6 +805,20 @@ export async function projectTerminal(id: string): Promise<{ window: string }> {
 export async function projectGitInit(id: string): Promise<void> {
   if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
   await request('POST', `/api/projects/${id}/git-init`);
+}
+/** A project's own Claude Code settings: what they set, and whether they apply. */
+export async function getProjectSettings(id: string): Promise<SettingsView> {
+  if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
+  const v = normSettingsView(await request('GET', `/api/projects/${id}/settings`));
+  if (!v) throw new ApiError(502, 'the answer about its settings does not fit');
+  return v;
+}
+/** Trust them as shown (hash: the view's) — or, trust false, no longer. */
+export async function trustProject(id: string, hash: string | null, trust = true): Promise<SettingsView> {
+  if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
+  const v = normSettingsView(trust ? await request('POST', `/api/projects/${id}/trust`, { hash }) : await request('DELETE', `/api/projects/${id}/trust`));
+  if (!v) throw new ApiError(502, 'the answer about its settings does not fit');
+  return v;
 }
 
 // ---------------------------------------------------------------- files

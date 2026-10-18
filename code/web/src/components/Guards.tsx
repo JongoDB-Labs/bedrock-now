@@ -3,7 +3,8 @@
 // conversation to it again, on the session's model), and a hint on a new session's first turn on Opus.
 import { useEffect, useState } from 'preact/hooks';
 import { useSel } from '../store';
-import { store, activeView, dropLinkDraft, ackLinkDraft, setModel } from '../app';
+import { store, activeView, dropLinkDraft, ackLinkDraft, openProjectDialog, setModel } from '../app';
+import { settingsApplied } from '../projects';
 import { cacheNotice, opusHint } from '../budget';
 import { fullModel } from '../models';
 import type { SessionView } from '../session';
@@ -102,6 +103,25 @@ function LinkDraft({ onClear, nudge }: { onClear: () => void; nudge: number }) {
   );
 }
 
+/** A session whose folder's own Claude Code settings its process did not get (not trusted, changed, cannot be
+ *  checked): said above the prompt, with the way to review them. */
+function SettingsGuard({ v }: { v: SessionView }) {
+  const p = useSel(store, (s) => (v.settings?.project ? s.projects.find((x) => x.id === v.settings?.project) : undefined));
+  if (!v.settings || settingsApplied(v.settings.state) || v.state === 'closed') return null;
+  const why = v.settings.state === 'changed' ? ' (they changed since you trusted them)' : v.settings.state === 'unverifiable' ? ' (one of them cannot be checked)' : '';
+  return (
+    <div class="guard settings-guard" data-testid="settings-guard" data-state={v.settings.state}>
+      <Icon name="shield" size={13} />
+      <span>{p ? `${p.name}'s` : 'This folder\'s'} own Claude Code settings are not applied in this session{why}: your own settings only.</span>
+      {p && !p.workspace && (
+        <button type="button" class="btn small ghost" onClick={() => openProjectDialog({ kind: 'settings', id: p.id })} data-testid="settings-guard-review">
+          Review them…
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ColdCache({ v }: { v: SessionView }) {
   const bn = useSel(store, (s) => s.models);
   const info = useSel(store, (s) => s.sessions.find((x) => x.id === v.id));
@@ -168,6 +188,7 @@ export function Guards({ onClear, nudge = 0 }: { onClear: () => void; nudge?: nu
   return (
     <>
       <LinkDraft onClear={onClear} nudge={nudge} />
+      {v && <SettingsGuard v={v} />}
       {v && <ColdCache v={v} />}
       <OpusHint v={v} />
     </>

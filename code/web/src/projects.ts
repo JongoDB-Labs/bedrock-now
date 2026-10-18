@@ -17,6 +17,24 @@ const ID = /^p_[0-9a-f]{8}$/;
 const ODD = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 
 export type FolderState = 'dir' | 'missing' | 'link' | 'other';
+/** A project's own Claude Code settings (.claude/settings*.json, .mcp.json): the Workspace's always apply; a project's
+ *  only once trusted as they are (none: nothing to trust; changed: trusted once, different now; unverifiable: a file
+ *  there cannot be checked — never trusted; unchecked: the sandbox did not say — not applied). */
+export type SettingsState = 'workspace' | 'none' | 'trusted' | 'untrusted' | 'changed' | 'unverifiable' | 'unchecked';
+const SETTINGS: SettingsState[] = ['workspace', 'none', 'trusted', 'untrusted', 'changed', 'unverifiable', 'unchecked'];
+export const settingsState = (v: unknown): SettingsState | null => (SETTINGS.includes(v as SettingsState) ? (v as SettingsState) : null);
+/** they apply (or there is nothing to apply; null: not said) */
+export const settingsApplied = (v: SettingsState | null): boolean => v === null || v === 'workspace' || v === 'none' || v === 'trusted';
+/** a session's process: what of its folder's settings it got */
+export interface SessionSettings {
+  state: SettingsState;
+  project: string | null;
+}
+export function normSessionSettings(v: unknown): SessionSettings | null {
+  const o = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  const state = settingsState(o?.state);
+  return o && state ? { state, project: projectIdOk(o.project) ? o.project : null } : null;
+}
 export interface Project {
   /** ws (the Workspace) or p_ and 8 hex */
   id: string;
@@ -30,6 +48,8 @@ export interface Project {
   /** what the sandbox says of its folder (null: not said) */
   folder: FolderState | null;
   git: boolean | null;
+  /** its own Claude Code settings (null: not said) */
+  settings: SettingsState | null;
 }
 /** Where a session runs and which project it is shown in. */
 export interface Where {
@@ -56,7 +76,8 @@ export function cwdOk(v: unknown): v is string {
   return v.slice(WORKSPACE_PATH.length + 1).split('/').every((s) => s !== '' && s !== '.' && s !== '..');
 }
 export const pathOf = (root: string): string => (root ? `${WORKSPACE_PATH}/${root}` : WORKSPACE_PATH);
-export const WORKSPACE: Project = Object.freeze({ id: WORKSPACE_ID, name: 'Workspace', root: '', path: WORKSPACE_PATH, created: null, workspace: true, folder: null, git: null });
+export const WORKSPACE: Project = Object.freeze({ id: WORKSPACE_ID, name: 'Workspace', root: '', path: WORKSPACE_PATH, created: null, workspace: true, folder: null, git: null,
+  settings: null });
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : null);
@@ -68,11 +89,12 @@ export function normProject(v: unknown): Project | null {
   if (!o || !projectIdOk(o.id)) return null;
   const folder = FOLDERS.includes(o.folder as FolderState) ? (o.folder as FolderState) : null;
   const git = typeof o.git === 'boolean' ? o.git : null;
-  if (o.id === WORKSPACE_ID) return { ...WORKSPACE, folder, git };
+  const settings = settingsState(o.settings);
+  if (o.id === WORKSPACE_ID) return { ...WORKSPACE, folder, git, settings: settings === null ? null : 'workspace' };
   if (!rootOk(o.root)) return null;
   const created = typeof o.created === 'number' && Number.isFinite(o.created) && o.created > 0 ? o.created : null;
   const name = nameOk(o.name) ? o.name : label(o.root.split('/').pop(), 80);
-  return { id: o.id, name, root: o.root, path: pathOf(o.root), created, workspace: false, folder, git };
+  return { id: o.id, name, root: o.root, path: pathOf(o.root), created, workspace: false, folder, git, settings: settings === 'workspace' ? null : settings };
 }
 /** The list: the Workspace first (always there), then each project once (by id and by folder), at most 64 more. */
 export function normProjects(list: unknown): Project[] {
@@ -143,3 +165,66 @@ export function workspacePath(p: string, cwd: string): string | null {
 export const inProject = (wsPath: string, root: string): boolean => !root || wsPath === root || wsPath.startsWith(`${root}/`);
 /** A path of the workspace as the project shows it (relative to its folder). */
 export const shownIn = (wsPath: string, root: string): string => (root && wsPath.startsWith(`${root}/`) ? wsPath.slice(root.length + 1) : wsPath);
+
+/** GET /api/projects/ID/settings: a project's own Claude Code settings — what they set (text only), their hash. */
+export interface SettingsFile {
+  name: string;
+  type: 'missing' | 'file' | 'link' | 'big' | 'other';
+  size: number | null;
+  target: string | null;
+}
+export interface SettingsSummary {
+  hooks: { file: string; event: string; matcher: string; command: string }[];
+  allow: string[];
+  ask: string[];
+  deny: string[];
+  defaultMode: string | null;
+  directories: string[];
+  env: { file: string; name: string; value: string }[];
+  commands: { file: string; key: string; command: string }[];
+  mcp: { file: string; key: string; value: string }[];
+  mcpServers: { name: string; run: string }[];
+  other: { file: string; key: string; value: string }[];
+  notes: { file: string; note: string }[];
+}
+export interface SettingsView {
+  project: string;
+  path: string;
+  state: SettingsState;
+  /** what trusting them names (null: nothing that can be trusted) */
+  hash: string | null;
+  trustedAt: number | null;
+  files: SettingsFile[];
+  summary: SettingsSummary;
+}
+const FILE_TYPES = ['missing', 'file', 'link', 'big', 'other'];
+const rows = <T>(v: unknown, n: number, f: (o: Obj) => T | null): T[] => (Array.isArray(v) ? v.slice(0, n).map((x) => (obj(x) ? f(obj(x) as Obj) : null)).filter((x): x is T => x !== null) : []);
+const texts = (v: unknown, n = 200, max = 500): string[] => (Array.isArray(v) ? v.slice(0, n).filter((x) => typeof x === 'string').map((x) => label(x, max)) : []);
+const t = (v: unknown, max = 500): string => label(typeof v === 'string' ? v : '', max);
+/** The backend's view of a project's settings, checked (everything as text, capped); null when it does not fit. */
+export function normSettingsView(v: unknown): SettingsView | null {
+  const o = obj(v);
+  const state = settingsState(o?.state);
+  if (!o || !state || !projectIdOk(o.project)) return null;
+  const s = obj(o.summary) ?? {};
+  return {
+    project: o.project, path: cwdOk(o.path) ? o.path : WORKSPACE_PATH, state,
+    hash: typeof o.hash === 'string' && /^[0-9a-f]{64}$/.test(o.hash) ? o.hash : null,
+    trustedAt: typeof o.trustedAt === 'number' && Number.isFinite(o.trustedAt) && o.trustedAt > 0 ? o.trustedAt : null,
+    files: rows(o.files, 3, (f) => (typeof f.name === 'string' && FILE_TYPES.includes(f.type as string)
+      ? { name: t(f.name, 60), type: f.type as SettingsFile['type'], size: typeof f.size === 'number' && f.size >= 0 ? f.size : null, target: typeof f.target === 'string' ? t(f.target, 300) : null }
+      : null)),
+    summary: {
+      hooks: rows(s.hooks, 200, (h) => ({ file: t(h.file, 60), event: t(h.event, 60), matcher: t(h.matcher, 200), command: t(h.command, 1000) })),
+      allow: texts(s.allow), ask: texts(s.ask), deny: texts(s.deny),
+      defaultMode: typeof s.defaultMode === 'string' ? t(s.defaultMode, 40) : null,
+      directories: texts(s.directories, 50),
+      env: rows(s.env, 200, (e) => ({ file: t(e.file, 60), name: t(e.name, 200), value: t(e.value, 300) })),
+      commands: rows(s.commands, 50, (c) => ({ file: t(c.file, 60), key: t(c.key, 60), command: t(c.command, 1000) })),
+      mcp: rows(s.mcp, 50, (c) => ({ file: t(c.file, 60), key: t(c.key, 60), value: t(c.value, 300) })),
+      mcpServers: rows(s.mcpServers, 200, (m) => ({ name: t(m.name, 100), run: t(m.run, 600) })),
+      other: rows(s.other, 100, (x) => ({ file: t(x.file, 60), key: t(x.key, 100), value: t(x.value, 300) })),
+      notes: rows(s.notes, 20, (x) => ({ file: t(x.file, 60), note: t(x.note, 300) })),
+    },
+  };
+}

@@ -26,12 +26,14 @@ import {
   renameSessionById,
   resumeSession,
   setProject,
+  setProjectTrust,
   showGit,
+  type NewSessionOptions,
   type ProjectDialog,
 } from '../app';
 import * as api from '../api';
 import { GROUP_LABEL, groupOf, type Group } from '../groups';
-import { rootOk, sessionsByProject, WORKSPACE_ID, type Project } from '../projects';
+import { rootOk, sessionsByProject, settingsApplied, WORKSPACE_ID, type Project, type SettingsView } from '../projects';
 import type { SessionView } from '../session';
 import type { SessionInfo } from '../types';
 import { ago, label } from '../text';
@@ -148,6 +150,9 @@ function ProjectMenu({ p, onRename }: { p: Project; onRename: () => void }) {
           <MenuItem icon="branch" onSelect={() => (close(), void connectGitRepo(p.id))} testid="project-menu-git">
             Connect a git repository
           </MenuItem>
+          <MenuItem icon="shield" onSelect={() => (close(), openProjectDialog({ kind: 'settings', id: p.id }))} testid="project-menu-settings">
+            Claude Code settings…
+          </MenuItem>
           {!p.workspace && (
             <>
               <MenuItem icon="pencil" onSelect={() => (close(), onRename())} testid="project-menu-rename">
@@ -259,6 +264,13 @@ export function ProjectsPanel() {
                 )}
                 {p.git && <span class="proj-tag" title="A git repository"><Icon name="branch" size={12} /></span>}
                 {note && <span class="proj-tag warn-text" title={note}><Icon name="alert" size={12} /></span>}
+                {!settingsApplied(p.settings) && (
+                  <button type="button" class="proj-tag proj-settings warn-text" onClick={() => openProjectDialog({ kind: 'settings', id: p.id })}
+                    title="Its own Claude Code settings are not applied: review them" aria-label={`${p.name}: its own Claude Code settings are not applied — review them`}
+                    data-testid="project-settings-flag">
+                    <Icon name="shield" size={12} />
+                  </button>
+                )}
                 {needs > 0 && <span class="badge warn" title="Sessions waiting for you">{needs}</span>}
                 <ProjectMenu p={p} onRename={() => { setNewName(p.name); setRenaming(p.id); }} />
               </div>
@@ -380,6 +392,7 @@ export function ProjectDialogs() {
   const close = () => openProjectDialog(null);
   if (d.kind === 'new') return <NewProjectDialog tab={d.tab} onClose={close} />;
   if (d.kind === 'remove') return <RemoveProjectDialog id={d.id} onClose={close} />;
+  if (d.kind === 'settings') return <SettingsDialog id={d.id} start={d.start} onClose={close} />;
   return <FileDialog ids={d.ids} onClose={close} />;
 }
 
@@ -567,6 +580,112 @@ function FileDialog({ ids, onClose }: { ids: string[]; onClose: () => void }) {
           </li>
         ))}
       </ul>
+    </Dialog>
+  );
+}
+
+/** A project's own Claude Code settings (.claude/settings.json, settings.local.json, .mcp.json): what they set, as text,
+ *  and Trust (exactly these files) or Stop trusting. start: the new session you asked for, started after your choice. */
+function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSessionOptions; onClose: () => void }) {
+  const p = useSel(store, (s) => s.projects.find((x) => x.id === id));
+  const [v, setV] = useState<SettingsView | null>(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api.getProjectSettings(id).then((x) => live && setV(x), (e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => { live = false; };
+  }, [id]);
+  if (!p) return null;
+  const go = async (trust: boolean | null) => {
+    setBusy(true);
+    setErr('');
+    const e = trust === null ? '' : await setProjectTrust(id, v?.hash ?? null, trust);
+    setBusy(false);
+    if (e) return setErr(e);
+    onClose();
+    if (start) void newSession({ ...start, noAsk: true });
+  };
+  const when = v?.trustedAt ? new Date(v.trustedAt).toLocaleString() : '';
+  const lead: Record<string, string> = {
+    untrusted: 'Claude Code reads these files when a session starts in this folder. They are not applied until you trust them: hooks run commands, allow rules skip the permission cards, env changes what runs, MCP servers start programs. Read them first.',
+    changed: `They changed since you trusted them${when ? ` (${when})` : ''}: not applied until you look again.`,
+    trusted: `Trusted${when ? ` ${when}` : ''}: they apply to sessions in this folder while they stay exactly as they are.`,
+    unverifiable: 'One of these files cannot be checked (a link out of the workspace, too large to show, or not a file): they are not applied, and cannot be trusted until it is a plain file of the project.',
+    none: 'This project has no Claude Code settings of its own (.claude/settings.json, settings.local.json, .mcp.json): nothing to trust.',
+    workspace: 'The Workspace\'s own settings always apply, as they did before projects.',
+    unchecked: 'The sandbox did not say what they hold: they are not applied.',
+  };
+  const fileNote = (f: SettingsView['files'][number]) =>
+    f.type === 'missing' ? 'not there' : f.type === 'big' ? 'too large to show' : f.type === 'other' ? 'not a file' : f.type === 'link' ? `a link to ${f.target ?? '?'}` : `${f.size ?? 0} bytes`;
+  const sm = v?.summary;
+  const section = (title: string, rows: string[], testid: string) =>
+    rows.length ? (
+      <div class="ps-sec" data-testid={testid}>
+        <div class="ps-head">{title}</div>
+        <ul class="ps-list">{rows.slice(0, 200).map((r, i) => <li key={i}><code>{r}</code></li>)}</ul>
+      </div>
+    ) : null;
+  const canTrust = v && v.hash && (v.state === 'untrusted' || v.state === 'changed');
+  return (
+    <Dialog title={`${p.name}: its own Claude Code settings`} onClose={onClose} testid="settings-dialog">
+      {!v && !err && <p class="muted small"><Spinner size={12} /> Reading them in the sandbox…</p>}
+      {v && (
+        <>
+          <p class={`small${settingsApplied(v.state) ? '' : ' warn-text'}`} data-testid="settings-state" data-state={v.state}>{lead[v.state]}</p>
+          <ul class="ps-files small" data-testid="settings-files">
+            {v.files.map((f) => (
+              <li key={f.name}><code>{label(`${v.path}/${f.name}`, 300)}</code> — {label(fileNote(f), 300)}</li>
+            ))}
+          </ul>
+          {sm && (
+            <div class="ps-body">
+              {section('Hooks (commands Claude Code runs)', sm.hooks.map((h) => `${h.event}${h.matcher ? ` (${h.matcher})` : ''}: ${h.command}`), 'settings-hooks')}
+              {section('Allowed without asking', sm.allow, 'settings-allow')}
+              {section('Always asked', sm.ask, 'settings-ask')}
+              {section('Denied', sm.deny, 'settings-deny')}
+              {section('Default permission mode', sm.defaultMode ? [sm.defaultMode] : [], 'settings-mode')}
+              {section('More folders Claude may use', sm.directories, 'settings-dirs')}
+              {section('Environment variables', sm.env.map((e) => `${e.name}=${e.value}`), 'settings-env')}
+              {section('Programs it names', sm.commands.map((c) => `${c.key}: ${c.command}`), 'settings-commands')}
+              {section('MCP servers (.mcp.json)', sm.mcpServers.map((m) => `${m.name}: ${m.run}`), 'settings-mcp')}
+              {section('MCP settings', sm.mcp.map((m) => `${m.key}: ${m.value}`), 'settings-mcp-keys')}
+              {section('Other settings', sm.other.map((o) => `${o.key}: ${o.value}`), 'settings-other')}
+              {section('Notes', sm.notes.map((n) => `${n.file}: ${n.note}`), 'settings-notes')}
+            </div>
+          )}
+          {!settingsApplied(v.state) && (
+            <p class="muted small">Until then a session here runs with your own settings only (the sandbox&apos;s ~/.claude) and, of MCP servers, the stack&apos;s own; this
+              project&apos;s CLAUDE.md, commands and agents are not read either. Every project is in the one sandbox: trusting runs these hooks there, not on your computer.</p>
+          )}
+        </>
+      )}
+      {err && <p class="plg-err small" role="alert" data-testid="settings-error">{label(err, 300)}</p>}
+      <div class="dlg-actions">
+        <button type="button" class="btn" onClick={onClose}>
+          {start ? 'Cancel' : 'Close'}
+        </button>
+        {start && v && !settingsApplied(v.state) && (
+          <button type="button" class="btn" disabled={busy} onClick={() => void go(null)} data-testid="settings-start-without">
+            Start without them
+          </button>
+        )}
+        {v?.state === 'trusted' && !p.workspace && (
+          <button type="button" class="btn" disabled={busy} onClick={() => void go(false)} data-testid="settings-untrust">
+            Stop trusting them
+          </button>
+        )}
+        {canTrust && (
+          <button type="button" class="btn primary" disabled={busy} onClick={() => void go(true)} data-testid="settings-trust">
+            {busy ? <Spinner size={12} /> : null} {start ? 'Trust them and start' : 'Trust this project\'s Claude Code settings'}
+          </button>
+        )}
+        {start && v && settingsApplied(v.state) && (
+          <button type="button" class="btn primary" disabled={busy} onClick={() => void go(null)} data-testid="settings-start">
+            Start the session
+          </button>
+        )}
+      </div>
     </Dialog>
   );
 }

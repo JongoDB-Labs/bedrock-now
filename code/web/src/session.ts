@@ -17,6 +17,7 @@ import type {
   WatchChange,
 } from './types';
 import type { Budget } from './budget';
+import type { SessionSettings } from './projects';
 
 export type Item =
   | { t: 'user'; k: number; text: string; images: number; uuid: string | null; queued: boolean; folded?: boolean }
@@ -89,6 +90,8 @@ export interface SessionView {
   unseen: boolean;
   /** the session's budget as the backend holds it (null: none) */
   budget: Budget | null;
+  /** what of its folder's own Claude Code settings its process got (null: not said) */
+  settings: SessionSettings | null;
   /** the backend's last activity of this session (its lastActive), for the cold-cache line */
   lastActive: number | null;
   /** the session's spend when it was last looked at (budget warnings fire when it crosses a level) */
@@ -126,6 +129,7 @@ export function newView(id: string, init: Partial<SessionView> = {}): SessionVie
     status: '',
     unseen: false,
     budget: null,
+    settings: null,
     lastActive: null,
     spendSeen: null,
     ...init,

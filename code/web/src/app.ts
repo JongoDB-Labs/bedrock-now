@@ -226,7 +226,9 @@ export interface RewindState {
 export type ProjectDialog =
   | { kind: 'new'; tab: 'empty' | 'clone' | 'folder' }
   | { kind: 'remove'; id: string }
-  | { kind: 'file'; ids: string[] };
+  | { kind: 'file'; ids: string[] }
+  /** a project's own Claude Code settings: what they set, Trust / Stop trusting (start: then a new session there) */
+  | { kind: 'settings'; id: string; start?: NewSessionOptions };
 
 /** A draft that came from a link (?prompt=): never focused, never sent by Enter until you said you read it, and always
  *  sent into a NEW session in Manual mode — never into the session shown, never in your remembered mode. */
@@ -777,7 +779,7 @@ function handle(m: ServerMsg): void {
       updateView(m.session, (v) => {
         const w = over ? endedMidTurn(v) : v;
         return { ...w, state: m.state, seq: over ? 0 : w.seq, model: m.model ?? w.model, mode: m.mode ?? w.mode, budget: m.budget === undefined ? w.budget : m.budget,
-          lastActive: m.lastActive ?? w.lastActive };
+          lastActive: m.lastActive ?? w.lastActive, settings: m.settings === undefined ? w.settings : m.settings };
       });
       // the backend's budget is the one its stop uses: this browser remembers it (another device may have changed it)
       if (m.budget !== undefined) keepBudget(m.session, m.budget);
@@ -992,7 +994,7 @@ export async function boot(): Promise<void> {
     set((s) => ({ ...s, server }));
     noteWhere(server.sessions);
     for (const o of server.sessions) {
-      ensureView(o.id, { state: o.state, model: o.model ?? '', mode: o.mode ?? 'default', title: o.title, budget: o.budget, lastActive: o.lastActive });
+      ensureView(o.id, { state: o.state, model: o.model ?? '', mode: o.mode ?? 'default', title: o.title, budget: o.budget, lastActive: o.lastActive, settings: o.settings });
     }
     const shown = link.session ? await showLinked(link.session) : false;
     // (a link's draft without a session: no session shown — sending it starts a new one, in Manual)
@@ -1140,10 +1142,21 @@ export interface NewSessionOptions {
   budget?: Budget | null;
   /** its project (undefined: the one shown): it runs in that project's folder */
   project?: string;
+  /** start it without first showing a project's own settings that would not apply (a prompt typed, /clear …) */
+  noAsk?: boolean;
 }
 
 export function newSession(opts: NewSessionOptions = {}): Promise<string | null> {
-  return get().opening ? Promise.resolve(null) : whileOpening(openNew(opts));
+  if (get().opening) return Promise.resolve(null);
+  // a project whose own Claude Code settings are there but not trusted (as they are now): shown first — trust them,
+  // or start without them
+  const s = get();
+  const proj = s.projects.find((p) => p.id === (opts.project ?? s.project));
+  if (!opts.noAsk && proj && !proj.workspace && (proj.settings === 'untrusted' || proj.settings === 'changed' || proj.settings === 'unverifiable')) {
+    openProjectDialog({ kind: 'settings', id: proj.id, start: { ...opts, project: proj.id } });
+    return Promise.resolve(null);
+  }
+  return whileOpening(openNew(opts));
 }
 
 async function openNew(opts: NewSessionOptions): Promise<string | null> {
@@ -1397,7 +1410,7 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
   // a link's draft: a new session in Manual mode (never the one shown, never your remembered mode), as a prompt for
   // Claude — none of the page's own shortcuts (# memory line, /model, /clear) apply to it
   if (get().linkDraft) {
-    const nid = await newSession({ mode: 'default' });
+    const nid = await newSession({ mode: 'default', noAsk: true });
     if (!nid) return false;
     return deliver(nid, text, images);
   }
@@ -1405,7 +1418,7 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
   if (CLEAR.test(t)) {
     // a fresh conversation, with this one's model, mode and effort (the old one stays in the list)
     const cur = activeView();
-    return (await newSession(cur ? { model: cur.model || undefined, mode: startMode(cur.mode, get().prefs.mode, autoOk(get())), effort: cur.effort } : {})) !== null;
+    return (await newSession(cur ? { model: cur.model || undefined, mode: startMode(cur.mode, get().prefs.mode, autoOk(get())), effort: cur.effort, noAsk: true } : { noAsk: true })) !== null;
   }
   if (RESUME.test(t)) {
     showSessions();
@@ -1425,14 +1438,14 @@ export async function sendPrompt(text: string, images: ImageBlock[]): Promise<bo
     // a session that never got a prompt has no transcript to resume: a new one takes its place
     if (!v.items.some((it) => it.t === 'user')) {
       const old = id;
-      id = await newSession({ model: v.model || undefined, mode: startMode(v.mode, get().prefs.mode, autoOk(get())), effort: v.effort });
+      id = await newSession({ model: v.model || undefined, mode: startMode(v.mode, get().prefs.mode, autoOk(get())), effort: v.effort, noAsk: true });
       if (id) set((s) => {
         const views = { ...s.views };
         delete views[old];
         return { ...s, views };
       });
     } else id = await revive(id);
-  } else if (!id || !v) id = await newSession();
+  } else if (!id || !v) id = await newSession({ noAsk: true });
   if (!id) return false;
   return deliver(id, text, images);
 }
@@ -1568,7 +1581,7 @@ export async function confirmBypass(): Promise<void> {
   if (asked === null) return;
   let id: string | null = asked || null;
   const v = id ? get().views[id] : undefined;
-  if (!id || !v) id = await newSession();
+  if (!id || !v) id = await newSession({ noAsk: true });
   else if (v.state === 'closed') id = await revive(id);
   if (!id) return;
   // after a switch still on its way (and the one queued behind it)
@@ -1814,9 +1827,35 @@ export async function createProject(b: { kind: 'new' | 'folder'; folder: string;
     const p = r.project && get().projects.find((x) => x.id === r.project?.id);
     if (!p) return 'The project was made, but the list does not show it: reload the page.';
     setProject(p.id);
+    if (b.kind === 'folder') settingsHint(p.id);
     if (r.gitError) toast(`${p.name}: the folder is there, but git init failed (${r.gitError}).`, 'error');
     else toast(b.kind === 'new' ? `New project ${p.name} in ${p.path}${r.git ? ', a git repository' : ''}` : `${p.name} (${p.path}) is a project now`, 'ok');
     void refreshSessions();
+    return '';
+  } catch (e) {
+    return errText(e);
+  }
+}
+
+/** A project that came with Claude Code settings of its own (a clone, a folder that was there): said once — they apply
+ *  only once you trusted them. */
+function settingsHint(id: string): void {
+  const p = get().projects.find((x) => x.id === id);
+  if (p && (p.settings === 'untrusted' || p.settings === 'changed' || p.settings === 'unverifiable')) {
+    toast(`${p.name} has Claude Code settings of its own (.claude/, .mcp.json): sessions there run without them until you trust them.`, 'ok',
+      { label: 'Review them', run: () => openProjectDialog({ kind: 'settings', id }) });
+  }
+}
+
+/** Trust a project's own Claude Code settings as shown (hash: what the dialog showed) — or, trust false, no longer.
+ *  -> '' or why not */
+export async function setProjectTrust(id: string, hash: string | null, trust: boolean): Promise<string> {
+  try {
+    await api.trustProject(id, hash, trust);
+    await refreshProjects();
+    const name = get().projects.find((p) => p.id === id)?.name ?? 'The project';
+    toast(trust ? `${name}: its own Claude Code settings apply now — to new sessions there, and to open ones from their next prompt (Claude Code restarts for it).`
+      : `${name}: its own Claude Code settings no longer apply (open sessions there restart without them at their next prompt).`, 'ok');
     return '';
   } catch (e) {
     return errText(e);
@@ -1830,7 +1869,10 @@ async function cloneBecomesProject(folder: string): Promise<void> {
   try {
     const r = await api.addProject({ kind: 'folder', folder });
     await refreshProjects();
-    if (r.project) setProject(r.project.id);
+    if (r.project) {
+      setProject(r.project.id);
+      settingsHint(r.project.id);
+    }
   } catch (e) {
     toast(`The clone is in ${folder}, but it did not become a project: ${errText(e)} (New project › A folder in the workspace).`, 'error');
   }
