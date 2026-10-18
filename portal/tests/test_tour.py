@@ -220,7 +220,8 @@ def test_git_host_step_opens_the_code_pages_git_hosts():
     step = _step(js, "git-hosts")
     for words in ("Connect a git host…", "access token", "Contents: Read and write", '"read_repository"', '"write_repository"', "SSH key",
                   "Allow write access", "Test connection", "Let Claude use this host", "off by default",
-                  "only from the computer running bedrock-now", 'openGit("hosts")', "window.bnCode.gitHosts()"):
+                  "only from the computer running bedrock-now", 'openGit("hosts")', "window.bnCode.gitHosts()",
+                  'code("./stack git-host import gh")'):
         assert words in step, words
     opener = js[js.index("function openGit(what)"):js.index("// The Terminal tab")]
     assert "c.openGitHosts()" in opener and "c.openClone()" in opener

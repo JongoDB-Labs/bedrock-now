@@ -1581,6 +1581,21 @@ operation you started, sent only where you saw it go.
   **The tokens and SSH private keys are stored unencrypted** (the file's mode 600 is the protection): whoever can read
   the `code-state` volume — Docker on this computer, its disk, a backup of Docker's own data, root — can read them. If
   that may have been exposed, revoke the tokens and remove the keys on the hosts, then connect them again.
+- [x] **A gh or glab login, imported.** `./stack git-host import gh` reads gh's token with `gh auth token`, `import
+  glab` glab's with `glab config get token` (with `GH_TOKEN`, `GITLAB_TOKEN` and their kin taken out of the
+  environment: the stored login only), on the computer running bedrock-now. The shell keeps it in a variable and hands
+  it to `code/server/import-host.mjs` in the code container on the stdin of `docker compose exec -T` — never a command
+  line (proven: in none of docker's, gh's or glab's arguments, nor docker's environment), a file, the browser or the
+  portal; nothing prints it. Before it is kept, the account and the scopes (from the CLI's own `gh api` / `glab api`)
+  and what the token reaches are shown, and you confirm (`--yes`: no question; no terminal and no `--yes`: refused).
+  It is then an access token like the others, with its source, account and scopes shown in the host's row. gh's
+  token is gh's OAuth app's: it does not expire, reaches what its scopes allow (by default `repo`, `read:org`, `gist`,
+  often `workflow`) on every repository the account can, and gh goes on using it — removing it here does not sign gh
+  out (the page says where to revoke it). glab's is taken only as a personal access token: glab's configuration says
+  it is no OAuth login and has no refresh token, and GitLab answers `personal_access_tokens/self` for it; an OAuth
+  login of glab's (single-use refresh tokens: sharing it would break glab or the Code page), or anything glab or GitLab
+  cannot confirm, is refused. Git hosts' file is written under a lock file, so the import and the code container never
+  write over each other's change.
 - [x] **One operation, its host, while it runs — HTTPS token.** The network command (`git fetch`, `push`, `clone`,
   `ls-remote`) gets one more descriptor, a socket pair as its fd 3, which only it and its children inherit, and the
   configuration `credential.helper=` (empty: every helper the repository's or the sandbox's configuration names is
@@ -1681,6 +1696,9 @@ operation you started, sent only where you saw it go.
   an answer or event), the URL rules equal to bn-coded's, the built-in host keys' fingerprints, the agent (only a
   login, verifiable), plans and the answers to an operation's questions (another host, protocol, a fourth question:
   nothing), Claude's broker (only allowed hosts, 30 a minute), and the routes over remote access.
+  `code/test/import-host.test.mjs`: an imported login kept as an access token (never printed), refusals, the lock with
+  another process writing at the same time; `tests/test_githost.sh`: `./stack git-host import` with fake gh, glab and
+  docker programs.
 
 ### Previews of dev servers in the sandbox
 

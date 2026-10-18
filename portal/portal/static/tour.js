@@ -428,6 +428,7 @@
             b("Contents: Read and write"), "; on GitLab ", code("read_repository"), " and ", code("write_repository"), ". Paste it once: it is never shown again."],
           ["Or an ", b("SSH key"), " the Code page makes, for git@… URLs: add its public half to your account, or as a deploy key of the repository (",
             b("Allow write access"), " to push)."],
+          ["Signed in with gh or glab on this computer already? ", code("./stack git-host import gh"), " (or ", code("glab"), "), in the bedrock-now folder, imports that login as the token (glab: a personal access token only)."],
           [b("Test connection"), " lists a repository's branches with it."]]),
         note("Claude's own git gets nothing from it unless you turn on ", b("Let Claude use this host"), " (off by default; each use shows in Activity). Adding a host, a token or a key works only from the computer running bedrock-now",
           onlyHere(), ". ", doc("remote-repositories-git-hosts-clone-push-and-pull", "More")),
