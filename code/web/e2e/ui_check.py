@@ -3486,13 +3486,20 @@ def git_remotes(browser):
     bar = page.get_by_test_id("git-remote-bar")
     expect(bar).to_be_visible(timeout=10_000)
     expect(page.get_by_test_id("git-remote")).to_contain_text("origin → github.com/mock/app")
-    expect(page.get_by_test_id("git-connect-host")).to_be_visible()
+    # Git hosts, findable: a labelled Hosts button, and while no connected host covers the remote, one line saying so
+    hosts_btn = bar.get_by_test_id("git-hosts-open")
+    expect(hosts_btn).to_have_text("Hosts")
+    expect(hosts_btn).to_have_attribute("title", re.compile("Git hosts: tokens and SSH keys"))
+    expect(page.get_by_test_id("git-host-hint")).to_contain_text("github.com is not a connected git host")
+    expect(page.get_by_test_id("git-host-hint")).to_contain_text("access token")
+    expect(page.get_by_test_id("git-connect-host")).to_have_text("Connect a git host")
+    p.shot("git-host-hint.png")
     # not connected: a push is refused before anything is sent, and says how to connect
     page.get_by_test_id("git-push").click()
     expect(page.get_by_test_id("toast").last).to_contain_text("not a connected git host", timeout=10_000)
     p.errors = [e for e in p.errors if "status of 400" not in e]   # (that refusal: the one 400 expected here)
-    # Git hosts: GitHub with a token (the token never comes back), GitLab with an SSH key made here
-    page.get_by_test_id("git-hosts-open").first.click()
+    # Git hosts: GitHub with a token (the token never comes back), GitLab with an SSH key made here — from the hint
+    page.get_by_test_id("git-connect-host").click()
     dlg = page.get_by_test_id("git-hosts-dialog")
     expect(dlg).to_be_visible()
     page.get_by_test_id("git-host-add").click()
@@ -3518,6 +3525,10 @@ def git_remotes(browser):
     page.get_by_test_id("git-claude-dialog").get_by_role("button", name="Cancel").click()
     expect(gl.get_by_test_id("git-host-claude")).to_have_attribute("aria-checked", "false")
     dlg.get_by_role("button", name="Close").click()
+    # a connected host covers the remote now: the hint is gone, the remote names the host
+    expect(page.get_by_test_id("git-host-hint")).to_have_count(0, timeout=10_000)
+    expect(page.get_by_test_id("git-remote")).to_contain_text("GitHub")
+    expect(hosts_btn).to_be_visible()
     # a commit, then Push: where it goes, shown first
     page.evaluate("async () => { await fetch('/api/fs/file?path=CHANGES.md', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '# Changes\\n' }) }); }")
     page.get_by_test_id("git-refresh").click()
@@ -3559,6 +3570,43 @@ def git_remotes(browser):
     p.shot("git-clone-confirm.png")
     plan.get_by_role("button", name="Cancel").click()
     expect(page.get_by_test_id("git-plan-dialog")).to_have_count(0)
+    p.assert_clean()
+    p.close()
+
+
+@check("git hosts findable: a new session's welcome offers Clone a repository and Connect a git host; desktop and phone")
+def git_welcome(browser):
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "git-welcome", **DESKTOP)
+    page = p.open()
+    expect(page.get_by_test_id("welcome-repo")).to_be_visible(timeout=10_000)
+    expect(page.get_by_test_id("welcome-hosts")).to_have_text("Connect a git host", timeout=10_000)
+    p.shot("welcome-repo.png")
+    page.get_by_test_id("welcome-clone").click()
+    expect(page.get_by_test_id("git-clone-dialog")).to_be_visible()
+    expect(page.get_by_test_id("git-panel")).to_be_visible()
+    page.get_by_test_id("git-clone-dialog").get_by_role("button", name="Cancel").click()
+    page.get_by_test_id("welcome-hosts").click()
+    dlg = page.get_by_test_id("git-hosts-dialog")
+    expect(dlg).to_be_visible()
+    page.get_by_test_id("git-host-add").click()
+    page.get_by_test_id("git-host-token").fill("mock" + "tok" + str(int(time.time())))
+    page.get_by_test_id("git-host-save").click()
+    expect(dlg.get_by_test_id("git-host")).to_have_count(1, timeout=10_000)
+    dlg.get_by_role("button", name="Close").click()
+    # one host connected: the welcome says Git hosts
+    expect(page.get_by_test_id("welcome-hosts")).to_have_text("Git hosts", timeout=10_000)
+    p.assert_clean()
+    p.close()
+    post(NORMAL + "/__mock/reset")
+    p = Page(browser, NORMAL, "git-welcome-phone", viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True, color_scheme="light")
+    page = p.open()
+    expect(page.get_by_test_id("welcome-repo")).to_be_visible(timeout=10_000)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "horizontal overflow (welcome)"
+    p.shot("welcome-repo-phone.png")
+    page.get_by_test_id("welcome-hosts").tap()
+    expect(page.get_by_test_id("git-hosts-dialog")).to_be_visible()
+    p.shot("welcome-hosts-phone.png")
     p.assert_clean()
     p.close()
 

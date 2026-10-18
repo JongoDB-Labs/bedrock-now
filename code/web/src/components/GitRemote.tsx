@@ -91,11 +91,11 @@ export function RemoteBar({ st }: { st: GitStatus }) {
         </button>
       </div>
       {hint && (
-        <div class="gitr-hint small" data-testid="git-host-hint">
+        <div class="gitr-hint small" title="Git hosts keep a token or an SSH key for push, pull and clone. A public repository fetches without one." data-testid="git-host-hint">
           <span>
             {hint.kind === 'uncovered'
-              ? `${label(hint.host, 120)} is not a connected git host: pushing, and fetching a private repository, need its ${hint.scheme === 'ssh' ? 'SSH key' : 'access token'}.`
-              : 'No git host is connected: pushing, and private repositories, need one.'}
+              ? `${label(hint.host, 120)} is not a connected git host: pushing needs its ${hint.scheme === 'ssh' ? 'SSH key' : 'access token'}.`
+              : 'No git host is connected: pushing needs one.'}
           </span>
           <button type="button" class="btn small" onClick={() => openGitDialog('hosts')} data-testid="git-connect-host">
             <Icon name="plus" size={13} /> Connect a git host
