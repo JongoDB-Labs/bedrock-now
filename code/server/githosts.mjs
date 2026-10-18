@@ -1,8 +1,9 @@
 // Git hosts (the Code page's Git panel › Git hosts; Settings › Claude Code links here): the git servers you connect
 // for clone, fetch, pull and push — GitHub, GitLab or any https/ssh host — each with an HTTPS access token or an SSH key
 // made here. They are kept in this container's own volume (code-state, at /var/lib/bn-code: compose.code.yaml), in
-// one file of mode 600 in a folder of mode 700: never in .env, the portal, the update helper's requests, backups or
-// diagnostic reports, and never in the sandbox — which gets a token for one operation of yours (bn-coded's git.net:
+// one file of mode 600 in a folder of mode 700 — unencrypted: whoever can read that volume (Docker, the computer's disk,
+// root) can read the credentials — never in .env, the portal, the update helper's requests, backups or diagnostic
+// reports, and never in the sandbox — which gets a token for one operation of yours (bn-coded's git.net:
 // gitremote.mjs) or a signature of a login (sshagent.mjs), never the file. A token or key is never shown again: the
 // page sees whether one is set, when, and (a key) its public half.
 // Also kept: the SSH host keys you trusted (Test connection), the remotes you fetched from before (a fetch or pull

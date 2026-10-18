@@ -151,6 +151,23 @@ test('remote URLs: https and ssh only; never a transport helper, a local path, a
   assert.equal(coded.parseRemoteUrl('https://xn--80ak6aa92e.com/r').host, 'xn--80ak6aa92e.com');
 });
 
+test('the operations\' private folder: made 700, an existing one set back to 700, never a link or another user\'s', () => {
+  const d = path.join(ROOT, 'priv');
+  fs.mkdirSync(d, { mode: 0o755 });
+  fs.chmodSync(d, 0o755);
+  assert.equal(coded.privateDir(d), d);
+  assert.equal(fs.statSync(d).mode & 0o777, 0o700);
+  const fresh = path.join(ROOT, 'priv-new/x');
+  coded.privateDir(fresh);
+  assert.equal(fs.statSync(fresh).mode & 0o777, 0o700);
+  const link = path.join(ROOT, 'priv-link');
+  fs.symlinkSync(d, link);
+  assert.throws(() => coded.privateDir(link), /not a folder/);
+  const file = path.join(ROOT, 'priv-file');
+  fs.writeFileSync(file, '');
+  assert.throws(() => coded.privateDir(file));
+});
+
 test('the overrides: every http.* setting of the connection for the plain key and the exact URL; the alias; the ssh command', () => {
   const cfg = coded.gitNetConfig('https://h/r.git', { token: true, ca: '/ca.pem', capath: '/cap', proxy: '' });
   const m = new Map(cfg.map(([k, v]) => [k, v]));

@@ -1280,7 +1280,7 @@ export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLI
 // ---   SSH key      the private key never comes here: ssh (the image's, by its path, with -F /dev/null and every
 // ---                option set here: known hosts the code container sends, its own ProxyCommand) talks to an agent
 // ---                socket in a private folder of this operation, whose every request this side relays to the code
-// ---                container — which signs (only an SSH login, at most twice an operation) with the key it keeps
+// ---                container — which signs (only an SSH login, once an operation) with the key it keeps
 // --- The remote's URL is the one the page showed and you confirmed: re-read from the configuration here, refused when
 // --- it changed meanwhile, and given to git through an alias no configuration can rewrite (url.<URL>.insteadOf and
 // --- .pushInsteadOf for a random name — the longest possible match; git takes the longest), so remote.<name>.* of the
@@ -1403,10 +1403,19 @@ export function sshCommand(dir, { proxy = '', strict = true, ssh = SSH } = {}) {
   return [ssh, '-F', '/dev/null', ...o.flatMap((x) => ['-o', x])].map(shq).join(' ');
 }
 
+// privateDir(p) -> p, a folder of this user's alone: made (mode 700) when it is not there; one that is there must be a
+// real folder (never a link) owned by this user, and is set to mode 700 again (mkdir's mode applies only to a new one)
+export function privateDir(p) {
+  fs.mkdirSync(p, { recursive: true, mode: 0o700 });
+  const st = fs.lstatSync(p);
+  if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`${printable(p, 200)} is not a folder`);
+  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) throw new Error(`${printable(p, 200)} is not this user's`);
+  fs.chmodSync(p, 0o700);
+  return p;
+}
 // opDir() -> a fresh private folder for one operation (its agent socket, known hosts, CA): /tmp/bn-git/op-XXXXXX
 function opDir() {
-  fs.mkdirSync(GIT_TMP, { recursive: true, mode: 0o700 });
-  return fs.mkdtempSync(path.join(GIT_TMP, 'op-'));
+  return fs.mkdtempSync(path.join(privateDir(GIT_TMP), 'op-'));
 }
 // lineReader(stream, max, onLine): newline-delimited lines of at most `max` bytes (a longer one ends the stream)
 function lineReader(stream, max, onLine) {
@@ -1850,8 +1859,8 @@ export async function gitTest(req, { git = GIT, deadlineMs = 60000, ask } = {}) 
 let broker = null;
 export function brokerStart(ask, { dir = path.join(GIT_TMP, 'claude') } = {}) {
   brokerStop();
-  fs.mkdirSync(GIT_TMP, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  privateDir(GIT_TMP);
+  privateDir(dir);
   for (const f of ['cred.sock', 'agent.sock']) { try { fs.unlinkSync(path.join(dir, f)); } catch { /* none */ } }
   const counter = { n: -Infinity };   // (no count: the code container limits and logs these)
   const cred = net.createServer((c) => {

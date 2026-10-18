@@ -942,7 +942,8 @@ credentials ever being kept in the sandbox.
   each use is listed in the host's *Recent use* and in Activity. Prefer a fine-grained token or a deploy key for that.
 
 The credentials are kept by the code container, in its own volume (`<project>_code-state`): not in `.env`, not in the
-portal, not in backups, never in the sandbox. A push, pull, fetch or clone you start gets its host's credential for
+portal, not in backups, never in the sandbox. They are stored there unencrypted (a file of mode 600): anyone who can
+read Docker's volumes on this computer can read them — revoke a token or key you think was exposed. A push, pull, fetch or clone you start gets its host's credential for
 that one operation, through a channel only that git process has, and only for the host of the URL you confirmed — the
 repository's configuration cannot send it elsewhere (URL rewrites, proxies, credential helpers, ssh commands are
 neutralised; hooks, filters and merge drivers do not run). `./stack code disable` keeps them; `./stack uninstall`, or

@@ -2,7 +2,7 @@
 // do — shown to you before anything is sent ("Push main → github.com/owner/repo (main) via HTTPS token 'GitHub'") —
 // and the operation itself in the sandbox (bn-coded's git.net / git.clone / git.test), whose credential questions
 // are answered here: only for the host of the URL you confirmed, only while that operation runs, a token at most 3
-// times and an SSH login signed at most twice. Claude's own git gets nothing unless you let it use a host (off by
+// times and one SSH login signed (askFor). Claude's own git gets nothing unless you let it use a host (off by
 // default; turned on only from the computer running bedrock-now): then git.broker answers for that host, each use
 // noted in Activity. Everything the sandbox says is checked here first (its answers are data).
 import crypto from 'node:crypto';

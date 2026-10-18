@@ -1570,6 +1570,9 @@ operation you started, sent only where you saw it go.
   trusting a host key and turning on Claude's use of a host work only from the computer running bedrock-now: the code
   container refuses them with Caddy's `X-Bn-Remote: 1` (its remote sites set it; a client's copy is stripped before
   it gets there). Removing a host and turning Claude's use off work everywhere. `./stack uninstall` removes the volume.
+  **The tokens and SSH private keys are stored unencrypted** (the file's mode 600 is the protection): whoever can read
+  the `code-state` volume — Docker on this computer, its disk, a backup of Docker's own data, root — can read them. If
+  that may have been exposed, revoke the tokens and remove the keys on the hosts, then connect them again.
 - [x] **One operation, its host, while it runs — HTTPS token.** The network command (`git fetch`, `push`, `clone`,
   `ls-remote`) gets one more descriptor, a socket pair as its fd 3, which only it and its children inherit, and the
   configuration `credential.helper=` (empty: every helper the repository's or the sandbox's configuration names is
