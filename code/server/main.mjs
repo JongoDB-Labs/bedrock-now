@@ -153,7 +153,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     egressHost: typeof sandbox.egressHost === 'boolean' ? sandbox.egressHost : null,
     workspace: typeof sandbox.workspace === 'string' && sandbox.workspace ? short(sandbox.workspace, 1000) : null };
   const mgr = new SessionManager({
-    query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher, watchRootOf, settingsFor: trust.cached,
+    query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher, watchRootOf, decideSettings: trust.decide,
     onEvent: (s, seq, ev) => {
       toAttached(s.id, { type: 'event', session: s.id, epoch: s.epoch, seq, ev });
       // a title given before the session had a transcript: written once its first turn is over
@@ -261,8 +261,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       }
       // a conversation resumed here that runs in the terminal (or anywhere else in the sandbox) right now: refused
       if (isUuid(b.resume) && b.fork !== true && !mgr.get(b.resume)?.open) await api.notRunning(b.resume);
-      // what of the folder's own Claude Code settings its process gets (trusted, or not applied)
-      await trust.decide(base.cwd);
+      // what of the folder's own Claude Code settings its process gets (trusted, or not applied): decided now, for it
+      await mgr.prepare(base.cwd);
       if (b.before !== undefined && b.before !== null) {
         // a fork before one of your prompts: up to the message it answered to (its first prompt: a fresh session)
         if (b.fork !== true || !isUuid(b.resume) || !isUuid(b.before) || b.at !== undefined) throw new HttpError(400, 'before needs resume and fork, and no at');
@@ -554,9 +554,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
           const check = s.resumeCheck = (s.resumeCheck ?? Promise.resolve()).catch(() => {}).then(() => (s.open ? null : api.notRunning(s.id)));
           await check;
         }
-        // a project's folder: its own settings looked at again (changed since a process started there: it restarts
-        // without them; trusted meanwhile: with them)
-        if (s.cwd !== WS || !s.open) await trust.decide(s.cwd);
+        // its folder's own settings decided again (changed since its process started: it restarts without them;
+        // trusted meanwhile: with them)
+        await mgr.prepare(s.cwd);
         s.prompt({ text: m.text, images: m.images ?? [], uuid: m.uuid });
         c.attached.add(s.id);
         return reply({});
@@ -565,7 +565,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'set_model': await sessionOf(m).setModel(m.model); return reply({ model: m.model });
       case 'set_mode': {
         const s = sessionOf(m);
-        if (!s.open || m.mode === 'bypassPermissions') await trust.decide(s.cwd);   // (a switch to Bypass may start a process)
+        if (!s.open || m.mode === 'bypassPermissions') await mgr.prepare(s.cwd);   // (a switch to Bypass may start a process)
         await s.setMode(m.mode, { confirmed: m.confirmed === true });
         return reply({ mode: s.mode });
       }
@@ -581,7 +581,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       // "Allow once" on an action Auto mode blocked (a `blocked` event's allowId)
       case 'allow_blocked': {
         if (!isUuid(m.id)) throw new SessionError('bad blocked-action id');
-        sessionOf(m).allowBlocked(m.id);
+        const bs = sessionOf(m);
+        await mgr.prepare(bs.cwd);   // (its retry is a prompt: it may start a process)
+        bs.allowBlocked(m.id);
         return reply({});
       }
       // the session's budget: {usd: null} for none; hard: Claude Code's own stop (applies from its next process start)
@@ -639,7 +641,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       case 'rewind_files': {
         if (!isUuid(m.message)) throw new SessionError('bad message id');
         const rs = sessionOf(m);
-        if (!rs.open) await trust.decide(rs.cwd);
+        if (!rs.open) await mgr.prepare(rs.cwd);
         const r = await rs.rewindFiles(m.message, { dryRun: m.dryRun === true });
         const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
         return reply({ canRewind: r?.canRewind === true, error: str(typeof r?.error === 'string' ? r.error : '', 500),

@@ -61,6 +61,13 @@ export function callKey(tool, input) {
 // what a blocked-action card shows of the call (capped like a permission prompt)
 const plainInput = (input) => capped(input ?? {}, LIMITS.permissionShownChars, LIMITS.permissionShownString).value;
 
+// a start's settings decision (SessionManager.prepare): taken within this long, else not applied
+const DECISION_MS = 60000;
+// the Workspace's own settings always apply (as before projects); a folder without a decision: your own only, and of MCP
+// servers the stack's only (fail closed)
+const WORKSPACE_SETTINGS = Object.freeze({ state: 'workspace', sources: ALL_SOURCES, strictMcp: false, project: 'ws', hash: null });
+const NOT_DECIDED = Object.freeze({ state: 'unchecked', sources: ['user'], strictMcp: true, project: null, hash: null });
+
 export class SessionError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
@@ -134,10 +141,12 @@ export class Session {
   }
   /** {state, project} of the running (or last) process's folder settings (trust.mjs), or null */
   settingsInfo() { return this.settings ? { state: this.settings.state, project: this.settings.project ?? null } : null; }
-  /** the folder's settings decision changed since this process started (you trusted them, or they changed): restart */
+  /** the folder's settings decision (made just before, mgr.prepare) differs from this process's (you trusted them, they
+   *  changed, you stopped trusting them): restart */
   settingsRestart() {
-    const d = this.mgr.settingsFor?.(this.cwd);
-    return Boolean(d && this.settings && (d.sources.join() !== this.settings.sources.join() || Boolean(d.strictMcp) !== Boolean(this.settings.strictMcp)));
+    const d = this.mgr.peekSettings(this.cwd);
+    return Boolean(d && this.settings && (d.sources.join() !== this.settings.sources.join() || Boolean(d.strictMcp) !== Boolean(this.settings.strictMcp)
+      || (d.state === 'trusted' && d.hash !== this.settings.hash)));
   }
 
   // --- the budget ---
@@ -208,7 +217,8 @@ export class Session {
     this.watchRoot = wr;
     const feed = { inbox: [], wake: null, closed: false, ready: null };
     // this folder's own Claude Code settings: applied, or (not trusted) only your own settings and the stack's MCP server
-    const settings = this.mgr.settingsFor?.(this.cwd) ?? { state: 'workspace', sources: ALL_SOURCES, strictMcp: false, project: null };
+    // — the decision made for this start (mgr.prepare); none: not applied
+    const settings = this.mgr.takeSettings(this.cwd);
     this.settings = settings;
     const options = {
       cwd: this.cwd,
@@ -217,7 +227,7 @@ export class Session {
       env: {},                                                 // nothing of this container's environment
       systemPrompt: { type: 'preset', preset: 'claude_code' },  // the SDK's default is an empty system prompt
       // the sandbox's plugins, skills, CLAUDE.md — and the folder's own .claude settings only when they apply (trust.mjs)
-      settingSources: [...(settings.sources ?? ALL_SOURCES)],
+      settingSources: [...settings.sources],
       includePartialMessages: true,
       enableFileCheckpointing: true,                           // backups in the sandbox: rewind_files can put files back
       permissionMode: cliMode(wantAuto ? 'default' : this.mode),   // explicit: omitted, the CLI may start in auto
@@ -274,6 +284,7 @@ export class Session {
     // (Claude Code says init with its first turn; until a prompt comes the session simply waits.)
     this.setState('idle');
     if (!APPLIED_STATES.includes(settings.state)) this.emit({ type: 'local', settings: settings.state, text: withheldText(settings) });
+    else if (settings.state === 'trusted') this.recheckSettings(this.q, settings);
     this.lastActive = Date.now();
     let ended;
     this.exited = new Promise((r) => { ended = r; });
@@ -476,6 +487,7 @@ export class Session {
     }
     if (this.open && startsTurn && this.budgetRestart()) this.close('budget');
     else if (this.open && startsTurn && this.settingsRestart()) this.close('settings');
+    if (this.open) this.mgr.dropSettings(this.cwd);   // (no start: the decision made for one goes)
     if (!this.open) this.start({ resume: this.id });
     const id = isUuid(uuid) ? uuid : crypto.randomUUID();
     // typed in the page: a human origin, stamped explicitly (absent, the CLI's strict trust gates fail closed)
@@ -796,6 +808,20 @@ export class Session {
     this.inTerminal = Date.now();
   }
 
+  // recheckSettings(q, settings) — a process started with a project's trusted settings: once Claude Code has read them
+  // (its initialization), they are checked again; changed in between (the sandbox wrote them after the check): it is
+  // closed at once, and the next start decides again (not applied: they changed)
+  recheckSettings(q, settings) {
+    if (!this.mgr.decideSettings) return;
+    Promise.resolve(typeof q?.initializationResult === 'function' ? q.initializationResult() : null).catch(() => null)
+      .then(() => (this.q === q ? this.mgr.decideSettings(this.cwd) : null))
+      .then((d) => {
+        if (!d || this.q !== q) return;
+        if (d.state !== 'trusted' || d.hash !== settings.hash) this.close('settings-changed');
+      })
+      .catch((e) => { if (this.q === q) { this.mgr.log(`session ${this.id.slice(0, 8)}: settings not checked again (${short(e?.message || String(e), 200)}): stopped`); this.close('settings-changed'); } });
+  }
+
   close(reason = 'closed') {
     const q = this.q;
     if (!q) return;
@@ -808,6 +834,7 @@ export class Session {
       : reason === 'reset' ? 'This conversation continues in a new session.'
         : reason === 'bypass' ? 'Restarting Claude Code for this session so it can run without asking (its next turn writes the prompt cache again).'
           : reason === 'budget' ? `Restarting Claude Code for this session so its new budget applies${this.budget?.hard ? ` (stop at ${money(this.budget.usd)})` : ''}${wasBypass ? ', in Manual (Bypass permissions ends with its process)' : ''}; its next turn may write the prompt cache again.`
+            : reason === 'settings-changed' ? 'Claude Code stopped here: this project\'s own Claude Code settings changed while it started (after they were checked). Your next prompt starts it again without them until you look at them again.'
             : reason === 'settings' ? 'Restarting Claude Code for this session: the folder\'s own Claude Code settings apply differently now (you trusted them, or they changed); its next turn writes the prompt cache again.'
             : reason === 'terminal' ? `Continued in the terminal${wasBypass ? ' (in Manual)' : ''}: exit Claude Code there (/exit) before you send a prompt here — two Claude Code processes would both write this conversation.`
               : `Session closed; a prompt resumes it${wasBypass ? ' (in Manual)' : ''}.`;
@@ -822,15 +849,17 @@ export class SessionManager {
   //            start in it, and "Allow once" reaches the actions it blocked)
   // watcher: {snapshot() -> ws.sensitive's RESULT, restore({path, ifSha256, data, mode}) -> ws.restore's} (bn-coded),
   //          or null (no watchlist)
-  // settingsFor(cwd) -> {state, sources, strictMcp, project}: what of a folder's own Claude Code settings a process
-  // started there gets (trust.mjs; synchronous: the caller decided before the start), or null: all of them
+  // decideSettings(cwd) -> Promise<{state, sources, strictMcp, project, hash}>: what of a folder's own Claude Code
+  // settings a process started there gets (trust.mjs), asked anew before every start (prepare); none: a process in a
+  // folder of the workspace gets your own settings only (the Workspace: its own too, as before projects)
   // watchRootOf(cwd) -> {rel, abs} of the project folder that holds a session's folder (its watchlist's), or null: the
   // workspace's
   constructor({ query, spawn, broker, log = () => {}, onEvent = () => {}, onState = () => {}, onReload = () => {}, onReset = () => {},
     transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000, allowBypass = false, allowAuto = false, watcher = null,
-    watchRootOf = () => null, settingsFor = null }) {
+    watchRootOf = () => null, decideSettings = null }) {
     Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, onReset, transcriptExists, maxOpen, idleMs, allowBypass: allowBypass === true,
-      allowAuto: allowAuto === true, watcher, watchRootOf, settingsFor });
+      allowAuto: allowAuto === true, watcher, watchRootOf, decideSettings });
+    this.decisions = new Map();   // cwd -> {d, at}: made just before a start (prepare), taken by it (takeSettings)
     this.sessions = new Map();
     this.stderrSeen = new Map();   // session -> {from, n, dropped}
     this.timer = setInterval(() => this.sweepIdle(), 60000);
@@ -838,6 +867,24 @@ export class SessionManager {
   }
 
   get(id) { return isUuid(id) ? this.sessions.get(id) || null : null; }
+
+  // --- what a process gets of its folder's own settings: decided just before each start, taken by it, never reused ---
+  async prepare(cwd) {
+    if (cwd === WS || !this.decideSettings) return;
+    const d = await this.decideSettings(cwd);
+    this.decisions.set(cwd, { d, at: Date.now() });
+  }
+  peekSettings(cwd) {
+    if (cwd === WS) return WORKSPACE_SETTINGS;
+    const e = this.decisions.get(cwd);
+    return e && Date.now() - e.at <= DECISION_MS ? e.d : null;
+  }
+  takeSettings(cwd) {
+    const d = this.peekSettings(cwd);
+    this.decisions.delete(cwd);
+    return d ?? { ...NOT_DECIDED };
+  }
+  dropSettings(cwd) { this.decisions.delete(cwd); }
   list() { return [...this.sessions.values()].map((s) => s.info()); }
 
   // Claude Code's stderr in this container's log: at most STDERR_LINES per session every STDERR_WINDOW_MS (a sandbox
@@ -901,6 +948,7 @@ export class SessionManager {
       s.close('reset');
       let has = false;
       try { has = (await this.transcriptExists(id, s.cwd)) === true; } catch { has = false; }
+      await this.prepare(s.cwd).catch(() => {});   // (its folder's settings decided for the new process; failing: not applied)
       if (this.sessions.has(id)) throw new Error('already a session here');   // (one opened meanwhile)
       const ns = new Session(this, { id, model: s.model, mode: s.mode, effort: s.effort, taskStop: s.taskStop, resume: has ? id : undefined, hasTranscript: has,
         budget: s.budget ? { ...s.budget } : undefined, cwd: s.cwd });

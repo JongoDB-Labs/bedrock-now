@@ -7,6 +7,7 @@
 // (bn-coded's project.settings). Changed since: not applied again until you look again. A folder without any of them
 // needs nothing. The Workspace (/workspace itself) keeps applying its own, as before projects: it is the folder you
 // chose for the sandbox. Everything here came from the sandbox: shown as text, capped.
+import crypto from 'node:crypto';
 import { short, str } from './validate.mjs';
 import { WS, WORKSPACE_ID, absOf } from './projects.mjs';
 
@@ -94,85 +95,86 @@ export function summarize(files) {
 }
 
 /** The state of a folder's own settings: workspace (always applied) | none (no such file) | trusted | untrusted (never
- *  trusted) | changed (trusted once, different now) | unchecked (the sandbox did not say: not applied). */
+ *  trusted) | changed (trusted once, different now) | unverifiable (a file there could not be read whole as text — a
+ *  link out of the workspace, too large, a FIFO —, so no hash covers what Claude Code would read: never trusted) |
+ *  unchecked (the sandbox did not say: not applied). */
 export const APPLIED = Object.freeze(['workspace', 'none', 'trusted']);
-export const stateOf = ({ workspace = false, present, hash, trust }) => {
+export const stateOf = ({ workspace = false, present, hash, trust, verifiable = true }) => {
   if (workspace) return 'workspace';
   if (!present) return 'none';
-  if (trust && hash && trust.hash === hash) return 'trusted';
+  if (!verifiable || !hash) return 'unverifiable';
+  if (trust && trust.hash === hash) return 'trusted';
   return trust ? 'changed' : 'untrusted';
 };
+const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
+/** hashOf(files) -> the hash bn-coded's settingsFiles makes, from the checked rows (null when none is there) */
+export const hashOf = (files) => (files.some((f) => f.type !== 'missing')
+  ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null);
 
 /** What a session says when its folder's own settings are not applied (a `local` event at its process's start). */
 export function withheldText(d) {
   const what = 'its own Claude Code settings (.claude/settings.json, settings.local.json, .mcp.json — and with them its CLAUDE.md, commands and agents)';
   const why = 'their hooks, permission rules, environment and MCP servers could run commands or silence the permission cards';
+  if (d.state === 'unverifiable') return `This ${d.project ? 'project' : 'folder'}'s ${what.slice(4)} are not applied in this session: one of these files cannot be checked (a link out of the workspace, too large to show, or not a file), so they cannot be trusted either. Your own settings apply; of MCP servers, only the stack's own (bedrock-shared).`;
   if (d.state === 'unchecked') return `This folder's ${what.slice(4)} are not applied in this session: the sandbox did not say what they hold. Your own settings apply; of MCP servers, only the stack's own (bedrock-shared).`;
   const how = d.project ? 'Review them: the project\'s ⋯ › Claude Code settings… — once you trust them, Claude Code here restarts with them at your next prompt.'
     : 'To review and trust them, make this folder a project (New project › A folder in the workspace).';
   return `This ${d.project ? 'project' : 'folder'}'s ${what.slice(4)} are not applied in this session${d.state === 'changed' ? ': they changed since you trusted them' : ''} — ${why}. Your own settings apply; of MCP servers, only the stack's own (bedrock-shared). ${how}`;
 }
 
-/** makeTrust({call, store, log}) — decisions per working folder (cached: a process starts synchronously; the callers
- *  refresh before one starts), the page's view of a project's settings, trust and untrust. */
+/** makeTrust({call, store, log}) — what a Claude Code process started in a folder gets of the folder's own settings
+ *  (decided anew before every start: never cached), the page's view of a project's settings, trust and untrust. */
 export function makeTrust({ call, store, log = () => {} }) {
-  const cache = new Map();
-  const WORKSPACE_DECISION = Object.freeze({ state: 'workspace', sources: ALL_SOURCES, strictMcp: false, project: WORKSPACE_ID });
-  const recordAt = (cwd) => { try { return store().list().find((p) => p.id !== WORKSPACE_ID && absOf(p.root) === cwd) ?? null; } catch { return null; } };
+  const recordAt = (cwd) => store().list().find((p) => p.id !== WORKSPACE_ID && absOf(p.root) === cwd) ?? null;
+  // read(abs) -> {files, present, hash, verifiable}: the hash recomputed here from what was shown — each text's own
+  // SHA-256 checked against the one the sandbox gave — so a trusted hash covers exactly the texts the page showed
   async function read(abs) {
     const { result } = await call({ op: 'project.settings', ...(abs === WS ? {} : { root: abs }) }, { timeoutMs: 15000 });
     const files = checkFiles(result);
+    for (const f of files) if (f.text !== null && (!f.sha256 || sha256(Buffer.from(f.text, 'utf8')) !== f.sha256)) f.text = null;
     const present = files.some((f) => f.type !== 'missing');
-    return { files, present, hash: present && SHA.test(result?.hash ?? '') ? result.hash : null };
+    const hash = hashOf(files);
+    const verifiable = present && result?.verifiable === true && hash !== null && result?.hash === hash
+      && files.every((f) => f.type === 'missing' || ((f.type === 'file' || f.type === 'link') && f.text !== null));
+    return { files, present, hash: verifiable ? hash : null, verifiable };
   }
-  /** decide(cwd) -> {state, sources, strictMcp, project}: what a Claude Code process started there now gets */
+  /** decide(cwd) -> {state, sources, strictMcp, project, hash}: what a Claude Code process started there now gets.
+   *  Anything that cannot be decided (the records, the sandbox): not applied. */
   async function decide(cwd) {
-    let d;
-    if (cwd === WS) d = WORKSPACE_DECISION;
-    else {
-      const rec = recordAt(cwd);
-      try {
-        const r = await read(cwd);
-        const state = stateOf({ present: r.present, hash: r.hash, trust: rec?.trust });
-        d = { state, project: rec?.id ?? null, sources: APPLIED.includes(state) ? ALL_SOURCES : USER_SOURCES,
-          // (an MCP configuration not trusted: only the stack's own server, whatever Claude Code would read)
-          strictMcp: !APPLIED.includes(state) };
-      } catch (e) {
-        log(`settings of ${short(cwd, 200)}: not checked (${short(e?.message || String(e), 200)}): not applied`);
-        d = { state: 'unchecked', project: rec?.id ?? null, sources: USER_SOURCES, strictMcp: true };
-      }
+    if (cwd === WS) return { state: 'workspace', sources: ALL_SOURCES, strictMcp: false, project: WORKSPACE_ID, hash: null };
+    let rec = null;
+    try {
+      rec = recordAt(cwd);
+      const r = await read(cwd);
+      const state = stateOf({ present: r.present, hash: r.hash, trust: rec?.trust, verifiable: r.verifiable });
+      // (not applied: your own settings, and of MCP servers only the stack's own — whatever Claude Code would read)
+      return { state, project: rec?.id ?? null, sources: APPLIED.includes(state) ? ALL_SOURCES : USER_SOURCES, strictMcp: !APPLIED.includes(state), hash: r.hash };
+    } catch (e) {
+      log(`settings of ${short(cwd, 200)}: not checked (${short(e?.message || String(e), 200)}): not applied`);
+      return { state: 'unchecked', project: rec?.id ?? null, sources: USER_SOURCES, strictMcp: true, hash: null };
     }
-    if (cache.size >= 500 && !cache.has(cwd)) cache.clear();
-    cache.set(cwd, d);
-    return d;
   }
-  /** cached(cwd) -> the last decision for that folder (none yet: the Workspace's own, else not applied) */
-  const cached = (cwd) => cache.get(cwd) ?? (cwd === WS ? WORKSPACE_DECISION : { state: 'unchecked', project: null, sources: USER_SOURCES, strictMcp: true });
   /** view(rec) -> GET /api/projects/ID/settings: the files, what they set, the hash to trust, the state */
   async function view(rec) {
     const abs = absOf(rec.root);
     const r = await read(abs);
-    const state = stateOf({ workspace: rec.id === WORKSPACE_ID, present: r.present, hash: r.hash, trust: rec.trust });
-    if (rec.id !== WORKSPACE_ID) await decide(abs);
+    const state = stateOf({ workspace: rec.id === WORKSPACE_ID, present: r.present, hash: r.hash, trust: rec.trust, verifiable: r.verifiable });
     return {
-      project: rec.id, path: abs, state, hash: r.hash, trustedAt: rec.trust?.at ?? null,
+      project: rec.id, path: abs, state, hash: state === 'workspace' ? null : r.hash, trustedAt: rec.trust?.at ?? null,
       files: r.files.map(({ name, type, size, target }) => ({ name, type, size, target })),
       summary: summarize(r.files),
     };
   }
-  /** trust(rec, hash) — only the files as the page showed them (409 when they changed since) */
+  /** trust(rec, hash) — only the files exactly as the page showed them (a conflict when they changed since, when there
+   *  are none, or when they cannot be verified) */
   async function trust(rec, hash) {
-    const abs = absOf(rec.root);
-    const r = await read(abs);
+    const r = await read(absOf(rec.root));
     if (!r.present) return { conflict: 'this project has no settings of its own (nothing to trust)' };
-    if (!r.hash || r.hash !== hash) return { conflict: 'its settings changed since you looked: review them again' };
+    if (!r.verifiable) return { conflict: 'its settings cannot be checked (a file there is a link out of the workspace, too large to show, or not a file): they are never trusted' };
+    if (r.hash !== hash) return { conflict: 'its settings changed since you looked: review them again' };
     store().trust(rec.id, hash);
-    await decide(abs);
     return { conflict: null };
   }
-  async function untrust(rec) {
-    store().trust(rec.id, null);
-    await decide(absOf(rec.root));
-  }
-  return { decide, cached, view, trust, untrust };
+  const untrust = async (rec) => { store().trust(rec.id, null); };
+  return { decide, view, trust, untrust };
 }

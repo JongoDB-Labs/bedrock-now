@@ -681,7 +681,8 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
         // its own Claude Code settings (trust.mjs): none, trusted as they are, never trusted, changed since; an older
         // sandbox that does not say: null
         const hash = r.settings === null || /^[0-9a-f]{64}$/.test(r.settings ?? '') ? r.settings : undefined;
-        const settings = hash === undefined ? null : stateOf({ workspace: p.id === WORKSPACE_ID, present: hash !== null, hash, trust: p.trust });
+        const settings = hash === undefined ? null : stateOf({ workspace: p.id === WORKSPACE_ID, present: hash !== null, hash, trust: p.trust,
+          verifiable: r.settingsVerifiable === true });
         out.set(p.id, { folder: oneOf(r.type, ['dir', 'missing', 'link', 'other'], 'other'), git: r.git === true, settings });
       });
     } catch { /* not said */ }
