@@ -75,6 +75,10 @@ export function capEntries(entries) {
 export const SESSIONS_MAX = 300;
 // a root's field for bn-coded: only for a project folder (the workspace's ops are sent as they always were)
 export const rootField = (root) => (root?.rel ? { root: root.abs } : {});
+// windowName(s, n, fallback) -> a tmux window's name as bn-coded makes it (launch.start, terminal.window): the answer's
+// window is shown only when it is that very name — the sandbox's own text never reaches a toast of ours
+export const windowName = (s, n, fallback) => String(s ?? '').replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, n) || fallback;
+const baseName = (p) => String(p).split('/').filter(Boolean).pop() ?? '';
 // a path bn-coded answered relative to a root, as a path of the workspace (the page's)
 export const inRoot = (root, p) => (root?.rel ? `${root.rel}/${p}` : p);
 
@@ -609,7 +613,8 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
       if (e instanceof SandboxError && e.kind === 'refused' && /changed since it was shown/.test(e.message)) throw refused(409, e, HttpError);
       throw e;
     }
-    return { ok: result.ok === true, name: short(result.name, 100), window: short(result.window, 60), port: int(result.port, 1, 65535),
+    // (the name: the one asked for; the window: bn-coded's name for it, or none — never the sandbox's text)
+    return { ok: result.ok === true, name, window: result.window === windowName(name, 40, 'server') ? result.window : null, port: int(result.port, 1, 65535),
       command: str(typeof result.command === 'string' ? result.command : '', 4000) };
   }
 
@@ -778,7 +783,8 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
       if (unknownOp(e)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
       throw e;
     }
-    return { ok: result?.ok === true, window: short(result?.window, 40) };
+    const want = windowName(baseName(root?.rel ? root.abs : WS), 30, 'workspace');
+    return { ok: result?.ok === true, window: result?.window === want ? want : null };
   }
   // Connect a git repository: a project's folder made a repository (git init: no template, the first branch main)
   async function projectGitInit(root) {

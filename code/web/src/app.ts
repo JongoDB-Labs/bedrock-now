@@ -2271,7 +2271,7 @@ export async function startLaunchEntry(e: LaunchEntry): Promise<void> {
   try {
     const r = await api.startLaunch(e.name, e.digest);
     if (r.port) awaited = { port: r.port, until: Date.now() + 120_000 };
-    const msg = `Started "${label(e.name, 60)}" in the terminal (window ${r.window})${r.port ? `: its preview opens once :${r.port} listens` : ''}.`;
+    const msg = `Started "${label(e.name, 60)}" in the terminal${r.window ? ` (window ${r.window})` : ''}${r.port ? `: its preview opens once :${r.port} listens` : ''}.`;
     toast(msg, 'ok', isPhone() ? undefined : { label: 'Show the terminal', run: () => setLayout({ terminal: true }) });
   } catch (err) {
     if (err instanceof api.ApiError && err.status === 409) {

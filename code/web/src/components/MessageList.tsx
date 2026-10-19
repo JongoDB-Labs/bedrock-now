@@ -224,7 +224,8 @@ function ResultLine({ it, cost }: { it: Extract<Item, { t: 'result' }>; cost: nu
   const other = otherModels(it.models, it.picked);
   return (
     <div class={`turn-end${it.isError && !interrupted ? ' err' : ''}`} data-testid="turn-end">
-      <span>{interrupted ? 'Stopped' : it.isError && it.subtype === 'success' ? 'Failed' : it.isError ? `Ended: ${it.subtype}` : 'Done'}</span>
+      {/* (the SDK's own subtypes as they are — the backend sends "other" for anything else: never its text in ours) */}
+      <span>{interrupted ? 'Stopped' : it.isError && it.subtype === 'success' ? 'Failed' : it.isError ? (it.subtype && it.subtype !== 'other' ? `Ended: ${it.subtype}` : 'Ended with an error') : 'Done'}</span>
       {it.durationMs > 0 && <span>{duration(it.durationMs)}</span>}
       {(it.usage.input || it.usage.output) > 0 && (
         <span title={`input ${it.usage.input} · output ${it.usage.output} · cache read ${it.usage.cacheRead} · cache write ${it.usage.cacheWrite}`}>

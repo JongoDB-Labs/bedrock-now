@@ -799,10 +799,10 @@ export async function fileSessions(id: string, ids: string[]): Promise<void> {
   await request('POST', `/api/projects/${id}/sessions`, { ids: ids.filter(isUuid).slice(0, 100) });
 }
 /** A new window of the terminal in the project's folder. */
-export async function projectTerminal(id: string): Promise<{ window: string }> {
+export async function projectTerminal(id: string): Promise<{ window: string | null }> {
   if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');
   const o = await request('POST', `/api/projects/${id}/terminal`);
-  return { window: label(o.window, 40) };
+  return { window: typeof o.window === 'string' && /^[A-Za-z0-9_.-]{1,30}$/.test(o.window) ? o.window : null };
 }
 /** Connect a git repository, first step: the project's folder made a repository (git init). */
 export async function projectGitInit(id: string): Promise<void> {
@@ -1779,9 +1779,9 @@ export async function getLaunch(): Promise<LaunchList> {
 
 /** Start a launch.json entry by name and the digest of what was shown (in a new window of the terminal's tmux
  *  session; the command is the file's — a 409 when the file changed since). */
-export async function startLaunch(name: string, digest: string): Promise<{ window: string; port: number | null }> {
+export async function startLaunch(name: string, digest: string): Promise<{ window: string | null; port: number | null }> {
   const o = await request('POST', '/api/launch/start', { name, digest, ...inScope() });
-  return { window: label(o.window, 60), port: typeof o.port === 'number' && Number.isInteger(o.port) ? o.port : null };
+  return { window: typeof o.window === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(o.window) ? o.window : null, port: typeof o.port === 'number' && Number.isInteger(o.port) ? o.port : null };
 }
 
 // ---------------------------------------------------------------- Run & test

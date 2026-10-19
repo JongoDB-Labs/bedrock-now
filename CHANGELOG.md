@@ -25,8 +25,10 @@ All notable changes to bedrock-now are documented here. The format follows
   free text in answers that went well — a launch configuration's or a task's reason, the permission rules' files, a
   search, a plugin, marketplace or MCP action's outcome, an MCP server's error, an error in Claude Code's stream, a
   process that ended, a file restore or a watchlist file not put back, Review's Undo — and for the WebSocket's refusals
-  (a prompt, a model or mode switch, each said as what did not happen). bn-coded's own fixed texts still read
-  plainly: the lists of them are checked equal to what it writes.
+  (a prompt, a model or mode switch, each said as what did not happen). A permission prompt's or a blocked action's
+  reason is labelled as Claude Code's (or its classifier's), a turn that ended otherwise than the SDK says reads
+  "Ended with an error", and a terminal window is named only by bn-coded's own name for it. bn-coded's own fixed
+  texts still read plainly: the lists of them are checked equal to what it writes.
 - **Sign-in while no app is set up (gitlab.com) says so plainly**: "Sign-in needs an app registered with GitLab once
   (2 minutes; only a public ID, no secret): Set up sign-in" opens the exact steps in the dialog; the field is
   **GitHub app client ID (Iv…)** / **GitLab application ID**; the waiting Sign in button says "Paste an app ID first";

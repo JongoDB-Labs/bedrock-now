@@ -8,6 +8,7 @@ import type { Mode } from '../types';
 import { allowBlocked } from '../app';
 import { ruleOf, sentence } from '../permission';
 import { label, prettyJson, safe } from '../text';
+import { SandboxSaid } from './Said';
 import { PERMISSION_SHOWN_CHARS } from '../api';
 import { Icon, Spinner } from './icons';
 
@@ -71,7 +72,12 @@ export function BlockedCard({ session, it, mode }: { session: string; it: Blocke
           {it.input !== null && what.detail !== 'none' && <pre class="json blocked-json">{prettyJson(it.input, PERMISSION_SHOWN_CHARS)}</pre>}
         </>
       )}
-      {auto && !rule && it.reason && <div class="perm-reason" data-testid="blocked-reason">{label(it.reason, 500)}</div>}
+      {/* (the classifier's reason, from Claude Code's stream: its words, apart — never a sentence of ours) */}
+      {auto && !rule && it.reason && (
+        <div class="perm-reason" data-testid="blocked-reason">
+          <SandboxSaid words={{ said: label(it.reason, 500), by: 'claude' }} who="The classifier's reason:" compact never={false} />
+        </div>
+      )}
       <p class="blocked-lede">
         {auto
           ? 'The reviewer model judged it risky, so it did not run. Claude was told why and may try another way.'

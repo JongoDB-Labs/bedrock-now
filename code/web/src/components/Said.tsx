@@ -9,11 +9,12 @@ import type { SandboxWords } from '../types';
 // to ~2,700 characters: shown whole, in their box that scrolls)
 const SHOWN = 3000;
 
-export function SandboxSaid({ words, compact = false, never = true }: { words: SandboxWords; compact?: boolean; never?: boolean }) {
+// who: the label, when it is not whose words in general but what they are ("Claude Code's reason:")
+export function SandboxSaid({ words, compact = false, never = true, who }: { words: SandboxWords; compact?: boolean; never?: boolean; who?: string }) {
   return (
     <div class={`said${compact ? ' said-compact' : ''}`} data-testid="sandbox-said">
       {never && <span class="said-never" data-testid="sandbox-said-never">{NEVER_ASKS}</span>}
-      <span class="said-who">{SAID_BY[words.by]}</span>
+      <span class="said-who">{who ?? SAID_BY[words.by]}</span>
       <span class="said-text" data-testid="sandbox-said-text">{label(words.said, SHOWN)}</span>
     </div>
   );

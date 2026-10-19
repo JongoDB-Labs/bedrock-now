@@ -14,6 +14,7 @@ import type { PermissionReq, RuleLine } from '../types';
 import { destinationText, modeName, rulePreview, sentence } from '../permission';
 import { compact, lineDiff } from '../diff';
 import { commandShape, label, prettyJson, safe } from '../text';
+import { SandboxSaid } from './Said';
 import { answerPermission, answerQuestions, allowAndSwitchToAuto, store, autoOk, sendToSession, toast } from '../app';
 import { approvedFollowUp, dropPlanComments, keepPlanningMessage, planLines, planNotes, prunePlanComments, setPlanComment, PLAN_COMMENT_MAX, PLAN_COMMENTS_MAX, type PlanComment } from '../plannotes';
 import { useSel } from '../store';
@@ -116,7 +117,8 @@ function QuestionCard({ req, qs, index, total }: { req: PermissionReq; qs: Quest
           <QuestionField key={i} q={q} n={i} pick={picks[i]} onPick={(p) => setPicks(picks.map((x, j) => (j === i ? p : x)))} />
         ))}
       </div>
-      {req.reason && <div class="perm-reason">{req.reason}</div>}
+      {/* (Claude Code's reason for asking: its words, apart — never a sentence of ours) */}
+      {req.reason && <div class="perm-reason"><SandboxSaid words={{ said: req.reason, by: 'claude' }} who="Claude Code's reason:" compact never={false} /></div>}
       <div class="perm-buttons">
         <button type="button" class="btn ghost" onClick={() => answerPermission(req.session, req.id, 'deny', 'I would rather not answer that now.')} data-testid="q-decline">
           Decline
@@ -548,8 +550,9 @@ function ToolPermission({ req, index, total }: { req: PermissionReq; index: numb
       {!req.complete && <Partial />}
       {req.reason && (
         <div class="perm-reason" data-testid="perm-reason">
-          {req.reasonType === 'classifier' && <strong>Auto mode paused: </strong>}
-          {req.reason}
+          {req.reasonType === 'classifier' && <strong>Auto mode paused.</strong>}
+          {/* (the classifier's reason, from Claude Code's stream: its words, apart — never a sentence of ours) */}
+          <SandboxSaid words={{ said: req.reason, by: 'claude' }} who={req.reasonType === 'classifier' ? "The classifier's reason:" : "Claude Code's reason:"} compact never={false} />
         </div>
       )}
       {autoErr && (

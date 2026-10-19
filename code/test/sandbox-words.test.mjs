@@ -18,7 +18,7 @@ const words = (said = HOSTILE, by = 'sandbox', error = SANDBOX_SAID) => ({ error
 
 // a stand-in sandbox that refuses every op with what `answer` says (the hostile text by default)
 let answer = () => new SandboxError(HOSTILE, 'refused');
-const call = async () => { throw answer(); };
+const call = async (req) => { const a = answer(req); if (a instanceof Error) throw a; return a; };
 // a session's start: Claude Code itself fails, in its own words
 const query = () => { throw new Error(HOSTILE); };
 const SECRET = 'ab'.repeat(16);
@@ -184,4 +184,33 @@ test('a failed WebSocket message: the operation\'s sentence, Claude Code\'s word
   assert.deepEqual([bug.error, bug.said], ['an error of the Code page server', undefined], 'never labelled as Claude Code\'s words');
   assert.deepEqual(wsFailure(new SessionError('bad mode'), 'set_mode'), { error: 'bad mode' });
   assert.deepEqual(wsFailure(new SandboxError(HOSTILE, 'refused'), 'prompt'), { error: SANDBOX_SAID, said: HOSTILE, saidBy: 'sandbox' });
+});
+
+test('a turn\'s end: the SDK\'s result subtypes (the list is the SDK\'s) as they are, anything else "other"', async () => {
+  const { fromSdk, SDK_RESULT_SUBTYPES } = await import('../server/normalize.mjs');
+  const dts = fs.readFileSync(path.resolve(import.meta.dirname, '../node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts'), 'utf8');
+  const types = [...dts.matchAll(/export declare type SDKResult(?:Success|Error) = \{[^}]*?subtype: ([^;]+);/g)].map((m) => m[1]).join(' | ');
+  assert.deepEqual([...SDK_RESULT_SUBTYPES].sort(), [...new Set([...types.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]))].sort(), 'SDK_RESULT_SUBTYPES: the SDK\'s');
+  assert.equal(fromSdk({ type: 'result', subtype: 'error_max_turns', is_error: true })[0].subtype, 'error_max_turns');
+  assert.equal(fromSdk({ type: 'result', subtype: HOSTILE.slice(0, 60), is_error: true })[0].subtype, 'other');
+});
+
+test('a terminal window\'s name in a toast: only bn-coded\'s own name for it (launch.start, terminal.window), else none', async () => {
+  const { windowName } = await import('../server/api.mjs');
+  assert.equal(windowName('dev server (web)', 40, 'server'), 'dev-server--web-');
+  assert.equal(windowName('', 30, 'workspace'), 'workspace');
+  try {
+    answer = (q) => ({ result: { ok: true, name: HOSTILE, window: q.op === 'launch.start' ? 'enter-WDJB-MJHT-at-github.com' : 'enter-WDJB-MJHT', port: 3000, command: 'npm run dev' } });
+    let r = await req('POST', '/api/launch/start', { name: 'dev', digest: 'a'.repeat(64) });
+    assert.deepEqual([r.status, r.json.name, r.json.window, r.json.port], [200, 'dev', null, 3000], 'the name asked for; no window but bn-coded\'s');
+    r = await req('POST', '/api/projects/ws/terminal');
+    assert.deepEqual([r.status, r.json.window], [200, null]);
+    answer = (q) => ({ result: { ok: true, name: 'dev', window: q.op === 'launch.start' ? 'dev' : 'workspace', port: null, command: 'x' } });
+    r = await req('POST', '/api/launch/start', { name: 'dev', digest: 'a'.repeat(64) });
+    assert.equal(r.json.window, 'dev');
+    r = await req('POST', '/api/projects/ws/terminal');
+    assert.equal(r.json.window, 'workspace');
+  } finally {
+    answer = () => new SandboxError(HOSTILE, 'refused');
+  }
 });

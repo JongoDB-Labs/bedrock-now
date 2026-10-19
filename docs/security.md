@@ -1979,8 +1979,11 @@ default).
   "It did not work.", the CLI's message apart); an MCP server's error (any server, one a prompt-injected Claude added
   too); Claude Code's stream (the SDK's error names as they are, anything else apart; a process that ended with an
   error: its words in the conversation, the session's state text ours); a file restore, a watchlist file not put back
-  and Review's Undo. The page says what failed and shows the words in the box under the same line — never "Save
-  failed: …" with their text. bn-coded's own fixed texts read plainly: the lists in `gitreasons.mjs` (its reasons,
+  and Review's Undo. A permission prompt's or a blocked action's reason is labelled as Claude Code's (or its
+  classifier's) words, apart; a turn's end names only the SDK's own result subtypes ("Ended with an error" otherwise);
+  a terminal window (Start, a project's terminal) is named only when its name is the one bn-coded makes. The page says
+  what failed and shows the words in the box under the same line — never "Save failed: …" with their text. bn-coded's
+  own fixed texts read plainly: the lists in `gitreasons.mjs` (its reasons,
   its refusals, its answers' errors) and the SDK's error names are checked equal to what bn-coded and the SDK write.
   Every text on those lists is plain ASCII: a refusal reaches the code container through a filter that turns anything
   else into "?", so a "…" would never match (a test checks each still matches through it). Proven with the same
