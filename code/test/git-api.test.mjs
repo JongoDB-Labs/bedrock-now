@@ -6,12 +6,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from '../server/main.mjs';
-import { SandboxError } from '../server/spawn-client.mjs';
+import { SandboxError, printable } from '../server/spawn-client.mjs';
 import { GIT_SAID, NEVER_ASKS } from '../server/gitremote.mjs';
 import { commitMessage, gitFileOf, gitLogOf, gitPathOk, gitStatusOf, gitTargets, GIT_LIST_MAX } from '../server/api.mjs';
 import { fakeQuery } from './fake-sdk.mjs';
 import { tmp, TERMINAL_DIR } from './helpers.mjs';
-import { GIT_REASONS, GIT_REFUSALS, GIT_ANSWERED, GIT_LOG_FAILED, reasonOf } from '../server/gitreasons.mjs';
+import { GIT_REASONS, GIT_REFUSALS, GIT_ANSWERED, GIT_LOG_FAILED, plainRefusal, reasonOf } from '../server/gitreasons.mjs';
 
 const H = 'c'.repeat(40);
 
@@ -223,6 +223,12 @@ test('git\'s reasons: bn-coded\'s fixed ones as they are (the same list as bn-co
   assert.ok(literal.size >= 60, String(literal.size));
   assert.deepEqual([...GIT_REFUSALS].sort(), [...literal].sort(), 'gitreasons.mjs\'s GIT_REFUSALS: what bn-coded\'s git ops refuse with');
   assert.equal(new Set(GIT_REFUSALS).size, GIT_REFUSALS.length);
+  // a refusal reaches the code container through printable() (spawn-client.mjs: ASCII only): each fixed text still
+  // matches as it arrives — none of them has a character printable() would change (a "…" never matched)
+  for (const s of [...GIT_REFUSALS, ...GIT_REASONS]) {
+    assert.equal(printable(s), s, `not plain ASCII: ${s}`);
+    assert.ok(plainRefusal(printable(s)), s);
+  }
 });
 
 test('changes need the page\'s own Origin (another site, or none, is refused before anything runs)', async () => {

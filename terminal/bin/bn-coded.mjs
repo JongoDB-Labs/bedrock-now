@@ -1433,7 +1433,7 @@ export function parseRemoteUrl(u) {
   } else {
     // scp-like: [user@]host:path (no "/" before the colon; git reads it as ssh)
     m = String(u).match(/^(?:([^@/:]+)@)?([^@/:]+):(?!\/\/)(.+)$/);
-    if (!m) throw new Error('not a remote URL (https://…, ssh://… or user@host:path); a local path is never used from here');
+    if (!m) throw new Error('not a remote URL (https://..., ssh://... or user@host:path); a local path is never used from here');
     scheme = 'ssh'; form = 'scp';
     auth = `${m[1] !== undefined ? `${m[1]}@` : ''}${m[2]}`; path = m[3];
   }

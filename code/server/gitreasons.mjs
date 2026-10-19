@@ -58,7 +58,7 @@ export const GIT_REFUSALS = Object.freeze([
   'the URL has spaces, control or non-ASCII characters',
   'a transport helper (name::address) is never used from here',
   'plain http sends everything unencrypted: use https://',
-  'not a remote URL (https://…, ssh://… or user@host:path); a local path is never used from here',
+  'not a remote URL (https://..., ssh://... or user@host:path); a local path is never used from here',
   'the URL holds a password or token: take it out (Git hosts keep the credential)',
   'not a user name the URL may hold',
   'not a host name (letters, digits, dots and dashes)',

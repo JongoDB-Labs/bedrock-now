@@ -36,7 +36,7 @@ export function parseRemoteUrl(u) {
     auth = m[2]; path = m[3] || '';
   } else {
     m = u.match(/^(?:([^@/:]+)@)?([^@/:]+):(?!\/\/)(.+)$/);
-    if (!m) no('not a remote URL (https://…, ssh://… or user@host:path); a local path is never used from here');
+    if (!m) no('not a remote URL (https://..., ssh://... or user@host:path); a local path is never used from here');
     scheme = 'ssh'; form = 'scp';
     auth = `${m[1] !== undefined ? `${m[1]}@` : ''}${m[2]}`; path = m[3];
   }

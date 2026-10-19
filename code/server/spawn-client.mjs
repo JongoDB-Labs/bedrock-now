@@ -31,7 +31,8 @@ const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGKILL'];
 export class SandboxError extends Error {
   constructor(message, kind = 'failed') { super(message); this.kind = kind; }   // kind: failed | refused | timeout | unreachable | too-large
 }
-const printable = (s, n = 300) => String(s ?? '').replace(/[^\x20-\x7e]/g, '?').slice(0, n);
+// (a refusal's text as it reaches here: printable ASCII only — gitreasons.mjs's lists are written so they still match)
+export const printable = (s, n = 300) => String(s ?? '').replace(/[^\x20-\x7e]/g, '?').slice(0, n);
 
 /** Agent SDK spawnClaudeCodeProcess(SpawnOptions) -> SpawnedProcess, in the sandbox. */
 export function sandboxProcess(opts, { litellmSession, onStderr, sock = SOCK } = {}) {
