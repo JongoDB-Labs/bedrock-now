@@ -1816,7 +1816,8 @@ operation you started, sent only where you saw it go.
   within the same 30 a minute, and notes it as gh's (*Claude's gh used the Git host …*, with that command). The token
   goes into that one gh process's environment (`GH_TOKEN`; `GH_ENTERPRISE_TOKEN` and `GH_HOST` for GitHub Enterprise
   Server) — not the wrapper's own, not a file, not `~/.config/gh`. Help, version, completion, config, alias and
-  `auth` (but `auth status`) never ask, so `gh auth token` cannot print it. A token is not withheld from gh: the
+  `auth` (but `auth status`) never ask, so `gh auth token` cannot print it; nor does a command with a login of yours
+  (a token in the environment, or `gh auth login` in the terminal for that host). A token is not withheld from gh: the
   broker already answers any program in the sandbox that asks as git does (`purpose` is the asker's word, kept for
   Activity), so refusing gh would stop nothing a command Claude was talked into could do — it would only make the
   use less visible. But gh with the token does far more than git: whatever the token may do on that host — issues,
@@ -1865,7 +1866,7 @@ operation you started, sent only where you saw it go.
   another process writing at the same time; `tests/test_githost.sh`: `./stack git-host import` with fake gh, glab and
   docker programs. `code/test/bn-gh.test.mjs`: gh's wrapper with a stand-in broker and gh — the token only in gh's
   environment (not the wrapper's, on Linux read from `/proc`; nothing in `~/.config/gh`), none and one line when not
-  answered, the host as gh takes it, help, version and `auth token` never asking, a token of yours left alone; through
+  answered, the host as gh takes it, help, version and `auth token` never asking, a login of yours left alone; through
   the real bn-coded broker in `bn-coded-remote.test.mjs`. `code/test/gitnote.test.mjs`: the note for no, one and two
   hosts, allowed or not, odd names and labels never in it, and the restart after a change.
 

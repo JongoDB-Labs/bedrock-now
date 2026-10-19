@@ -95,12 +95,16 @@ test('not allowed, or nothing to ask: no token, one line saying how to allow it 
   r = await gh(['issue', 'list']);
   assert.equal(r.out.GH_TOKEN, null);
   assert.match(r.err, NO_LOGIN_LINE, 'no broker (no host lets Claude): the same line');
-  // a login of gh's own for that host (gh auth login in the terminal): nothing said, gh uses it
+  // a login of gh's own for that host (gh auth login in the terminal): nothing asked or said, gh uses it — even
+  // while the broker would answer
   const conf = path.join(ROOT, 'ghconf');
   fs.mkdirSync(conf, { recursive: true });
   fs.writeFileSync(path.join(conf, 'hosts.yml'), 'github.com:\n    git_protocol: https\n');
+  await broker(); allow = new Set(['github.com']); asked.length = 0;
   r = await gh(['issue', 'list'], { env: { GH_CONFIG_DIR: conf } });
   assert.equal(r.err, '');
+  assert.equal(r.out.GH_TOKEN, null);
+  assert.equal(asked.length, 0);
 });
 
 test('never asked: help, version, completion, auth (but auth status), a token of yours', async () => {

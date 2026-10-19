@@ -7,10 +7,11 @@
 // each use as gh's. The token goes into that one gh process's environment (GH_TOKEN for github.com and *.ghe.com;
 // GH_ENTERPRISE_TOKEN and GH_HOST for GitHub Enterprise Server): never a file, never ~/.config/gh, never this
 // process's own environment. No answer: gh runs without one (public reads work, the rest says it is not logged in),
-// after one line on stderr saying how to allow it — unless gh has a login of its own for that host.
+// after one line on stderr saying how to allow it.
 // Not asked for: gh's help and version, completion, config, alias, and auth (but auth status, which says whether gh
-// has a login; auth token never prints one of ours); nor with a token of yours in the environment (GH_TOKEN …): that
-// one is used as it is. Node built-ins only. gh's exit status is this one's.
+// has a login; auth token never prints one of ours); nor with a login of yours — a token in the environment (GH_TOKEN
+// …), or a gh auth login of your own in the terminal for that host (gh's hosts.yml names it): gh uses that one as it
+// always does. Node built-ins only. gh's exit status is this one's.
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -146,6 +147,7 @@ if (wants(args) && !OWN_TOKENS.some((k) => process.env[k])) {
   const command = describe(args);
   let got = null;
   for (const host of hosts) {
+    if (ownLogin(host)) break;   // (yours: gh uses it, nothing asked or said)
     const token = await ask(host, command);
     if (token) { got = { host, token }; break; }
   }
@@ -153,7 +155,7 @@ if (wants(args) && !OWN_TOKENS.some((k) => process.env[k])) {
     if (got.host === 'github.com' || got.host.endsWith('.ghe.com')) env.GH_TOKEN = got.token;
     else env.GH_ENTERPRISE_TOKEN = got.token;
     if (got.host !== 'github.com' && !env.GH_HOST) env.GH_HOST = got.host;
-  } else if (hosts.length && !ownLogin(hosts[0])) {
+  } else if (hosts.length && !hosts.some(ownLogin)) {
     process.stderr.write(`gh: no login for ${hosts[0]} from bedrock-now — to give gh yours, connect that host in the Code page's Git panel › Hosts and turn on Let Claude use this host (gh goes on without one)\n`);
   }
 }
