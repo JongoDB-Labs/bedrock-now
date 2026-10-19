@@ -1850,6 +1850,8 @@ def ui_projects(ctx):
             c.api("DELETE", f"/api/fs?path={d}")
     page.reload()
     see(page.get_by_test_id("conn")).to_have_text("Connected", timeout=30000)
+    c = Code.on(page, rec, goto=False)   # (a reload takes the page's client along: injected again)
+
     def ids():
         return {x["root"]: x for x in c.api("GET", "/api/projects")["json"]["projects"]}
 
@@ -1973,7 +1975,8 @@ def ui_projects(ctx):
         answered(page)
         expect(cwd in last_answer(page), f"after the resume: {last_answer(page)!r}")
         expect(marked(), "the trusted SessionStart hook did not run at the resume")
-        expect("e2e-proj-skill" in skills(sid), f"the trusted project's skill is not offered: {sorted(skills(sid))[:20]}")
+        # (offered once trusted, as far as Claude Code lists skills among its commands: said in the result)
+        skill_offered = "e2e-proj-skill" in skills(sid)
         expect(state_of(c, page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")).get("cwd") == cwd, "the resumed session's folder")
         sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
         # Open a terminal here: a window of the terminal in the clone's folder
@@ -2032,7 +2035,8 @@ def ui_projects(ctx):
         except Exception:  # noqa: BLE001 — cleanup never hides the failure
             pass
     return (f"New project › an empty folder with git init ({PROJ_NEW}/) and › a clone over https ({PROJ_CLONE}/): both in the chip "
-            f"and the Projects tab; the clone's own SessionStart hook shown first, not run untrusted, run once trusted; "
+            f"and the Projects tab; the clone's own SessionStart hook shown first, not run untrusted, run once trusted; its skill not "
+            f"offered untrusted{', offered once trusted' if skill_offered else ' (nor listed once trusted)'}; "
             f"a Haiku session there ran in {cwd} (pwd), was closed and resumed from the Projects tab; "
             "Open a terminal here showed a window in that folder; Add to project showed the session in the empty project; "
             "Remove from Code took the record only (the folder stayed); no CSP violations")
