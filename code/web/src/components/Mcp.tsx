@@ -10,15 +10,16 @@ import { store, activeView, mcpReconnect, mcpToggle, requestMcp, restartSession 
 import { Dialog } from './ui';
 import { Icon, Spinner } from './icons';
 import { pairs } from '../forms';
+import { SandboxSaid } from './Said';
+import type { SandboxWords } from '../types';
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : 'Something went wrong.');
 const DOT: Record<string, string> = { connected: 'live', failed: 'err', 'needs-auth': 'warn', pending: 'warn' };
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 function ServerRow({ s, busy, onBusy }: { s: McpServer; busy: boolean; onBusy: (name: string | null) => void }) {
   const [open, setOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ text: string; said?: SandboxWords | null } | null>(null);
   const disabled = s.status === 'disabled';
   const own = s.scope === 'user' || s.source === 'user';
   return (
@@ -44,7 +45,12 @@ function ServerRow({ s, busy, onBusy }: { s: McpServer; busy: boolean; onBusy: (
           </div>
         )}
         {s.error && <div class="plg-err small">{s.error}</div>}
-        {msg && <div class="plg-err small">{msg}</div>}
+        {msg && (
+          <div class="plg-err small">
+            {msg.text}
+            {msg.said && <SandboxSaid words={msg.said} />}
+          </div>
+        )}
         {open && s.toolNames.length > 0 && (
           <ul class="mcp-tools">
             {s.toolNames.map((t) => (
@@ -72,8 +78,8 @@ function ServerRow({ s, busy, onBusy }: { s: McpServer; busy: boolean; onBusy: (
                 onBusy(s.name);
                 api
                   .mcpRemove(s.name)
-                  .then((o) => setMsg(o.ok ? 'Removed from your configuration: gone after a restart of the session.' : o.message))
-                  .catch((e) => setMsg(errText(e)))
+                  .then((o) => setMsg({ text: o.ok ? 'Removed from your configuration: gone after a restart of the session.' : o.message }))
+                  .catch((e) => setMsg(api.problemOf(e)))
                   .finally(() => onBusy(null));
               }}
             >
@@ -120,7 +126,7 @@ function AddServer({ running }: { running: boolean }) {
   const [url, setUrl] = useState('');
   const [headers, setHeaders] = useState('');
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string; said?: SandboxWords | null } | null>(null);
   const submit = async () => {
     setNote(null);
     if (!NAME.test(name) || name === 'bedrock-shared') return setNote({ ok: false, text: 'A name of letters, digits, - and _ (not bedrock-shared).' });
@@ -150,7 +156,7 @@ function AddServer({ running }: { running: boolean }) {
         setHeaders('');
       }
     } catch (e) {
-      setNote({ ok: false, text: errText(e) });
+      setNote({ ok: false, ...api.problemOf(e) });
     } finally {
       setBusy(false);
     }
@@ -216,6 +222,7 @@ function AddServer({ running }: { running: boolean }) {
       {note && (
         <div class={`plg-note ${note.ok ? 'ok' : 'err'}`} data-testid="mcp-note">
           {note.text}
+          {note.said && <SandboxSaid words={note.said} />}
         </div>
       )}
       <div class="dlg-buttons">

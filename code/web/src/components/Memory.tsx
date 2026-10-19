@@ -8,6 +8,7 @@ import * as api from '../api';
 import type { Memory, MemoryScope } from '../api';
 import { refreshExpandedDirs, toast } from '../app';
 import { Dialog } from './ui';
+import { SandboxSaid } from './Said';
 import { Icon, Spinner } from './icons';
 
 const SCOPES: [MemoryScope, string, string][] = [
@@ -22,12 +23,14 @@ export function MemoryDialog({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [errorSaid, setErrorSaid] = useState<ReturnType<typeof api.saidOf>>(null);
   const [conflict, setConflict] = useState(false);
   const dirty = !!mem && text !== mem.text;
 
   const load = async (s: MemoryScope) => {
     setLoading(true);
     setError('');
+    setErrorSaid(null);
     setConflict(false);
     try {
       const m = await api.getMemory(s);
@@ -36,6 +39,7 @@ export function MemoryDialog({ onClose }: { onClose: () => void }) {
     } catch (e) {
       setMem(null);
       setError(e instanceof Error ? e.message : String(e));
+      setErrorSaid(api.saidOf(e));
     } finally {
       setLoading(false);
     }
@@ -46,6 +50,7 @@ export function MemoryDialog({ onClose }: { onClose: () => void }) {
     if (!mem || mem.truncated) return;
     setSaving(true);
     setError('');
+    setErrorSaid(null);
     try {
       const r = await api.putMemory(scope, text, overwrite || !mem.exists ? null : mem.mtimeMs);
       if (!r.ok) {
@@ -58,6 +63,7 @@ export function MemoryDialog({ onClose }: { onClose: () => void }) {
       if (scope === 'project') refreshExpandedDirs();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setErrorSaid(api.saidOf(e));
     } finally {
       setSaving(false);
     }
@@ -108,7 +114,12 @@ export function MemoryDialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       )}
-      {error && <div class="plg-note err">{error}</div>}
+      {error && (
+        <div class="plg-note err">
+          {error}
+          {errorSaid && <SandboxSaid words={errorSaid} />}
+        </div>
+      )}
       <textarea
         class="mem-text"
         value={text}

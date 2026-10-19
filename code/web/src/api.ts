@@ -471,7 +471,7 @@ export function normServerMsg(raw: string): ServerMsg | null {
     }
     case 'reply': {
       const req = typeof o.req === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(o.req) ? o.req : null;
-      return req ? { kind: 'reply', req, ok: o.ok === true, error: label(o.error, LIMITS.short), data: boundedJson(o.data) } : null;
+      return req ? { kind: 'reply', req, ok: o.ok === true, error: label(o.error, LIMITS.short), data: boundedJson(o.data), said: o.ok === true ? null : wordsOf(o) } : null;
     }
     case 'hello': {
       const limits = obj(o.limits) ?? {};
@@ -503,7 +503,7 @@ export function normServerMsg(raw: string): ServerMsg | null {
       return usage ? { kind: 'context', session, usage } : null;
     }
     case 'error':
-      return { kind: 'error', session, message: label(o.message, LIMITS.short) || 'error', req: typeof o.req === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(o.req) ? o.req : null };
+      return { kind: 'error', session, message: label(o.message, LIMITS.short) || 'error', req: typeof o.req === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(o.req) ? o.req : null, said: wordsOf(o) };
     default:
       return null;
   }
@@ -1367,7 +1367,11 @@ export async function removeGitHost(id: string): Promise<{ revoked: boolean | nu
 }
 /** wordsOf(o) -> the sandbox's own words in an answer (said, saidBy), or null */
 function wordsOf(o: Obj | null | undefined): SandboxWords | null {
-  return o && typeof o.said === 'string' ? { said: label(o.said, 300), by: o.saidBy === 'claude' ? 'claude' : 'git' } : null;
+  return o && typeof o.said === 'string' && o.said ? { said: label(o.said, 300), by: o.saidBy === 'claude' || o.saidBy === 'sandbox' ? o.saidBy : 'git' } : null;
+}
+/** problemOf(e) -> a failure as the page shows it: our text, and the sandbox's own words apart when it is in them */
+export function problemOf(e: unknown): { text: string; said: SandboxWords | null } {
+  return { text: e instanceof Error ? e.message : 'Something went wrong.', said: saidOf(e) };
 }
 /** saidOf(e) -> the sandbox's own words when a failure is in them (the server's said: shown apart), else null — never
  *  taken from the message, which is a fixed sentence of ours then */

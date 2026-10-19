@@ -470,10 +470,14 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   a.send({ type: 'mcp_toggle', session: json.id, server: 'mine', enabled: false, req: 'tg' });
   assert.equal((await until(a.inbox, (m) => m.req === 'tg')).data[1].status, 'disabled');
   for (const [m, re] of [[{ type: 'mcp_toggle', session: json.id, server: 'mine', enabled: 'no', req: 't2' }, /enabled/],
-    [{ type: 'mcp_reconnect', session: json.id, server: 'a\nb', req: 't3' }, /bad MCP server name/], [{ type: 'mcp_reconnect', session: json.id, server: 'nope', req: 't4' }, /no server nope/]]) {
+    [{ type: 'mcp_reconnect', session: json.id, server: 'a\nb', req: 't3' }, /bad MCP server name/]]) {
     a.send(m);
     assert.match((await until(a.inbox, (x) => x.type === 'reply' && x.req === m.req)).error, re);
   }
+  // (Claude Code's own refusal: a fixed sentence of ours, its words apart — said.mjs)
+  a.send({ type: 'mcp_reconnect', session: json.id, server: 'nope', req: 't4' });
+  const t4 = await until(a.inbox, (x) => x.type === 'reply' && x.req === 't4');
+  assert.deepEqual([t4.error, t4.said, t4.saidBy], ['Claude Code in the sandbox stopped', 'no server nope', 'claude']);
   // a plugin reload: the reply counts; the pages showing the session get its new commands, plugins and servers
   a.send({ type: 'reload_plugins', session: json.id, req: 'rl' });
   assert.deepEqual((await until(a.inbox, (m) => m.req === 'rl' && m.type === 'reply')).data, { commands: 1, plugins: 2, errors: 0 });

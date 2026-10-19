@@ -17,11 +17,23 @@ import { makeApi, HttpError, sandboxStatus, attachment, rootField } from './api.
 import { str, short, isUuid, isId } from './validate.mjs';
 import { commandsOf, mcpOf, pluginsOf } from './normalize.mjs';
 import { GitHosts, HostError } from './githosts.mjs';
-import { makeGitRemote, NEVER_ASKS, sandboxWords } from './gitremote.mjs';
+import { makeGitRemote } from './gitremote.mjs';
+import { NEVER_ASKS, CLAUDE_SAID, sandboxWords } from './said.mjs';
+import { SandboxError } from './spawn-client.mjs';
 import { Projects, ProjectError, projectIdOk, WS, absOf } from './projects.mjs';
 import { makeTrust } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+// wsFailure(e) -> {error, said?, saidBy?}: what the WebSocket answers a failed message with — ours as it is (a session's
+// refusal, a timeout, an unreachable sandbox); the sandbox's or Claude Code's own words apart, under a fixed sentence
+function wsFailure(e) {
+  if (e instanceof SessionError || e instanceof HttpError || e instanceof HostError || e instanceof SandboxError) {
+    const w = sandboxWords(e);
+    if (w) return w;
+    return { error: short(e instanceof SandboxError ? `Claude Code: ${short(e.message, 300)}` : e.message, 500) };
+  }
+  return { error: CLAUDE_SAID, said: short(e?.message || String(e), 300), saidBy: 'claude' };
+}
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -518,9 +530,11 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       try {
         await handle(c, m, reply, answer);
       } catch (e) {
-        const msg = short(e instanceof SessionError || e instanceof HttpError ? e.message : `Claude Code: ${short(e?.message || String(e), 300)}`, 500);
-        sendTo(c, { type: 'error', session, req, message: msg, error: msg });
-        if (req !== undefined) sendTo(c, { type: 'reply', req, ok: false, error: msg });
+        // (a failure in the sandbox's or Claude Code's own words: a fixed sentence of ours, the words apart — said.mjs)
+        const w = wsFailure(e);
+        const words = w.said ? { said: w.said, saidBy: w.saidBy, neverAsks: NEVER_ASKS } : {};
+        sendTo(c, { type: 'error', session, req, message: w.error, error: w.error, ...words });
+        if (req !== undefined) sendTo(c, { type: 'reply', req, ok: false, error: w.error, ...words });
       }
       return undefined;
     });

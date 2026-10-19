@@ -9,7 +9,7 @@ export const PROPOSAL_MAX = 8_000;
 /** Shown above anything the sandbox said: its words could be worded as ours ("enter … at github.com/login/device"). */
 export const NEVER_ASKS = 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.';
 /** The label before the sandbox's words (SandboxWords.by): whose words they are. */
-export const SAID_BY = { git: 'git in the sandbox said:', claude: 'Claude Code in the sandbox said:' } as const;
+export const SAID_BY = { git: 'git in the sandbox said:', claude: 'Claude Code in the sandbox said:', sandbox: 'the sandbox said:' } as const;
 
 // what a commit message may hold (the backend refuses the rest): no control characters but tab and newline, nothing that
 // changes the direction of text

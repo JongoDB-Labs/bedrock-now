@@ -2722,7 +2722,9 @@ export async function launchStart(name, digest, { tmux = tmuxBin(), root = WS_RO
   if (!c.argv) throw new Error('that entry has no command (runtimeExecutable or program): it only names a running server');
   const cwd = confine(c.cwd, { root });
   if (!cwd) throw new Error('cwd: not a folder in the workspace');
-  try { if (!fs.statSync(cwd).isDirectory()) throw new Error('x'); } catch { throw new Error('cwd: not a folder in the workspace'); }
+  let dir = false;
+  try { dir = fs.statSync(cwd).isDirectory(); } catch { /* not there */ }
+  if (!dir) throw new Error('cwd: not a folder in the workspace');
   if (!c.program) throw new Error(`${printable(c.argv[0], 100)}: not found`);
   const node = imageProgram('node');
   if (!node) throw new Error('node is not the image\'s own here: start it in the terminal');

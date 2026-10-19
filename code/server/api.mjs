@@ -13,7 +13,8 @@ import { SandboxError } from './spawn-client.mjs';
 import { SessionError } from './sessions.mjs';
 import { isUuid, relPath, fileName, short, str, int, num, oneOf, isFullModel } from './validate.mjs';
 import { DraftError, draftPrompt, runDraft } from './gitdraft.mjs';
-import { repoOk, SandboxSaid } from './gitremote.mjs';
+import { repoOk } from './gitremote.mjs';
+import { SandboxSaid, refused } from './said.mjs';
 import { reasonOf, GIT_LOG_FAILED } from './gitreasons.mjs';
 import { watched } from './watch.mjs';
 import { WS, WORKSPACE_ID, PROJECTS_MAX, absOf, cwdOk, nameOk, rootOk } from './projects.mjs';
@@ -196,8 +197,9 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
       ({ result } = await call({ op: 'terminal.resume', id, ...cwdField(await cwdFor(id)) }, { timeoutMs: 20000 }));
     } catch (e) {
       handing.delete(id);
-      if (e instanceof SandboxError && e.kind === 'refused' && /no such session/.test(e.message)) throw new HttpError(404, e.message);
-      if (e instanceof SandboxError && e.kind === 'refused' && /already open/.test(e.message)) throw new HttpError(409, e.message);
+      // (a status of ours; the text: bn-coded's fixed one plainly, anything else its words apart — said.mjs)
+      if (e instanceof SandboxError && e.kind === 'refused' && /no such session/.test(e.message)) throw refused(404, e, HttpError);
+      if (e instanceof SandboxError && e.kind === 'refused' && /already open/.test(e.message)) throw refused(409, e, HttpError);
       if (e instanceof SandboxError && e.kind === 'refused' && /unknown op/.test(e.message)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
       throw e;
     }
@@ -241,7 +243,7 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     try {
       ({ result } = await call({ op: 'perm.remove', list, rule, ifSha256: sha }));
     } catch (e) {
-      if (e instanceof SandboxError && e.kind === 'refused' && /changed since|no such rule/.test(e.message)) throw new HttpError(409, e.message);
+      if (e instanceof SandboxError && e.kind === 'refused' && /changed since|no such rule/.test(e.message)) throw refused(409, e, HttpError);
       throw e;
     }
     return { ok: result?.ok === true, removed: int(result?.removed, 0, 1e6) ?? 0, sha256: /^[0-9a-f]{64}$/.test(result?.sha256 ?? '') ? result.sha256 : null };
@@ -342,7 +344,7 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     try {
       ({ result } = await call({ op: 'fs.grep', ...c, ...rootField(root) }, { timeoutMs: 30000, maxBytes: 4 << 20 }));
     } catch (e) {
-      if (e instanceof SandboxError && e.kind === 'refused' && /^busy/.test(e.message)) throw new HttpError(429, e.message);
+      if (e instanceof SandboxError && e.kind === 'refused' && /^busy/.test(e.message)) throw refused(429, e, HttpError);
       throw e;
     }
     const r = grepResult(result);
@@ -474,7 +476,8 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
   async function listing(args, maxBytes) {
     const r = await run(args, 60000, maxBytes);
     try { if (r.code === 0) return JSON.parse(r.out); } catch { /* below */ }
-    throw new HttpError(502, `claude ${args.slice(0, 3).join(' ')} failed: ${short(lastLine(`${r.err}\n${r.out}`), 300) || `exit ${r.code}`}`);
+    // (what the CLI said: Claude Code's own words, from the sandbox — apart, never in our sentence)
+    throw new SandboxSaid(502, short(lastLine(`${r.err}\n${r.out}`), 300) || `exit ${r.code}`, 'claude', `claude ${args.slice(0, 3).join(' ')} failed`);
   }
   // action(args) -> an action's outcome for the page: {ok, outcome, message, failureCode, needs_confirmation?}. The CLI's
   // --json prints one result line (after any human text it shows first); without one the exit code decides.
@@ -602,7 +605,7 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     try {
       ({ result } = await call({ op: 'launch.start', name, digest, ...rootField(root) }, { timeoutMs: 30000 }));
     } catch (e) {
-      if (e instanceof SandboxError && /changed since it was shown/.test(e.message)) throw new HttpError(409, e.message);
+      if (e instanceof SandboxError && e.kind === 'refused' && /changed since it was shown/.test(e.message)) throw refused(409, e, HttpError);
       throw e;
     }
     return { ok: result.ok === true, name: short(result.name, 100), window: short(result.window, 60), port: int(result.port, 1, 65535),
@@ -626,7 +629,7 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     try {
       ({ result } = await call({ op: 'run.start', source, name, digest, ...rootField(root) }, { timeoutMs: 30000 }));
     } catch (e) {
-      if (e instanceof SandboxError && /changed since it was shown/.test(e.message)) throw new HttpError(409, e.message);
+      if (e instanceof SandboxError && e.kind === 'refused' && /changed since it was shown/.test(e.message)) throw refused(409, e, HttpError);
       throw e;
     }
     return { ok: result.ok === true, id: RUN_ID.test(result.id ?? '') ? result.id : null, window: RUN_WINDOW.test(result.window ?? '') ? result.window : null,
@@ -656,8 +659,8 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     } catch (e) {
       if (e instanceof SandboxError && e.kind === 'refused') {
         if (/unknown op/.test(e.message)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
-        if (/no such pane/.test(e.message)) throw new HttpError(404, e.message);
-        if (/no tmux session|hooks/.test(e.message)) throw new HttpError(409, e.message);
+        if (/no such pane/.test(e.message)) throw refused(404, e, HttpError);
+        if (/no tmux session|hooks/.test(e.message)) throw refused(409, e, HttpError);
       }
       throw e;
     }

@@ -365,7 +365,7 @@ export type ServerMsg =
   /** the CLI reset the conversation (/clear, a plan exit with a fresh context): it goes on as `next` */
   | { kind: 'reset'; session: string; next: string }
   /** the answer to a message that carried `req` */
-  | { kind: 'reply'; req: string; ok: boolean; error: string; data: unknown }
+  | { kind: 'reply'; req: string; ok: boolean; error: string; data: unknown; said: SandboxWords | null }
   | { kind: 'hello'; pending: number; maxImages: number | null }
   | { kind: 'pending'; count: number }
   /** a use of a Git host (an operation of yours, or Claude's own git): the Git panel and Activity show it */
@@ -375,7 +375,7 @@ export type ServerMsg =
   | { kind: 'mcp'; session: string | null; servers: McpServer[] }
   | { kind: 'plugins'; session: string | null; plugins: LoadedPlugin[] }
   | { kind: 'context'; session: string | null; usage: ContextUsage }
-  | { kind: 'error'; session: string | null; message: string; req: string | null };
+  | { kind: 'error'; session: string | null; message: string; req: string | null; said: SandboxWords | null };
 
 export interface ImageBlock {
   media_type: string;
@@ -422,6 +422,8 @@ export interface LaunchEntry {
 export interface LaunchList {
   exists: boolean;
   error: string | null;
+  /** the error's words from the sandbox, when it is in them: shown apart (SandboxSaid) */
+  said?: SandboxWords | null;
   entries: LaunchEntry[];
 }
 
@@ -663,10 +665,10 @@ export interface GitEvent {
   said: string | null;
 }
 /** A failure in the sandbox's own words (the server's said, saidBy): shown apart and labelled, under NEVER_ASKS —
- *  never as a sentence of ours. by: whose words — git's, or Claude Code's (Write message's helper). */
+ *  never as a sentence of ours. by: whose words — git's, Claude Code's, or the sandbox's (bn-coded's). */
 export interface SandboxWords {
   said: string;
-  by: 'git' | 'claude';
+  by: 'git' | 'claude' | 'sandbox';
 }
 export interface GitHostRef {
   id: string;

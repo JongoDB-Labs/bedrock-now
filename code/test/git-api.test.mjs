@@ -11,7 +11,7 @@ import { GIT_SAID, NEVER_ASKS } from '../server/gitremote.mjs';
 import { commitMessage, gitFileOf, gitLogOf, gitPathOk, gitStatusOf, gitTargets, GIT_LIST_MAX } from '../server/api.mjs';
 import { fakeQuery } from './fake-sdk.mjs';
 import { tmp, TERMINAL_DIR } from './helpers.mjs';
-import { GIT_REASONS, GIT_REFUSALS, GIT_ANSWERED, GIT_LOG_FAILED, plainRefusal, reasonOf } from '../server/gitreasons.mjs';
+import { GIT_REASONS, GIT_REFUSALS, SANDBOX_REFUSALS, GIT_ANSWERED, GIT_LOG_FAILED, plainRefusal, reasonOf } from '../server/gitreasons.mjs';
 
 const H = 'c'.repeat(40);
 
@@ -206,26 +206,38 @@ test('git\'s reasons: bn-coded\'s fixed ones as they are (the same list as bn-co
   assert.deepEqual(gitLogOf({ repo: true, commits: [], error: 'git log: no answer in time' }), { repo: true, reason: null, commits: [], error: 'git log: no answer in time' });
   assert.deepEqual(gitFileOf({ repo: false, reason: hostile }, '', null, 'staged').said, hostile);
   assert.deepEqual(gitStatusOf({ repo: false, reason: 'not a git repository' }).said, undefined);
-  // bn-coded's fixed refusals in its git ops (an ERROR of its): the list is what they can be, word for word — the
-  // literal texts of new Error(…) / fail(…) from gitPaths to gitTest and in the git ops' dispatch (templated ones carry
-  // a name or git's words: apart)
+  // bn-coded's fixed refusals (an ERROR of its): the lists are what they can be, word for word — the literal texts of
+  // new Error(…) / fail(…), or a constant string they name; its git ops (gitPaths to gitTest, the git ops' dispatch)
+  // and the rest apart (templated ones carry a name or git's words: apart)
   const all = fs.readFileSync(path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'), 'utf8');
-  const t = all.indexOf('export async function gitTest(');
-  const region = all.slice(all.indexOf('export function gitPaths('), all.indexOf('\n}\n', t)) + all.slice(all.indexOf("        case 'git.diff':"), all.indexOf("        case 'memory.read':"));
-  const literal = new Set();
-  for (const line of region.split('\n')) {
-    if (/^\s*\/\//.test(line)) continue;
-    for (const m of line.matchAll(/(?:new Error|fail)\((.*)$/g)) {
-      const arg = m[1].replace(/`(?:[^`\\]|\\.)*`/g, '``');
-      for (const q of arg.matchAll(/(===?|!==?)?\s*'((?:[^'\\]|\\.)*)'/g)) { const s = q[2].replace(/\\(.)/g, '$1'); if (!q[1] && s) literal.add(s); }
+  const consts = new Map([...all.matchAll(/^const ([A-Z][A-Z0-9_]+) = '((?:[^'\\]|\\.)*)';/gm)].map((m) => [m[1], m[2]]));
+  const literals = (text) => {
+    const out = new Set();
+    for (const line of text.split('\n')) {
+      if (/^\s*\/\//.test(line)) continue;
+      for (const m of line.matchAll(/(?:new Error|fail)\((.*)$/g)) {
+        const named = /^([A-Z][A-Z0-9_]+)[),]/.exec(m[1]);
+        if (named && consts.has(named[1])) out.add(consts.get(named[1]));
+        const arg = m[1].replace(/`(?:[^`\\]|\\.)*`/g, '``');
+        for (const q of arg.matchAll(/(===?|!==?)?\s*'((?:[^'\\]|\\.)*)'/g)) { const s = q[2].replace(/\\(.)/g, '$1'); if (!q[1] && s) out.add(s); }
+      }
     }
-  }
+    return out;
+  };
+  const t = all.indexOf('export async function gitTest(');
+  const g = [all.indexOf('export function gitPaths('), all.indexOf('\n}\n', t)];
+  const d = [all.indexOf("        case 'git.diff':"), all.indexOf("        case 'memory.read':")];
+  const literal = literals(all.slice(g[0], g[1]) + all.slice(d[0], d[1]));
+  const rest = literals(all.slice(0, g[0]) + all.slice(g[1], d[0]) + all.slice(d[1]));
+  assert.ok(rest.size >= 60, String(rest.size));
+  assert.deepEqual([...SANDBOX_REFUSALS].sort(), [...rest].sort(), 'gitreasons.mjs\'s SANDBOX_REFUSALS: what the rest of bn-coded refuses with');
+  assert.equal(new Set(SANDBOX_REFUSALS).size, SANDBOX_REFUSALS.length);
   assert.ok(literal.size >= 60, String(literal.size));
   assert.deepEqual([...GIT_REFUSALS].sort(), [...literal].sort(), 'gitreasons.mjs\'s GIT_REFUSALS: what bn-coded\'s git ops refuse with');
   assert.equal(new Set(GIT_REFUSALS).size, GIT_REFUSALS.length);
   // a refusal reaches the code container through printable() (spawn-client.mjs: ASCII only): each fixed text still
   // matches as it arrives — none of them has a character printable() would change (a "…" never matched)
-  for (const s of [...GIT_REFUSALS, ...GIT_REASONS]) {
+  for (const s of [...GIT_REFUSALS, ...GIT_REASONS, ...SANDBOX_REFUSALS]) {
     assert.equal(printable(s), s, `not plain ASCII: ${s}`);
     assert.ok(plainRefusal(printable(s)), s);
   }

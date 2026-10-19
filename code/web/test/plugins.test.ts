@@ -60,14 +60,14 @@ test('the backend\'s shapes (protocol.mjs) read as meant', () => {
   assert.equal(p?.kind === 'permission' && p.req.tool, 'AskUserQuestion');
   assert.deepEqual(msg({ type: 'permission_done', id: S, session: S, decision: 'answer' }), { kind: 'permission_done', id: S, session: S });
   assert.deepEqual(msg({ type: 'session_state', session: S, state: 'ended', model: 'haiku', mode: 'default', effort: null, error: 'x' }), { kind: 'session_state', session: S, state: 'ended', model: 'haiku', mode: 'default' });
-  assert.deepEqual(msg({ type: 'error', session: S, req: 'r1', message: 'bad mode', error: 'bad mode' }), { kind: 'error', session: S, message: 'bad mode', req: 'r1' });
+  assert.deepEqual(msg({ type: 'error', session: S, req: 'r1', message: 'bad mode', error: 'bad mode' }), { kind: 'error', session: S, message: 'bad mode', req: 'r1', said: null });
   // the page reads hello/pending (the badge), attached (epoch, gap), reply (a refused prompt) and reset
   assert.deepEqual(msg({ type: 'hello', pending: 2, limits: { maxImages: 4 } }), { kind: 'hello', pending: 2, maxImages: 4 });
   assert.deepEqual(msg({ type: 'pending', count: 3 }), { kind: 'pending', count: 3 });
   assert.deepEqual(msg({ type: 'attached', session: S, epoch: 'ab12cd34', state: 'idle', from: 1, last: 9, gap: false }),
     { kind: 'attached', session: S, from: 1, last: 9, gap: false, epoch: 'ab12cd34' });
   assert.equal(msg({ type: 'attached', session: S, from: 'x', last: 9 }), null);
-  assert.deepEqual(msg({ type: 'reply', req: 'p1', ok: false, error: 'empty or too long prompt' }), { kind: 'reply', req: 'p1', ok: false, error: 'empty or too long prompt', data: null });
+  assert.deepEqual(msg({ type: 'reply', req: 'p1', ok: false, error: 'empty or too long prompt' }), { kind: 'reply', req: 'p1', ok: false, error: 'empty or too long prompt', data: null, said: null });
   // rewind_files: the reply's data, read as a checkpoint result (paths shown relative to the workspace)
   const rw = msg({ type: 'reply', req: 'r1', ok: true, data: { canRewind: true, error: '', filesChanged: ['/workspace/src/a.ts', 'b.md', 42, '/etc/passwd'], insertions: 3, deletions: -1, skippedLinks: 1 } });
   assert.ok(rw?.kind === 'reply');

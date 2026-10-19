@@ -61,6 +61,8 @@ export interface FileTab {
   truncated: boolean;
   loading: boolean;
   error: string | null;
+  /** the error's words from the sandbox, when it is in them: shown apart (SandboxSaid) */
+  said?: SandboxWords | null;
   dirty: boolean;
   /** 'disk': save refused (changed on disk); 'claude': Claude edited it while it had unsaved changes */
   conflict: null | 'disk' | 'claude';
@@ -198,6 +200,8 @@ export interface SearchState {
   loading: boolean;
   result: GrepResult | null;
   error: string | null;
+  /** the error's words from the sandbox, when it is in them: shown apart (SandboxSaid) */
+  said?: SandboxWords | null;
   /** bumped to focus the search box */
   focus: number;
 }
@@ -283,6 +287,8 @@ export interface AppState {
   /** the servers listening in the sandbox (polled while the page is visible) */
   ports: PortInfo[];
   portsError: string | null;
+  /** portsError's words from the sandbox, when it is in them: apart */
+  portsSaid?: SandboxWords | null;
   /** whether previews work here (null: not asked yet) */
   preview: PreviewInfo | null;
   /** the workspace's .claude/launch.json (null: not read yet) */
@@ -292,6 +298,8 @@ export interface AppState {
   /** Run & test: the workspace's tasks (null: not read yet) */
   run: RunList | null;
   runError: string | null;
+  /** runError's words from the sandbox, when it is in them: apart */
+  runSaid?: SandboxWords | null;
   /** the last runs, newest first (the Problems list) */
   runs: RunResult[];
   /** a task shown in full before it runs (the Run confirmation) */
@@ -401,6 +409,14 @@ export function dismissToast(id: number): void {
 }
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : 'Something went wrong.';
+}
+/** A failure said in a toast: `what` and ours ("Save failed: …") — or, when it is in the sandbox's own words (the
+ *  server's said), `what` alone and its words apart in the box (Toast.said), never in a sentence of ours. plain: how
+ *  `what` and ours read together (default "what: ours"; what = '': ours alone). */
+export function failed(e: unknown, what: string, plain?: (msg: string) => string): void {
+  const said = api.saidOf(e);
+  if (said !== null) toast(what || errText(e), 'error', undefined, said);
+  else toast(plain ? plain(errText(e)) : what ? `${what}: ${errText(e)}` : errText(e), 'error');
 }
 /** A Git panel operation's failure: ours as `text` says it — or, when it is in the sandbox's own words, `what`
  *  failed and its words apart (Toast.said), never as a sentence of ours. */
@@ -631,13 +647,15 @@ function requestContext(id: string, ms = 1500): void {
 }
 
 /** Requests over the WebSocket waiting for their reply, by request id. */
-const pendingReplies = new Map<string, (r: { ok: boolean; data: unknown; error: string }) => void>();
+const pendingReplies = new Map<string, (r: WsReply) => void>();
+/** A WebSocket request's reply: said — a failure's words from the sandbox or Claude Code, apart (the box) */
+type WsReply = { ok: boolean; data: unknown; error: string; said?: SandboxWords | null };
 let requestN = 0;
 
 /** A client message without its request id (wsRequest adds one). */
 type WithoutReq<T> = T extends unknown ? Omit<T, 'req'> : never;
 /** A WebSocket request and its reply (an error when none comes within `ms`). */
-function wsRequest(msg: WithoutReq<api.ClientMsg>, ms = 60_000): Promise<{ ok: boolean; data: unknown; error: string }> {
+function wsRequest(msg: WithoutReq<api.ClientMsg>, ms = 60_000): Promise<WsReply> {
   const req = `r${Date.now().toString(36)}${(requestN++).toString(36)}`;
   return new Promise((resolve) => {
     const t = setTimeout(() => {
@@ -713,7 +731,7 @@ function handle(m: ServerMsg): void {
       return;
     case 'reply': {
       const waiting = pendingReplies.get(m.req);
-      if (waiting) return waiting({ ok: m.ok, data: m.data, error: m.error });
+      if (waiting) return waiting({ ok: m.ok, data: m.data, error: m.error, said: m.said });
       const p = sentPrompts.get(m.req);
       if (!p) return;
       sentPrompts.delete(m.req);
@@ -721,7 +739,8 @@ function handle(m: ServerMsg): void {
       // the backend refused the prompt: it never ran — take it back and give the text back to the composer
       updateView(p.session, (v) => dropPrompt(v, p.uuid));
       if (get().active === p.session) set((s) => ({ ...s, restore: { n: (s.restore?.n ?? 0) + 1, text: p.text } }));
-      toast(`Not sent: ${m.error || 'the backend refused it'}`, 'error');
+      if (m.said) toast('Not sent', 'error', undefined, m.said);
+      else toast(`Not sent: ${m.error || 'the backend refused it'}`, 'error');
       if (BUDGET_WORDS.test(m.error)) onBudgetRefusal(p.session);
       announce();
       return;
@@ -811,8 +830,8 @@ function handle(m: ServerMsg): void {
     case 'error':
       // a request of the page's own (a prompt) gets a reply too, which says it
       if (m.req) return;
-      if (m.session && get().views[m.session]) updateView(m.session, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: m.message, level: 'error' }], nextKey: v.nextKey + 1 }));
-      else toast(m.message, 'error');
+      if (m.session && get().views[m.session]) updateView(m.session, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: m.message, level: 'error', said: m.said }], nextKey: v.nextKey + 1 }));
+      else toast(m.message, 'error', undefined, m.said);
       if (BUDGET_WORDS.test(m.message)) onBudgetRefusal(m.session);
       return;
   }
@@ -1116,7 +1135,7 @@ async function reloadHistory(id: string, fresh: boolean, from = id, upTo?: strin
     }
     updateView(id, (v) => mergeHistory(fresh ? { ...v, items: [], turns: [] } : v, events, Date.now(), { offset: upTo ? 0 : h.offset, truncated: h.truncated }));
   } catch (e) {
-    if (!(e instanceof api.ApiError && e.status === 404)) updateView(id, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: `History could not be loaded: ${errText(e)}`, level: 'warn' }], nextKey: v.nextKey + 1 }));
+    if (!(e instanceof api.ApiError && e.status === 404)) updateView(id, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: api.saidOf(e) ? 'History could not be loaded' : `History could not be loaded: ${errText(e)}`, level: 'warn', said: api.saidOf(e) }], nextKey: v.nextKey + 1 }));
   } finally {
     historyLoading.delete(id);
     updateView(id, (v) => (v.gap ? { ...v, gap: false } : v));
@@ -1198,7 +1217,7 @@ async function openNew(opts: NewSessionOptions): Promise<string | null> {
     void refreshSessions();
     return id;
   } catch (e) {
-    toast(`Could not start a session: ${errText(e)}`, 'error');
+    failed(e, 'Could not start a session');
     return null;
   } finally {
     set((x) => ({ ...x, opening: false }));
@@ -1265,7 +1284,7 @@ async function openExisting(id: string, fork: boolean, before?: string, text = '
     set((x) => ({ ...x, focusComposer: x.focusComposer + 1, restore: text ? { n: (x.restore?.n ?? 0) + 1, text } : x.restore }));
     void refreshSessions();
   } catch (e) {
-    toast(`Could not open the session: ${errText(e)}`, 'error');
+    failed(e, 'Could not open the session');
   } finally {
     set((x) => ({ ...x, opening: false }));
   }
@@ -1275,7 +1294,7 @@ export async function closeSessionById(id: string): Promise<void> {
   try {
     await api.closeSession(id);
   } catch (e) {
-    toast(errText(e), 'error');
+    failed(e, '');
     return;
   }
   attached.delete(id);
@@ -1334,7 +1353,7 @@ export async function openInTerminal(id: string): Promise<void> {
     }
     announce();
   } catch (e) {
-    toast(`Not opened in the terminal: ${errText(e)}`, 'error');
+    failed(e, 'Not opened in the terminal');
   }
 }
 
@@ -1346,7 +1365,7 @@ export async function renameSessionById(id: string, title: string): Promise<void
     updateView(id, (v) => ({ ...v, title: label(t, 200) }));
     set((s) => ({ ...s, sessions: s.sessions.map((x) => (x.id === id ? { ...x, title: label(t, 200) } : x)) }));
   } catch (e) {
-    toast(`Rename failed: ${errText(e)}`, 'error');
+    failed(e, 'Rename failed');
   }
 }
 
@@ -1374,7 +1393,7 @@ async function revive(id: string): Promise<string | null> {
     attach(newId);
     return newId;
   } catch (e) {
-    toast(`Could not reopen the session: ${errText(e)}`, 'error');
+    failed(e, 'Could not reopen the session');
     return null;
   }
 }
@@ -1400,7 +1419,7 @@ export async function addMemoryLine(line: string): Promise<boolean> {
         return true;
       }
     } catch (e) {
-      toast(`Not added to CLAUDE.md: ${errText(e)}`, 'error');
+      failed(e, 'Not added to CLAUDE.md');
       return false;
     }
   }
@@ -1519,7 +1538,8 @@ export async function setModel(name: string): Promise<boolean> {
   updateView(v.id, (x) => (x.model === model ? { ...x, model: prev } : x));
   setPrefs((p) => (p.model === model ? { ...p, model: prevPref } : p));
   const was = get().models?.models.find((m) => m.id === prev || m.alias === prev)?.name || prev || 'the model before';
-  toast(`Still on ${was}: ${r.error || 'the switch did not go through'}`, 'error');
+  if (r.said) toast(`Still on ${was}`, 'error', undefined, r.said);
+  else toast(`Still on ${was}: ${r.error || 'the switch did not go through'}`, 'error');
   return false;
 }
 /** Switch the permission mode. Read only, Manual, Accept edits and Auto are remembered for new sessions too; Plan and
@@ -1570,7 +1590,8 @@ export function setMode(mode: Mode): void {
       if (remembered(mode)) setPrefs((p) => ({ ...p, mode }));
     } else {
       if (!next) updateView(v.id, (x) => (x.mode === mode ? { ...x, mode: prev } : x));
-      toast(`The mode was not changed: ${r.error || 'no answer'}`, 'error');
+      if (r.said) toast('The mode was not changed', 'error', undefined, r.said);
+      else toast(`The mode was not changed: ${r.error || 'no answer'}`, 'error');
       announce();
     }
     sendQueued(next);
@@ -1609,7 +1630,7 @@ export async function confirmBypass(): Promise<void> {
   const r = await wsRequest({ type: 'set_mode', session: id, mode: 'bypassPermissions', confirmed: true }, 120_000);
   // a mode picked while this was on its way (Shift+Tab) goes next — after Bypass, so it is the one that holds
   const next = switchDone();
-  if (!r.ok) toast(`Bypass permissions was not turned on: ${r.error || 'no answer'}`, 'error');
+  if (!r.ok) toast(r.said ? 'Bypass permissions was not turned on' : `Bypass permissions was not turned on: ${r.error || 'no answer'}`, 'error', undefined, r.said);
   else {
     updateView(id, (x) => ({ ...x, mode: 'bypassPermissions' }));
     announce();
@@ -1720,7 +1741,7 @@ export async function restartSession(): Promise<void> {
   try {
     if (v.state !== 'closed' && v.state !== 'ended') await api.closeSession(id);
   } catch (e) {
-    if (!(e instanceof api.ApiError && e.status === 404)) return toast(errText(e), 'error');
+    if (!(e instanceof api.ApiError && e.status === 404)) return failed(e, '');
   }
   updateView(id, (x) => ({ ...x, state: 'ended', seq: 0, permissions: [] }));
   const n = await revive(id);
@@ -1990,6 +2011,8 @@ export async function loadDir(path: string): Promise<void> {
     reloadChangedTabs(path, entries);
   } catch (e) {
     set((s) => ({ ...s, fs: { ...s.fs, dirs: { ...s.fs.dirs, [path]: { entries: s.fs.dirs[path]?.entries ?? [], loading: false, error: errText(e), truncated: false } } } }));
+    // (a tree row has room for one line: the sandbox's own words, when it is in them, in a toast's box)
+    if (api.saidOf(e)) failed(e, `Could not list ${path ? label(path, 120) : 'the workspace folder'}`);
   }
 }
 
@@ -2088,14 +2111,14 @@ export async function refreshPorts(): Promise<void> {
     ports = await api.getPorts();
   } catch (e) {
     portFails = Math.min(portFails + 1, 4);
-    set((s) => ({ ...s, portsError: errText(e) }));
+    set((s) => ({ ...s, portsError: errText(e), portsSaid: api.saidOf(e) }));
     return;
   }
   portFails = 0;
   const now = new Set(ports.map((p) => p.port));
   const fresh = knownPorts ? ports.filter((p) => !knownPorts!.has(p.port)) : [];
   knownPorts = now;
-  set((s) => (sameList(s.ports, ports) && !s.portsError ? s : { ...s, ports, portsError: null }));
+  set((s) => (sameList(s.ports, ports) && !s.portsError ? s : { ...s, ports, portsError: null, portsSaid: null }));
   for (const p of fresh) {
     if (awaited && awaited.port === p.port && Date.now() < awaited.until) {
       awaited = null;
@@ -2198,7 +2221,7 @@ export async function stopServer(p: PortInfo, force = false): Promise<void> {
     await api.stopPort(p.pid, p.port, force);
     toast(`Stopped :${p.port}${force ? ' (killed)' : ''}`, 'ok');
   } catch (e) {
-    toast(`Could not stop :${p.port}: ${errText(e)}`, 'error');
+    failed(e, `Could not stop :${p.port}`);
   }
   setTimeout(() => void refreshPorts(), 600);
 }
@@ -2210,7 +2233,7 @@ export async function loadLaunch(): Promise<void> {
     const launch = await api.getLaunch();
     if (get().project === proj) set((s) => ({ ...s, launch }));
   } catch (e) {
-    if (get().project === proj) set((s) => ({ ...s, launch: { exists: false, error: errText(e), entries: [] } }));
+    if (get().project === proj) set((s) => ({ ...s, launch: { exists: false, error: errText(e), said: api.saidOf(e), entries: [] } }));
   }
 }
 
@@ -2248,7 +2271,7 @@ export async function startLaunchEntry(e: LaunchEntry): Promise<void> {
       void loadLaunch();
       return;
     }
-    toast(`Could not start "${label(e.name, 60)}": ${errText(err)}`, 'error');
+    failed(err, `Could not start "${label(e.name, 60)}"`);
   }
 }
 
@@ -2259,9 +2282,9 @@ export async function loadRun(): Promise<void> {
   const proj = get().project;
   try {
     const run = await api.getRunTasks();
-    if (get().project === proj) set((s) => ({ ...s, run, runError: null }));
+    if (get().project === proj) set((s) => ({ ...s, run, runError: null, runSaid: null }));
   } catch (e) {
-    if (get().project === proj) set((s) => ({ ...s, runError: errText(e) }));
+    if (get().project === proj) set((s) => ({ ...s, runError: errText(e), runSaid: api.saidOf(e) }));
   }
 }
 
@@ -2336,7 +2359,7 @@ export async function startRunTask(t: RunTask): Promise<void> {
       void loadRun();
       return;
     }
-    toast(`Could not run "${label(t.name, 60)}": ${errText(err)}`, 'error');
+    failed(err, `Could not run "${label(t.name, 60)}"`);
   }
   await refreshRuns();
 }
@@ -2348,7 +2371,7 @@ export async function showRunWindow(r: RunResult): Promise<void> {
   try {
     await api.showRun(r.id);
   } catch (e) {
-    toast(`Its window: ${errText(e)}`, 'error');
+    failed(e, 'Its window');
     return;
   }
   if (!isPhone()) {
@@ -2370,11 +2393,11 @@ async function loadFile(key: string, path: string): Promise<void> {
     const preview = sniff(path, f);
     updateTab(key, (t) =>
       t.kind === 'file'
-        ? { ...t, saved: f.text, mtimeMs: f.mtimeMs, size: f.size, binary: f.binary, truncated: f.truncated, loading: false, error: null, dirty: false, conflict: null, version: t.version + 1, head: f.head, preview, view: viewFor(preview, t.view) }
+        ? { ...t, saved: f.text, mtimeMs: f.mtimeMs, size: f.size, binary: f.binary, truncated: f.truncated, loading: false, error: null, said: null, dirty: false, conflict: null, version: t.version + 1, head: f.head, preview, view: viewFor(preview, t.view) }
         : t,
     );
   } catch (e) {
-    updateTab(key, (t) => (t.kind === 'file' ? { ...t, loading: false, error: errText(e) } : t));
+    updateTab(key, (t) => (t.kind === 'file' ? { ...t, loading: false, error: errText(e), said: api.saidOf(e) } : t));
   }
 }
 
@@ -2410,7 +2433,7 @@ export async function saveFile(key: string, text: string, force = false): Promis
     refreshDirOf(t.path);
     return true;
   } catch (e) {
-    toast(`Save failed: ${errText(e)}`, 'error');
+    failed(e, 'Save failed');
     return false;
   }
 }
@@ -2437,7 +2460,7 @@ export async function keepMine(key: string): Promise<void> {
     const f = await api.fsRead(t.path);
     updateTab(key, (x) => ({ ...x, conflict: null, mtimeMs: f.mtimeMs }) as Tab);
   } catch (e) {
-    toast(errText(e), 'error');
+    failed(e, '');
   }
 }
 
@@ -2482,7 +2505,7 @@ export async function uploadFiles(files: File[], dir: string): Promise<string[]>
       const p = await api.fsUpload(dir, f);
       done.push(p);
     } catch (e) {
-      toast(`Upload of ${f.name} failed: ${errText(e)}`, 'error');
+      failed(e, `Upload of ${label(f.name, 120)} failed`);
     }
   }
   if (done.length) {
@@ -2499,7 +2522,7 @@ export async function makeDir(parent: string, name: string): Promise<void> {
     await api.fsMkdir(p);
     await loadDir(parent);
   } catch (e) {
-    toast(errText(e), 'error');
+    failed(e, '');
   }
 }
 export async function newFile(parent: string, name: string): Promise<void> {
@@ -2512,7 +2535,7 @@ export async function newFile(parent: string, name: string): Promise<void> {
     await loadDir(parent);
     void openFile(p);
   } catch (e) {
-    toast(errText(e), 'error');
+    failed(e, '');
   }
 }
 export async function renamePath(from: string, toName: string): Promise<void> {
@@ -2523,7 +2546,7 @@ export async function renamePath(from: string, toName: string): Promise<void> {
     await loadDir(dirname(from));
     set((s) => ({ ...s, tabs: s.tabs.map((t) => (t.kind === 'file' && t.path === from ? { ...t, path: to, key: `file:${to}` } : t)), activeTab: s.activeTab === `file:${from}` ? `file:${to}` : s.activeTab }));
   } catch (e) {
-    toast(errText(e), 'error');
+    failed(e, '');
   }
 }
 export async function deletePath(path: string): Promise<void> {
@@ -2532,7 +2555,7 @@ export async function deletePath(path: string): Promise<void> {
     await loadDir(dirname(path));
     toast(`Moved ${basename(path)} to the ${inProject(path, projectRoot()) && projectRoot() ? 'project\'s' : 'workspace'} trash`, 'ok');
   } catch (e) {
-    toast(errText(e), 'error');
+    failed(e, '');
   }
 }
 
@@ -2608,7 +2631,7 @@ export async function exportTranscript(id = get().active): Promise<void> {
       if (w.dropped > 0) partial = true;
     } catch (e) {
       partial = true;
-      toast(`Earlier messages could not be read (${errText(e)}): the export has what the page shows.`, 'error');
+      failed(e, 'Earlier messages could not be read: the export has what the page shows', (m) => `Earlier messages could not be read (${m}): the export has what the page shows.`);
     }
   }
   const title = v.title || get().sessions.find((x) => x.id === v.id)?.title || '';
@@ -2694,7 +2717,7 @@ export async function loadEarlier(id: string): Promise<void> {
     const h = await api.getMessages(id, { offset, limit: v.historyOffset - offset });
     updateView(id, (x) => prependHistory(x, h.events, offset));
   } catch (e) {
-    toast(`Earlier messages could not be loaded: ${errText(e)}`, 'error');
+    failed(e, 'Earlier messages could not be loaded');
   } finally {
     historyLoading.delete(id);
   }
@@ -3169,7 +3192,7 @@ export async function loadGitHosts(): Promise<void> {
     setGit((g) => ({ ...g, hosts, events: hosts.events }));
     announce();   // (the portal: its Activity's Git hosts uses, the walkthrough's count of hosts)
   } catch (e) {
-    toast(`Git hosts: ${errText(e)}`, 'error');
+    failed(e, 'Git hosts');
   }
 }
 /** A Git hosts change (add a host, a token, a key, Claude's use …): the list again, and what went wrong said. */
@@ -3304,16 +3327,16 @@ export function showSearch(): void {
 let searchSeq = 0;
 export async function runSearch(): Promise<void> {
   const q = get().search;
-  if (!q.q.trim()) return setSearch({ result: null, error: null, loading: false });
+  if (!q.q.trim()) return setSearch({ result: null, error: null, said: null, loading: false });
   const n = ++searchSeq;
-  setSearch({ loading: true, error: null });
+  setSearch({ loading: true, error: null, said: null });
   const proj = get().project;
   try {
     const result = await api.grep({ q: q.q, regex: q.regex, caseSensitive: q.caseSensitive, include: q.include, exclude: q.exclude });
     if (get().project !== proj) return setSearch({ loading: false });
     if (n === searchSeq) setSearch({ result, loading: false, error: result.error });
   } catch (e) {
-    if (n === searchSeq) setSearch({ loading: false, error: e instanceof api.ApiError && e.status === 429 ? 'Two searches are running already: try again in a moment.' : errText(e) });
+    if (n === searchSeq) setSearch({ loading: false, error: e instanceof api.ApiError && e.status === 429 ? 'Two searches are running already: try again in a moment.' : errText(e), said: api.saidOf(e) });
   }
 }
 

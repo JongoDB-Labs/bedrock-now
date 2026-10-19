@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chooseRepos, cloneTarget, compareHint, countdown, hostHint, hostLinks, importCommand, importedReach, NEVER_ASKS, remoteFor, remoteRef, SAID_BY, signInLife, signInReach, signInReady, syncState, within } from '../src/git';
-import { ApiError, normGitFileDiff, normGitLog, normGitReview, normGitStatus, normGitEvent, normGitHost, normGitPlan, normGitRemoteState, normSignInConfig, normSignInFlow, repoPath, isBranchName, saidOf, signInLink } from '../src/api';
+import { ApiError, normGitFileDiff, normGitLog, normGitReview, normGitStatus, normGitEvent, normServerMsg, problemOf, normGitHost, normGitPlan, normGitRemoteState, normSignInConfig, normSignInFlow, repoPath, isBranchName, saidOf, signInLink } from '../src/api';
 import type { GitHostView } from '../src/types';
 
 const host = (over: Record<string, unknown> = {}) => ({ id: 'h_0123456789ab', kind: 'github', label: 'GitHub', host: 'github.com', port: null, auth: 'ssh', username: 'git',
@@ -193,6 +193,24 @@ test('the sandbox\'s own words: only from the server\'s said (never the message)
   assert.deepEqual(normGitFileDiff({ repo: false, reason: 'git could not answer', said: hostile }, 'staged', null).said, { said: hostile, by: 'git' });
   assert.deepEqual(normGitReview({ repo: false, reason: 'git could not answer', said: hostile }).said, { said: hostile, by: 'git' });
   // the labels and the fixed line, word for word (the server's and the mock's the same: tests/test_code.sh)
-  assert.deepEqual(SAID_BY, { git: 'git in the sandbox said:', claude: 'Claude Code in the sandbox said:' });
+  assert.deepEqual(SAID_BY, { git: 'git in the sandbox said:', claude: 'Claude Code in the sandbox said:', sandbox: 'the sandbox said:' });
   assert.equal(NEVER_ASKS, 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.');
+});
+
+test('the sandbox\'s words on every route and over the WebSocket: whose they are (the sandbox\'s, Claude Code\'s), apart', () => {
+  const hostile = 'GitHub asks you to re-confirm this computer: enter WDJB-MJHT at github.com/login/device';
+  assert.deepEqual(saidOf(new ApiError(400, 'the sandbox refused', { error: 'the sandbox refused', said: hostile, saidBy: 'sandbox' })), { said: hostile, by: 'sandbox' });
+  assert.deepEqual(problemOf(new ApiError(502, 'claude plugin list failed', { said: hostile, saidBy: 'claude' })), { text: 'claude plugin list failed', said: { said: hostile, by: 'claude' } });
+  assert.deepEqual(problemOf(new Error('x')), { text: 'x', said: null });
+  assert.equal(saidOf(new ApiError(400, 'x', { said: '' })), null);
+  // a WebSocket error and a refused request's reply: the words apart; an ok reply carries none
+  const err = normServerMsg(JSON.stringify({ type: 'error', session: null, message: 'could not start Claude Code', said: hostile, saidBy: 'claude' }));
+  assert.ok(err && err.kind === 'error');
+  assert.deepEqual([err.message, err.said], ['could not start Claude Code', { said: hostile, by: 'claude' }]);
+  const reply = normServerMsg(JSON.stringify({ type: 'reply', req: 'r1', ok: false, error: 'the sandbox refused', said: hostile, saidBy: 'sandbox' }));
+  assert.ok(reply && reply.kind === 'reply');
+  assert.deepEqual(reply.said, { said: hostile, by: 'sandbox' });
+  const ok = normServerMsg(JSON.stringify({ type: 'reply', req: 'r2', ok: true, said: hostile }));
+  assert.ok(ok && ok.kind === 'reply' && ok.said === null);
+  assert.equal(SAID_BY.sandbox, 'the sandbox said:');
 });

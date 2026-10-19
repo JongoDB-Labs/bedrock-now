@@ -6,10 +6,11 @@
 // sessions reload their plugins, so new commands and skills are in the / palette at once.
 import { useEffect, useRef, useState } from 'preact/hooks';
 import * as api from '../api';
-import type { AvailablePlugin, Catalog, Confirmation, InstalledPlugin, Marketplace, Outcome } from '../types';
+import type { AvailablePlugin, Catalog, Confirmation, InstalledPlugin, Marketplace, Outcome, SandboxWords } from '../types';
 import { useSel } from '../store';
 import { store, activeView, toast } from '../app';
 import { label } from '../text';
+import { SandboxSaid } from './Said';
 import { Dialog } from './ui';
 import { Icon, Spinner } from './icons';
 
@@ -20,13 +21,15 @@ interface Pending {
   confirm: Confirmation;
 }
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : 'Something went wrong.');
 
-function Note({ o }: { o: { ok: boolean; text: string } | null }) {
+/** What an action came to: ok, or why not — the sandbox's own words apart when it is in them (said) */
+type NoteOf = { ok: boolean; text: string; said?: SandboxWords | null };
+function Note({ o }: { o: NoteOf | null }) {
   if (!o) return null;
   return (
     <div class={`plg-note ${o.ok ? 'ok' : 'err'}`} role={o.ok ? 'status' : 'alert'} data-testid="plugins-note">
       <Icon name={o.ok ? 'check' : 'alert'} size={14} /> <span>{o.text}</span>
+      {o.said && <SandboxSaid words={o.said} />}
     </div>
   );
 }
@@ -169,7 +172,7 @@ function Discover({ busy, act, stamp }: { busy: string | null; act: (a: api.Plug
   const [q, setQ] = useState('');
   const [mkt, setMkt] = useState('');
   const [cat, setCat] = useState<Catalog | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ReturnType<typeof api.problemOf> | null>(null);
   const [loading, setLoading] = useState(false);
   const seq = useRef(0);
   useEffect(() => {
@@ -180,7 +183,7 @@ function Discover({ busy, act, stamp }: { busy: string | null; act: (a: api.Plug
         api
           .getAvailable(q, mkt)
           .then((c) => n === seq.current && (setCat(c), setErr(null)))
-          .catch((e) => n === seq.current && setErr(errText(e)))
+          .catch((e) => n === seq.current && setErr(api.problemOf(e)))
           .finally(() => n === seq.current && setLoading(false)),
       q ? 250 : 0,
     );
@@ -203,7 +206,12 @@ function Discover({ busy, act, stamp }: { busy: string | null; act: (a: api.Plug
         </select>
         {loading && <Spinner size={14} />}
       </div>
-      {err && <div class="plg-note err">{err}</div>}
+      {err && (
+        <div class="plg-note err">
+          {err.text}
+          {err.said && <SandboxSaid words={err.said} />}
+        </div>
+      )}
       {cat && !cat.plugins.length && !loading && <p class="muted">{q ? 'Nothing matches.' : 'No plugins: add a marketplace first.'}</p>}
       <ul class="plg-list" data-testid="plugins-available">
         {(cat?.plugins ?? []).map((p: AvailablePlugin) => (
@@ -315,9 +323,9 @@ export function PluginsDialog({ onClose }: { onClose: () => void }) {
   const [installed, setInstalled] = useState<InstalledPlugin[]>([]);
   const [markets, setMarkets] = useState<Marketplace[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [loadErr, setLoadErr] = useState<ReturnType<typeof api.problemOf> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [note, setNote] = useState<NoteOf | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [stamp, setStamp] = useState(0);
 
@@ -330,7 +338,7 @@ export function PluginsDialog({ onClose }: { onClose: () => void }) {
       setLoadErr(null);
       if (!r.installed.length && r.marketplaces.length) setTab((t) => (t === 'installed' ? 'discover' : t));
     } catch (e) {
-      setLoadErr(errText(e));
+      setLoadErr(api.problemOf(e));
     } finally {
       setLoading(false);
     }
@@ -354,7 +362,7 @@ export function PluginsDialog({ onClose }: { onClose: () => void }) {
     setNote(null);
     f()
       .then(done)
-      .catch((e) => setNote({ ok: false, text: errText(e) }))
+      .catch((e) => setNote({ ok: false, ...api.problemOf(e) }))
       .finally(() => setBusy(null));
   };
 
@@ -371,7 +379,7 @@ export function PluginsDialog({ onClose }: { onClose: () => void }) {
         }
         done(o);
       })
-      .catch((e) => setNote({ ok: false, text: errText(e) }))
+      .catch((e) => setNote({ ok: false, ...api.problemOf(e) }))
       .finally(() => setBusy(null));
   };
 
@@ -388,7 +396,7 @@ export function PluginsDialog({ onClose }: { onClose: () => void }) {
           done(o);
         }
       })
-      .catch((e) => setNote({ ok: false, text: errText(e) }))
+      .catch((e) => setNote({ ok: false, ...api.problemOf(e) }))
       .finally(() => setBusy(null));
   };
 
@@ -407,7 +415,12 @@ export function PluginsDialog({ onClose }: { onClose: () => void }) {
         ))}
         {loading && <Spinner size={14} />}
       </div>
-      {loadErr && <div class="plg-note err">{loadErr}</div>}
+      {loadErr && (
+        <div class="plg-note err">
+          {loadErr.text}
+          {loadErr.said && <SandboxSaid words={loadErr.said} />}
+        </div>
+      )}
       <Note o={note} />
       {pending ? (
         <ConfirmCommand

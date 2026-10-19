@@ -12,6 +12,8 @@ import { checkSnapshot, diffSnapshots, mergeSnapshots, watchEvent, revertOf } fr
 import { WS, cwdOk } from './projects.mjs';
 import { ALL_SOURCES, APPLIED as APPLIED_STATES, withheldText } from './trust.mjs';
 import { gitNote } from './gitnote.mjs';
+import { SandboxError } from './spawn-client.mjs';
+import { plainRefusal } from './gitreasons.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
@@ -69,8 +71,12 @@ const DECISION_MS = 60000;
 const WORKSPACE_SETTINGS = Object.freeze({ state: 'workspace', sources: ALL_SOURCES, strictMcp: false, project: 'ws', hash: null });
 const NOT_DECIDED = Object.freeze({ state: 'unchecked', sources: ['user'], strictMcp: true, project: null, hash: null });
 
+// (said, saidBy: the sandbox's or Claude Code's own words in it — apart, never in the message: said.mjs)
 export class SessionError extends Error {
-  constructor(message, status = 400) { super(message); this.status = status; }
+  constructor(message, status = 400, { said = null, saidBy = null } = {}) {
+    super(message); this.status = status;
+    if (typeof said === 'string' && said) { this.said = said; this.saidBy = saidBy === 'sandbox' ? 'sandbox' : 'claude'; }
+  }
 }
 
 // pluginsKey(list) -> a comparable summary of a session's loaded plugins (what a reload is waiting to see change)
@@ -299,8 +305,13 @@ export class Session {
       feed.ready = wantAuto ? flagged.then(() => this.startAuto(q)) : flagged;
     } catch (e) {
       this.q = null;
-      this.setState('error', short(e.message, 300));
-      throw new SessionError(`could not start Claude Code: ${short(e.message, 200)}`, 502);
+      // (why: bn-coded's fixed refusal, or a failure of ours — a timeout, an unreachable sandbox —, as it is; anything
+      // else — the sandbox's or Claude Code's own words — apart)
+      const why = short(e?.message || String(e), 200);
+      const ours = e instanceof SandboxError && (e.kind !== 'refused' || plainRefusal(e.message));
+      this.setState('error', ours ? `could not start Claude Code: ${why}` : 'could not start Claude Code');
+      throw ours ? new SessionError(`could not start Claude Code: ${why}`, 502)
+        : new SessionError('could not start Claude Code', 502, { said: why, saidBy: e instanceof SandboxError ? 'sandbox' : 'claude' });
     }
     // (Claude Code says init with its first turn; until a prompt comes the session simply waits.)
     this.setState('idle');

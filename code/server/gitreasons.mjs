@@ -1,8 +1,8 @@
-// What git in the sandbox answers as a reason (no repository here, no answer) or a log's error: bn-coded's own fixed
-// reasons are shown as they are — the list below, word for word (code/test/git-api.test.mjs checks it equals
-// bn-coded's GIT_REASONS, and that bn-coded writes no reason another way). Anything else is the sandbox's own words
-// (git's stderr — or a hostile sandbox's): a fixed sentence of ours, its words apart (said, saidBy), which the page
-// shows in a box of their own under NEVER_ASKS — never as a sentence of ours.
+// bn-coded's own fixed texts — what git in the sandbox answers as a reason (no repository here, no answer) or a log's
+// error, and its refusals (an ERROR) — are shown as they are: the lists below, word for word (code/test/git-api.test.mjs
+// checks they equal what bn-coded writes, and that bn-coded writes no reason another way). Anything else is the
+// sandbox's own words (git's stderr, a name — or a hostile sandbox's): a fixed sentence of ours, its words apart (said,
+// saidBy: said.mjs), which the page shows in a box of their own under NEVER_ASKS — never as a sentence of ours.
 import { short } from './validate.mjs';
 
 export const GIT_REASONS = Object.freeze([
@@ -98,8 +98,81 @@ export const GIT_REFUSALS = Object.freeze([
   'busy: try again in a moment',
   'busy: another git change is on its way',
 ]);
+// bn-coded's own fixed refusals in its other ops (the files, the terminal, Run, the launch configurations, sessions,
+// the permission rules, the watchlist …): the same — read plainly (checked the same way: the rest of bn-coded)
+export const SANDBOX_REFUSALS = Object.freeze([
+  'frame too large',
+  'ENOENT',
+  'not in the workspace',
+  'bad session id',
+  'bad title',
+  'not a transcript',
+  'that name exists already',
+  'changed on disk since it was opened',
+  'not a file',
+  'bad size',
+  'more bytes than announced',
+  'fewer bytes than announced',
+  'no free name',
+  'not a host name',
+  'not a port',
+  'the egress proxy answered with too long a header',
+  'a search of 1 to 1000 characters, one line',
+  'regular expressions need ripgrep, which is not in the sandbox: search for the text itself',
+  'bad pid or port',
+  'bad signal',
+  'that process does not listen on that port (it stopped already?)',
+  'no digest of the entry shown',
+  'no such entry in .claude/launch.json',
+  '.claude/launch.json changed since it was shown: review it again',
+  'that entry has no command (runtimeExecutable or program): it only names a running server',
+  'cwd: not a folder in the workspace',
+  "node is not the image's own here: start it in the terminal",
+  'no such session in this workspace (it has no prompts yet?)',
+  'no such session in this workspace',
+  'that conversation is already open in the sandbox (the terminal?)',
+  'tmux: no pane for the new window',
+  'bad pane id',
+  'the terminal has no tmux session yet: open the terminal once',
+  'no such pane in the terminal',
+  'no digest of the task shown',
+  'no such task',
+  'no such task in the workspace (any more)',
+  'the task changed since it was shown: review it again',
+  'no workspace',
+  "node is not the image's own here: run it in the terminal",
+  'bad run id',
+  'no window for that run',
+  'its window is closed',
+  'there are no user settings (any more)',
+  'the user settings cannot be read',
+  'the user settings are not a regular file of at most 256 KiB: change them in the terminal',
+  'list: allow, ask or deny',
+  'bad rule',
+  'ifSha256: the SHA-256 of the file as shown',
+  'the user settings are not valid JSON: change them in the terminal',
+  'no such rule',
+  'a link now: not changed',
+  'not a watched file',
+  'a folder is there now',
+  'it changed again since: not put back',
+  'bad data',
+  'a folder on its way is a link',
+  'the connection ended',
+  'no answer',
+  'too many plugin or MCP commands at once',
+  'too many Claude Code processes',
+  'bad open',
+  'cwd must be in /workspace',
+  'bad name',
+  'busy: try again in a moment',
+  'busy: too many connections at once',
+  'unknown op',
+  'open first',
+  'the user settings changed since they were shown: look again',
+]);
 const KNOWN = new Set(GIT_REASONS);
-const PLAIN = new Set([...GIT_REASONS, ...GIT_REFUSALS]);
+const PLAIN = new Set([...GIT_REASONS, ...GIT_REFUSALS, ...SANDBOX_REFUSALS]);
 // plainRefusal(message) -> true when a refusal of bn-coded's is one of its fixed texts (a reason or a refusal)
 export const plainRefusal = (m) => typeof m === 'string' && PLAIN.has(m);
 export const GIT_ANSWERED = 'git could not answer';

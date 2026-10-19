@@ -11,6 +11,7 @@ import { getRunResults } from '../api';
 import { duration, failing, lastLines, outcome, outcomeText, plainCommand, plainOutput } from '../run';
 import type { RunResult, RunSource, RunTask } from '../types';
 import { label, visible } from '../text';
+import { SandboxSaid } from './Said';
 import { Icon, Spinner } from './icons';
 import { addProblems } from '../attach';
 import { Dialog, Dropdown } from './ui';
@@ -151,6 +152,7 @@ export function Problems({ onDone }: { onDone?: () => void }) {
 export function RunPanel({ onDone }: { onDone?: () => void }) {
   const run = useSel(store, (s) => s.run);
   const error = useSel(store, (s) => s.runError);
+  const errorSaid = useSel(store, (s) => s.runSaid ?? null);
   const launch = useSel(store, (s) => s.launch);
   useEffect(() => {
     void loadRun();
@@ -169,7 +171,12 @@ export function RunPanel({ onDone }: { onDone?: () => void }) {
         </button>
       </div>
       {anyRuns && <Problems onDone={onDone} />}
-      {error && <div class="banner warn small">Could not list the tasks: {label(error, 200)}</div>}
+      {error && (
+        <div class="banner warn small">
+          {errorSaid ? 'Could not list the tasks.' : `Could not list the tasks: ${label(error, 200)}`}
+          {errorSaid && <SandboxSaid words={errorSaid} />}
+        </div>
+      )}
       {run === null && !error && (
         <p class="muted small">
           <Spinner size={11} /> Reading {currentProject().path}…

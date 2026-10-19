@@ -6,7 +6,8 @@
 import { useEffect, useState } from 'preact/hooks';
 import * as api from '../api';
 import type { PermFile, Permissions } from '../api';
-import { toast, currentProject } from '../app';
+import { failed, toast, currentProject } from '../app';
+import { SandboxSaid } from './Said';
 import { safe } from '../text';
 import { Dialog } from './ui';
 import { Icon, Spinner } from './icons';
@@ -102,13 +103,16 @@ function Rules({ id, file, removable, onRemove, busy }: { id: string; file: Perm
 export function PermissionsDialog({ onClose }: { onClose: () => void }) {
   const [p, setP] = useState<Permissions | null>(null);
   const [error, setError] = useState('');
+  const [errorSaid, setErrorSaid] = useState<ReturnType<typeof api.saidOf>>(null);
   const [busy, setBusy] = useState('');
   const load = async () => {
     setError('');
+    setErrorSaid(null);
     try {
       setP(await api.getPermissions());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setErrorSaid(api.saidOf(e));
     }
   };
   useEffect(() => void load(), []);
@@ -121,7 +125,8 @@ export function PermissionsDialog({ onClose }: { onClose: () => void }) {
       toast(`Removed: ${safe(rule, 120)}`, 'ok');
     } catch (e) {
       // changed meanwhile (an "Always" just now, the terminal): the list is read again, nothing was removed
-      toast(e instanceof api.ApiError && e.status === 409 ? 'The settings changed meanwhile: here they are again. Nothing was removed.' : `Not removed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      if (e instanceof api.ApiError && e.status === 409) toast('The settings changed meanwhile: here they are again. Nothing was removed.', 'error');
+      else failed(e, 'Not removed');
     } finally {
       setBusy('');
       void load();
@@ -135,9 +140,10 @@ export function PermissionsDialog({ onClose }: { onClose: () => void }) {
         pick next to Send decides the rest.
       </p>
       {error && (
-        <p class="err" role="alert">
+        <div class="err" role="alert">
           {error}
-        </p>
+          {errorSaid && <SandboxSaid words={errorSaid} />}
+        </div>
       )}
       {!p && !error && <Spinner />}
       {p && (

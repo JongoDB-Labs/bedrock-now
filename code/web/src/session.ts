@@ -13,6 +13,7 @@ import type {
   SessionState,
   SpendRow,
   Task,
+  SandboxWords,
   Usage,
   WatchChange,
 } from './types';
@@ -35,7 +36,7 @@ export type Item =
     }
   | { t: 'local'; k: number; text: string }
   | { t: 'result'; k: number; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; turn: number; models?: string[]; picked?: string }
-  | { t: 'notice'; k: number; text: string; level: 'info' | 'warn' | 'error' }
+  | { t: 'notice'; k: number; text: string; level: 'info' | 'warn' | 'error'; said?: SandboxWords | null }
   /** files that run on your computer changed: the card with diffs and Revert */
   | { t: 'watch'; k: number; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete: string }
   /** a call denied without asking you (Auto mode's classifier, a rule …): the card with the reason and "Allow once" */

@@ -11,6 +11,7 @@ import { useSel } from '../store';
 import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
 import { WatchCard } from './WatchCard';
+import { SandboxSaid } from './Said';
 import { BlockedCard } from './BlockedCard';
 import { modelLabel } from './Pickers';
 import { otherModels } from '../models';
@@ -377,6 +378,7 @@ export function MessageList({ view }: { view: SessionView | undefined }) {
           <div key={it.k} class={`notice notice-${it.level}`}>
             {it.level === 'error' && <Icon name="alert" size={14} />}
             <span>{it.text}</span>
+            {it.said && <SandboxSaid words={it.said} />}
           </div>
         );
     }

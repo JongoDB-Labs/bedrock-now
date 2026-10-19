@@ -11,6 +11,7 @@ import { RANGE_MAX, lineToken } from '../mentions';
 import * as api from '../api';
 import { countChanges, hunkLines } from '../diff';
 import { basename, bytes, dirname, label } from '../text';
+import { SandboxSaid } from './Said';
 import { downloadUrl } from '../api';
 import type { EditorHandle } from '../editor/cm';
 import { Icon, Spinner } from './icons';
@@ -212,6 +213,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
       ) : tab.error ? (
         <div class="pane-msg err">
           <Icon name="alert" /> {tab.error}
+          {tab.said && <SandboxSaid words={tab.said} />}
           <button type="button" class="btn small" onClick={() => reloadFile(tab.key)}>
             Retry
           </button>

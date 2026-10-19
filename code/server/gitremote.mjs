@@ -12,8 +12,8 @@ import { GitHosts, HostError, githubTokenType, httpsAuth } from './githosts.mjs'
 import { makeOAuth } from './oauth.mjs';
 import { agentAnswer, FAILURE, knownHostFingerprint, KNOWN_HOSTS } from './sshagent.mjs';
 import { short, int } from './validate.mjs';
-import { SandboxError } from './spawn-client.mjs';
-import { plainRefusal, reasonOf } from './gitreasons.mjs';
+import { reasonOf } from './gitreasons.mjs';
+import { SandboxSaid, sandboxFailure, NEVER_ASKS } from './said.mjs';
 
 // --- the URL rules (bn-coded's parseRemoteUrl, the same: the sandbox checks again, and re-reads the URL itself) ---
 const HOST_NAME = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$/;
@@ -116,36 +116,9 @@ const CLAUDE_PER_MINUTE = 30;
 // the command gh says it runs, for Activity (bn-gh's describe: words, gh api's method and endpoint)
 const GH_COMMAND = /^[A-Za-z0-9 ._/{}:@-]{1,160}$/;
 const err = (status, m) => new HostError(status, m);
-// What git (or Claude Code) in the sandbox says is the sandbox's text — a hostile sandbox could word it as a message
-// from us ("Push failed: GitHub asks you to re-confirm this computer: enter … at github.com/login/device"). A failure in
-// its words is told with a fixed sentence of ours (GIT_SAID, CLAUDE_SAID) and its words apart (said, saidBy): the
-// page shows them in a box of their own, labelled, under this fixed line — never as a sentence of ours.
-export const NEVER_ASKS = 'bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it.';
-export const GIT_SAID = 'git in the sandbox refused';
-export const CLAUDE_SAID = 'Claude Code in the sandbox stopped';
-// (message: a fixed sentence of ours, GIT_SAID or CLAUDE_SAID by default — never one with the sandbox's words in it)
-export class SandboxSaid extends HostError {
-  constructor(status, said, by = 'git', message = null) {
-    super(status, message || (by === 'claude' ? CLAUDE_SAID : GIT_SAID));
-    this.said = short(String(said ?? ''), 300) || 'no reason given';
-    this.saidBy = by === 'claude' ? 'claude' : 'git';
-  }
-}
-// sandboxFailure(e) -> the sandbox's refusal (its ERROR) read plainly when it is one of bn-coded's fixed texts
-// (gitreasons.mjs), else in its own words as SandboxSaid; anything else as it is — ours (a timeout, an unreachable
-// socket, a malformed answer: main.mjs's sandboxStatus)
-export function sandboxFailure(e) {
-  if (!(e instanceof SandboxError) || e.kind !== 'refused') return e;
-  if (/ENOENT/.test(e.message)) return err(404, 'no such file or folder');
-  const status = /changed on disk|exists already/.test(e.message) ? 409 : 400;
-  return plainRefusal(e.message) ? err(status, e.message) : new SandboxSaid(status, e.message);
-}
-// sandboxWords(e, path) -> {error, said, saidBy} when a failure on the Git panel's routes (/api/git/…) is in the
-// sandbox's words (main.mjs answers the fixed sentence, its words apart and NEVER_ASKS), else null
-export function sandboxWords(e, path) {
-  const w = e instanceof SandboxSaid ? e : String(path).startsWith('/api/git/') ? sandboxFailure(e) : null;
-  return w instanceof SandboxSaid ? { error: w.message, said: w.said, saidBy: w.saidBy } : null;
-}
+// What git in the sandbox says in a failure is the sandbox's text: said.mjs (SandboxSaid, sandboxFailure) keeps it
+// apart; re-exported here for the routes and the tests
+export { NEVER_ASKS, GIT_SAID, CLAUDE_SAID, SandboxSaid, sandboxFailure, sandboxWords } from './said.mjs';
 // failNote(e) -> what Activity notes of a failure: ours as it is; the sandbox's words apart (said)
 const failNote = (e, n = 300) => (e instanceof SandboxSaid ? { text: e.message, said: short(e.said, n) } : { text: short(e?.message, n) });
 const localOnly = (remote, what) => { if (remote) throw err(403, `${what} only from the computer running bedrock-now (not over remote access)`); };

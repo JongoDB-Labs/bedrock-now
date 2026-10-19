@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import { store, openFileAt, runSearch, setSearch } from '../app';
 import { label, safe } from '../text';
+import { SandboxSaid } from './Said';
 import type { GrepFile, GrepHit } from '../types';
 import { Icon, Spinner } from './icons';
 import { MOD } from '../shortcuts';
@@ -89,7 +90,10 @@ export function SearchPanel({ onOpen }: { onOpen?: () => void }) {
               <Spinner size={11} /> Searching…
             </>
           ) : st.error ? (
-            <span class="err">{label(st.error, 300)}</span>
+            <span class="err">
+              {label(st.error, 300)}
+              {st.said && <SandboxSaid words={st.said} />}
+            </span>
           ) : r ? (
             <>
               {r.hits ? `${r.hits} result${r.hits === 1 ? '' : 's'} in ${r.files.length} file${r.files.length === 1 ? '' : 's'}` : 'No results'}

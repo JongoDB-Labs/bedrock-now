@@ -15,6 +15,7 @@ import { previewTabUrl } from '../api';
 import { VIEWPORTS, cleanPreviewPath, fitScale, loaderWhy } from '../devpreview';
 import type { LaunchEntry, PortInfo } from '../types';
 import { label, visible } from '../text';
+import { SandboxSaid } from './Said';
 import { Icon, Spinner } from './icons';
 import { Dialog, copyText, useMedia } from './ui';
 
@@ -273,6 +274,7 @@ function PortRow({ p, onDone }: { p: PortInfo; onDone?: () => void }) {
 export function PortsPanel({ onDone }: { onDone?: () => void }) {
   const ports = useSel(store, (s) => s.ports);
   const error = useSel(store, (s) => s.portsError);
+  const errorSaid = useSel(store, (s) => s.portsSaid ?? null);
   const info = useSel(store, (s) => s.preview);
   const launch = useSel(store, (s) => s.launch);
   const [other, setOther] = useState('');
@@ -298,7 +300,12 @@ export function PortsPanel({ onDone }: { onDone?: () => void }) {
           Over remote access a browser previews one port at a time: opening another port's preview switches the one shown.
         </p>
       )}
-      {error && <div class="banner warn small">Could not list them: {label(error, 200)}</div>}
+      {error && (
+        <div class="banner warn small">
+          {errorSaid ? 'Could not list them.' : `Could not list them: ${label(error, 200)}`}
+          {errorSaid && <SandboxSaid words={errorSaid} />}
+        </div>
+      )}
       {ports.length ? (
         <ul class="port-list">
           {ports.map((p) => (
@@ -331,7 +338,10 @@ export function PortsPanel({ onDone }: { onDone?: () => void }) {
           <Spinner size={11} /> Reading it…
         </p>
       ) : launch.error && !launch.entries.length ? (
-        <p class="muted small">It cannot be used: {launch.error}</p>
+        <div class="muted small">
+          {launch.said ? 'It cannot be used.' : `It cannot be used: ${launch.error}`}
+          {launch.said && <SandboxSaid words={launch.said} />}
+        </div>
       ) : !launch.exists ? (
         <p class="muted small">None in this project. The Claude Code desktop app's dev-server list works here too: its entries can be started from this panel.</p>
       ) : (
