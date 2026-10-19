@@ -252,6 +252,9 @@ let gitRemoteBranches = ['main'];
 let gitBranchesMock = [{ name: 'main', upstream: { remote: 'origin', branch: 'main' } }];
 let gitCurrent = 'main';
 const gitPlans = new Map();
+// a CLI action's outcome as the backend answers it (api.mjs's actionResult): a sentence of ours, the CLI's message apart
+const outcomeOf = (o) => (o && typeof o.message === 'string' && o.failureCode !== 'command_too_long'
+  ? { ...o, message: o.ok ? 'Done.' : 'It did not work.', said: o.message.slice(0, 300), saidBy: 'claude' } : o);
 // a hostile sandbox's words (/__mock/git-said): its failures answered as main.mjs does — a fixed sentence of ours, its
 // words apart (said) — never in a sentence of ours
 let gitSaid = '';
@@ -2203,8 +2206,8 @@ async function api(req, res, url) {
     if (b.acceptCommand !== undefined && !/^[0-9a-f]{64}$/.test(b.acceptCommand)) return json(res, 400, { error: 'bad acceptCommand (a SHA-256)' });
     await sleep(300);
     const cur = plug.installed.find((i) => i.id === b.name);
-    const fail = (message, failureCode = 'error_unknown') => json(res, 200, { ok: false, outcome: 'failed', message, failureCode });
-    const ok = (message) => json(res, 200, { ok: true, outcome: 'ok', message, failureCode: null, reloaded: reloadAll() });
+    const fail = (message, failureCode = 'error_unknown') => json(res, 200, outcomeOf({ ok: false, outcome: 'failed', message, failureCode }));
+    const ok = (message) => json(res, 200, outcomeOf({ ok: true, outcome: 'ok', message, failureCode: null, reloaded: reloadAll() }));
     if (act === 'install') {
       const entry = catalog().find((x) => x.id === b.name || (!b.name.includes('@') && x.name === b.name));
       if (!entry) return fail(`Plugin "${b.name}" not found in any marketplace`, 'not_found');
@@ -2234,36 +2237,36 @@ async function api(req, res, url) {
     const src = String((await jsonBody(req)).source || '').trim();
     await sleep(400);
     const name = /^[\w.-]+\/[\w.-]+$/.test(src) ? src.split('/')[1] : /^https:\/\//.test(src) ? src.replace(/\.git$/, '').split('/').pop() : src.startsWith('/workspace/') ? src.split('/').filter(Boolean).pop() : '';
-    if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) return json(res, 200, { ok: false, outcome: 'failed', message: `Invalid marketplace source: ${src}`, failureCode: 'invalid_source' });
-    if (plug.marketplaces.some((x) => x.name === name)) return json(res, 200, { ok: false, outcome: 'failed', message: `Marketplace '${name}' is already added`, failureCode: 'already_added' });
+    if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) return json(res, 200, outcomeOf({ ok: false, outcome: 'failed', message: `Invalid marketplace source: ${src}`, failureCode: 'invalid_source' }));
+    if (plug.marketplaces.some((x) => x.name === name)) return json(res, 200, outcomeOf({ ok: false, outcome: 'failed', message: `Marketplace '${name}' is already added`, failureCode: 'already_added' }));
     plug.marketplaces.push({ name, source: src.startsWith('/') ? 'directory' : src.startsWith('https') ? 'git' : 'github', location: src });
-    return json(res, 200, { ok: true, outcome: 'ok', message: `Successfully added marketplace: ${name} (declared in user settings)`, reloaded: reloadAll() });
+    return json(res, 200, outcomeOf({ ok: true, outcome: 'ok', message: `Successfully added marketplace: ${name} (declared in user settings)`, reloaded: reloadAll() }));
   }
   if (p === '/api/marketplaces/update' && m === 'POST') {
     const name = String((await jsonBody(req)).name || '');
-    return json(res, 200, plug.marketplaces.some((x) => x.name === name) ? { ok: true, outcome: 'ok', message: `Successfully updated marketplace: ${name}`, reloaded: reloadAll() } : { ok: false, outcome: 'failed', message: `Marketplace '${name}' not found` });
+    return json(res, 200, outcomeOf(plug.marketplaces.some((x) => x.name === name) ? { ok: true, outcome: 'ok', message: `Successfully updated marketplace: ${name}`, reloaded: reloadAll() } : { ok: false, outcome: 'failed', message: `Marketplace '${name}' not found` }));
   }
   if (p === '/api/marketplaces' && m === 'DELETE') {
     const name = url.searchParams.get('name') || '';
-    if (!plug.marketplaces.some((x) => x.name === name)) return json(res, 200, { ok: false, outcome: 'failed', message: `Marketplace '${name}' not found` });
+    if (!plug.marketplaces.some((x) => x.name === name)) return json(res, 200, outcomeOf({ ok: false, outcome: 'failed', message: `Marketplace '${name}' not found` }));
     plug.marketplaces = plug.marketplaces.filter((x) => x.name !== name);
     const gone = plug.installed.filter((i) => i.id.endsWith(`@${name}`));
     plug.installed = plug.installed.filter((i) => !gone.includes(i));
-    return json(res, 200, { ok: true, outcome: 'ok', message: `Successfully removed marketplace: ${name}${gone.length ? `\nAlso uninstalled ${gone.length} plugin(s).` : ''}`, reloaded: reloadAll() });
+    return json(res, 200, outcomeOf({ ok: true, outcome: 'ok', message: `Successfully removed marketplace: ${name}${gone.length ? `\nAlso uninstalled ${gone.length} plugin(s).` : ''}`, reloaded: reloadAll() }));
   }
   if (p === '/api/mcp' && m === 'POST') {
     const b = await jsonBody(req);
     if (typeof b.name !== 'string' || !/^(?!bedrock-shared$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(b.name)) return json(res, 400, { error: 'a name of letters, digits, - and _ (not bedrock-shared)' });
     if (b.transport === 'stdio' ? !(typeof b.command === 'string' && b.command.trim()) : !['http', 'sse'].includes(b.transport) || !/^https?:\/\//.test(b.url || '')) return json(res, 400, { error: 'bad server' });
-    if (plug.mcp.some((x) => x.name === b.name)) return json(res, 200, { ok: false, outcome: 'failed', message: `MCP server ${b.name} already exists in user config` });
+    if (plug.mcp.some((x) => x.name === b.name)) return json(res, 200, outcomeOf({ ok: false, outcome: 'failed', message: `MCP server ${b.name} already exists in user config` }));
     plug.mcp.push({ name: b.name, config: b.transport === 'stdio' ? { type: 'stdio', command: b.command, args: b.args ?? [], env: b.env ?? {} } : { type: b.transport, url: b.url, headers: b.headers ?? {} } });
-    return json(res, 200, { ok: true, outcome: 'ok', message: `Added ${b.transport} MCP server ${b.name} to user config` });
+    return json(res, 200, outcomeOf({ ok: true, outcome: 'ok', message: `Added ${b.transport} MCP server ${b.name} to user config` }));
   }
   if (p === '/api/mcp' && m === 'DELETE') {
     const name = url.searchParams.get('name') || '';
-    if (!plug.mcp.some((x) => x.name === name)) return json(res, 200, { ok: false, outcome: 'failed', message: `No user-scoped MCP server found with name: ${name}` });
+    if (!plug.mcp.some((x) => x.name === name)) return json(res, 200, outcomeOf({ ok: false, outcome: 'failed', message: `No user-scoped MCP server found with name: ${name}` }));
     plug.mcp = plug.mcp.filter((x) => x.name !== name);
-    return json(res, 200, { ok: true, outcome: 'ok', message: `Removed MCP server ${name} from user config` });
+    return json(res, 200, outcomeOf({ ok: true, outcome: 'ok', message: `Removed MCP server ${name} from user config` }));
   }
   return json(res, 404, { error: 'not found' });
 }

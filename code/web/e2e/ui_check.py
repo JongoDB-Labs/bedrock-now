@@ -774,7 +774,7 @@ def mcp_panel(browser):
     dlg.get_by_test_id("mcp-command").fill("npx")
     dlg.get_by_test_id("mcp-args").fill("-y\nsome-mcp-server@1.2.3")
     dlg.get_by_test_id("mcp-add-submit").click()
-    expect(dlg.get_by_test_id("mcp-note")).to_contain_text("Added stdio MCP server my-tools")
+    expect(dlg.get_by_test_id("mcp-note")).to_contain_text("Added. It connects in sessions started from now on")
     page.mouse.move(0, 0)
     p.shot("desktop-mcp.png")
     dlg.get_by_test_id("mcp-restart").click()
