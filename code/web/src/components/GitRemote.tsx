@@ -845,13 +845,53 @@ function ImportHint({ kind, host }: { kind: 'github' | 'gitlab'; host: string })
   const [copied, setCopied] = useState(false);
   return (
     <p class="muted small gitr-import wide" data-testid="git-host-import-hint">
-      Signed in with {kind === 'github' ? 'gh' : 'glab'} on this computer already? <code>{cmd}</code>{' '}
+      Already use {kind === 'github' ? 'gh' : 'glab'} on this computer? <code>{cmd}</code>{' '}
       <button type="button" class="linkish" onClick={() => { void navigator.clipboard?.writeText(cmd).then(() => setCopied(true), () => setCopied(false)); }} data-testid="git-host-import-copy">
         {copied ? 'Copied' : 'Copy'}
       </button>{' '}
       — run in the bedrock-now folder, it imports that login (
       {kind === 'github' ? "gh's token reaches every repository your account can, and gh goes on using it" : "a personal access token only; an OAuth login of glab's: sign in here instead"}).
     </p>
+  );
+}
+
+/** No app set up for sign-in yet: one line on what it takes, the exact steps a click away (README › Your own app for
+ *  sign-in has them too), and gh's or glab's login as the other way. */
+function SignInSetup({ kind }: { kind: 'github' | 'gitlab' }) {
+  const gh = kind === 'github';
+  return (
+    <div class="banner warn small gitr-setup" data-testid="git-host-no-app">
+      <span>
+        Sign-in needs an app registered with {gh ? 'GitHub' : 'GitLab'} once (2 minutes; only a public ID, no secret):
+      </span>{' '}
+      <details class="gitr-setup-steps" data-testid="git-host-setup">
+        <summary>Set up sign-in</summary>
+        {gh ? (
+          <ol>
+            <li>
+              On GitHub, open{' '}
+              <a href="https://github.com/settings/apps/new" target="_blank" rel="noopener noreferrer">Settings › Developer settings › GitHub Apps › New GitHub App ↗</a>
+              {' '}(or your organization's).
+            </li>
+            <li>Give it a name and a homepage URL (any; this project's will do). Leave the callback URL empty.</li>
+            <li>Tick <strong>Enable Device Flow</strong>; leave <em>Expire user authorization tokens</em> ticked; untick <em>Webhook › Active</em>.</li>
+            <li>Under <em>Repository permissions</em>, set <strong>Contents: Read and write</strong>. Create it — no client secret, no private key.</li>
+            <li>Copy its <strong>Client ID</strong> (<code>Iv…</code>) into the field below — or into Settings › Claude Code › More › GitHub app client ID to keep it.</li>
+            <li>Then <em>Install App</em> on the repositories it may reach (Choose repositories, after signing in, opens that page).</li>
+          </ol>
+        ) : (
+          <ol>
+            <li>
+              On gitlab.com, open{' '}
+              <a href="https://gitlab.com/-/user_settings/applications" target="_blank" rel="noopener noreferrer">Edit profile › Applications › Add new application ↗</a>.
+            </li>
+            <li>Give it a name, untick <strong>Confidential</strong>, and tick the scopes <code>read_repository</code>, <code>write_repository</code> and <code>read_user</code> (a redirect URI, if the form insists: <code>http://localhost/</code>).</li>
+            <li>Save it, and copy its <strong>Application ID</strong> into the field below — or into Settings › Claude Code › More › GitLab application ID to keep it.</li>
+          </ol>
+        )}
+        <p class="muted">The same steps, in full: README › Your own app for sign-in. Or connect with an access token or an SSH key instead.</p>
+      </details>
+    </div>
   );
 }
 
@@ -890,6 +930,8 @@ function AddHost({ onDone, signIn }: { onDone: () => void; signIn: GitSignInConf
   }, [signIn]);
   const choose = (a: GitAuth) => { setChosen(true); setAuth(a); };
   const defaultHost = !host.trim() || host.trim().toLowerCase() === (kind === 'gitlab' ? 'gitlab.com' : 'github.com');
+  // Sign in waits for an app ID while bedrock-now has none set up here (or for a host of your own)
+  const needsId = !clientId.trim() && (!ready || !defaultHost);
   const pickKind = (k: GitHostKind) => {
     setKind(k);
     if (k === 'other' && auth === 'oauth') setAuth('token');
@@ -968,16 +1010,10 @@ function AddHost({ onDone, signIn }: { onDone: () => void; signIn: GitSignInConf
         </fieldset>
         {auth === 'oauth' && kind !== 'other' && (
           <div class="wide small gitr-oauth-new" data-testid="git-host-oauth-form">
-            {!ready && defaultHost && (
-              <p class="banner warn small" data-testid="git-host-no-app">
-                {kind === 'github' ? 'No GitHub App is set up for signing in here.' : 'bedrock-now has no application on gitlab.com.'} Register one of your own (README ›
-                Remote repositories: Your own app for sign-in — a minute, no secret) and enter its {kind === 'github' ? 'client ID' : 'application ID'} below, or in
-                Settings › Claude Code › More — or connect with an access token or an SSH key.
-              </p>
-            )}
+            {!ready && defaultHost && <SignInSetup kind={provider} />}
             {(!ready || !defaultHost) && (
               <label class="wide">
-                {defaultHost ? `Your ${kind === 'github' ? "GitHub App's client ID" : "application's ID"}` : `The application (client) ID of your ${KIND_LABEL[kind]} app on ${label(host.trim(), 120)}`}
+                {defaultHost ? (kind === 'github' ? 'GitHub app client ID (Iv…)' : 'GitLab application ID') : `The application (client) ID of your ${KIND_LABEL[kind]} app on ${label(host.trim(), 120)}`}
                 <input type="text" value={clientId} spellcheck={false} maxLength={128} placeholder={kind === 'github' ? 'Iv23…' : 'the application ID (64 characters)'}
                   onInput={(e) => setClientId((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-client-id" />
               </label>
@@ -1052,9 +1088,13 @@ function AddHost({ onDone, signIn }: { onDone: () => void; signIn: GitSignInConf
           Cancel
         </button>
         {auth === 'oauth' && kind !== 'other' ? (
-          <button type="button" class="btn primary" disabled={busy || (!ready && !clientId.trim()) || (!defaultHost && !clientId.trim())} onClick={() => void start()} data-testid="git-host-signin">
-            {busy ? <Spinner size={12} /> : null} Sign in with {KIND_LABEL[kind]}
-          </button>
+          <>
+            {/* (no app ID yet: the button says why it waits) */}
+            {needsId && !busy && <span class="muted small gitr-needs-id" data-testid="git-host-signin-needs-id">Paste an app ID first</span>}
+            <button type="button" class="btn primary" disabled={busy || needsId} title={needsId ? 'Paste an app ID first' : undefined} onClick={() => void start()} data-testid="git-host-signin">
+              {busy ? <Spinner size={12} /> : null} Sign in with {KIND_LABEL[kind]}
+            </button>
+          </>
         ) : (
           <button type="button" class="btn primary" disabled={busy || (auth === 'token' && !token) || (kind === 'other' && !host.trim())} onClick={() => void add()} data-testid="git-host-save">
             {busy ? <Spinner size={12} /> : null} Connect

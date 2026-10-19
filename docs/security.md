@@ -1965,7 +1965,18 @@ default).
   …), word for word from the lists in `code/server/gitreasons.mjs` — a test checks they equal what bn-coded writes (its
   `GIT_REASONS`, and the literal refusals of its git ops), and that bn-coded writes no reason another way. Proven with a
   sandbox answering such a message, on the backend (the routes, the events) and in the page (a fetch, a stage, a
-  commit, a long one, no repository).
+  commit, a long one, no repository). Every other route keeps the sandbox's words apart the same way (`said.mjs`):
+  opening, saving, renaming or uploading a file, the explorer, the terminal window, Run, the launch configurations,
+  the ports, the permission rules, plugins and MCP answer "the sandbox refused" with the words apart (*the sandbox
+  said:*), a CLI listing that fails "claude plugin list failed" and a session that cannot start "could not start
+  Claude Code" with Claude Code's own words apart (*Claude Code in the sandbox said:*), and so do the WebSocket's
+  failures (a prompt refused, a model or mode switch); the page says what failed and shows the words in the box under
+  the same line — never "Save failed: …" with their text. bn-coded's own fixed refusals there read plainly too (the
+  list in `gitreasons.mjs`, checked equal to the rest of bn-coded's). Every text on those lists is plain ASCII: a
+  refusal reaches the code container through a filter that turns anything else into "?", so a "…" would never match
+  (a test checks each still matches through it). Proven with the same hostile text on the files, the terminal window,
+  Run, the ports, the launch configurations, a session's start and the WebSocket. Not apart yet: Undo in the Review
+  pane says only "the sandbox refused" when a write back is refused in the sandbox's words, without the words.
 - [x] **Stored like a token.** The access token, the refresh token (when the host gives one), their expiry times, the
   account, the scopes or the GitHub App's installations, and the client ID are kept in Git hosts' file (mode 600,
   unencrypted: the same caveats as a token). The page sees the account, the scopes, the expiry and whether it renews

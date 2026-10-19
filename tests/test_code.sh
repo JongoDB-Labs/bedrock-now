@@ -675,7 +675,7 @@ test_git_sandbox_said_has_one_fixed_line() {
   # what git in the sandbox says is shown apart, with this line beside it: the server's, the page's and the mock's are
   # the same words (code/test/githosts.test.mjs and the page's check prove where it shows)
   line="bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it."
-  for f in code/server/gitremote.mjs code/web/src/git.ts code/web/dev/mock-server.mjs; do
+  for f in code/server/said.mjs code/web/src/git.ts code/web/dev/mock-server.mjs; do
     assert_eq "$(grep -c "NEVER_ASKS = '$line';" "$STACK_DIR/$f")" 1 || { echo "$f: not the same fixed line" >&2; return 1; }
   done
   assert_contains "$(cat "$STACK_DIR/docs/security.md")" "never asks you to enter a code except in Git hosts › Sign in, right after you press it"

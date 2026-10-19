@@ -131,3 +131,9 @@ p.said-never { margin: 6px 0 2px; }
 .gitr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12.5px var(--mono); }
 @media (max-width: 640px) { .gitr-form { grid-template-columns: minmax(0, 1fr); } }
 .sheet .gitr .btn { min-height: 36px; }
+/* no app set up for sign-in: one line, the steps a click away; why Sign in waits */
+.gitr-setup-steps { display: inline; }
+.gitr-setup-steps[open] { display: block; margin-top: 4px; }
+.gitr-setup-steps summary { display: inline; cursor: pointer; color: var(--accent); text-decoration: underline; }
+.gitr-setup-steps ol { margin: 6px 0 4px; padding-left: 20px; display: grid; gap: 3px; }
+.gitr-needs-id { align-self: center; }

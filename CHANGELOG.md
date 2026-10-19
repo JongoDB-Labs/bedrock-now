@@ -6,6 +6,26 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The sandbox's own words stay apart on every page and route**, not only in the Git panel: when opening, saving,
+  renaming or uploading a file, the explorer, the terminal window, Run, the launch configurations, the ports, the
+  permission rules, plugins, MCP or a session's start fail in the sandbox's (or Claude Code's) own words, the page says
+  what failed — "Save failed", "Could not start a session" — and shows the words in a box of their own, labelled *the
+  sandbox said:* (or *Claude Code in the sandbox said:*), under "bedrock-now never asks you to enter a code except in
+  Git hosts › Sign in, right after you press it." The same for the WebSocket's refusals (a prompt, a model or mode
+  switch). bn-coded's own fixed refusals still read plainly.
+- **Sign in with GitHub / GitLab while no app is set up says so plainly**: "Sign-in needs an app registered with
+  GitHub once (2 minutes; only a public ID, no secret): Set up sign-in" opens the exact steps in the dialog; the field
+  is **GitHub app client ID (Iv…)** / **GitLab application ID**; the waiting Sign in button says "Paste an app ID
+  first"; and "Already use gh on this computer? `./stack git-host import gh` Copy" is right there.
+
+### Fixed
+
+- **The Git panel's "not a remote URL (https://…, ssh://… or user@host:path)" refusal** read as bn-coded's own again:
+  its "…" became "?" on the way, so it never matched the list and showed in the box; it says "..." now, and a test
+  checks every fixed text still matches as it arrives.
+
 ## [0.18.0] - 2026-10-19
 
 ### Added
