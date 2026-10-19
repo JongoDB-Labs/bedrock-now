@@ -104,7 +104,14 @@ export function initEvent(m) {
   };
 }
 // An error of the session (the page shows `message`; `text` is the same, for older readers)
-export const errorEvent = (message) => ({ type: 'error', message: str(message, 2000), text: str(message, 2000) });
+// errorEvent(message, said) -> an error in the conversation: message a sentence of ours; said — Claude Code's own words
+// (its stream, a process that ended), apart: the page shows them in the box, never as ours
+export const errorEvent = (message, said = null) => ({ type: 'error', message: str(message, 2000), text: str(message, 2000),
+  ...(typeof said === 'string' && said ? { said: short(said, 300), saidBy: 'claude' } : {}) });
+// the SDK's names for an API error (SDKAssistantMessageError, sdk.d.ts): shown as they are — anything else in that field
+// of Claude Code's stream is its own text, apart (code/test/normalize.test.mjs checks the list against the SDK's)
+export const SDK_ERRORS = Object.freeze(['authentication_failed', 'oauth_org_not_allowed', 'account_on_hold', 'verification_required', 'billing_error', 'rate_limit',
+  'overloaded', 'invalid_request', 'model_not_found', 'server_error', 'unknown', 'max_output_tokens', 'cloud_credential_error']);
 
 const TASK = ['pending', 'running', 'completed', 'failed', 'stopped', 'killed', 'paused'];
 
@@ -122,7 +129,9 @@ export function fromSdk(m) {
     }
     case 'assistant': {
       const out = blocks(m, parent);
-      if (typeof m.error === 'string') out.push(errorEvent(`Claude Code reported: ${short(m.error, 80)}`));
+      if (typeof m.error === 'string') {
+        out.push(SDK_ERRORS.includes(m.error) ? errorEvent(`Claude Code reported: ${m.error}`) : errorEvent('Claude Code reported an error of its own', m.error));
+      }
       return out;
     }
     case 'user': return toolResults(m, parent, true);
@@ -148,7 +157,7 @@ export function fromSdk(m) {
           return [{ type: 'local', text: `Conversation compacted${pre !== null ? ` (${pre}${post !== null ? ` → ${post}` : ''} tokens)` : ''}.` }];
         }
         case 'api_retry':
-          return [{ type: 'status', status: `Bedrock retry ${int(m.attempt, 0, 1000) ?? '?'}/${int(m.max_retries, 0, 1000) ?? '?'} (${short(m.error, 60) || 'error'}${int(m.error_status, 0, 999) ? `, HTTP ${m.error_status}` : ''})` }];
+          return [{ type: 'status', status: `Bedrock retry ${int(m.attempt, 0, 1000) ?? '?'}/${int(m.max_retries, 0, 1000) ?? '?'} (${SDK_ERRORS.includes(m.error) ? m.error : 'error'}${int(m.error_status, 0, 999) ? `, HTTP ${m.error_status}` : ''})` }];
         case 'permission_denied': {
           // a call denied without asking you: Auto mode's classifier (by: classifier; reason: the rule it matched,
           // "[Data Exfiltration]", or why it could not decide), a deny rule, Read only … The session adds what was
@@ -231,8 +240,11 @@ function mcpWhere(c) {
   }
   return type ? { type } : null;
 }
+// (a server's error: its own words, through Claude Code — any MCP server, one a prompt-injected Claude added too: a
+// sentence of ours, its words apart — said.mjs)
 export const mcpOf = (list) => objs(list, 100).map((x) => ({
-  name: short(x.name, 200), status: MCP_STATES.includes(x.status) ? x.status : 'unknown', error: str(x.error ?? '', 500),
+  name: short(x.name, 200), status: MCP_STATES.includes(x.status) ? x.status : 'unknown', error: typeof x.error === 'string' && x.error ? 'the server reported an error' : '',
+  ...(typeof x.error === 'string' && x.error ? { said: short(x.error, 300), saidBy: 'claude' } : {}),
   scope: short(x.scope, 40), source: short(x.source, 40), tools: Array.isArray(x.tools) ? x.tools.length : null,
   toolNames: objs(x.tools, 200).map((t) => short(t.name, 200)).filter(Boolean),
   server: x.serverInfo && typeof x.serverInfo === 'object' ? { name: short(x.serverInfo.name, 200), version: short(x.serverInfo.version, 60) } : null,

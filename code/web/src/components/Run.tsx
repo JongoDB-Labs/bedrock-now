@@ -39,6 +39,7 @@ function TaskRow({ t, onDone }: { t: RunTask; onDone?: () => void }) {
         {t.error ? (
           <span class="muted small run-why" data-testid="run-why">
             {t.error}
+            {t.said && <SandboxSaid words={t.said} compact />}
           </span>
         ) : (
           <span class="port-actions">
@@ -77,6 +78,7 @@ function ProblemRow({ r, onDone }: { r: RunResult; onDone?: () => void }) {
         </span>
         {when && <span class="muted small problem-time">{when}</span>}
       </button>
+      {r.said && <SandboxSaid words={r.said} compact />}
       {lines.length > 0 && !full && (
         <pre class="problem-tail" data-testid="problem-tail">
           {visible(lines.join('\n'))}
@@ -192,7 +194,12 @@ export function RunPanel({ onDone }: { onDone?: () => void }) {
               <h4>
                 {title} <span class="muted small">{info?.file}</span>
               </h4>
-              {info?.error && <p class="muted small">It cannot be used: {info.error}</p>}
+              {info?.error && (
+                <div class="muted small">
+                  It cannot be used: {info.error}
+                  {info.said && <SandboxSaid words={info.said} compact />}
+                </div>
+              )}
               {tasks.length ? (
                 <ul class="run-list">
                   {tasks.map((t, i) => (

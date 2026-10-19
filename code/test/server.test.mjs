@@ -317,7 +317,8 @@ test('plugins: listings checked; the catalog searched here; a marketplace-declar
   assert.deepEqual(calls.at(-1)[0], { op: 'cli', args: ['plugin', 'install', 'hello-cmd@bn-e2e', '--json', '--scope=user', `--accept-command=${SHA}`] });
   assert.deepEqual([r.json.ok, r.json.outcome, r.json.reloaded], [true, 'ok', 0]);
   r = await req('POST', '/api/plugins/disable', { body: { name: 'hello-local@bn-e2e' } });
-  assert.deepEqual([r.json.ok, r.json.failureCode, r.json.message], [false, 'already_in_goal_state', 'already disabled']);
+  // (what the CLI said: Claude Code's own words, apart — said)
+  assert.deepEqual([r.json.ok, r.json.failureCode, r.json.message, r.json.said, r.json.saidBy], [false, 'already_in_goal_state', 'It did not work.', 'already disabled', 'claude']);
   for (const body of [{ name: '../x' }, { name: 'x', scope: 'managed' }, { name: 'x', acceptCommand: 'yes' }, { name: 'x', acceptCommand: 'A'.repeat(64) }]) {
     assert.equal((await req('POST', '/api/plugins/install', { body })).status, 400);
   }
@@ -341,10 +342,12 @@ test('plugins: listings checked; the catalog searched here; a marketplace-declar
 test('outcomes of the CLI: its --json line after human text, else its first (ok) or last (failed) line; confirmations need a SHA-256', () => {
   const sha = 'e'.repeat(64);
   const line = (o) => JSON.stringify(o);
+  // (the CLI's words — its JSON message, or a line of its output — apart: a sentence of ours, said)
   assert.deepEqual(actionResult(0, 'Removed MCP server x from user config\nFile modified: /home/coder/.claude.json\n', ''),
-    { ok: true, outcome: 'ok', message: 'Removed MCP server x from user config', failureCode: null });
+    { ok: true, outcome: 'ok', message: 'Done.', said: 'Removed MCP server x from user config', saidBy: 'claude', failureCode: null });
   assert.deepEqual(actionResult(1, '', 'No MCP server named "nope" in user scope\n'),
-    { ok: false, outcome: 'failed', message: 'No MCP server named "nope" in user scope', failureCode: null });
+    { ok: false, outcome: 'failed', message: 'It did not work.', said: 'No MCP server named "nope" in user scope', saidBy: 'claude', failureCode: null });
+  assert.deepEqual(actionResult(3, '', ''), { ok: false, outcome: 'failed', message: 'It did not work (exit 3).', failureCode: null });
   const human = '"p" is installed by running a command from marketplace "m" on this machine:\n  curl x | sh\n';
   let r = actionResult(1, `${human}${line({ outcome: 'failed', message: 'not reviewed', failureCode: 'entry_helper_unconfirmed',
     shownCommand: { kind: 'entry_helper', pluginId: 'p@m', command: 'helper --x', archiveUrl: 'https://x/p.zip', sha256: sha, acceptCommandMatched: true } })}\n`);
@@ -371,7 +374,7 @@ test('outcomes of the CLI: its --json line after human text, else its first (ok)
 test('MCP servers of your own: one checked shape, user scope, never bedrock-shared', async () => {
   let r = await req('POST', '/api/mcp', { body: { name: 'my-tools', transport: 'stdio', command: 'npx', args: ['-y', 'x@1'], env: { API_KEY: 'k' } } });
   assert.deepEqual(calls.at(-1)[0], { op: 'cli', args: ['mcp', 'add-json', 'my-tools', JSON.stringify({ type: 'stdio', command: 'npx', args: ['-y', 'x@1'], env: { API_KEY: 'k' } }), '--scope=user'] });
-  assert.deepEqual([r.json.ok, r.json.message], [true, 'Added stdio MCP server my-tools to user config']);
+  assert.deepEqual([r.json.ok, r.json.message, r.json.said], [true, 'Done.', 'Added stdio MCP server my-tools to user config']);
   r = await req('POST', '/api/mcp', { body: { name: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', headers: {} } });
   assert.deepEqual(calls.at(-1)[0].args.slice(0, 4), ['mcp', 'add-json', 'remote', '{"type":"http","url":"https://mcp.example.com/mcp"}']);
   for (const body of [{ name: 'bedrock-shared', transport: 'stdio', command: 'x' }, { name: 'a b', transport: 'stdio', command: 'x' },
@@ -381,7 +384,7 @@ test('MCP servers of your own: one checked shape, user scope, never bedrock-shar
     assert.equal((await req('POST', '/api/mcp', { body })).status, 400, JSON.stringify(body));
   }
   r = await req('DELETE', '/api/mcp?name=my-tools', { headers: { Origin: origin } });
-  assert.deepEqual([r.json.ok, r.json.message], [false, 'No user-scoped MCP server found with name: my-tools']);
+  assert.deepEqual([r.json.ok, r.json.message, r.json.said], [false, 'It did not work.', 'No user-scoped MCP server found with name: my-tools']);
   assert.equal((await req('DELETE', '/api/mcp?name=bedrock-shared', { headers: { Origin: origin } })).status, 400);
 });
 
@@ -477,7 +480,7 @@ test('WebSocket: another site\'s Origin refused; prompt, events, re-attach with 
   // (Claude Code's own refusal: a fixed sentence of ours, its words apart — said.mjs)
   a.send({ type: 'mcp_reconnect', session: json.id, server: 'nope', req: 't4' });
   const t4 = await until(a.inbox, (x) => x.type === 'reply' && x.req === 't4');
-  assert.deepEqual([t4.error, t4.said, t4.saidBy], ['Claude Code in the sandbox stopped', 'no server nope', 'claude']);
+  assert.deepEqual([t4.error, t4.said, t4.saidBy], ['the MCP server was not reconnected', 'no server nope', 'claude']);
   // a plugin reload: the reply counts; the pages showing the session get its new commands, plugins and servers
   a.send({ type: 'reload_plugins', session: json.id, req: 'rl' });
   assert.deepEqual((await until(a.inbox, (m) => m.req === 'rl' && m.type === 'reply')).data, { commands: 1, plugins: 2, errors: 0 });

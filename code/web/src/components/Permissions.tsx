@@ -30,7 +30,13 @@ export const removeEffect: Record<List, string> = {
 function Rules({ id, file, removable, onRemove, busy }: { id: string; file: PermFile; removable: boolean; onRemove?: (list: List, rule: string) => void; busy: string }) {
   // an ask or deny rule's Remove asks first, saying what becomes possible
   const [confirming, setConfirming] = useState('');
-  if (file.error) return <p class="muted small">{file.path}: {file.error}</p>;
+  if (file.error)
+    return (
+      <div class="muted small">
+        {file.path}: {file.error}
+        {file.said && <SandboxSaid words={file.said} compact />}
+      </div>
+    );
   if (!file.exists) return <p class="muted small">{file.path}: not there (no rules).</p>;
   const empty = !file.allow.length && !file.ask.length && !file.deny.length;
   return (

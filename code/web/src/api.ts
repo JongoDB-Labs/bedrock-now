@@ -257,7 +257,7 @@ export function normEvent(v: unknown): Ev | null {
         consumed: Array.isArray(o.consumed) ? o.consumed.slice(0, 64).filter(isUuid).map((u: string) => u.toLowerCase()) : [],
       };
     case 'error':
-      return { kind: 'error', text: label(o.message ?? o.text, LIMITS.short) };
+      return { kind: 'error', text: label(o.message ?? o.text, LIMITS.short), ...saidIn(o) };
     case 'blocked': {
       // (an input is shown in full or not at all, with the permission prompts' caps)
       const shown = permissionInput(o.input);
@@ -359,6 +359,7 @@ export function normMcpServer(v: unknown): McpServer {
     status: MCP_STATES.includes(status) ? status : 'unknown',
     tools: typeof x.tools === 'number' ? nonneg(x.tools) : Array.isArray(x.tools) ? x.tools.length : null,
     error: label(x.error, 500),
+    ...saidIn(x),
     scope: label(x.scope, 40),
     source: label(x.source, 40),
     toolNames: arr(x.toolNames, 200).map((t) => label(t)).filter(Boolean),
@@ -726,6 +727,8 @@ export interface PermFile {
   path: string;
   exists: boolean;
   error: string | null;
+  /** the error in the sandbox's own words (not one of bn-coded's): apart (SandboxSaid) */
+  said?: SandboxWords | null;
   sha256: string | null;
   allow: string[];
   ask: string[];
@@ -745,7 +748,7 @@ export interface Permissions {
 const rules = (v: unknown): string[] => arr(v, 500).filter((r): r is string => typeof r === 'string' && r.length >= 1 && r.length <= 4000);
 export function normPermFile(v: unknown, path: string): PermFile {
   const o = obj(v) ?? {};
-  return { path, exists: o.exists === true, error: typeof o.error === 'string' && o.error ? label(o.error, 200) : null,
+  return { path, exists: o.exists === true, error: typeof o.error === 'string' && o.error ? label(o.error, 200) : null, ...saidIn(o),
     sha256: typeof o.sha256 === 'string' && /^[0-9a-f]{64}$/.test(o.sha256) ? o.sha256 : null,
     allow: rules(o.allow), ask: rules(o.ask), deny: rules(o.deny), other: Math.floor(nonneg(o.other) ?? 0), truncated: o.truncated === true,
     defaultMode: typeof o.defaultMode === 'string' && o.defaultMode ? label(o.defaultMode, 40) : null,
@@ -992,6 +995,8 @@ export async function putMemory(which: MemoryScope, text: string, ifMtimeMs: num
 export interface Rewind {
   canRewind: boolean;
   error: string;
+  /** why not, in Claude Code's own words: apart (SandboxSaid) */
+  said?: SandboxWords | null;
   files: string[];
   insertions: number;
   deletions: number;
@@ -1003,6 +1008,7 @@ export function normRewind(v: unknown): Rewind {
   return {
     canRewind: o.canRewind === true,
     error: label(o.error, 500),
+    ...saidIn(o),
     files: arr(o.filesChanged, 200)
       .filter((p): p is string => typeof p === 'string' && p !== '')
       .map((p) => exactPath(p) ?? label(p, 500)),
@@ -1369,6 +1375,11 @@ export async function removeGitHost(id: string): Promise<{ revoked: boolean | nu
 function wordsOf(o: Obj | null | undefined): SandboxWords | null {
   return o && typeof o.said === 'string' && o.said ? { said: label(o.said, 300), by: o.saidBy === 'claude' || o.saidBy === 'sandbox' ? o.saidBy : 'git' } : null;
 }
+/** saidIn(o) -> {said} when an answer carries the sandbox's own words, else nothing (shapes stay as they were) */
+function saidIn(o: Obj | null | undefined): { said?: SandboxWords } {
+  const w = wordsOf(o);
+  return w ? { said: w } : {};
+}
 /** problemOf(e) -> a failure as the page shows it: our text, and the sandbox's own words apart when it is in them */
 export function problemOf(e: unknown): { text: string; said: SandboxWords | null } {
   return { text: e instanceof Error ? e.message : 'Something went wrong.', said: saidOf(e) };
@@ -1494,6 +1505,7 @@ export function normGrep(o: Obj): GrepResult {
     truncated: o.truncated === true,
     timedOut: o.timedOut === true,
     error: o.error ? label(o.error, 300) : null,
+    ...saidIn(o),
   };
 }
 /** Search the workspace's files (the backend: ripgrep in the sandbox, or a literal walk). */
@@ -1566,6 +1578,7 @@ export function normOutcome(v: unknown): Outcome {
     ok: x.ok === true,
     outcome: label(x.outcome, 40),
     message: safe(x.message, 4000),
+    ...saidIn(x),
     failureCode: x.failureCode ? label(x.failureCode, 60) : null,
     confirm,
     reloaded: nonneg(x.reloaded),
@@ -1737,7 +1750,7 @@ export function normLaunchEntry(v: unknown): LaunchEntry | null {
   const error = typeof o.error === 'string' ? label(o.error, 200) : null;
   if (!name && !error) return null;
   const none: LaunchEntry = { name: name || '(no name)', port: null, command: null, argv: null, cwd: '.', url: null, env: [], program: null, programOwn: false, programSha256: null,
-    digest: null, error };
+    digest: null, error, ...(error ? saidIn(o) : {}) };
   if (error) return none;
   const port = typeof o.port === 'number' && Number.isInteger(o.port) && o.port >= 1 && o.port <= 65535 ? o.port : null;
   const url = typeof o.url === 'string' && /^https?:\/\/[\x21-\x7e]{1,500}$/.test(o.url) ? o.url : null;
@@ -1760,7 +1773,7 @@ export function normLaunchEntry(v: unknown): LaunchEntry | null {
 /** The workspace's .claude/launch.json, as bn-coded read and checked it. */
 export async function getLaunch(): Promise<LaunchList> {
   const o = await request('GET', '/api/launch' + q(inScope()));
-  return { exists: o.exists === true, error: typeof o.error === 'string' ? label(o.error, 200) : null,
+  return { exists: o.exists === true, error: typeof o.error === 'string' ? label(o.error, 200) : null, ...saidIn(o),
     entries: arr(o.configurations, 20).map(normLaunchEntry).filter((e): e is LaunchEntry => e !== null) };
 }
 
@@ -1783,7 +1796,7 @@ export function normRunTask(v: unknown): RunTask | null {
   if (!o || !source) return null;
   const name = typeof o.name === 'string' ? o.name : '';
   const none: RunTask = { source, name: label(name, 200) || '(no name)', argv: null, command: null, detail: [], files: [], notes: [], digest: null, error: null };
-  if (typeof o.error === 'string') return { ...none, error: label(o.error, 300) };
+  if (typeof o.error === 'string') return { ...none, error: label(o.error, 300), ...saidIn(o) };
   const argvIn = arr(o.argv, 9);
   const argv = argvIn.length >= 1 && argvIn.length <= 8 && argvIn.every((a) => typeof a === 'string' && a.length <= 2000) ? (argvIn as string[]) : null;
   const detailIn = arr(o.detail, 5).map((d) => obj(d));
@@ -1804,7 +1817,7 @@ export function normRunResult(v: unknown): RunResult | null {
   const code = typeof o.exitCode === 'number' && Number.isInteger(o.exitCode) && o.exitCode >= 0 && o.exitCode <= 255 ? o.exitCode : null;
   return { id: o.id, source, name: label(o.name, 100), command: safe(o.command, 4000), window: typeof o.window === 'string' && /^@[0-9]{1,9}$/.test(o.window) ? o.window : null,
     startedAt: n(o.startedAt), state: o.state as RunResult['state'], exitCode: o.state === 'done' ? code : null,
-    signal: typeof o.signal === 'string' && /^SIG[A-Z0-9]{1,12}$/.test(o.signal) ? o.signal : null, error: typeof o.error === 'string' && o.error ? label(o.error, 300) : null,
+    signal: typeof o.signal === 'string' && /^SIG[A-Z0-9]{1,12}$/.test(o.signal) ? o.signal : null, error: typeof o.error === 'string' && o.error ? label(o.error, 300) : null, ...saidIn(o),
     endedAt: n(o.endedAt), tail: typeof o.tail === 'string' ? o.tail.slice(-70_000) : '', cut: o.cut === true,
     root: typeof o.root === 'string' && /^[^\x00-\x1f\x7f]{0,160}$/.test(o.root) && !o.root.split('/').some((x) => x === '..' || x === '.') && !o.root.startsWith('/') ? o.root : '' };
 }
@@ -1812,7 +1825,7 @@ export function normRunResult(v: unknown): RunResult | null {
 export async function getRunTasks(): Promise<RunList> {
   const o = await request('GET', '/api/run' + q(inScope()));
   const sources = arr(o.sources, 3).map((x) => obj(x)).filter((x): x is Obj => !!x && !!runSource(x.source))
-    .map((x): RunSourceInfo => ({ source: x.source as RunSource, file: label(x.file, 40), exists: x.exists === true, error: typeof x.error === 'string' && x.error ? label(x.error, 300) : null, more: x.more === true }));
+    .map((x): RunSourceInfo => ({ source: x.source as RunSource, file: label(x.file, 40), exists: x.exists === true, error: typeof x.error === 'string' && x.error ? label(x.error, 300) : null, ...saidIn(x), more: x.more === true }));
   return { sources, tasks: arr(o.tasks, 300).map(normRunTask).filter((t): t is RunTask => t !== null) };
 }
 /** Run a task by its name and the digest of what was shown (a 409 when it changed since). */

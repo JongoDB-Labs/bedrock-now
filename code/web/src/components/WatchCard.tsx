@@ -4,7 +4,8 @@
 // (the file as the turn's start saw it, only while it is still as its end saw it; a new one goes to the workspace
 // trash). Every string came from the sandbox: shown as text only.
 import { useState } from 'preact/hooks';
-import type { WatchChange } from '../types';
+import type { SandboxWords, WatchChange } from '../types';
+import { SandboxSaid } from './Said';
 import { revertWatch } from '../app';
 import { compact, lineDiff } from '../diff';
 import { DiffLines } from './ToolCard';
@@ -12,7 +13,7 @@ import { Icon, Spinner } from './icons';
 
 const CHANGE: Record<WatchChange['change'], string> = { added: 'new', changed: 'changed', removed: 'removed' };
 
-function Change({ c, busy, result, onRevert }: { c: WatchChange; busy: boolean; result: { ok: boolean; text: string } | undefined; onRevert: () => void }) {
+function Change({ c, busy, result, onRevert }: { c: WatchChange; busy: boolean; result: { ok: boolean; text: string; said?: SandboxWords | null } | undefined; onRevert: () => void }) {
   const [open, setOpen] = useState(false);
   const diffable = c.before !== null || c.after !== null;
   return (
@@ -38,6 +39,7 @@ function Change({ c, busy, result, onRevert }: { c: WatchChange; busy: boolean; 
           ) : null}
         </span>
       </div>
+      {result && !result.ok && result.said && <SandboxSaid words={result.said} compact />}
       <div class="watch-why">{c.why}</div>
       {c.binary && <div class="watch-why muted">Not text: no diff here.</div>}
       {open && (
@@ -51,7 +53,7 @@ function Change({ c, busy, result, onRevert }: { c: WatchChange; busy: boolean; 
 }
 
 export function WatchCard({ session, id, when, changes, incomplete = '' }: { session: string; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete?: string }) {
-  const [results, setResults] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [results, setResults] = useState<Record<string, { ok: boolean; text: string; said?: SandboxWords | null }>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [kept, setKept] = useState(false);
@@ -61,7 +63,7 @@ export function WatchCard({ session, id, when, changes, incomplete = '' }: { ses
     const r = await revertWatch(session, id, path);
     setBusy(false);
     if (!r.ok) return setError(r.error);
-    setResults((x) => ({ ...x, ...Object.fromEntries(r.results.map((y) => [y.path, { ok: y.ok, text: y.text }])) }));
+    setResults((x) => ({ ...x, ...Object.fromEntries(r.results.map((y) => [y.path, { ok: y.ok, text: y.text, said: y.said }])) }));
   };
   const open = changes.filter((c) => c.revertable && !results[c.path]?.ok);
   const title = when === 'between' ? 'Changed since the last turn ended (a background command, the terminal, or you)' : 'Changed in this turn';

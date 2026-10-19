@@ -14,6 +14,7 @@ import { ALL_SOURCES, APPLIED as APPLIED_STATES, withheldText } from './trust.mj
 import { gitNote } from './gitnote.mjs';
 import { SandboxError } from './spawn-client.mjs';
 import { plainRefusal } from './gitreasons.mjs';
+import { sandboxWords } from './said.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
@@ -493,8 +494,9 @@ export class Session {
     this.q = null; this.endFeed();
     this.forgetProcess();
     this.mgr.broker.cancelSession(this.id);
-    if (error) this.emit(errorEvent(error));
-    this.setState('ended', error);   // (ended either way: the next prompt starts a new process, and a new ring)
+    // (why: Claude Code's own words — apart in the conversation, never in its state's text, which is ours)
+    if (error) this.emit(errorEvent('Claude Code stopped with an error', error));
+    this.setState('ended', error ? 'Claude Code stopped with an error' : null);   // (ended either way: the next prompt starts a new process, and a new ring)
     if (this.resetTo) void this.mgr.handover(this);
   }
 
@@ -771,7 +773,11 @@ export class Session {
           data: c.before ? c.before.data.toString('base64') : null, mode: c.before ? c.before.mode : null }, c.root ?? null);
         c.done = true;
         results.set(c.path, { path: c.path, ok: true, action: short(r?.action, 20) || 'restored' });
-      } catch (e) { results.set(c.path, { path: c.path, ok: false, error: short(e?.message || String(e), 300) }); }
+      } catch (e) {
+        // (the sandbox's refusal: its fixed text plainly, anything else its words apart — said.mjs)
+        const w = sandboxWords(e);
+        results.set(c.path, w ? { path: c.path, ok: false, error: w.error, said: w.said, saidBy: w.saidBy } : { path: c.path, ok: false, error: short(e?.message || String(e), 300) });
+      }
     };
     // git's configs last: one of them may name the hook folder the others are in (core.hooksPath) — put back first, it
     // would make them no longer watched; a file the sandbox no longer counts as watched is tried once more at the end

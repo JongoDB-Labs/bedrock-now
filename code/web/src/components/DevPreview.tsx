@@ -350,7 +350,10 @@ export function PortsPanel({ onDone }: { onDone?: () => void }) {
             <li key={`${e.name}-${i}`} class="launch-row" data-testid="launch-row">
               <span class="launch-name">{e.name}</span>
               {e.error ? (
-                <span class="muted small">{e.error}</span>
+                <span class="muted small">
+                  {e.error}
+                  {e.said && <SandboxSaid words={e.said} compact />}
+                </span>
               ) : (
                 <>
                   <code class="launch-cmd" title={`${e.command ?? e.url ?? ''}${e.cwd !== '.' ? ` (in ${e.cwd})` : ''}${e.env.length ? ` · sets ${e.env.join(', ')}` : ''}`}>

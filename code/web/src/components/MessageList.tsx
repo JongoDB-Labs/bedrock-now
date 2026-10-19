@@ -12,6 +12,7 @@ import { MarkdownView } from './MarkdownView';
 import { ToolCard } from './ToolCard';
 import { WatchCard } from './WatchCard';
 import { SandboxSaid } from './Said';
+import type { SandboxWords } from '../types';
 import { BlockedCard } from './BlockedCard';
 import { modelLabel } from './Pickers';
 import { otherModels } from '../models';
@@ -42,6 +43,7 @@ function RewindPanel() {
       ) : nothing ? (
         <div class="rewind-line">
           Nothing to restore{rw.error || r?.error ? `: ${rw.error || r?.error}` : r && !r.canRewind ? ' (no checkpoint for this prompt)' : ' — no file changed since this prompt.'}
+          {(rw.said ?? r?.said) && <SandboxSaid words={(rw.said ?? r?.said) as SandboxWords} compact />}
         </div>
       ) : (
         <>
@@ -57,7 +59,12 @@ function RewindPanel() {
               </li>
             ))}
           </ul>
-          {rw.error && <div class="rewind-line err">{rw.error}</div>}
+          {rw.error && (
+            <div class="rewind-line err">
+              {rw.error}
+              {rw.said && <SandboxSaid words={rw.said} compact />}
+            </div>
+          )}
           <div class="muted small">Only files Claude changed with its edit tools; the conversation stays as it is.</div>
         </>
       )}

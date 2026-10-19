@@ -311,7 +311,7 @@ export function applyEvent(v: SessionView, ev: Ev, now = Date.now()): SessionVie
       return w;
     }
     case 'error':
-      return push(v, { t: 'notice', k: v.nextKey, text: ev.text, level: 'error' });
+      return push(v, { t: 'notice', k: v.nextKey, text: ev.text, level: 'error', ...(ev.said ? { said: ev.said } : {}) });
     case 'blocked':
       // (replayed: the same call's block is shown once)
       if (ev.toolUseId && v.items.some((it) => it.t === 'blocked' && it.toolUseId === ev.toolUseId)) return v;

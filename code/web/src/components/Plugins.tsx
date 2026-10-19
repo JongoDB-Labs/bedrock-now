@@ -101,11 +101,13 @@ function Installed({
                 {p.fromFolder && <span class="tag" title="Read from its folder: edits there apply on the next reload">folder</span>}
                 {!p.enabled && <span class="tag warn">off</span>}
               </div>
-              {p.errors.map((e, i) => (
-                <div key={i} class="plg-err small">
-                  {e}
+              {/* (why it did not load: Claude Code's own words — apart) */}
+              {p.errors.length > 0 && (
+                <div class="plg-err small">
+                  It did not load cleanly.
+                  {p.errors.map((e, i) => <SandboxSaid key={i} words={{ said: e, by: 'claude' }} compact never={i > 0} />)}
                 </div>
-              ))}
+              )}
             </div>
             <div class="plg-actions">
               {busy === p.id ? (
@@ -350,10 +352,10 @@ export function PluginsDialog({ onClose }: { onClose: () => void }) {
   const done = (o: Outcome) => {
     if (o.ok) {
       const n = o.reloaded ?? 0;
-      setNote({ ok: true, text: `${o.message}${n ? ` Reloaded in ${n} open session${n === 1 ? '' : 's'}: new commands are in the / palette.` : ''}` });
+      setNote({ ok: true, text: `${o.message}${n ? ` Reloaded in ${n} open session${n === 1 ? '' : 's'}: new commands are in the / palette.` : ''}`, said: o.said });
       setStamp((x) => x + 1);
       void load();
-    } else setNote({ ok: false, text: o.message || 'That did not work.' });
+    } else setNote({ ok: false, text: o.message || 'That did not work.', said: o.said });
   };
 
   /** One change; key marks what shows the spinner. */

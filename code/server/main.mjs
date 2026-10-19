@@ -24,15 +24,25 @@ import { Projects, ProjectError, projectIdOk, WS, absOf } from './projects.mjs';
 import { makeTrust } from './trust.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-// wsFailure(e) -> {error, said?, saidBy?}: what the WebSocket answers a failed message with — ours as it is (a session's
-// refusal, a timeout, an unreachable sandbox); the sandbox's or Claude Code's own words apart, under a fixed sentence
-function wsFailure(e) {
+// what a failed WebSocket message was (its type): the sentence of ours its failure is told with — the operation, never
+// "stopped" for one that only did not go through (a reconnect, a switch)
+const NOT_DONE = { attach: 'the session was not opened here', prompt: 'the prompt was not sent', interrupt: 'Claude was not stopped',
+  set_model: 'the model was not changed', set_mode: 'the mode was not changed', set_effort: 'the effort was not changed', set_budget: 'the budget was not set',
+  watch_revert: 'nothing was put back', watch_check: 'the files were not checked', allow_blocked: 'it was not run', permission: 'the answer was not taken',
+  commands: 'the commands were not listed', models: 'the models were not listed', mcp: 'the MCP servers were not listed',
+  mcp_reconnect: 'the MCP server was not reconnected', mcp_toggle: 'the MCP server was not switched', context: 'the context was not read',
+  rewind_files: 'the files were not restored', reload_plugins: 'the plugins were not reloaded', stop_task: 'the task was not stopped' };
+// wsFailure(e, type) -> {error, said?, saidBy?}: what the WebSocket answers a failed message with — ours as it is (a
+// session's refusal, a timeout, an unreachable sandbox); the sandbox's or Claude Code's own words apart, under the
+// operation's sentence; a fault of this server's own (a TypeError …) is ours too — never labelled as Claude Code's words
+export function wsFailure(e, type) {
   if (e instanceof SessionError || e instanceof HttpError || e instanceof HostError || e instanceof SandboxError) {
     const w = sandboxWords(e);
     if (w) return w;
     return { error: short(e instanceof SandboxError ? `Claude Code: ${short(e.message, 300)}` : e.message, 500) };
   }
-  return { error: CLAUDE_SAID, said: short(e?.message || String(e), 300), saidBy: 'claude' };
+  if (e instanceof TypeError || e instanceof RangeError || e instanceof ReferenceError || e instanceof SyntaxError) return { error: 'an error of the Code page server', ours: true };
+  return { error: NOT_DONE[type] ?? CLAUDE_SAID, said: short(e?.message || String(e), 300) || 'no reason given', saidBy: 'claude' };
 }
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -531,7 +541,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         await handle(c, m, reply, answer);
       } catch (e) {
         // (a failure in the sandbox's or Claude Code's own words: a fixed sentence of ours, the words apart — said.mjs)
-        const w = wsFailure(e);
+        const w = wsFailure(e, m.type);
+        if (w.ours) logger(`ws ${short(m.type, 40)}: ${short(e?.stack || e?.message || String(e), 600)}`);
         const words = w.said ? { said: w.said, saidBy: w.saidBy, neverAsks: NEVER_ASKS } : {};
         sendTo(c, { type: 'error', session, req, message: w.error, error: w.error, ...words });
         if (req !== undefined) sendTo(c, { type: 'reply', req, ok: false, error: w.error, ...words });
@@ -667,7 +678,9 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         if (!rs.open) await mgr.prepare(rs.cwd);
         const r = await rs.rewindFiles(m.message, { dryRun: m.dryRun === true });
         const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
-        return reply({ canRewind: r?.canRewind === true, error: str(typeof r?.error === 'string' ? r.error : '', 500),
+        // (why not: Claude Code's own words — a sentence of ours, the words apart)
+        const why = typeof r?.error === 'string' && r.error ? short(r.error, 300) : '';
+        return reply({ canRewind: r?.canRewind === true, error: why ? 'Claude Code cannot restore them' : '', ...(why ? { said: why, saidBy: 'claude' } : {}),
           filesChanged: (Array.isArray(r?.filesChanged) ? r.filesChanged : []).slice(0, 200).filter((x) => typeof x === 'string').map((x) => short(x, 4096)),
           insertions: n(r?.insertions), deletions: n(r?.deletions), skippedLinks: n(r?.skippedLinks) });
       }

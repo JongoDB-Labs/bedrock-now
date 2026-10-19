@@ -59,7 +59,7 @@ export type Ev =
   | { kind: 'local'; text: string }
   | { kind: 'status'; text: string; mode: Mode | null; model: string | null }
   | { kind: 'result'; subtype: string; turns: number; durationMs: number; usage: Usage; isError: boolean; consumed?: string[] }
-  | { kind: 'error'; text: string }
+  | { kind: 'error'; text: string; said?: SandboxWords }
   /** files of the workspace that run on your computer changed (in a turn, or between turns) */
   | { kind: 'watch'; id: string; when: 'turn' | 'between'; changes: WatchChange[]; incomplete: string }
   /** a call denied without asking you: by Auto mode's classifier ("classifier": reason = the rule it matched, or why
@@ -171,6 +171,8 @@ export interface McpServer {
   status: string;
   tools: number | null;
   error: string;
+  /** its error in its own words (through Claude Code): apart, in the box */
+  said?: SandboxWords | null;
   /** where its configuration lives: user, project, local, dynamic (the stack's bedrock-shared), plugin … */
   scope: string;
   source: string;
@@ -233,6 +235,8 @@ export interface Outcome {
   ok: boolean;
   outcome: string;
   message: string;
+  /** what the CLI said (Claude Code's own words): apart, in the box */
+  said?: SandboxWords | null;
   failureCode: string | null;
   confirm: Confirmation | null;
   /** open sessions that reloaded their plugins after the change */
@@ -417,6 +421,8 @@ export interface LaunchEntry {
   digest: string | null;
   /** why the entry cannot be used (then the rest is empty) */
   error: string | null;
+  /** the error in the sandbox's own words (not one of bn-coded's): apart (SandboxSaid) */
+  said?: SandboxWords | null;
 }
 
 export interface LaunchList {
@@ -448,12 +454,16 @@ export interface RunTask {
   digest: string | null;
   /** why it is not offered (then the rest is empty) */
   error: string | null;
+  /** the error in the sandbox's own words (not one of bn-coded's): apart (SandboxSaid) */
+  said?: SandboxWords | null;
 }
 export interface RunSourceInfo {
   source: RunSource;
   file: string;
   exists: boolean;
   error: string | null;
+  /** the error in the sandbox's own words (not one of bn-coded's): apart (SandboxSaid) */
+  said?: SandboxWords | null;
   more: boolean;
 }
 export interface RunList {
@@ -474,6 +484,8 @@ export interface RunResult {
   exitCode: number | null;
   signal: string | null;
   error: string | null;
+  /** the error in the sandbox's own words (not one of bn-coded's): apart (SandboxSaid) */
+  said?: SandboxWords | null;
   endedAt: number | null;
   /** the end of its output (ANSI escapes left in: the page strips them) */
   tail: string;
@@ -810,4 +822,6 @@ export interface GrepResult {
   truncated: boolean;
   timedOut: boolean;
   error: string | null;
+  /** the error in the sandbox's own words (not one of bn-coded's): apart (SandboxSaid) */
+  said?: SandboxWords | null;
 }

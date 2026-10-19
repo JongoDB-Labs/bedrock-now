@@ -219,6 +219,8 @@ export interface RewindState {
   phase: 'checking' | 'ready' | 'restoring';
   result: api.Rewind | null;
   error: string;
+  /** the error in Claude Code's own words: apart (SandboxSaid) */
+  said?: SandboxWords | null;
   /** a line above the result (the check ran again: Claude worked since the first one) */
   note: string;
   /** the session's turn marks when the dry run ran: a restore after another turn checks again first */
@@ -1653,13 +1655,13 @@ export function openModelMenu(): void {
 }
 
 /** Revert of a watch card: the watched files (or one) put back as they were before the change. -> each file's outcome */
-export async function revertWatch(session: string, id: string, path?: string): Promise<{ ok: boolean; error: string; results: { path: string; ok: boolean; text: string }[] }> {
+export async function revertWatch(session: string, id: string, path?: string): Promise<{ ok: boolean; error: string; results: { path: string; ok: boolean; text: string; said?: SandboxWords | null }[] }> {
   const r = await wsRequest({ type: 'watch_revert', session, id, ...(path ? { path } : {}) }, 60_000);
   if (!r.ok) return { ok: false, error: r.error || 'No answer from the Code page server.', results: [] };
   const list = Array.isArray((r.data as { results?: unknown })?.results) ? ((r.data as { results: unknown[] }).results) : [];
   const results = list.slice(0, 60).map((x) => {
     const o = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
-    return { path: label(o.path, 500), ok: o.ok === true, text: o.ok === true ? label(o.action, 20) : label(o.error, 300) };
+    return { path: label(o.path, 500), ok: o.ok === true, text: o.ok === true ? label(o.action, 20) : label(o.error, 300), said: o.ok === true ? null : api.saidOf(new api.ApiError(400, '', o)) };
   });
   refreshExpandedDirs();
   return { ok: true, error: '', results };
@@ -2314,7 +2316,7 @@ export async function refreshRuns(): Promise<void> {
     if (!myRuns.has(r.id) || r.state === 'running' || before.find((b) => b.id === r.id)?.state !== 'running') continue;
     myRuns.delete(r.id);
     const ok = outcome(r) === 'ok';
-    toast(`${plainCommand(r)}: ${outcomeText(r)}`, ok ? 'ok' : 'error', { label: 'Problems', run: () => openRun() });
+    toast(`${plainCommand(r)}: ${outcomeText(r)}`, ok ? 'ok' : 'error', { label: 'Problems', run: () => openRun() }, r.said);
   }
   if (runs.some((r) => r.state === 'running')) runTimer = setTimeout(() => void refreshRuns(), 2000);
 }
@@ -2672,7 +2674,7 @@ export async function rewindPreview(session: string, message: string, note = '')
   const at = id ?? session;
   set((s) =>
     s.rewind?.message === message
-      ? { ...s, rewind: { ...s.rewind, session: at, mark: turnMarks.get(at) ?? 0, phase: 'ready', result: r.ok ? api.normRewind(r.data) : null, error: r.ok ? '' : r.error || 'The check failed.' } }
+      ? { ...s, rewind: { ...s.rewind, session: at, mark: turnMarks.get(at) ?? 0, phase: 'ready', result: r.ok ? api.normRewind(r.data) : null, error: r.ok ? '' : r.error || 'The check failed.', said: r.ok ? null : r.said ?? null } }
       : s,
   );
 }
@@ -2694,7 +2696,7 @@ export async function rewindConfirm(): Promise<void> {
   const r = await wsRequest({ type: 'rewind_files', session: rw.session, message: rw.message, dryRun: false });
   const done = r.ok ? api.normRewind(r.data) : null;
   if (!r.ok || !done || done.error) {
-    set((s) => ({ ...s, rewind: s.rewind && { ...s.rewind, phase: 'ready', error: (r.ok ? done?.error : r.error) || 'The restore failed.' } }));
+    set((s) => ({ ...s, rewind: s.rewind && { ...s.rewind, phase: 'ready', error: (r.ok ? done?.error : r.error) || 'The restore failed.', said: (r.ok ? done?.said : r.said) ?? null } }));
     return;
   }
   set((s) => ({ ...s, rewind: null }));
@@ -3340,7 +3342,7 @@ export async function runSearch(): Promise<void> {
   try {
     const result = await api.grep({ q: q.q, regex: q.regex, caseSensitive: q.caseSensitive, include: q.include, exclude: q.exclude });
     if (get().project !== proj) return setSearch({ loading: false });
-    if (n === searchSeq) setSearch({ result, loading: false, error: result.error });
+    if (n === searchSeq) setSearch({ result, loading: false, error: result.error, said: result.said ?? null });
   } catch (e) {
     if (n === searchSeq) setSearch({ loading: false, error: e instanceof api.ApiError && e.status === 429 ? 'Two searches are running already: try again in a moment.' : errText(e), said: api.saidOf(e) });
   }

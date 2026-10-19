@@ -15,7 +15,7 @@ import { isUuid, relPath, fileName, short, str, int, num, oneOf, isFullModel } f
 import { DraftError, draftPrompt, runDraft } from './gitdraft.mjs';
 import { repoOk } from './gitremote.mjs';
 import { SandboxSaid, refused } from './said.mjs';
-import { reasonOf, GIT_LOG_FAILED } from './gitreasons.mjs';
+import { reasonOf, answerOf, GIT_LOG_FAILED } from './gitreasons.mjs';
 import { watched } from './watch.mjs';
 import { WS, WORKSPACE_ID, PROJECTS_MAX, absOf, cwdOk, nameOk, rootOk } from './projects.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
@@ -593,7 +593,8 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
   }
   async function launch(root = null) {
     const { result } = await call({ op: 'launch.list', ...rootField(root) });
-    return { exists: result.exists === true, error: short(result.error, 200) || null,
+    // (an error: bn-coded's fixed text as it is, anything else — a parser's words quoting the file — apart: answerOf)
+    return { exists: result.exists === true, ...answerOf(result.error),
       configurations: (Array.isArray(result.configurations) ? result.configurations : []).slice(0, 20).map(launchRow).filter(Boolean) };
   }
   // Start: by name, and only while the entry is what the page showed (its digest: argv, folder, environment, port)
@@ -821,7 +822,7 @@ const PERM_RULE = 4000, PERM_RULES = 500;
 export function permSide(x, path) {
   const rules = (v) => (Array.isArray(v) ? v.slice(0, PERM_RULES).filter((r) => typeof r === 'string' && r.length >= 1 && r.length <= PERM_RULE) : []);
   if (!x || typeof x !== 'object') return { path, exists: false, error: 'no answer from the sandbox', sha256: null, allow: [], ask: [], deny: [], other: 0, truncated: false, defaultMode: null, directories: [] };
-  return { path, exists: x.exists === true, error: short(x.error, 200) || null, sha256: /^[0-9a-f]{64}$/.test(x.sha256 ?? '') ? x.sha256 : null,
+  return { path, exists: x.exists === true, ...answerOf(x.error), sha256: /^[0-9a-f]{64}$/.test(x.sha256 ?? '') ? x.sha256 : null,
     allow: rules(x.allow), ask: rules(x.ask), deny: rules(x.deny), other: int(x.other, 0, 1e6) ?? 0,
     truncated: x.truncated === true || [x.allow, x.ask, x.deny].some((l) => Array.isArray(l) && l.length > PERM_RULES),
     defaultMode: short(x.defaultMode, 40) || null,
@@ -872,7 +873,7 @@ export function grepResult(r) {
     if (hits.length) files.push({ path: f.path, hits });
   }
   return { engine: r?.engine === 'ripgrep' ? 'ripgrep' : 'node', files, hits: total, truncated: r?.truncated === true || (int(r?.hits, 0, 1e9) ?? 0) > total,
-    timedOut: r?.timedOut === true, error: short(r?.error, 300) || null };
+    timedOut: r?.timedOut === true, ...answerOf(r?.error) };
 }
 
 // --- the Review pane: git's patch (and bn-coded's for new files), parsed into files and hunks. All of it comes from
@@ -1118,7 +1119,7 @@ const ONE_LINE = /^[^\x00-\x1f\x7f]*$/;
 export function launchRow(x) {
   if (!x || typeof x !== 'object') return null;
   const name = short(x.name, 100);
-  if (typeof x.error === 'string') return { name: name || null, error: short(x.error, 200) };
+  if (typeof x.error === 'string') return { name: name || null, ...answerOf(x.error) };
   if (!name) return null;
   const bad = (why) => ({ name, error: why });
   const argv = x.argv === null || x.argv === undefined ? null : x.argv;
@@ -1181,7 +1182,7 @@ function wrapperOk(source, name, argv) {
 export function runSourceRow(x) {
   if (!x || typeof x !== 'object' || typeof x.source !== 'string' || !Object.hasOwn(RUN_FILES, x.source)) return null;
   return { source: x.source, file: RUN_FILES[x.source].includes(x.file) ? x.file : RUN_FILES[x.source].at(-1), exists: x.exists === true,
-    error: short(x.error, 300) || null, more: x.more === true };
+    ...answerOf(x.error), more: x.more === true };
 }
 // runTaskRow(x) -> a task for the page, whole or not at all: its arguments, the texts shown (scripts, recipe, entry
 // point) and the files bound by their hash are shown before Run, so nothing of them is cut — a task beyond these
@@ -1189,7 +1190,7 @@ export function runSourceRow(x) {
 export function runTaskRow(x) {
   if (!x || typeof x !== 'object' || typeof x.source !== 'string' || !Object.hasOwn(RUN_NAMES, x.source)) return null;
   const source = x.source;
-  if (typeof x.error === 'string') return { source, name: short(x.name, 200) || '(no name)', error: short(x.error, 300) };
+  if (typeof x.error === 'string') return { source, name: short(x.name, 200) || '(no name)', ...answerOf(x.error) };
   if (typeof x.name !== 'string' || !RUN_NAMES[source].test(x.name)) return null;
   const name = x.name;
   const bad = (why) => ({ source, name, error: why });
@@ -1223,7 +1224,7 @@ export function runResultRow(x, max = RUN_TAIL) {
   if (x.state !== 'done') return row;
   const tail = typeof x.tail === 'string' ? x.tail : '';
   return { ...row, exitCode: int(x.exitCode, 0, 255), signal: /^SIG[A-Z0-9]{1,12}$/.test(x.signal ?? '') ? x.signal : null,
-    error: short(x.error, 300) || null, endedAt: num(x.endedAt, 0, 1e14), bytes: int(x.bytes, 0, Number.MAX_SAFE_INTEGER),
+    ...answerOf(x.error), endedAt: num(x.endedAt, 0, 1e14), bytes: int(x.bytes, 0, Number.MAX_SAFE_INTEGER),
     tail: tail.length > max ? tail.slice(-max) : tail, cut: x.cut === true || tail.length > max };
 }
 
@@ -1248,8 +1249,11 @@ export function actionResult(code, out, err = '') {
     try { const v = JSON.parse(l); if (v && typeof v === 'object' && !Array.isArray(v)) j = v; } catch { /* not this line */ }
   }
   const ok = code === 0 && (!j || j.outcome !== 'failed');
-  const res = { ok, outcome: short(j?.outcome, 40) || (ok ? 'ok' : 'failed'),
-    message: str(typeof j?.message === 'string' ? j.message : (ok ? firstLine(out) : lastLine(`${out}\n${err}`)) || (ok ? 'Done.' : `exit ${code}`), 4000),
+  // (what the CLI said — its JSON message, or a line of its output — is Claude Code's own words, from the sandbox: a
+  // sentence of ours, its words apart, never as ours; the page shows them in the box)
+  const words = str(typeof j?.message === 'string' ? j.message : (ok ? firstLine(out) : lastLine(`${out}\n${err}`)), 4000);
+  const res = { ok, outcome: short(j?.outcome, 40) || (ok ? 'ok' : 'failed'), message: ok ? 'Done.' : `It did not work${words ? '' : ` (exit ${code})`}.`,
+    ...(words ? { said: short(words, 300), saidBy: 'claude' } : {}),
     failureCode: short(j?.failureCode, 60) || null };
   const sc = j?.shownCommand;
   if (!ok && sc && typeof sc === 'object' && typeof sc.command === 'string' && SHA.test(sc.sha256 ?? '') && CONFIRM.includes(j.failureCode)) {

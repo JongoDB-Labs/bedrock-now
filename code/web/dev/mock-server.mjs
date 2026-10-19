@@ -2901,7 +2901,7 @@ server.on('upgrade', (req, sock, head) => {
         case 'set_model': {
           // as the backend: aliases refused; Claude Code's own model check can fail on a slow API (/__mock/model-fail)
           // (Claude Code's own words: as the backend answers them — a fixed sentence of ours, the words apart)
-          const no = ALIAS.test(String(m.model)) ? 'name the model in full (claude-…), not by an alias' : modelFail > 0 ? 'Claude Code in the sandbox stopped' : '';
+          const no = ALIAS.test(String(m.model)) ? 'name the model in full (claude-…), not by an alias' : modelFail > 0 ? 'the model was not changed' : '';
           const words = modelFail > 0 && !ALIAS.test(String(m.model))
             ? { said: `Couldn't confirm model "${String(m.model).slice(0, 60)}" with the API. Try again, or run /model to see available models.`, saidBy: 'claude', neverAsks: NEVER_ASKS } : {};
           if (no) {

@@ -81,7 +81,8 @@ test('GET /api/permissions: the three files as checked here (hostile answers cap
   assert.deepEqual(u.deny, []);
   assert.deepEqual(u.ask, ['Bash(git push:*)']);
   assert.equal(u.other, 0);
-  assert.equal(u.error, 'fine [31m');
+  // (a reason not one of bn-coded's own: the sandbox's words apart — gitreasons.mjs's answerOf)
+  assert.deepEqual([u.error, u.said, u.saidBy], ['the sandbox gave a reason of its own', 'fine [31m', 'sandbox']);
   assert.equal(u.sha256, SHA);
   assert.deepEqual(u.directories, ['/tmp']);
   assert.equal(r.json.project.sha256, null);

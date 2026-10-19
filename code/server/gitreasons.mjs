@@ -180,8 +180,42 @@ export const SANDBOX_REFUSALS = Object.freeze([
   '--project-config-root: exactly once, as the folder Claude Code runs in',
   '--project-config-root must be the folder Claude Code runs in',
 ]);
+// bn-coded's own fixed texts in an answer's error field (the launch configurations, Run's sources and tasks, the
+// permission rules' files, a search): the literal values of its error: and bad(…) — code/test checks the list equals them
+export const ANSWER_ERRORS = Object.freeze([
+  'a line too long to read',
+  'not an object',
+  'no name',
+  'port: a number from 1 to 65535',
+  'runtimeExecutable: one line',
+  'program: one line',
+  'runtimeArgs / args: a list of one-line strings',
+  'env: names and one-line values',
+  'url: http(s)',
+  'cwd: one line',
+  'not a file',
+  'larger than 64 KiB',
+  'not valid JSON (comments are fine)',
+  'no "configurations" list',
+  'the name is used twice',
+  'a link (not followed here)',
+  'not readable',
+  'larger than 1 MiB',
+  'not valid JSON',
+  'not a JSON object',
+  '"scripts" is not an object',
+  'not a name the Run menu passes on (letters, digits and _ . / + -): run it in the terminal',
+  'not a name the Run menu passes on (letters, digits and _ . -): run it in the terminal',
+  'not a "module:function" entry point (extras, a table or another form): run it in the terminal',
+  'make is not installed in the sandbox: its targets are listed, not run',
+  '"permissions" is not an object',
+  'a folder on its way is a link',
+  'a link: not read',
+  'not a regular file',
+  'a folder on its way is a link (or not a folder): not read',
+]);
 const KNOWN = new Set(GIT_REASONS);
-const PLAIN = new Set([...GIT_REASONS, ...GIT_REFUSALS, ...SANDBOX_REFUSALS]);
+const PLAIN = new Set([...GIT_REASONS, ...GIT_REFUSALS, ...SANDBOX_REFUSALS, ...ANSWER_ERRORS]);
 // plainRefusal(message) -> true when a refusal of bn-coded's is one of its fixed texts (a reason or a refusal)
 export const plainRefusal = (m) => typeof m === 'string' && PLAIN.has(m);
 export const GIT_ANSWERED = 'git could not answer';
@@ -194,4 +228,13 @@ export function reasonOf(v, { missing = 'git is not available', other = GIT_ANSW
   if (!s) return { reason: missing };
   if (KNOWN.has(s)) return { reason: s };
   return { reason: other, said: short(s, 300) || 'no reason given', saidBy: 'git' };
+}
+
+// answerOf(v, {other, by}) -> {error} for one of bn-coded's own fixed texts (or none: null), else {error: other, said,
+// saidBy} — an answer's free text in the sandbox's (or Claude Code's) own words, apart
+export function answerOf(v, { other = 'the sandbox gave a reason of its own', by = 'sandbox' } = {}) {
+  const s = typeof v === 'string' ? v : '';
+  if (!s) return { error: null };
+  if (by === 'sandbox' && PLAIN.has(s)) return { error: s };
+  return { error: other, said: short(s, 300) || 'no reason given', saidBy: by };
 }

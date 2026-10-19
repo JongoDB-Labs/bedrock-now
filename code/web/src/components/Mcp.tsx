@@ -44,7 +44,12 @@ function ServerRow({ s, busy, onBusy }: { s: McpServer; busy: boolean; onBusy: (
             {s.command || s.url}
           </div>
         )}
-        {s.error && <div class="plg-err small">{s.error}</div>}
+        {s.error && (
+          <div class="plg-err small">
+            {s.error}
+            {s.said && <SandboxSaid words={s.said} compact />}
+          </div>
+        )}
         {msg && (
           <div class="plg-err small">
             {msg.text}
@@ -78,7 +83,7 @@ function ServerRow({ s, busy, onBusy }: { s: McpServer; busy: boolean; onBusy: (
                 onBusy(s.name);
                 api
                   .mcpRemove(s.name)
-                  .then((o) => setMsg({ text: o.ok ? 'Removed from your configuration: gone after a restart of the session.' : o.message }))
+                  .then((o) => setMsg({ text: o.ok ? 'Removed from your configuration: gone after a restart of the session.' : o.message, said: o.said }))
                   .catch((e) => setMsg(api.problemOf(e)))
                   .finally(() => onBusy(null));
               }}
@@ -146,7 +151,7 @@ function AddServer({ running }: { running: boolean }) {
     setBusy(true);
     try {
       const o = await api.mcpAdd(form);
-      setNote({ ok: o.ok, text: o.ok ? `${o.message || 'Added.'} It connects in sessions started from now on${running ? ' — or restart this one' : ''}.` : o.message });
+      setNote({ ok: o.ok, text: o.ok ? `Added. It connects in sessions started from now on${running ? ' — or restart this one' : ''}.` : o.message, said: o.ok ? null : o.said });
       if (o.ok) {
         setName('');
         setCommand('');
