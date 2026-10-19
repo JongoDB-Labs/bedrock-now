@@ -4609,6 +4609,13 @@ def proj(page, pid):
     return page.locator(f"[data-testid=project][data-project='{pid}']")
 
 
+def unfold(page, pid):
+    """A project of the Projects tab unfolded (the one shown is; others are folded until opened)."""
+    t = proj(page, pid).get_by_test_id("project-toggle")
+    if t.get_attribute("aria-expanded") == "false":
+        t.click()
+
+
 @check("projects: the Projects tab (each project's sessions), the chip, a project's files, Search, @-mentions and new sessions in its folder; Add to project; the palette's entries; New project (empty with git init, a folder of the workspace, a clone); Connect a git repository; a terminal there; rename; Remove from Code (the record; the folder only when named again); ?project= links")
 def projects_desktop(browser):
     post(NORMAL + "/__mock/reset")
@@ -4794,6 +4801,7 @@ def projects_settings(browser):
     flag = proj(page, web).get_by_test_id("project-settings-flag")
     expect(flag).to_have_count(1)
     # New session there: what they set first — hooks, rules, env, MCP servers, as text
+    unfold(page, web)
     proj(page, web).get_by_test_id("project-new-session").click()
     dlg = page.get_by_test_id("settings-dialog")
     expect(dlg).to_be_visible(timeout=10_000)
@@ -4804,7 +4812,7 @@ def projects_settings(browser):
     expect(dlg.get_by_test_id("settings-env")).to_contain_text("NODE_ENV=development")
     expect(dlg.get_by_test_id("settings-mcp")).to_contain_text("docs: npx -y @acme/docs-mcp")
     expect(dlg.get_by_test_id("settings-tree")).to_contain_text(".claude/skills/release/SKILL.md: allowed-tools: Bash(npm version *), Bash(git tag *)")
-    expect(dlg.get_by_test_id("settings-not-covered")).to_contain_text("not covered")
+    expect(dlg.get_by_test_id("settings-not-covered")).to_contain_text("Not covered here")
     # Start without them: the session runs with your own settings only, and says so above the prompt
     page.get_by_test_id("settings-start-without").click()
     expect(dlg).to_have_count(0, timeout=10_000)
@@ -4825,6 +4833,7 @@ def projects_settings(browser):
     page.reload()
     page.get_by_test_id("side-sessions").click()
     expect(flag).to_have_count(1, timeout=10_000)
+    unfold(page, web)
     proj(page, web).get_by_test_id("project-new-session").click()
     expect(dlg.get_by_test_id("settings-state")).to_have_attribute("data-state", "changed", timeout=10_000)
     page.keyboard.press("Escape")
