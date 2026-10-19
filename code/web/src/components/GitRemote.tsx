@@ -532,8 +532,10 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
   const [againErr, setAgainErr] = useState('');
   const links = hostLinks(h, remote);
   const o = h.oauth;
-  // (the sandbox's gh gets a GitHub host's token too while Claude may use it: bn-gh)
-  const ghToo = h.kind === 'github' && h.auth !== 'ssh';
+  // (the sandbox's gh gets the token too while Claude may use the host — github.com and *.ghe.com only, GitHub's own
+  // hosts: bn-gh; a GitHub Enterprise Server token would go to any host a gh command names)
+  const githubHttps = h.kind === 'github' && h.auth !== 'ssh';
+  const ghToo = githubHttps && (h.host === 'github.com' || /\.ghe\.com$/.test(h.host)) && (h.port ?? 443) === 443;
   const signInAgain = async () => {
     setAgainErr('');
     try {
@@ -724,7 +726,13 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
             <p class="warn-text" data-testid="git-claude-gh">
               gh, the GitHub CLI in the sandbox, gets this {h.auth === 'oauth' ? 'sign-in\'s token' : 'token'} too, one command at a time — and gh does far more than git:
               whatever the token may do on {label(h.host, 120)}, such as opening, closing and merging issues and pull requests, changing a repository's settings, or
-              (with delete_repo) deleting repositories. Each use is in Activity, with its command.
+              (with delete_repo) deleting repositories. Each use is in Activity, with the command gh says it runs.
+            </p>
+          )}
+          {githubHttps && !ghToo && (
+            <p class="small" data-testid="git-claude-gh-none">
+              gh in the sandbox gets no login for this host from here (bedrock-now gives gh one for github.com and *.ghe.com only): for a GitHub Enterprise
+              Server, run <code>gh auth login --hostname {label(h.host, 120)}</code> in the terminal.
             </p>
           )}
           {h.imported?.source === 'gh' && h.imported.tokenType !== 'fine-grained' && (

@@ -1684,11 +1684,11 @@ def ui_git_remotes(ctx):
 @saved
 def claude_git_access(ctx):
     """Claude's own git, and what Claude is told of it (run.sh E2E_GIT_SERVER=1; Haiku, one short answer): the suite's
-    git server as a GitHub host with a token; Let Claude use this host turned on through its warning (which says gh
-    gets the token too); the sandbox's own git — a make target in a project of its own, run from Run & test, with no
-    credential of its own — lists the server's branches through the broker (Activity: Claude's git used the host);
-    gh is in the image and, for a host it gets no login for, says so in one line; a new session's instructions name
-    the host as one Claude may use."""
+    git server as a GitHub host with a token (on port 8443: a GitHub Enterprise Server to gh); Let Claude use this
+    host turned on through its warning (which says gh gets no login for it from here); the sandbox's own git — a make
+    target in a project of its own, run from Run & test, with no credential of its own — lists the server's branches
+    through the broker (Activity: Claude's git used the host); gh is in the image and, for that host, says in one line
+    that it gets no login from here; a new session's instructions name the host as one Claude may use."""
     if not GIT_SERVER:
         raise Skip("needs the suite's git server (tests/e2e/run.sh with E2E_GIT_SERVER=1)")
     need_on()
@@ -1711,13 +1711,14 @@ def claude_git_access(ctx):
         tok = dlg.get_by_test_id("git-host").filter(has_text="HTTPS access token")
         see(tok.get_by_test_id("git-host-claude")).to_have_attribute("aria-checked", "false")
         tok.get_by_test_id("git-host-claude").click()
-        see(page.get_by_test_id("git-claude-gh")).to_contain_text("gh, the GitHub CLI in the sandbox, gets this token too", timeout=10000)
+        see(page.get_by_test_id("git-claude-gh-none")).to_contain_text("gh in the sandbox gets no login for this host from here", timeout=10000)
+        see(page.get_by_test_id("git-claude-gh")).to_have_count(0)
         shot(page, "code-claude-git-warning")
         page.get_by_test_id("git-claude-confirm").click()
         see(tok.get_by_test_id("git-host-claude")).to_have_attribute("aria-checked", "true", timeout=30000)
         dlg.get_by_role("button", name="Close").click()
         # the sandbox's own git (git's credential helper from /etc/gitconfig; the server's CA given to git, which the
-        # sandbox does not trust otherwise), then gh: in the image, and with no login for a host on another port
+        # sandbox does not trust otherwise), then gh: in the image, and with no login for a host not GitHub's own
         r = c.api("POST", "/api/projects", {"kind": "new", "folder": folder, "git": False})
         expect(r["status"] == 200, f"the project: {r['status']} {r['text'][:200]}")
         pid = r["json"]["project"]["id"]
@@ -1738,7 +1739,7 @@ def claude_git_access(ctx):
         tail = (run or {}).get("tail", "")
         expect(run and run.get("exitCode") == 0 and re.search(r"[0-9a-f]{40}\s+refs/heads/main", tail), f"git ls-remote through the broker: {run and run.get('exitCode')} {tail[-600:]}")
         expect("gh version 2.102.0" in tail, f"gh in the image: {tail[-600:]}")
-        expect("gh: no login for gitsrv from bedrock-now" in tail, f"gh's one line: {tail[-600:]}")
+        expect("gh: bedrock-now gives gh a login for github.com and *.ghe.com only, not for gitsrv" in tail, f"gh's one line: {tail[-600:]}")
         expect(token not in tail, "the token in the run's output")
         events = c.api("GET", "/api/git/hosts")["json"]["events"]
         used = [e for e in events if e["who"] == "claude" and e["action"] == "credential" and e["ok"]]
@@ -1751,8 +1752,8 @@ def claude_git_access(ctx):
         answer = text_of(evs).strip()
         expect("gitsrv" in answer.lower(), f"the session's answer: {answer!r}")
         csp_clean(page, rec)
-        return (f"Let Claude use this host on for gitsrv (its warning names gh); the sandbox's own git listed {https_url}'s main through "
-                f"the broker (Activity: {used[0]['target']}); gh 2.102.0 there, with its one line for a host it gets no login for; "
+        return (f"Let Claude use this host on for gitsrv (its warning: no gh login for it); the sandbox's own git listed {https_url}'s main "
+                f"through the broker (Activity: {used[0]['target']}); gh 2.102.0 there, with its one line for a host not GitHub's own; "
                 f"a Haiku session asked which Git hosts it may use: {answer!r}; the token in no output or event")
     finally:
         for h in c.api("GET", "/api/git/hosts")["json"]["hosts"]:

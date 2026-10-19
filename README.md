@@ -1053,13 +1053,14 @@ credentials ever being kept in the sandbox.
   logins too — so Claude, or text it reads and follows, could push to any repository the token or key reaches — and
   each use is listed in the host's *Recent use* and in Activity. Prefer a fine-grained token or a deploy key for that.
 - **gh in the sandbox.** The sandbox has the GitHub CLI (`gh`), never logged in there. While *Let Claude use this
-  host* is on for a GitHub host, each gh command gets that host's token the way git does — in that command's
-  environment only, each use in Activity with its command (*Claude's gh used the Git host GitHub*: `gh pr create`).
-  gh does far more than push: whatever the token may do — issues, pull requests, repository settings, deleting
-  repositories when it has `delete_repo` — so for a GitHub host that is what the switch hands over too (its warning
-  says so). Otherwise gh runs without a login (public reads work) and says in one line how to allow it. For a GitHub
-  Enterprise host, run gh inside a clone from it, or with `GH_HOST=<host>`; a `gh auth login` of your own in the
-  terminal is used as gh always uses it.
+  host* is on for github.com (or a `*.ghe.com` host), each gh command gets that host's token the way git does — in
+  that command's environment only, each use in Activity with the command gh says it runs (*Claude's gh used the Git
+  host GitHub*: `gh pr create`). gh does far more than push: whatever the token may do — issues, pull requests,
+  repository settings, deleting repositories when it has `delete_repo` — so for such a host that is what the switch
+  hands over too (its warning says so). Otherwise gh runs without a login (public reads work) and says in one line
+  how to allow it. A GitHub Enterprise Server host gets no login for gh from here (gh would send that token to any
+  host a command names): run `gh auth login --hostname <host>` in the terminal for it. A `gh auth login` of your own
+  is used as gh always uses it, and nothing is asked then.
 - **What Claude is told.** Each Code page session's instructions say how git gets a login here and list the
   connected Git hosts with whether Claude may use each — host names, kinds and accounts only, never a token — so
   Claude neither hunts for credentials in `~/.gitconfig` nor says git is not set up. After you change Git hosts, a

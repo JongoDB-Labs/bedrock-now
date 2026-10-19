@@ -444,9 +444,12 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
       const m = q.host.toLowerCase().match(/^([a-z0-9.-]{1,253})(?::([0-9]{1,5}))?$/);
       if (!m) return {};
       const port = m[2] ? Number(m[2]) : 443;
-      // gh (bn-gh) asks as git does, for a GitHub host only: the same switch, the same limit, its own events — with
-      // the command it says it runs (its first words: "pr create", "api DELETE repos/o/r"), the asker's word
+      // gh (bn-gh) asks as git does — answered for github.com and *.ghe.com only (GH_TOKEN, which gh sends to
+      // GitHub's own hosts alone; a GitHub Enterprise Server token would be GH_ENTERPRISE_TOKEN, which gh sends to any
+      // host a command names): the same switch, the same limit, its own events — with the command it says it runs
+      // (its first words: "pr create", "api DELETE repos/o/r"), the asker's word
       const gh = q.purpose === 'gh';
+      if (gh && !(port === 443 && (m[1] === 'github.com' || /\.ghe\.com$/.test(m[1])))) return {};
       const action = gh ? 'gh' : 'credential';
       let h = hosts.find((x) => httpsAuth(x.auth) && x.host === m[1] && (x.port ?? 443) === port && (!gh || x.kind === 'github'));
       if (!h) return {};

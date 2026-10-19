@@ -298,10 +298,17 @@ test('Test connection learns a host key only locally; the broker answers Claude 
   assert.deepEqual(await onAsk({ kind: 'cred', protocol: 'https', host: 'gitlab.com', purpose: 'gh' }), {}, 'gh: not for a GitLab host');
   assert.equal((await onAsk({ kind: 'cred', protocol: 'https', host: 'gitlab.com' })).password, TOKEN, 'git: yes');
   gb.setClaude(lab.id, { on: false }, true);
+  // GitHub Enterprise Server: git yes, gh never (its token would be GH_ENTERPRISE_TOKEN, sent to any host a command
+  // names); github.com on another port: likewise
+  const ghes = s.add({ kind: 'github', host: 'ghes.corp.example', auth: 'token', token: TOKEN });
+  gb.setClaude(ghes.id, { on: true }, false);
+  assert.deepEqual(await onAsk({ kind: 'cred', protocol: 'https', host: 'ghes.corp.example', purpose: 'gh' }), {}, 'gh: not for GitHub Enterprise Server');
+  assert.equal((await onAsk({ kind: 'cred', protocol: 'https', host: 'ghes.corp.example' })).password, TOKEN, 'git: yes');
+  gb.setClaude(ghes.id, { on: false }, true);
   assert.ok(!JSON.stringify(events).includes(TOKEN));
   let given = 0;
   for (let i = 0; i < 40; i++) if ((await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com', ...(i % 2 ? { purpose: 'gh' } : {}) })).password) given++;
-  assert.equal(given, 26, 'at most 30 a minute, git\'s and gh\'s together');
+  assert.equal(given, 25, 'at most 30 a minute, git\'s and gh\'s together');
   assert.equal(events.at(-1).ok, false);
   gb.setClaude(tok.id, { on: false }, true);   // (off works over remote access too)
   await new Promise((r) => setTimeout(r, 10));

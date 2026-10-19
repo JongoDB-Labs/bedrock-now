@@ -2,16 +2,17 @@
 // gh in the sandbox: /usr/local/bin/gh is this (bn-gh); the GitHub CLI itself is /usr/local/lib/gh/gh, never logged
 // in here. For each command it asks /tmp/bn-git/claude/cred.sock — the question git's credential helper asks there
 // (bin/bn-git-credential), marked as gh's, with the command's first words — for the login of the GitHub host the
-// command goes to. The code container answers only while you let Claude use that host (Git panel › Hosts › Let
-// Claude use this host, off by default), only for a GitHub host, within git's limit (30 a minute), and Activity lists
-// each use as gh's. The token goes into that one gh process's environment (GH_TOKEN for github.com and *.ghe.com;
-// GH_ENTERPRISE_TOKEN and GH_HOST for GitHub Enterprise Server): never a file, never ~/.config/gh, never this
-// process's own environment. No answer: gh runs without one (public reads work, the rest says it is not logged in),
-// after one line on stderr saying how to allow it.
-// Not asked for: gh's help and version, completion, config, alias, and auth (but auth status, which says whether gh
-// has a login; auth token never prints one of ours); nor with a login of yours — a token in the environment (GH_TOKEN
-// …), or a gh auth login of your own in the terminal for that host (gh's hosts.yml names it): gh uses that one as it
-// always does. Node built-ins only. gh's exit status is this one's.
+// command goes to — github.com or a *.ghe.com host only. The code container answers only while you let Claude use
+// that host (Git panel › Hosts › Let Claude use this host, off by default), within git's limit (30 a minute), and
+// Activity lists each use as gh's. The token goes into that one gh process's environment as GH_TOKEN, which gh sends
+// to GitHub's own hosts only: never a file, never ~/.config/gh, never this process's own environment. A GitHub
+// Enterprise Server host gets none (gh would send GH_ENTERPRISE_TOKEN to any host a command names): a gh auth login
+// of yours serves it. No answer: gh runs without one (public reads work, the rest says it is not logged in), after
+// one line on stderr saying how to allow it.
+// Not asked for: gh's help and version, completion, config, alias, and auth (but auth status without showing the
+// token) — a convenience, not a boundary: anything in the sandbox can ask cred.sock itself; nor with a login of
+// yours — a token in the environment (GH_TOKEN …), or a gh auth login of your own in the terminal for that host (gh's
+// hosts.yml names it): gh uses that one as it always does. Node built-ins only. gh's exit status is this one's.
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -30,7 +31,7 @@ const args = process.argv.slice(2);
 function wants(a) {
   const cmd = a[0];
   if (!cmd || cmd.startsWith('-') || NO_LOGIN.has(cmd) || a.includes('--help')) return false;
-  if (cmd === 'auth') return a[1] === 'status' && !a.includes('-t') && !a.includes('--show-token');
+  if (cmd === 'auth') return a[1] === 'status' && !a.slice(2).some((x) => /^--show-token(=|$)/.test(x) || /^-[A-Za-z]*t/.test(x));
   return true;
 }
 
@@ -61,24 +62,43 @@ function remoteHosts() {
   const names = [...['upstream', 'github', 'origin'].filter((n) => urls.has(n)), ...[...urls.keys()].filter((n) => !['upstream', 'github', 'origin'].includes(n))];
   return [...new Set(names.map((n) => repoHost(urls.get(n))).filter(Boolean))];
 }
-// targets(args) -> the hosts to ask for, in order (the first that answers is gh's): GH_HOST, --hostname, -R/--repo,
-// GH_REPO — one host, as gh takes it; else this repository's remotes (three at most); else github.com
-function targets(a) {
-  if (process.env.GH_HOST) { const h = hostOk(process.env.GH_HOST); return h ? [h] : []; }
+// cloud(host) -> whether gh sends GH_TOKEN there: github.com and its tenants (*.ghe.com), GitHub's own hosts. gh
+// sends GH_ENTERPRISE_TOKEN to any other host a command reaches — a URL in its arguments too — so a GitHub Enterprise
+// Server host gets no token from here: a gh auth login of yours in the terminal serves it.
+const cloud = (h) => h === 'github.com' || /\.ghe\.com$/.test(h);
+// namedHost(x) -> the host an argument names by itself: a URL (https://host/o/r/pull/1), or HOST/OWNER/REPO with a
+// dotted host; else null
+function namedHost(x) {
+  const m = x.match(/^https?:\/\/(?:[^@/]*@)?([^/:?#]+)(?:[:/?#]|$)/i);
+  if (m) return hostOk(m[1]) ?? '';
+  const parts = x.split('/');
+  return parts.length === 3 && parts[0].includes('.') && parts.every(Boolean) ? hostOk(parts[0]) ?? '' : null;
+}
+// target(args) -> the host the command goes to, as gh takes it: what it is told — --hostname (auth's -h), -R/--repo,
+// a URL or HOST/OWNER/REPO among the arguments, GH_REPO (any of them not GitHub's own: that one, so no token) —, else
+// this repository's remotes (a GitHub one first, in gh's order), else GH_HOST, else github.com. '' : a name that is
+// not one (nothing asked).
+function target(a) {
+  const named = [];
+  let repoFlag = false;
   for (let i = 0; i < a.length && a[i] !== '--'; i++) {
     const x = a[i];
     let v = null;
-    if (x === '--hostname' || (x === '-h' && a[0] === 'auth')) v = a[i + 1] ?? '';
+    if (x === '--hostname' || (x === '-h' && a[0] === 'auth')) v = a[++i] ?? '';
     else if (x.startsWith('--hostname=')) v = x.slice(11);
-    if (v !== null) { const h = hostOk(v); return h ? [h] : []; }
-    if (x === '-R' || x === '--repo') v = a[i + 1] ?? '';
+    if (v !== null) { named.push(hostOk(v) ?? ''); continue; }
+    if (x === '-R' || x === '--repo') v = a[++i] ?? '';
     else if (x.startsWith('--repo=')) v = x.slice(7);
-    else if (x.startsWith('-R') && x.length > 2) v = x.slice(2);
-    if (v !== null) { const h = repoHost(v); return h ? [h] : []; }
+    else if (/^-R./.test(x)) v = x.slice(2);
+    if (v !== null) { repoFlag = true; named.push(repoHost(v) ?? ''); continue; }
+    if (i > 0 && !x.startsWith('-')) { const h = namedHost(x); if (h !== null) named.push(h); }
   }
-  if (process.env.GH_REPO) { const h = repoHost(process.env.GH_REPO); return h ? [h] : []; }
-  const r = remoteHosts().slice(0, 3);
-  return r.length ? r : ['github.com'];
+  if (!repoFlag && process.env.GH_REPO) named.push(repoHost(process.env.GH_REPO) ?? '');
+  if (named.length) return named.includes('') ? '' : named.find((h) => !cloud(h)) ?? named[0];
+  const r = remoteHosts();
+  if (r.length) return r.find(cloud) ?? r[0];
+  if (process.env.GH_HOST) return hostOk(process.env.GH_HOST) ?? '';
+  return 'github.com';
 }
 // (gh api's flags that take a value: their value is never the endpoint)
 const API_VALUE_FLAGS = new Set(['-H', '--header', '-f', '--raw-field', '-F', '--field', '-q', '--jq', '-t', '--template', '--input', '--cache', '-p', '--preview',
@@ -143,20 +163,17 @@ const env = { ...process.env };
 env.GH_NO_UPDATE_NOTIFIER ??= '1';
 env.GH_TELEMETRY ??= 'false';
 if (wants(args) && !OWN_TOKENS.some((k) => process.env[k])) {
-  const hosts = targets(args);
-  const command = describe(args);
-  let got = null;
-  for (const host of hosts) {
-    if (ownLogin(host)) break;   // (yours: gh uses it, nothing asked or said)
-    const token = await ask(host, command);
-    if (token) { got = { host, token }; break; }
-  }
-  if (got) {
-    if (got.host === 'github.com' || got.host.endsWith('.ghe.com')) env.GH_TOKEN = got.token;
-    else env.GH_ENTERPRISE_TOKEN = got.token;
-    if (got.host !== 'github.com' && !env.GH_HOST) env.GH_HOST = got.host;
-  } else if (hosts.length && !hosts.some(ownLogin)) {
-    process.stderr.write(`gh: no login for ${hosts[0]} from bedrock-now — to give gh yours, connect that host in the Code page's Git panel › Hosts and turn on Let Claude use this host (gh goes on without one)\n`);
+  const host = target(args);
+  if (host && !ownLogin(host)) {   // (a login of yours for it: gh uses that one, nothing asked or said)
+    const token = cloud(host) ? await ask(host, describe(args)) : null;
+    if (token) {
+      env.GH_TOKEN = token;
+      if (host !== 'github.com' && !env.GH_HOST) env.GH_HOST = host;
+    } else if (cloud(host)) {
+      process.stderr.write(`gh: no login for ${host} from bedrock-now — to give gh yours, connect that host in the Code page's Git panel › Hosts and turn on Let Claude use this host (gh goes on without one)\n`);
+    } else {
+      process.stderr.write(`gh: bedrock-now gives gh a login for github.com and *.ghe.com only, not for ${host} — run gh auth login --hostname ${host} in the terminal for it (gh goes on without one)\n`);
+    }
   }
 }
 
