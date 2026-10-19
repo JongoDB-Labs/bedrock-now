@@ -1902,10 +1902,14 @@ default).
   with it can reach: *Contents: Read and write* and *Metadata: Read-only*, on the repositories you install it on
   (*Choose repositories*) and that your account can reach — nothing else of your account. Its user tokens expire
   after 8 hours and are renewed with a refresh token (the sign-in lasts 6 months), kept in the code container like
-  any sign-in. The app's owner, the bedrock-now project, holds no secret bedrock-now uses (the device flow needs
-  none); like any GitHub App's owner it could act on the repositories the app is installed on, within those
-  permissions, by making a private key for it. If that is not acceptable, install it on fewer repositories, use a
-  fine-grained token, or register an app of your own (README: *Your own app for sign-in*) and name it in Settings.
+  any sign-in. The app has one private key registered on GitHub (GitHub requires one before an app can be
+  installed). Its private half was deleted right after it was made, and bedrock-now uses no key (the device flow
+  needs none). GitHub shows an app's keys only to its owner, so that is the project's word. Like any GitHub App's
+  owner, the project could make a new key at any time and act on the repositories the app is installed on, within
+  its permissions (Contents read and write, Metadata); new permissions need each installer's approval on GitHub. The
+  app has no webhook (inactive): no events from installed repositories go anywhere. If that is not acceptable,
+  install it on fewer repositories, use a fine-grained token, or register an app of your own (README: *Your own app
+  for sign-in*) and name it in Settings.
   gitlab.com has no bedrock-now application: Sign in with GitLab there needs one of yours; a GitLab of your own
   always takes its own application's ID in the Git hosts dialog.
 - [x] **The code container talks to the host; TLS ends there.** The code container keeps no network of its own. Its

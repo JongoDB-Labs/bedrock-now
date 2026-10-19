@@ -36,11 +36,15 @@ function wants(a) {
 }
 
 const hostOk = (h) => { const v = String(h ?? '').trim().toLowerCase(); return HOST.test(v) ? v : null; };
+// (http:// — any case: gh sends its Authorization header whatever the scheme, so an http:// URL names no host a token
+// may go to — '': nothing asked)
+const PLAIN_HTTP = /^http:\/\//i;
 // repoHost(s) -> the host of a remote's URL (https://, ssh://, git@host:…) or of [HOST/]OWNER/REPO (OWNER/REPO:
-// github.com), or null
+// github.com), '' for an http:// one, or null
 function repoHost(s) {
   if (typeof s !== 'string' || !s) return null;
-  let m = s.match(/^(?:https?|ssh|git):\/\/(?:[^@/]*@)?([^/:?#]+)/i);
+  if (PLAIN_HTTP.test(s)) return '';
+  let m = s.match(/^(?:https|ssh|git):\/\/(?:[^@/]*@)?([^/:?#]+)/i);
   if (m) return hostOk(m[1]);
   m = s.match(/^(?:[^@/:]+@)?([^/:]+):(?!\/)/);
   if (m) return hostOk(m[1]);
@@ -66,10 +70,11 @@ function remoteHosts() {
 // sends GH_ENTERPRISE_TOKEN to any other host a command reaches — a URL in its arguments too — so a GitHub Enterprise
 // Server host gets no token from here: a gh auth login of yours in the terminal serves it.
 const cloud = (h) => h === 'github.com' || /\.ghe\.com$/.test(h);
-// namedHost(x) -> the host an argument names by itself: a URL (https://host/o/r/pull/1), or HOST/OWNER/REPO with a
-// dotted host; else null
+// namedHost(x) -> the host an argument names by itself: a URL (https://host/o/r/pull/1; '' for http://), or
+// HOST/OWNER/REPO with a dotted host; else null
 function namedHost(x) {
-  const m = x.match(/^https?:\/\/(?:[^@/]*@)?([^/:?#]+)(?:[:/?#]|$)/i);
+  if (PLAIN_HTTP.test(x)) return '';
+  const m = x.match(/^https:\/\/(?:[^@/]*@)?([^/:?#]+)(?:[:/?#]|$)/i);
   if (m) return hostOk(m[1]) ?? '';
   const parts = x.split('/');
   return parts.length === 3 && parts[0].includes('.') && parts.every(Boolean) ? hostOk(parts[0]) ?? '' : null;

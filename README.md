@@ -988,9 +988,10 @@ credentials ever being kept in the sandbox.
   walkthrough's *Connect a git host*). Choose GitHub, GitLab or another server and how to connect:
   - **Sign in with GitHub** (recommended; it works with no setup) / **Sign in with GitLab** (with [an app of your
     own](#your-own-app-for-sign-in)), for `https://` URLs. The dialog shows a code, large, with *Copy*; open the
-    host's page it links to (*Open github.com/login/device*), enter the code there and approve. The page never opens
-    it for you, and your browser never talks to the host about it: the code container asks the host for the code and
-    waits for your approval, through the sandbox's own way out. On github.com it signs in with bedrock-now's GitHub
+    host's page it links to (*Open github.com/login/device*), enter the code there and approve. Enter a device code
+    only when your own Code page shows it, right after you pressed Sign in. The page never opens the host's page for
+    you, and your browser never talks to the host about it: the code container asks the host for the code and waits
+    for your approval, through the sandbox's own way out. On github.com it signs in with bedrock-now's GitHub
     App, which reaches only the repositories you install it on — *Choose repositories* in the host's row, or
     [github.com/apps/bedrock-now](https://github.com/apps/bedrock-now) — with *Contents: Read and write* (and
     *Metadata: Read-only*); its token lasts 8 hours and renews itself when an operation needs it (the sign-in lasts 6

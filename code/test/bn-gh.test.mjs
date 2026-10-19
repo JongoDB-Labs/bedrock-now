@@ -164,6 +164,15 @@ test('the host gh goes to, as gh takes it; a token for github.com and *.ghe.com 
   r = await gh(['issue', 'view', 'https://attacker.example/o/r/issues/1', '-R', 'o/r']);
   assert.equal(r.out.GH_TOKEN, null);
   assert.equal(asked.length, 0, 'nothing asked for a command that names another host');
+  // http:// (any case): gh would send the token unencrypted — no host it may go to, nothing asked or set
+  for (const a of [['api', 'http://github.com/user'], ['api', 'HTTP://GITHUB.COM/user'], ['pr', 'view', 'http://github.com/o/r/pull/1'],
+    ['pr', 'list', '-R', 'http://github.com/o/r'], ['api', 'Http://acme.ghe.com/api/v3/user']]) {
+    r = await gh(a);
+    assert.equal(r.out.GH_TOKEN, null, a.join(' ')); assert.equal(r.out.GH_ENTERPRISE_TOKEN, null, a.join(' '));
+  }
+  r = await gh(['issue', 'list'], { env: { GH_REPO: 'http://github.com/o/r' } });
+  assert.equal(r.out.GH_TOKEN, null);
+  assert.equal(asked.length, 0, 'nothing asked for an http:// URL');
   // gh api's endpoint and a title with a colon are not hosts
   r = await gh(['api', 'repos/o/r/pulls']);
   assert.equal(r.out.GH_TOKEN, TOKEN);
