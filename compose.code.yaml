@@ -42,8 +42,9 @@ services:
       TERMINAL_EGRESS: ${TERMINAL_EGRESS:-}
       CODE_WORKSPACE_LABEL: ${TERMINAL_WORKSPACE:-}
       # Git hosts' Sign in with GitHub / GitLab (code/server/oauth.mjs): the applications' client IDs and the GitHub App's
-      # name in its URL — public values, no secret (Settings › Claude Code › More; blank: bedrock-now's own apps). The
-      # device flow's and the renewals' requests go through the sandbox's way out (bn-coded's net.tunnel), TLS here.
+      # name in its URL — public values, no secret (Settings › Claude Code › More; blank: bedrock-now's own GitHub App,
+      # none for gitlab.com). The device flow's and the renewals' requests go through the sandbox's way out (bn-coded's
+      # net.tunnel), TLS here.
       GIT_GITHUB_CLIENT_ID: ${GIT_GITHUB_CLIENT_ID:-}
       GIT_GITHUB_APP_SLUG: ${GIT_GITHUB_APP_SLUG:-}
       GIT_GITLAB_CLIENT_ID: ${GIT_GITLAB_CLIENT_ID:-}

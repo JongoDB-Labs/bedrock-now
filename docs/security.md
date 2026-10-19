@@ -1894,9 +1894,20 @@ default).
   application's (client) ID alone, which is public: no client secret and no private key are anywhere in bedrock-now —
   a program you run on your own computer could not keep one. GitHub's web flow with PKCE still needs the client
   secret, so it is not used; GitLab's device grant needs a non-confidential application. The IDs are settings
-  (`GIT_GITHUB_CLIENT_ID`, `GIT_GITHUB_APP_SLUG`, `GIT_GITLAB_CLIENT_ID`; blank: bedrock-now's own apps), changed only
-  from the computer running bedrock-now: an app someone else registered is theirs, and a GitHub App you install on
-  repositories lets its owner act on them too.
+  (`GIT_GITHUB_CLIENT_ID`, `GIT_GITHUB_APP_SLUG`, `GIT_GITLAB_CLIENT_ID`; blank: bedrock-now's own GitHub App, and
+  none for gitlab.com), changed only from the computer running bedrock-now: an app someone else registered is theirs,
+  and a GitHub App you install on repositories lets its owner act on them too.
+- [x] **bedrock-now's own GitHub App (the default on github.com).** `code/server/oauth.mjs` names it by its public
+  values only: client ID `Iv23li9eDUUgicar7aTx`, name `bedrock-now` (github.com/apps/bedrock-now). What a sign-in
+  with it can reach: *Contents: Read and write* and *Metadata: Read-only*, on the repositories you install it on
+  (*Choose repositories*) and that your account can reach — nothing else of your account. Its user tokens expire
+  after 8 hours and are renewed with a refresh token (the sign-in lasts 6 months), kept in the code container like
+  any sign-in. The app's owner, the bedrock-now project, holds no secret bedrock-now uses (the device flow needs
+  none); like any GitHub App's owner it could act on the repositories the app is installed on, within those
+  permissions, by making a private key for it. If that is not acceptable, install it on fewer repositories, use a
+  fine-grained token, or register an app of your own (README: *Your own app for sign-in*) and name it in Settings.
+  gitlab.com has no bedrock-now application: Sign in with GitLab there needs one of yours; a GitLab of your own
+  always takes its own application's ID in the Git hosts dialog.
 - [x] **The code container talks to the host; TLS ends there.** The code container keeps no network of its own. Its
   requests to the host — the device code, the polling, the renewals, the account (`/user`), a GitLab revocation — go
   through a TCP connection bn-coded opens on request (`net.tunnel`) through the sandbox's own way out: the egress

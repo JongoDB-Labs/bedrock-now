@@ -81,7 +81,7 @@ CLAUDE_BEDROCK_HAIKU_MODEL	code	with	CLAUDE_MODEL_HAIKU	-
 TERMINAL_MEM_LIMIT	code	more	TERMINAL_ENABLED	The sandbox container's memory limit.
 GIT_GITHUB_CLIENT_ID	code	more	CODE_ENABLED	Sign in with GitHub (Git hosts): the GitHub App's client ID (blank: bedrock-now's own).
 GIT_GITHUB_APP_SLUG	code	with	GIT_GITHUB_CLIENT_ID	-
-GIT_GITLAB_CLIENT_ID	code	more	CODE_ENABLED	Sign in with GitLab (Git hosts): the gitlab.com application's ID (blank: bedrock-now's own).
+GIT_GITLAB_CLIENT_ID	code	more	CODE_ENABLED	Sign in with GitLab (Git hosts): the gitlab.com application's ID (blank: none — yours, for gitlab.com).
 
 @files	Files & sharing	The file store behind the Files tab, and the shared file server Claude Code and Chat use.	README.md#shared-files-and-knowledge-mcp
 RUSTFS_ACCESS_KEY	files	main	-	The Files tab's sign-in (the portal signs you in with it); also the storage key of Chat and backups.

@@ -29,9 +29,12 @@ const DEVICE_CODE = /^[\x21-\x7e]{8,2048}$/;
 const ERROR_CODE = /^[a-z_]{1,64}$/;
 const HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*$/;
 
-// The project's own applications (blank until they are registered: then sign-in needs one of yours). Settings ›
-// Claude Code › More (GIT_GITHUB_CLIENT_ID, GIT_GITHUB_APP_SLUG, GIT_GITLAB_CLIENT_ID) replace them.
-export const DEFAULT_APPS = Object.freeze({ github: { clientId: '', appSlug: '' }, gitlab: { clientId: '' } });
+// The project's own applications — public values, no secret: bedrock-now's GitHub App (github.com/apps/bedrock-now:
+// Contents read and write and Metadata, on the repositories you install it on; user tokens that expire in 8 hours,
+// renewed with a refresh token). gitlab.com has none (blank: sign-in there needs an application of yours; a GitLab of
+// your own always takes its own ID in the Git hosts dialog). Settings › Claude Code › More (GIT_GITHUB_CLIENT_ID,
+// GIT_GITHUB_APP_SLUG, GIT_GITLAB_CLIENT_ID) replace them.
+export const DEFAULT_APPS = Object.freeze({ github: Object.freeze({ clientId: 'Iv23li9eDUUgicar7aTx', appSlug: 'bedrock-now' }), gitlab: Object.freeze({ clientId: '' }) });
 
 // Where each provider's endpoints are, for a Git host {host, port}: web (device code, token), the API (the account)
 export const PROVIDERS = Object.freeze({
@@ -146,19 +149,24 @@ export function tokensOf(j, now) {
   return { accessToken: j.access_token, refreshToken: rt, expiresAt: exp ? now + exp * 1000 : null, refreshExpiresAt: rt && rexp ? now + rexp * 1000 : null, scopes };
 }
 
-// makeOAuth({store, connect, apps, now, delay, log, onEvent}) -> the sign-ins and their renewal (gitremote.mjs):
+// resolveApp(provider, apps, defaults) -> the application a sign-in on the provider's own host uses: Settings' value,
+// else the project's own (defaults: DEFAULT_APPS) — {clientId, appSlug (GitHub)}, '' where neither is a valid one
+export function resolveApp(p, apps = {}, defaults = DEFAULT_APPS) {
+  const set = apps?.[p] || {};
+  const clientId = String(set.clientId || '').trim() || String(defaults?.[p]?.clientId || '');
+  const slug = p === 'github' ? String(set.appSlug || '').trim() || String(defaults?.github?.appSlug || '') : '';
+  return { clientId: CLIENT_ID.test(clientId) ? clientId : '', ...(p === 'github' ? { appSlug: SLUG.test(slug) ? slug : '' } : {}) };
+}
+
+// makeOAuth({store, connect, apps, appDefaults, now, delay, log, onEvent}) -> the sign-ins and their renewal
+// (gitremote.mjs):
 //   connect(host, port) -> a Duplex to that host's port (the sandbox's tunnel; a direct socket in tests)
-//   apps: {github: {clientId, appSlug}, gitlab: {clientId}} — Settings' values (blank: the project's own, DEFAULT_APPS)
+//   apps: {github: {clientId, appSlug}, gitlab: {clientId}} — Settings' values (blank: the project's own, appDefaults)
 //   delay(ms, flow) -> a promise: the wait between two polls (tests make it short)
-export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), delay = null, log = () => {}, onEvent = () => {} }) {
+export function makeOAuth({ store, connect, apps = {}, appDefaults = DEFAULT_APPS, now = () => Date.now(), delay = null, log = () => {}, onEvent = () => {} }) {
   const flows = new Map();
   const inflight = new Map();
-  const app = (p) => {
-    const set = apps[p] || {};
-    const clientId = String(set.clientId || '').trim() || DEFAULT_APPS[p].clientId;
-    const slug = p === 'github' ? String(set.appSlug || '').trim() || DEFAULT_APPS.github.appSlug : '';
-    return { clientId: CLIENT_ID.test(clientId) ? clientId : '', ...(p === 'github' ? { appSlug: SLUG.test(slug) ? slug : '' } : {}) };
-  };
+  const app = (p) => resolveApp(p, apps, appDefaults);
   // config() -> what the page needs to offer a sign-in: whether each provider's default host has an application ID
   const config = () => {
     const gh = app('github'), gl = app('gitlab');
@@ -202,7 +210,7 @@ export function makeOAuth({ store, connect, apps = {}, now = () => Date.now(), d
       clientId = String(b.clientId || '').trim() || (host === DEFAULTS[provider].host && port === null ? app(provider).clientId : '');
       if (!clientId) {
         throw new HostError(400, host === DEFAULTS[provider].host
-          ? `no ${P.name} app is set up for bedrock-now yet: register one (README › Remote repositories) and enter its client ID — or connect with an access token or an SSH key`
+          ? `no ${P.name} app is set up for sign-in on ${host}: register one (README › Remote repositories › Your own app for sign-in) and enter its ID in Settings › Claude Code › More — or connect with an access token or an SSH key`
           : `the application (client) ID of your ${P.name} app on ${host}, please`);
       }
       if (!CLIENT_ID.test(clientId)) throw new HostError(400, 'an application (client) ID of letters, digits, ., _ and -');

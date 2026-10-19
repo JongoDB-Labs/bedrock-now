@@ -152,15 +152,16 @@ const localOnly = (remote, what) => { if (remote) throw err(403, `${what} only f
 
 // makeGitRemote({call, openBroker, store, onEvent, connect, apps}) -> the API of Git hosts and remote operations (main.mjs
 // routes): call(req, opts) — sandboxCall; openBroker({onAsk}) — sandboxBroker; onEvent(event) — a use, for the pages;
-// connect(host, port) — sandboxTunnel (a sign-in's requests to its provider, TLS here); apps — Settings' application IDs
+// connect(host, port) — sandboxTunnel (a sign-in's requests to its provider, TLS here); apps — Settings' application IDs;
+// appDefaults — the project's own (oauth.mjs DEFAULT_APPS; tests give others)
 export function makeGitRemote({ call: sandboxCall, openBroker = null, store = new GitHosts(), onEvent = () => {}, now = () => Date.now(), log = () => {}, connect = null, apps = {},
-  oauthDelay = null }) {
+  appDefaults = undefined, oauthDelay = null }) {
   const plans = new Map();
   // every op of the sandbox's: its failures labelled as its own (sandboxFailure)
   const call = async (req, opts) => { try { return await sandboxCall(req, opts); } catch (e) { throw sandboxFailure(e); } };
   const event = (e) => { try { const ev = store.event(e); onEvent(ev); return ev; } catch (x) { log(`git event: ${x.message}`); return null; } };
   const noTunnel = async () => { throw new Error('no way out from here (the Code page\'s sandbox is not connected)'); };
-  const oauth = makeOAuth({ store, connect: connect || noTunnel, apps, now, log, delay: oauthDelay, onEvent: (e) => event(e) });
+  const oauth = makeOAuth({ store, connect: connect || noTunnel, apps, appDefaults, now, log, delay: oauthDelay, onEvent: (e) => event(e) });
   // fresh(h) -> the host with a token good for a while yet (a sign-in's renewed first; "Sign in again" when it cannot be)
   const fresh = async (h) => (h?.auth === 'oauth' ? (await oauth.fresh(h.id)) || h : h);
 

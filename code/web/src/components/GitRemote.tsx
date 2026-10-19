@@ -956,9 +956,9 @@ function AddHost({ onDone, signIn }: { onDone: () => void; signIn: GitSignInConf
           <div class="wide small gitr-oauth-new" data-testid="git-host-oauth-form">
             {!ready && defaultHost && (
               <p class="banner warn small" data-testid="git-host-no-app">
-                bedrock-now has no {kind === 'github' ? 'GitHub App' : 'gitlab.com application'} set up for signing in yet. Register one of your own (README › Remote
-                repositories: Your own app — a minute, no secret) and enter its {kind === 'github' ? 'client ID' : 'application ID'} below, or in Settings › Claude
-                Code › More — or connect with an access token or an SSH key.
+                {kind === 'github' ? 'No GitHub App is set up for signing in here.' : 'bedrock-now has no application on gitlab.com.'} Register one of your own (README ›
+                Remote repositories: Your own app for sign-in — a minute, no secret) and enter its {kind === 'github' ? 'client ID' : 'application ID'} below, or in
+                Settings › Claude Code › More — or connect with an access token or an SSH key.
               </p>
             )}
             {(!ready || !defaultHost) && (

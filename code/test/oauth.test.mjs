@@ -14,7 +14,7 @@ import https from 'node:https';
 import http from 'node:http';
 import { GitHosts, HostError } from '../server/githosts.mjs';
 import { makeGitRemote, revokeAt } from '../server/gitremote.mjs';
-import { request, verificationUrl, tokensOf, REFRESH_EARLY_MS } from '../server/oauth.mjs';
+import { request, verificationUrl, tokensOf, REFRESH_EARLY_MS, DEFAULT_APPS, resolveApp, makeOAuth } from '../server/oauth.mjs';
 import { createServer } from '../server/main.mjs';
 import { sandboxTunnel } from '../server/spawn-client.mjs';
 import { createOAuthMock } from './oauth-mock.mjs';
@@ -83,6 +83,24 @@ async function signIn(g, b, { account = 'alice', polls = 1 } = {}) {
   await until(() => g.signInStatus(v.flowId, false).state !== 'pending');
   return { start: v, end: g.signInStatus(v.flowId, false) };
 }
+
+test('which app a sign-in uses: Settings\' value, else the project\'s own — bedrock-now\'s GitHub App; none for gitlab.com', () => {
+  assert.deepEqual(DEFAULT_APPS, { github: { clientId: 'Iv23li9eDUUgicar7aTx', appSlug: 'bedrock-now' }, gitlab: { clientId: '' } });
+  assert.deepEqual(resolveApp('github', {}), { clientId: 'Iv23li9eDUUgicar7aTx', appSlug: 'bedrock-now' });
+  assert.deepEqual(resolveApp('gitlab', {}), { clientId: '' }, 'gitlab.com: no app of the project\'s');
+  assert.deepEqual(resolveApp('github', { github: { clientId: ' Iv23mine0000000000 ', appSlug: 'my-app' } }), { clientId: 'Iv23mine0000000000', appSlug: 'my-app' });
+  assert.deepEqual(resolveApp('gitlab', { gitlab: { clientId: 'gl-mine' } }), { clientId: 'gl-mine' });
+  // blank Settings and blank defaults: not ready
+  const blank = { github: { clientId: '', appSlug: '' }, gitlab: { clientId: '' } };
+  assert.deepEqual(resolveApp('github', { github: { clientId: '', appSlug: '' } }, blank), { clientId: '', appSlug: '' });
+  assert.deepEqual(resolveApp('gitlab', {}, blank), { clientId: '' });
+  // a value that is not an ID: none (never another app in its place)
+  assert.deepEqual(resolveApp('github', { github: { clientId: 'a b', appSlug: 'Bad Slug' } }), { clientId: '', appSlug: '' });
+  // with no Settings, the page is offered bedrock-now's app on github.com
+  const o = makeOAuth({ store: new GitHosts({ dir: path.join(ROOT, 'defaults') }), connect });
+  assert.deepEqual(o.config(), { github: { host: 'github.com', clientId: 'Iv23li9eDUUgicar7aTx', appSlug: 'bedrock-now', configured: true },
+    gitlab: { host: 'gitlab.com', clientId: null, configured: false } });
+});
 
 test('the provider\'s answers are checked: the verification page on the Git host only, tokens as git sends them', () => {
   const t = { host: 'gitlab.test', port: null };
@@ -188,7 +206,11 @@ test('declined, expired (by the provider, or before an answer), a provider that 
   assert.throws(() => g.signInStatus('0'.repeat(32), false), /no such sign-in/);
   // an application the provider does not know; no application at all
   await assert.rejects(g.startSignIn({ provider: 'gitlab', host: 'gitlab.test', clientId: 'unknown-app', ca: CA }, false), /does not take this application ID/);
-  await assert.rejects(g.startSignIn({ provider: 'github' }, false), /no GitHub app is set up for bedrock-now yet/);
+  // (no app at all: the project's own blank, and none in Settings — as for gitlab.com)
+  const { g: none } = remoteOf('bad-none', { appDefaults: { github: { clientId: '', appSlug: '' }, gitlab: { clientId: '' } } });
+  await assert.rejects(none.startSignIn({ provider: 'github' }, false), /no GitHub app is set up for sign-in on github\.com: register one/);
+  assert.deepEqual(none.hostsView(false).signIn.github, { host: 'github.com', clientId: null, appSlug: null, configured: false });
+  await assert.rejects(g.startSignIn({ provider: 'gitlab' }, false), /no GitLab app is set up for sign-in on gitlab\.com/);
   await assert.rejects(g.startSignIn({ provider: 'gitlab', host: 'gitlab.test' }, false), /application \(client\) ID of your GitLab app on gitlab.test/);
   await assert.rejects(g.startSignIn({ provider: 'gitlab', host: 'gitlab.test', clientId: 'a b', ca: CA }, false), /letters, digits/);
   // github.com and gitlab.com: the system's roots only — no CA of yours replaces them

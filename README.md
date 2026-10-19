@@ -986,17 +986,19 @@ credentials ever being kept in the sandbox.
   covers the remote, or none is connected —, *Connect a git host…* when the workspace is not a repository yet, a new
   session's *Connect a git host*, the command palette's *Git: Git hosts*, Settings › Claude Code › **Git hosts**, or the
   walkthrough's *Connect a git host*). Choose GitHub, GitLab or another server and how to connect:
-  - **Sign in with GitHub** / **Sign in with GitLab** (recommended once an app is set: [your own
-    app](#your-own-app-for-sign-in) until bedrock-now's are), for `https://` URLs. The dialog shows a code, large, with
-    *Copy*; open the host's page it links to (*Open github.com/login/device*), enter the code there and approve. The
-    page never opens it for you, and your browser never talks to the host about it: the code container asks the host
-    for the code and waits for your approval, through the sandbox's own way out. On GitHub it signs in with a GitHub
-    App, which reaches only the repositories you install it on (*Choose repositories* in the host's row), with
-    *Contents: Read and write*; its token lasts 8 hours and renews itself when an operation needs it (the sign-in lasts
-    6 months). On GitLab it asks for `read_repository`, `write_repository` and `read_user`: every project your account
-    can reach; its token renews itself too. A GitLab of your own, or GitHub Enterprise: its address
-    (`gitlab.example.com`), the application ID of an app you registered there, and its CA under *More* when a private
-    CA signed its certificate. When a sign-in ends
+  - **Sign in with GitHub** (recommended; it works with no setup) / **Sign in with GitLab** (with [an app of your
+    own](#your-own-app-for-sign-in)), for `https://` URLs. The dialog shows a code, large, with *Copy*; open the
+    host's page it links to (*Open github.com/login/device*), enter the code there and approve. The page never opens
+    it for you, and your browser never talks to the host about it: the code container asks the host for the code and
+    waits for your approval, through the sandbox's own way out. On github.com it signs in with bedrock-now's GitHub
+    App, which reaches only the repositories you install it on — *Choose repositories* in the host's row, or
+    [github.com/apps/bedrock-now](https://github.com/apps/bedrock-now) — with *Contents: Read and write* (and
+    *Metadata: Read-only*); its token lasts 8 hours and renews itself when an operation needs it (the sign-in lasts 6
+    months). On GitLab it asks for `read_repository`, `write_repository` and `read_user`: every project your account
+    can reach; its token renews itself too. gitlab.com has no bedrock-now application: register one (below) and put
+    its ID in Settings. A GitLab of your own, or GitHub Enterprise: its address (`gitlab.example.com`), the
+    application ID of an app you registered there, and its CA under *More* when a private CA signed its certificate.
+    When a sign-in ends
     (revoked on the host, or too old to renew), the host's row says so and **Sign in again** keeps the host and its
     settings.
   - **An access token**, for `https://` URLs. The dialog links to the place to create one: on GitHub a
@@ -1068,9 +1070,10 @@ credentials ever being kept in the sandbox.
 
 ##### Your own app for sign-in
 
-Sign in with GitHub and Sign in with GitLab need an application registered with the host; its ID is public (no
-client secret, no private key: the device flow needs none). Until bedrock-now's own are set (Settings › Claude Code ›
-More shows them blank), or to use one of your own:
+Optional. Sign in with GitHub on github.com uses bedrock-now's own GitHub App (`bedrock-now`) unless Settings ›
+Claude Code › More names another. An application of your own is for GitHub Enterprise, for gitlab.com (which has no
+bedrock-now application) and a GitLab of your own, or for when you would rather authorize an app you own than
+bedrock-now's. Its ID is public (no client secret, no private key: the device flow needs none):
 
 - **GitHub** — *Settings › Developer settings › GitHub Apps › New GitHub App* (or your organization's): a name, a
   homepage URL (this repository's will do), no callback URL, **Enable Device Flow** ticked, *Expire user authorization

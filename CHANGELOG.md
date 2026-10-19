@@ -8,6 +8,13 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Added
 
+- **Sign in with GitHub works with no setup.** bedrock-now's own GitHub App is registered
+  ([github.com/apps/bedrock-now](https://github.com/apps/bedrock-now)) and is the default for github.com: Git hosts'
+  Sign in with GitHub needs nothing in Settings. Install the app on the repositories it may reach (*Choose
+  repositories* in the host's row): *Contents: Read and write* and *Metadata*, user tokens of 8 hours renewed with a
+  refresh token. An app of your own (Settings › Claude Code › More) stays optional — for GitHub Enterprise, or to
+  authorize your own; gitlab.com has no bedrock-now application, so Sign in with GitLab there needs one of yours.
+
 - **Claude knows how git gets a login here.** Every Code page session's instructions now say that git's logins come
   through the sandbox's credential helper and SSH agent (not `~/.gitconfig`, `~/.ssh` or the environment) and list
   the connected Git hosts — host names, kinds and accounts only, never a token — with whether Claude may use each,

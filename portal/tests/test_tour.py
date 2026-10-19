@@ -224,6 +224,8 @@ def test_git_host_step_opens_the_code_pages_git_hosts():
                   "only from the computer running bedrock-now", 'openGit("hosts")', "window.bnCode.gitHosts()",
                   # (the sign-in: the code entered on the host's own page, which you open; gh's / glab's login imported)
                   'b("Sign in with GitHub")', 'b("Sign in with GitLab")', "the page never opens it for you", 'b("Choose repositories")',
+                  # (github.com: bedrock-now's own GitHub App, no setup; gitlab.com: an app of yours)
+                  "no setup: bedrock-now's own GitHub App", "github.com/apps/bedrock-now", "(an app of yours)",
                   'code("./stack git-host import gh")'):
         assert words in step, words
     opener = js[js.index("function openGit(what)"):js.index("// The Terminal tab")]

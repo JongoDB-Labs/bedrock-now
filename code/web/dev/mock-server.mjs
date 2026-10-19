@@ -34,7 +34,8 @@
 // glab's login, its account and scopes).
 // /__mock/git-signin?action=approve|deny|expire|end&account= plays the user (and the provider) for the Git hosts
 // dialog's sign-in in progress: approved (as account), declined, expired; end: a signed-in host's sign-in ended (Sign in
-// again); /__mock/git-signin?app=0 is a stack with no GitHub App set up.
+// again); /__mock/git-signin?app=0 is a stack with no GitHub App set up (bedrock-now's own is the default, as in
+// oauth.mjs: this plays a Settings value that is not one, or a build without it).
 // /__mock/git-said?text= is a hostile sandbox: push, pull, fetch, clone, Test connection, stage and commit fail in its
 // words (as main.mjs answers them: a fixed sentence of ours, its words apart — said); /__mock/git-said ends it.
 // Projects (projects.mjs as the backend has them): the Workspace, and folders of the workspace made projects (New project
@@ -266,12 +267,12 @@ const mockHost = (scheme) => gitHostsMock.find((h) => h.host === 'github.com' &&
 // Sign in with GitHub / GitLab: the flows (the device code never leaves the "code container"), and whether an app is set
 const signInFlows = new Map();
 let signInApp = true;
-const signInConfig = () => ({ github: { host: 'github.com', clientId: signInApp ? 'Iv23mockclient000000' : null, appSlug: signInApp ? 'bedrock-now' : null, configured: signInApp },
+const signInConfig = () => ({ github: { host: 'github.com', clientId: signInApp ? 'Iv23li9eDUUgicar7aTx' : null, appSlug: signInApp ? 'bedrock-now' : null, configured: signInApp },
   gitlab: { host: 'gitlab.com', clientId: null, configured: false } });
 const flowView = (f) => ({ flowId: f.id, provider: f.provider, host: f.host, port: null, label: f.label, state: f.state, userCode: f.state === 'pending' ? f.userCode : null,
   verificationUri: f.provider === 'github' ? `https://${f.host}/login/device` : `https://${f.host}/oauth/device`, verificationUriComplete: null, expiresAt: f.expiresAt, interval: 5,
   error: f.error ?? null, gitHost: f.gitHost ? hostView(f.gitHost) : null, again: Boolean(f.hostId) });
-const oauthOf = (provider, account) => ({ provider, source: 'signed-in', clientId: provider === 'github' ? 'Iv23mockclient000000' : 'gl-mock-app', account,
+const oauthOf = (provider, account) => ({ provider, source: 'signed-in', clientId: provider === 'github' ? 'Iv23li9eDUUgicar7aTx' : 'gl-mock-app', account,
   scopes: provider === 'github' ? [] : ['read_repository', 'write_repository', 'read_user'], app: provider === 'github' ? 'github-app' : null, appSlug: provider === 'github' ? 'bedrock-now' : null,
   installations: provider === 'github' ? [{ account, selection: 'selected' }] : [], expiresAt: Date.now() + 8 * 3600000, refreshExpiresAt: Date.now() + 180 * 86400000, refreshable: true,
   needsSignIn: false, why: null, signedInAt: Date.now(), refreshedAt: null });
@@ -311,8 +312,8 @@ async function gitRemotePanel(p, m, url, req) {
     const again = b.hostId ? gitHostsMock.find((x) => x.id === b.hostId) : null;
     if (b.hostId && !again) return [400, { error: 'that git host was not connected by a sign-in' }];
     if (again) host = again.host;
-    const clientId = String(b.clientId || '') || (host === 'github.com' && b.provider === 'github' && signInApp ? 'Iv23mockclient000000' : '');
-    if (!clientId && !again) return [400, { error: host === 'github.com' || host === 'gitlab.com' ? `no ${b.provider === 'github' ? 'GitHub' : 'GitLab'} app is set up for bedrock-now yet: register one (README › Remote repositories) and enter its client ID — or connect with an access token or an SSH key` : `the application (client) ID of your app on ${host}, please` }];
+    const clientId = String(b.clientId || '') || (host === 'github.com' && b.provider === 'github' && signInApp ? 'Iv23li9eDUUgicar7aTx' : '');
+    if (!clientId && !again) return [400, { error: host === 'github.com' || host === 'gitlab.com' ? `no ${b.provider === 'github' ? 'GitHub' : 'GitLab'} app is set up for sign-in on ${host}: register one (README › Remote repositories › Your own app for sign-in) and enter its ID in Settings › Claude Code › More — or connect with an access token or an SSH key` : `the application (client) ID of your app on ${host}, please` }];
     if (!again && gitHostsMock.some((x) => x.host === host && x.auth !== 'ssh')) return [409, { error: `${host} is connected with an access token already: remove it first to sign in instead` }];
     const f = { id: crypto.randomBytes(16).toString('hex'), provider: b.provider, host, label: b.label || '', state: 'pending', hostId: again?.id ?? null,
       userCode: `${crypto.randomBytes(2).toString('hex').toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`, expiresAt: Date.now() + 900000 };

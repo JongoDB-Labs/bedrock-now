@@ -424,8 +424,8 @@
         p("For private repositories, and to push: GitHub, GitLab or any git server over https or ssh, connected once on the Code page."),
         list("ol", [
           [b("Open Git hosts"), " → ", b("Connect a git host…"), ": GitHub, GitLab or another server."],
-          [b("Sign in with GitHub"), " or ", b("Sign in with GitLab"), ": the dialog shows a code — open the host's page it links to, enter the code there and approve (the page never opens it for you). ",
-            "On GitHub it reaches only the repositories you install its app on (", b("Choose repositories"), "); its token renews itself."],
+          [b("Sign in with GitHub"), " (no setup: bedrock-now's own GitHub App) or ", b("Sign in with GitLab"), " (an app of yours): the dialog shows a code — open the host's page it links to, enter the code there and approve (the page never opens it for you). ",
+            "On GitHub it reaches only the repositories you install the app on (", b("Choose repositories"), ", or github.com/apps/bedrock-now), with ", b("Contents: Read and write"), "; its token renews itself."],
           ["Or an ", b("access token"), " for https:// URLs (the dialog links to where you make one): on GitHub a fine-grained token for only the repositories you need, with ",
             b("Contents: Read and write"), "; on GitLab ", code("read_repository"), " and ", code("write_repository"), ". Paste it once: it is never shown again."],
           ["Or an ", b("SSH key"), " the Code page makes, for git@… URLs: add its public half to your account, or as a deploy key of the repository (",
