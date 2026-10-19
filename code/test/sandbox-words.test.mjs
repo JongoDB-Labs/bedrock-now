@@ -111,25 +111,34 @@ test('an answer\'s error field: bn-coded\'s fixed texts (the list is what it wri
   const { ANSWER_ERRORS, answerOf } = await import('../server/gitreasons.mjs');
   const { TERMINAL_DIR } = await import('./helpers.mjs');
   const { printable } = await import('../server/spawn-client.mjs');
-  // the list: the literal values of bn-coded's error: and bad(…) (templated ones carry a name or a program's words)
+  // the list: the literal values of bn-coded's error:, bad(…) and taskError(…, …, why) — and of NO_PROGRAM, which
+  // taskError names (templated ones carry a name or a program's words)
   const src = fs.readFileSync(path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'), 'utf8');
   const found = new Set();
+  const lits = (expr) => {
+    for (const lit of expr.replace(/`(?:[^`\\]|\\.)*`/g, '``').matchAll(/(===?|!==?)?\s*'((?:[^'\\]|\\.)*)'/g)) { const s = lit[2].replace(/\\(.)/g, '$1'); if (!lit[1] && s) found.add(s); }
+  };
+  // args(rest) -> the top-level arguments (or the one expression) up to the closing ) , or }
+  const args = (rest, many) => {
+    const out = [];
+    let depth = 0, q = null, from = 0;
+    for (let i = 0; i < rest.length; i++) {
+      const c = rest[i];
+      if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
+      if (c === "'" || c === '`' || c === '"') { q = c; continue; }
+      if ('([{'.includes(c)) depth++;
+      else if (')]}'.includes(c)) { if (depth === 0) { out.push(rest.slice(from, i)); return out; } depth--; } else if (c === ',' && depth === 0) { out.push(rest.slice(from, i)); if (!many) return out; from = i + 1; }
+    }
+    out.push(rest.slice(from));
+    return out;
+  };
   for (const line of src.split('\n')) {
     if (/^\s*\/\//.test(line)) continue;
-    for (const m of line.matchAll(/(?:\berror: |\bbad\()/g)) {
-      const rest = line.slice(m.index + m[0].length);
-      let depth = 0, q = null, end = rest.length;
-      for (let i = 0; i < rest.length; i++) {
-        const c = rest[i];
-        if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
-        if (c === "'" || c === '`' || c === '"') { q = c; continue; }
-        if ('([{'.includes(c)) depth++;
-        else if (')]}'.includes(c)) { if (depth === 0) { end = i; break; } depth--; } else if (c === ',' && depth === 0) { end = i; break; }
-      }
-      const expr = rest.slice(0, end).replace(/`(?:[^`\\]|\\.)*`/g, '``');
-      for (const lit of expr.matchAll(/(===?|!==?)?\s*'((?:[^'\\]|\\.)*)'/g)) { const s = lit[2].replace(/\\(.)/g, '$1'); if (!lit[1] && s) found.add(s); }
-    }
+    for (const m of line.matchAll(/(?:\berror: |\bbad\()/g)) lits(args(line.slice(m.index + m[0].length), false)[0]);
+    for (const m of line.matchAll(/\btaskError\(/g)) lits(args(line.slice(m.index + m[0].length), true)[2] ?? '');
   }
+  const np = /^const NO_PROGRAM = \{([\s\S]*?)\};/m.exec(src)?.[1] ?? '';
+  for (const lit of np.matchAll(/'((?:[^'\\]|\\.)*)'/g)) found.add(lit[1].replace(/\\(.)/g, '$1'));
   assert.ok(found.size >= 25, String(found.size));
   assert.deepEqual([...ANSWER_ERRORS].sort(), [...found].sort(), 'gitreasons.mjs\'s ANSWER_ERRORS: what bn-coded writes');
   for (const s of ANSWER_ERRORS) { assert.equal(printable(s), s, s); assert.deepEqual(answerOf(s), { error: s }); }

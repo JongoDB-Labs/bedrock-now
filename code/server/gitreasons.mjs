@@ -181,7 +181,8 @@ export const SANDBOX_REFUSALS = Object.freeze([
   '--project-config-root must be the folder Claude Code runs in',
 ]);
 // bn-coded's own fixed texts in an answer's error field (the launch configurations, Run's sources and tasks, the
-// permission rules' files, a search): the literal values of its error: and bad(…) — code/test checks the list equals them
+// permission rules' files, a search): the literal values of its error:, bad(…) and taskError(…) and NO_PROGRAM's —
+// code/test/sandbox-words.test.mjs checks the list equals them
 export const ANSWER_ERRORS = Object.freeze([
   'a line too long to read',
   'not an object',
@@ -213,6 +214,14 @@ export const ANSWER_ERRORS = Object.freeze([
   'a link: not read',
   'not a regular file',
   'a folder on its way is a link (or not a folder): not read',
+  // (Run's tasks: taskError's reasons, and NO_PROGRAM's)
+  'its script is not a string',
+  'not a name the Run menu passes on (letters, digits and _ . : @ / + -): run it in the terminal',
+  'its script is too long to show here: run it in the terminal',
+  'make is not installed in the sandbox',
+  'its recipe is too long to show here: run it in the terminal',
+  "npm or node is not the image's own here (root's, in /usr/local/bin or /usr/bin): run it in the terminal",
+  "python3 is not the image's own here: run it in the terminal",
 ]);
 const KNOWN = new Set(GIT_REASONS);
 const PLAIN = new Set([...GIT_REASONS, ...GIT_REFUSALS, ...SANDBOX_REFUSALS, ...ANSWER_ERRORS]);

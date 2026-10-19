@@ -621,7 +621,9 @@ test('the code container passes only the fixed wrappers and checked runs to the 
   ]) assert.match(api.runTaskRow({ ...base, ...bad }).error, why, JSON.stringify(bad));
   assert.equal(api.runTaskRow({ ...base, name: 'a; rm -rf /' }), null);
   assert.equal(api.runTaskRow({ ...base, source: 'shell' }), null);
-  assert.deepEqual(api.runTaskRow({ source: 'npm', name: '<img src=x onerror=alert(1)>\n', error: 'x'.repeat(500) }), { source: 'npm', name: '<img src=x onerror=alert(1)> ', error: 'x'.repeat(300) });
+  // (a reason not one of bn-coded's own: the sandbox's words apart — gitreasons.mjs's answerOf)
+  assert.deepEqual(api.runTaskRow({ source: 'npm', name: '<img src=x onerror=alert(1)>\n', error: 'x'.repeat(500) }),
+    { source: 'npm', name: '<img src=x onerror=alert(1)> ', error: 'the sandbox gave a reason of its own', said: 'x'.repeat(300), saidBy: 'sandbox' });
   const run = api.runResultRow({ id: 'a'.repeat(16), source: 'npm', name: 'test\u001b[31m', command: 'npm run -- test', window: '@7;x', startedAt: 1, state: 'done',
     exitCode: 300, signal: 'KILL', error: 7, endedAt: 2, bytes: -1, tail: 'y'.repeat(70000), cut: 'yes' }, 4096);
   assert.deepEqual({ ...run, tail: run.tail.length }, { id: 'a'.repeat(16), source: 'npm', name: 'test [31m', command: 'npm run -- test', window: null, startedAt: 1, state: 'done',
