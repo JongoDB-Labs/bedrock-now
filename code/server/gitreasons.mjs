@@ -26,6 +26,12 @@ export const GIT_REASONS = Object.freeze([
 // git's words in them are not here): read plainly, as bn-coded's (code/test/git-api.test.mjs checks the list equals
 // what bn-coded's git ops can refuse with)
 export const GIT_REFUSALS = Object.freeze([
+  // (the projects' ops among them: a new project's folder, git init in one, Remove from Code with its folder)
+  'the new folder is not a folder any more',
+  'not a project folder of the workspace',
+  "the project's folder is not there",
+  "the project's folder is a link or not a folder: nothing was moved",
+  'it is a git repository already',
   'all or paths, not both',
   'too many path bytes at once',
   'a commit message, please',
