@@ -1680,6 +1680,87 @@ def ui_git_remotes(ctx):
             "the token in no answer, event or .git/config; no model calls; no CSP violations")
 
 
+@check("browser", "code-claude-git-access")
+@saved
+def claude_git_access(ctx):
+    """Claude's own git, and what Claude is told of it (run.sh E2E_GIT_SERVER=1; Haiku, one short answer): the suite's
+    git server as a GitHub host with a token; Let Claude use this host turned on through its warning (which says gh
+    gets the token too); the sandbox's own git — a make target in a project of its own, run from Run & test, with no
+    credential of its own — lists the server's branches through the broker (Activity: Claude's git used the host);
+    gh is in the image and, for a host it gets no login for, says so in one line; a new session's instructions name
+    the host as one Claude may use."""
+    if not GIT_SERVER:
+        raise Skip("needs the suite's git server (tests/e2e/run.sh with E2E_GIT_SERVER=1)")
+    need_on()
+    need_haiku()
+    token = os.environ.get("E2E_GIT_TOKEN", "")
+    ca = base64.b64decode(os.environ.get("E2E_GIT_CA_B64", "")).decode()
+    expect(len(token) >= 20 and "BEGIN CERTIFICATE" in ca, "no token or CA from run.sh")
+    page, rec = ui_page(ctx, "code-claude-git-access")
+    c = Code.on(page, rec, goto=False)
+    https_url, folder = "https://gitsrv:8443/e2e/demo.git", "e2e-claude-git"
+    _drop_projects(c, (folder,))
+    if folder in {e["name"] for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", [])}:
+        c.api("DELETE", f"/api/fs?path={folder}")
+    for h in c.api("GET", "/api/git/hosts")["json"]["hosts"]:
+        c.api("DELETE", f"/api/git/hosts/{h['id']}")
+    try:
+        page.keyboard.press("Control+Shift+G")
+        see(page.get_by_test_id("git-panel")).to_be_visible(timeout=30000)
+        dlg = _gitsrv_https_host(page, token, ca, https_url)
+        tok = dlg.get_by_test_id("git-host").filter(has_text="HTTPS access token")
+        see(tok.get_by_test_id("git-host-claude")).to_have_attribute("aria-checked", "false")
+        tok.get_by_test_id("git-host-claude").click()
+        see(page.get_by_test_id("git-claude-gh")).to_contain_text("gh, the GitHub CLI in the sandbox, gets this token too", timeout=10000)
+        shot(page, "code-claude-git-warning")
+        page.get_by_test_id("git-claude-confirm").click()
+        see(tok.get_by_test_id("git-host-claude")).to_have_attribute("aria-checked", "true", timeout=30000)
+        dlg.get_by_role("button", name="Close").click()
+        # the sandbox's own git (git's credential helper from /etc/gitconfig; the server's CA given to git, which the
+        # sandbox does not trust otherwise), then gh: in the image, and with no login for a host on another port
+        r = c.api("POST", "/api/projects", {"kind": "new", "folder": folder, "git": False})
+        expect(r["status"] == 200, f"the project: {r['status']} {r['text'][:200]}")
+        pid = r["json"]["project"]["id"]
+        c.api("PUT", f"/api/fs/file?path={folder}/ca.pem", {"text": ca})
+        make = ("bn-e2e-claude-git:\n\tGIT_SSL_CAINFO=$(CURDIR)/ca.pem GIT_TERMINAL_PROMPT=0 git ls-remote " + https_url
+                + "\n\tgh --version\n\tGH_HOST=gitsrv gh api user || true\n")
+        expect(c.api("PUT", f"/api/fs/file?path={folder}/Makefile", {"text": make})["status"] == 200, "the Makefile")
+        task = next((t for t in c.api("GET", f"/api/run?project={pid}")["json"]["tasks"] if t.get("name") == "bn-e2e-claude-git"), None)
+        expect(task and re.fullmatch(r"[0-9a-f]{64}", task.get("digest") or ""), f"the target listed: {task}")
+        r = c.api("POST", "/api/run/start", {"source": "make", "name": "bn-e2e-claude-git", "digest": task["digest"], "project": pid})
+        expect(r["status"] == 200 and r["json"].get("id"), f"run: {r['status']} {r['text'][:200]}")
+        rid, run = r["json"]["id"], None
+        for _ in range(120):
+            run = (c.api("GET", f"/api/run/results?id={rid}")["json"] or {}).get("runs", [None])[0]
+            if run and run.get("state") == "done":
+                break
+            page.wait_for_timeout(1000)
+        tail = (run or {}).get("tail", "")
+        expect(run and run.get("exitCode") == 0 and re.search(r"[0-9a-f]{40}\s+refs/heads/main", tail), f"git ls-remote through the broker: {run and run.get('exitCode')} {tail[-600:]}")
+        expect("gh version 2.102.0" in tail, f"gh in the image: {tail[-600:]}")
+        expect("gh: no login for gitsrv from bedrock-now" in tail, f"gh's one line: {tail[-600:]}")
+        expect(token not in tail, "the token in the run's output")
+        events = c.api("GET", "/api/git/hosts")["json"]["events"]
+        used = [e for e in events if e["who"] == "claude" and e["action"] == "credential" and e["ok"]]
+        expect(used and "gitsrv:8443" in used[0]["target"], f"Activity: {[(e['who'], e['action'], e['target']) for e in events][:6]}")
+        expect(token not in json.dumps(events), "the token in an event")
+        # a new session is told: the host, as one Claude may use (no tool, one short answer)
+        sid = c.new_session(HAIKU, "default")
+        evs = c.turn(sid, "Without using any tool, from your instructions only: which Git hosts may you use for git in this sandbox? "
+                     "Reply with only their host names, comma-separated, or the single word none.")
+        answer = text_of(evs).strip()
+        expect("gitsrv" in answer.lower(), f"the session's answer: {answer!r}")
+        csp_clean(page, rec)
+        return (f"Let Claude use this host on for gitsrv (its warning names gh); the sandbox's own git listed {https_url}'s main through "
+                f"the broker (Activity: {used[0]['target']}); gh 2.102.0 there, with its one line for a host it gets no login for; "
+                f"a Haiku session asked which Git hosts it may use: {answer!r}; the token in no output or event")
+    finally:
+        for h in c.api("GET", "/api/git/hosts")["json"]["hosts"]:
+            c.api("DELETE", f"/api/git/hosts/{h['id']}")
+        _drop_projects(c, (folder,))
+        c.api("DELETE", f"/api/fs?path={folder}")
+
+
 def git_admin(path, body=None):
     """The suite's git server's stand-in OAuth provider (tests/e2e/gitsrv: code/test/oauth-mock.mjs), as the user and the
     test see it: /_e2e/approve plays you entering the code on its page, /_e2e/revoke voids the refresh tokens, /_e2e/log
