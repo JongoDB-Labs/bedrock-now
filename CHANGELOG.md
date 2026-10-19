@@ -6,19 +6,31 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Sign in with GitHub works with no setup**: bedrock-now's own GitHub App (`bedrock-now`, client ID
+  `Iv23li9eDUUgicar7aTx` — public values, no secret) is the default, so *Connect a git host…* › Sign in with GitHub
+  asks for nothing first; the dialog says where to install the app on the repositories it may reach (*Choose
+  repositories*). Settings › Claude Code › More still takes an app of your own (an organization's, for example).
+  GitLab: gitlab.com still needs an application ID (Settings); a GitLab of your own, the instance's own (the dialog).
+
 ### Changed
 
 - **The sandbox's own words stay apart on every page and route**, not only in the Git panel: when opening, saving,
   renaming or uploading a file, the explorer, the terminal window, Run, the launch configurations, the ports, the
-  permission rules, plugins, MCP or a session's start fail in the sandbox's (or Claude Code's) own words, the page says
-  what failed — "Save failed", "Could not start a session" — and shows the words in a box of their own, labelled *the
-  sandbox said:* (or *Claude Code in the sandbox said:*), under "bedrock-now never asks you to enter a code except in
-  Git hosts › Sign in, right after you press it." The same for the WebSocket's refusals (a prompt, a model or mode
-  switch). bn-coded's own fixed refusals still read plainly.
-- **Sign in with GitHub / GitLab while no app is set up says so plainly**: "Sign-in needs an app registered with
-  GitHub once (2 minutes; only a public ID, no secret): Set up sign-in" opens the exact steps in the dialog; the field
-  is **GitHub app client ID (Iv…)** / **GitLab application ID**; the waiting Sign in button says "Paste an app ID
-  first"; and "Already use gh on this computer? `./stack git-host import gh` Copy" is right there.
+  permission rules, plugins, MCP, projects (a new project, its trust, Remove) or a session's start fail in the
+  sandbox's (or Claude Code's) own words, the page says what failed — "Save failed", "Could not start a session" — and
+  shows the words in a box of their own, labelled *the sandbox said:* (or *Claude Code in the sandbox said:*), under
+  "bedrock-now never asks you to enter a code except in Git hosts › Sign in, right after you press it." The same for
+  free text in answers that went well — a launch configuration's or a task's reason, the permission rules' files, a
+  search, a plugin, marketplace or MCP action's outcome, an MCP server's error, an error in Claude Code's stream, a
+  process that ended, a file restore or a watchlist file not put back, Review's Undo — and for the WebSocket's refusals
+  (a prompt, a model or mode switch, each said as what did not happen). bn-coded's own fixed texts still read
+  plainly: the lists of them are checked equal to what it writes.
+- **Sign-in while no app is set up (gitlab.com) says so plainly**: "Sign-in needs an app registered with GitLab once
+  (2 minutes; only a public ID, no secret): Set up sign-in" opens the exact steps in the dialog; the field is
+  **GitHub app client ID (Iv…)** / **GitLab application ID**; the waiting Sign in button says "Paste an app ID first";
+  and "Already use gh on this computer? `./stack git-host import gh` Copy" is right there.
 
 ### Fixed
 

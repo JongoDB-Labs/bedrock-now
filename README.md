@@ -1076,18 +1076,20 @@ Claude Code › More names another. An application of your own is for GitHub Ent
 bedrock-now application) and a GitLab of your own, or for when you would rather authorize an app you own than
 bedrock-now's. Its ID is public (no client secret, no private key: the device flow needs none):
 
-- **GitHub** — *Settings › Developer settings › GitHub Apps › New GitHub App* (or your organization's): a name, a
-  homepage URL (this repository's will do), no callback URL, **Enable Device Flow** ticked, *Expire user authorization
-  tokens* left ticked, *Webhook › Active* unticked, *Repository permissions › Contents: Read and write* (GitHub adds
-  *Metadata: Read-only*; add *Workflows: Read and write* only to push changes to `.github/workflows`), *Any account*
-  or *Only on this account*. Do not generate a client secret or a private key. Copy its **Client ID** (`Iv…`) into
-  Settings › Claude Code › More › **GitHub app client ID** (`GIT_GITHUB_CLIENT_ID`) and its name as its address has it
-  (`github.com/apps/NAME`) into **GitHub app name** (`GIT_GITHUB_APP_SLUG`), then **Install App** on the accounts and
-  repositories it may reach (Git hosts' *Choose repositories* opens that page).
+- **GitHub** — *Settings › Developer settings › GitHub Apps › New GitHub App*: a name, a homepage URL (this
+  repository's will do), no callback URL, **Enable Device Flow** ticked, *Expire user authorization tokens* left
+  ticked, *Webhook › Active* unticked, *Repository permissions › Contents: Read and write* (GitHub adds *Metadata:
+  Read-only*; add *Workflows: Read and write* only to push changes to `.github/workflows`). For an organization's
+  repositories, create it under the organization, or choose *Any account* (GitHub's default is *Only on this
+  account*). Do not generate a client secret or a private key. Copy its **Client ID** (`Iv…`) into Settings › Claude
+  Code › More › **GitHub app client ID** (`GIT_GITHUB_CLIENT_ID`) and its name as its address has it
+  (`github.com/apps/NAME`) into **GitHub app name** (`GIT_GITHUB_APP_SLUG`), then install it on the accounts and
+  repositories it may reach: from the app's page (*Developer settings › GitHub Apps › your app › Install App*), or Git
+  hosts' *Choose repositories*, which opens that page once the app's name is set.
 - **GitLab** — *Edit profile › Applications › Add new application* (GitLab 17.9 or later for a GitLab of your own): a
   name, **Confidential** unticked, the scopes `read_repository`, `write_repository` and `read_user`, and the device
-  authorization grant where the form lists grant types; a redirect URI is not used by the device sign-in (if the form
-  insists, `http://localhost/`). Copy its **Application ID** into **GitLab application ID** (`GIT_GITLAB_CLIENT_ID`)
+  authorization grant where the form lists grant types. The form requires a redirect URI: `http://localhost/` (the
+  device sign-in does not use it). Copy its **Application ID** into **GitLab application ID** (`GIT_GITLAB_CLIENT_ID`)
   — for gitlab.com; a GitLab of your own takes it in the Git hosts dialog.
 
 The settings change only from the computer running bedrock-now (another app is another party you would authorize).

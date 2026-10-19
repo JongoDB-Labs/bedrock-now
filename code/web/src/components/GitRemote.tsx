@@ -875,9 +875,19 @@ function SignInSetup({ kind }: { kind: 'github' | 'gitlab' }) {
             </li>
             <li>Give it a name and a homepage URL (any; this project's will do). Leave the callback URL empty.</li>
             <li>Tick <strong>Enable Device Flow</strong>; leave <em>Expire user authorization tokens</em> ticked; untick <em>Webhook › Active</em>.</li>
-            <li>Under <em>Repository permissions</em>, set <strong>Contents: Read and write</strong>. Create it — no client secret, no private key.</li>
+            <li>
+              Under <em>Repository permissions</em>, set <strong>Contents: Read and write</strong> (and <em>Workflows: Read and write</em> only to push
+              changes to <code>.github/workflows</code>). Create it — no client secret, no private key.
+            </li>
+            <li>
+              For an organization's repositories, create the app under the organization, or choose <em>Any account</em> (GitHub's default is <em>Only on
+              this account</em>).
+            </li>
             <li>Copy its <strong>Client ID</strong> (<code>Iv…</code>) into the field below — or into Settings › Claude Code › More › GitHub app client ID to keep it.</li>
-            <li>Then <em>Install App</em> on the repositories it may reach (Choose repositories, after signing in, opens that page).</li>
+            <li>
+              Then install it from your app's page (<em>Developer settings › GitHub Apps › your app › Install App</em>) on the repositories it may reach — or
+              set Settings › Claude Code › More › GitHub app name, so Choose repositories opens that page.
+            </li>
           </ol>
         ) : (
           <ol>
@@ -885,7 +895,10 @@ function SignInSetup({ kind }: { kind: 'github' | 'gitlab' }) {
               On gitlab.com, open{' '}
               <a href="https://gitlab.com/-/user_settings/applications" target="_blank" rel="noopener noreferrer">Edit profile › Applications › Add new application ↗</a>.
             </li>
-            <li>Give it a name, untick <strong>Confidential</strong>, and tick the scopes <code>read_repository</code>, <code>write_repository</code> and <code>read_user</code> (a redirect URI, if the form insists: <code>http://localhost/</code>).</li>
+            <li>
+              Give it a name, untick <strong>Confidential</strong>, and tick the scopes <code>read_repository</code>, <code>write_repository</code> and{' '}
+              <code>read_user</code>. The form requires a redirect URI: <code>http://localhost/</code> (the sign-in does not use it).
+            </li>
             <li>Save it, and copy its <strong>Application ID</strong> into the field below — or into Settings › Claude Code › More › GitLab application ID to keep it.</li>
           </ol>
         )}
@@ -1011,6 +1024,13 @@ function AddHost({ onDone, signIn }: { onDone: () => void; signIn: GitSignInConf
         {auth === 'oauth' && kind !== 'other' && (
           <div class="wide small gitr-oauth-new" data-testid="git-host-oauth-form">
             {!ready && defaultHost && <SignInSetup kind={provider} />}
+            {ready && defaultHost && kind === 'github' && (
+              <p class="small" data-testid="git-host-install-app">
+                Install the app on the repositories it may reach:{' '}
+                <a href={signIn?.github.appSlug ? `https://github.com/apps/${signIn.github.appSlug}/installations/new` : 'https://github.com/settings/installations'}
+                  target="_blank" rel="noopener noreferrer">Choose repositories ↗</a>
+              </p>
+            )}
             {(!ready || !defaultHost) && (
               <label class="wide">
                 {defaultHost ? (kind === 'github' ? 'GitHub app client ID (Iv…)' : 'GitLab application ID') : `The application (client) ID of your ${KIND_LABEL[kind]} app on ${label(host.trim(), 120)}`}

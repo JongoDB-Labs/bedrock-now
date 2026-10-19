@@ -1967,16 +1967,26 @@ default).
   sandbox answering such a message, on the backend (the routes, the events) and in the page (a fetch, a stage, a
   commit, a long one, no repository). Every other route keeps the sandbox's words apart the same way (`said.mjs`):
   opening, saving, renaming or uploading a file, the explorer, the terminal window, Run, the launch configurations,
-  the ports, the permission rules, plugins and MCP answer "the sandbox refused" with the words apart (*the sandbox
-  said:*), a CLI listing that fails "claude plugin list failed" and a session that cannot start "could not start
-  Claude Code" with Claude Code's own words apart (*Claude Code in the sandbox said:*), and so do the WebSocket's
-  failures (a prompt refused, a model or mode switch); the page says what failed and shows the words in the box under
-  the same line — never "Save failed: …" with their text. bn-coded's own fixed refusals there read plainly too (the
-  list in `gitreasons.mjs`, checked equal to the rest of bn-coded's). Every text on those lists is plain ASCII: a
-  refusal reaches the code container through a filter that turns anything else into "?", so a "…" would never match
-  (a test checks each still matches through it). Proven with the same hostile text on the files, the terminal window,
-  Run, the ports, the launch configurations, a session's start and the WebSocket. Not apart yet: Undo in the Review
-  pane says only "the sandbox refused" when a write back is refused in the sandbox's words, without the words.
+  the ports, the permission rules, plugins, MCP and projects (a new project, its trust, Remove) answer "the sandbox
+  refused" with the words apart (*the sandbox said:*); a CLI listing that fails ("claude plugin list failed") and a
+  session that cannot start ("could not start Claude Code") keep Claude Code's own words apart (*Claude Code in the
+  sandbox said:*); a failed WebSocket message is said as what did not happen ("the model was not changed", "the MCP
+  server was not reconnected") with Claude Code's words apart, and a fault of the code container's own is ours,
+  never labelled as theirs. The same for free text in an answer that went well: a launch configuration's or a task's
+  reason, Run's results, the permission rules' files, a search, a project's settings not shown whole, a new
+  project's git init — bn-coded's own fixed texts as they are, anything else (a parser quoting the file, a program's
+  words) "the sandbox gave a reason of its own" with the words apart; a plugin, marketplace or MCP action ("Done." /
+  "It did not work.", the CLI's message apart); an MCP server's error (any server, one a prompt-injected Claude added
+  too); Claude Code's stream (the SDK's error names as they are, anything else apart; a process that ended with an
+  error: its words in the conversation, the session's state text ours); a file restore, a watchlist file not put back
+  and Review's Undo. The page says what failed and shows the words in the box under the same line — never "Save
+  failed: …" with their text. bn-coded's own fixed texts read plainly: the lists in `gitreasons.mjs` (its reasons,
+  its refusals, its answers' errors) and the SDK's error names are checked equal to what bn-coded and the SDK write.
+  Every text on those lists is plain ASCII: a refusal reaches the code container through a filter that turns anything
+  else into "?", so a "…" would never match (a test checks each still matches through it). Proven with the same
+  hostile text on the files, the terminal window, Run, the ports, the launch configurations, a session's start, the
+  WebSocket and the answers above. Still the sandbox's text as it is, where it is plainly data and labelled so: a
+  file's content, a tool's output, a commit's subject, a branch's name, Claude's own answers.
 - [x] **Stored like a token.** The access token, the refresh token (when the host gives one), their expiry times, the
   account, the scopes or the GitHub App's installations, and the client ID are kept in Git hosts' file (mode 600,
   unencrypted: the same caveats as a token). The page sees the account, the scopes, the expiry and whether it renews
