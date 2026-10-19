@@ -445,8 +445,13 @@ test('--project-config-root: only the folder Claude Code runs in (it only narrow
   assert.match(other.error, /must be the folder Claude Code runs in/);
   fs.symlinkSync(P1, path.join(WS, 'link-to-p1'));
   const viaLink = await call({ op: 'claude', args: [...coded.FIXED, `--project-config-root=${path.join(WS, 'link-to-p1')}`], cwd: P1, env: {} });
-  assert.doesNotMatch(String(viaLink.error ?? ''), /must be the folder/, 'the same folder through a link (real paths compared)');
+  assert.doesNotMatch(String(viaLink.error ?? ''), /must be the folder|exactly once/, 'the same folder through a link (real paths compared)');
   fs.rmSync(path.join(WS, 'link-to-p1'));
+  // none at all (the Workspace's sessions too), twice, or as a separate value: refused before anything starts
+  assert.match((await call({ op: 'claude', args: [...coded.FIXED], cwd: WS, env: {} })).error, /exactly once/);
+  assert.match((await call({ op: 'claude', args: [...coded.FIXED, `--project-config-root=${P1}`, `--project-config-root=${P1}`], cwd: P1, env: {} })).error, /given twice|exactly once/);
+  assert.ok(coded.checkClaudeArgs([...coded.FIXED, '--project-config-root', P1]), 'a separate value: refused');
+  assert.match(coded.checkClaudeArgs([...coded.FIXED, '--model=a', '--model=b']), /given twice/, 'every valued option once');
 });
 
 test('terminal.window: a new window of the terminal\'s session in the project\'s folder, nothing typed', async () => {

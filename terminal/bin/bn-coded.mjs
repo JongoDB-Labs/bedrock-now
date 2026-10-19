@@ -185,17 +185,21 @@ const VALUED = {
   '--allowedTools': (v) => RULES.test(v),
   '--disallowedTools': (v) => RULES.test(v),
   '--tools': (v) => v === '',
-  // the project folder a session runs in (it only narrows what Claude Code reads: open() checks it is the process's cwd)
-  '--project-config-root': (v) => v.startsWith(`${WORKSPACE}/`) && v.length <= 1024 && !/[\x00-\x1f\x7f]/.test(v),
+  // the folder a session runs in (it only narrows what Claude Code reads: open() requires it, once, as the process's cwd)
+  '--project-config-root': (v) => (v === WORKSPACE || v.startsWith(`${WORKSPACE}/`)) && v.length <= 1024 && !/[\x00-\x1f\x7f]/.test(v),
 };
 export function checkClaudeArgs(args) {
   if (!Array.isArray(args) || args.length > 64 || FIXED.some((a, i) => args[i] !== a)) return 'the stream-json prefix is missing';
+  const seen = new Set();
   for (const a of args.slice(FIXED.length)) {
     if (typeof a !== 'string') return 'not a string';
     if (FLAGS.has(a)) continue;
     const eq = a.indexOf('=');
     const name = eq > 0 ? a.slice(0, eq) : a;
     if (!Object.hasOwn(VALUED, name) || eq < 0 || !VALUED[name](a.slice(eq + 1))) return `argument refused: ${printable(name, 40)}`;
+    // (each valued option once: a second one could win in Claude Code's own parser)
+    if (seen.has(name)) return `argument given twice: ${printable(name, 40)}`;
+    seen.add(name);
   }
   return null;
 }
@@ -3882,9 +3886,11 @@ export function serve(sock) {
       if (why) return fail(why);
       const cwd = confine(typeof req.cwd === 'string' ? req.cwd : WORKSPACE);
       if (!cwd) return fail('cwd must be in /workspace');
-      // --project-config-root: only the folder the process runs in (real paths), never another folder's configuration
-      const pcr = req.args.find((a) => typeof a === 'string' && a.startsWith('--project-config-root='));
-      if (pcr && confine(pcr.slice('--project-config-root='.length)) !== cwd) return fail('--project-config-root must be the folder Claude Code runs in');
+      // --project-config-root: always, once, and the folder the process runs in (real paths) — Claude Code then reads the
+      // configuration project.settings hashes (no .claude/ below it), never another folder's
+      const pcr = req.args.filter((a) => typeof a === 'string' && a.startsWith('--project-config-root'));
+      if (pcr.length !== 1 || !pcr[0].startsWith('--project-config-root=')) return fail('--project-config-root: exactly once, as the folder Claude Code runs in');
+      if (confine(pcr[0].slice('--project-config-root='.length)) !== cwd) return fail('--project-config-root must be the folder Claude Code runs in');
       const args = [...FIXED, ...(fs.existsSync(MCP_CONFIG) ? [`--mcp-config=${MCP_CONFIG}`] : []), ...req.args.slice(FIXED.length)];
       return startProcess(args, cwd, childEnv(req.env, req.litellmSession));
     }

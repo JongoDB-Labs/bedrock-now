@@ -127,6 +127,7 @@ export function proposedMessage(answer) {
 export function draftOptions({ id, model, spawn, abortController, log = () => {} }) {
   const options = {
     cwd: '/workspace',
+    projectConfigRoot: '/workspace',   // (bn-coded starts no Claude Code without it; with settingSources [] it reads nothing anyway)
     pathToClaudeCodeExecutable: '/usr/local/bin/claude',
     env: {},
     systemPrompt: DRAFT_SYSTEM,

@@ -2038,6 +2038,53 @@ def ui_projects(ctx):
             "Remove from Code took the record only (the folder stayed); no CSP violations")
 
 
+@check("browser", "code-projects-config-above")
+@saved
+def projects_config_above(ctx):
+    """A monorepo's configuration above a project counts (no model calls): a repository e2e-mono/ (New project, git
+    init) with a skill granting Bash in its .claude/skills, and a project e2e-mono/app with nothing of its own — the
+    app's configuration needs trust (the skill listed with what it grants), and a session there starts without it."""
+    need_on()
+    page, rec = ui_page(ctx, "code-projects-config-above")
+    c = Code.on(page, rec, goto=False)
+    mono, app = "e2e-mono", "e2e-mono/app"
+    _drop_projects(c, (mono, app))
+    if mono in {e["name"] for e in (c.api("GET", "/api/fs?path=.")["json"] or {}).get("entries", [])}:
+        c.api("DELETE", f"/api/fs?path={mono}")
+    try:
+        r = c.api("POST", "/api/projects", {"kind": "new", "folder": mono, "git": True})
+        expect(r["status"] == 200 and r["json"].get("git") is True, f"the repository: {r['status']} {r['text'][:200]}")
+        for d in (f"{mono}/.claude", f"{mono}/.claude/skills", f"{mono}/.claude/skills/deploy", app):
+            c.api("POST", "/api/fs/mkdir", {"path": d})
+        r = c.api("PUT", f"/api/fs/file?path={mono}/.claude/skills/deploy/SKILL.md",
+                  {"text": "---\nname: deploy\nallowed-tools: Bash(*)\n---\nDeploy with Bash.\n"})
+        expect(r["status"] == 200, f"the skill: {r['status']} {r['text'][:100]}")
+        r = c.api("POST", "/api/projects", {"kind": "folder", "folder": app})
+        expect(r["status"] == 200, f"the app's project: {r['status']} {r['text'][:200]}")
+        pid = r["json"]["project"]["id"]
+        v = c.api("GET", f"/api/projects/{pid}/settings")["json"] or {}
+        expect(v.get("state") == "untrusted", f"the app's configuration (a skill above it): {v.get('state')} {v.get('summary', {}).get('missing')}")
+        files = {f["name"]: f["grants"] for f in v["summary"]["files"]}
+        skill = f"/workspace/{mono}/.claude/skills/deploy/SKILL.md"
+        expect(files.get(skill) == [{"key": "allowed-tools", "value": "Bash(*)"}], f"the skill above: {files}")
+        # a session there (no prompt, no model call): your own settings only
+        r = c.api("POST", "/api/sessions", {"project": pid, "model": HAIKU or None, "mode": "default"})
+        expect(r["status"] == 200, f"a session: {r['status']} {r['text'][:200]}")
+        sid = r["json"]["id"]
+        st = state_of(c, sid)
+        expect((st.get("settings") or {}).get("state") == "untrusted", f"the session's: {st.get('settings')}")
+        c.api("DELETE", f"/api/sessions/{sid}")
+        csp_clean(page, rec)
+    finally:
+        try:
+            _drop_projects(c, (mono, app))
+            c.api("DELETE", f"/api/fs?path={mono}")
+        except Exception:  # noqa: BLE001 — cleanup never hides the failure
+            pass
+    return (f"a skill in {mono}/.claude/skills (allowed-tools: Bash(*)) above the project {app}: listed in its configuration, which "
+            "needs trust; a session there started with your own settings only; no model calls")
+
+
 @check("browser", "code-ui-phone")
 @saved
 def ui_phone(ctx):

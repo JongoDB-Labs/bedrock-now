@@ -46,12 +46,16 @@ test('claude arguments: the SDK prefix, then only allowlisted --name=value / fla
     '--thinking=adaptive', '--effort=xhigh', '--max-turns=12', '--max-budget-usd=1.5', '--allowedTools=Bash(npm test:*)',
     '--disallowedTools=WebFetch', '--include-partial-messages', '--fork-session', '--include-hook-events',
     '--allow-dangerously-skip-permissions',   // (CODE_ALLOW_BYPASS: the page may switch a session to Bypass permissions)
-    '--tools=', '--no-session-persistence'];   // (the Git panel's Write-message helper: no tool, no transcript)
-  assert.equal(coded.checkClaudeArgs([...FIXED, ...ok]), null);
+    '--tools=', '--no-session-persistence',   // (the Git panel's Write-message helper: no tool, no transcript)
+    `--project-config-root=${WS}`, `--project-config-root=${WS}/app`];   // (the folder a session runs in: open() checks it)
+  for (const a of ok) assert.equal(coded.checkClaudeArgs([...FIXED, a]), null, a);
+  // each valued option once (a second one could win in Claude Code's parser); flags may repeat harmlessly
+  assert.match(coded.checkClaudeArgs([...FIXED, '--model=a', '--model=b']), /given twice/);
+  assert.match(coded.checkClaudeArgs([...FIXED, `--project-config-root=${WS}`, `--project-config-root=${WS}/x`]), /given twice/);
   // the helper's whole argument list, as the SDK builds it for code/server/gitdraft.mjs (recorded by the fake-API probe)
   assert.equal(coded.checkClaudeArgs([...FIXED, '--max-turns=3', '--permission-prompt-tool=stdio',
     '--disallowedTools=Bash,BashOutput,KillShell,KillBash,Edit,MultiEdit,Write,Read,Glob,Grep,NotebookEdit,NotebookRead,WebFetch,WebSearch,Task,Agent,TodoWrite,Skill,SlashCommand,ExitPlanMode,EnterPlanMode,AskUserQuestion,LSP,ListMcpResourcesTool,ReadMcpResourceTool,mcp__bedrock-shared',
-    '--tools=', '--setting-sources=', '--permission-mode=dontAsk', '--no-session-persistence']), null);
+    '--tools=', '--setting-sources=', '--permission-mode=dontAsk', '--no-session-persistence', `--project-config-root=${WS}`]), null);
   const refused = ['--settings={"x":1}', '--mcp-config=/tmp/x.json', '--plugin-dir=/tmp', '--debug-file=/tmp/d', '--betas=x',
     '--task-budget=10', '--managed-settings=x', '--add-dir=/', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions=1',
     '--permission-mode=bypassPermissions', '--permission-mode=auto', '--permission-mode=readOnly', '--permission-mode=manual', '--model', '--model=', '--model=-x', '--model=a b',
@@ -280,13 +284,13 @@ test('claude: runs in the workspace with the checked arguments, the shared MCP c
   const got2 = [];
   const done = new Promise((r) => c2.on('close', r));
   c2.on('data', (d) => got2.push(...p2.push(d)));
-  c2.write(open({ op: 'claude', args: [...FIXED, '--model=haiku', `--session-id=${SID}`], cwd: WS, env: { CLAUDE_CODE_ENTRYPOINT: 'sdk-ts', EVIL: '1' }, litellmSession: SID }));
+  c2.write(open({ op: 'claude', args: [...FIXED, '--model=haiku', `--session-id=${SID}`, `--project-config-root=${WS}`], cwd: WS, env: { CLAUDE_CODE_ENTRYPOINT: 'sdk-ts', EVIL: '1' }, litellmSession: SID }));
   c2.write(frame(T.STDIN, Buffer.from('{"type":"user"}\n')));
   c2.write(frame(T.STDIN_END, Buffer.alloc(0)));
   await done;
   const out = stdout(got2).toString().split('\n');
   const info = JSON.parse(out[0]);
-  assert.deepEqual(info.args, [...FIXED, `--mcp-config=${path.join(HOME, '.config/bedrock-now/mcp.json')}`, '--model=haiku', `--session-id=${SID}`]);
+  assert.deepEqual(info.args, [...FIXED, `--mcp-config=${path.join(HOME, '.config/bedrock-now/mcp.json')}`, '--model=haiku', `--session-id=${SID}`, `--project-config-root=${WS}`]);
   assert.equal(info.cwd, WS);
   assert.deepEqual(info.env, { ANTHROPIC_CUSTOM_HEADERS: `x-litellm-session-id: code-${SID}\nx-litellm-tags: claude-bedrock,code`, CLAUDE_CODE_ENTRYPOINT: 'sdk-ts', PATH: 'set' });
   assert.equal(out[1], 'echo:{"type":"user"}');
@@ -298,7 +302,7 @@ test('claude: runs in the workspace with the checked arguments, the shared MCP c
   const p3 = new FrameParser(); const got3 = [];
   const done3 = new Promise((r) => c3.on('close', r));
   c3.on('data', (d) => got3.push(...p3.push(d)));
-  c3.write(open({ op: 'claude', args: FIXED, cwd: WS }));
+  c3.write(open({ op: 'claude', args: [...FIXED, `--project-config-root=${WS}`], cwd: WS }));
   await new Promise((r) => setTimeout(r, 400));
   c3.write(frame(T.SIGNAL, { signal: 'SIGTERM' }));
   await done3;
@@ -308,7 +312,7 @@ test('claude: runs in the workspace with the checked arguments, the shared MCP c
 
 test('claude: the code side going away ends the process (stdin EOF)', async () => {
   const c = net.connect(SOCK);
-  c.write(open({ op: 'claude', args: FIXED, cwd: WS }));
+  c.write(open({ op: 'claude', args: [...FIXED, `--project-config-root=${WS}`], cwd: WS }));
   await new Promise((r) => setTimeout(r, 400));
   const before = fs.readdirSync(path.join(ROOT, 'children'));
   assert.equal(before.length, 1, 'the child is recorded');

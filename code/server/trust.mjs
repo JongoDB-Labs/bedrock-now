@@ -20,10 +20,12 @@ const SHA = /^[0-9a-f]{64}$/;
 export const SETTINGS_FILES = Object.freeze(['.claude/settings.json', '.claude/settings.local.json']);
 const TYPES = ['file', 'link', 'big', 'other'];
 export const FILES_MAX = 500;
-// a name bn-coded may list: .mcp.json, or a .claude (the root's or one below it: a link, not a folder) or a path under
-// one — relative, one line, no "." or ".." part
-const nameOk = (n) => typeof n === 'string' && n.length <= 1024 && !/[\x00-\x1f\x7f]/.test(n)
-  && (n.toLowerCase() === '.mcp.json' || (n.toLowerCase().split('/').includes('.claude') && n.split('/').every((x) => x !== '' && x !== '.' && x !== '..')));
+// a name bn-coded may list: the project's own .mcp.json, its .claude (a link, not a folder) or a path under it —
+// relative —, or a path under a .claude above it, absolute in /workspace; one line, no "." or ".." part
+const segsOk = (segs) => segs.every((x) => x !== '' && x !== '.' && x !== '..');
+const nameOk = (n) => typeof n === 'string' && n.length <= 1024 && !/[\x00-\x1f\x7f]/.test(n) && (n.toLowerCase() === '.mcp.json'
+  || (!n.startsWith('/') && n.split('/')[0].toLowerCase() === '.claude' && segsOk(n.split('/')))
+  || (n.startsWith(`${WS}/`) && n.slice(WS.length + 1).toLowerCase().split('/').includes('.claude') && segsOk(n.slice(WS.length + 1).split('/'))));
 
 /** checkFiles(project.settings' RESULT) -> {files: [{name, type, size, sha256, target, text}], ok}: ok false when the
  *  list does not fit what bn-coded lists (a bad name, the same name twice, out of order, too many): then unverifiable */
@@ -239,16 +241,18 @@ export function makeTrust({ call, store, log = () => {} }) {
   const known = new Map();
   const note = (id, state) => { if (id && id !== WORKSPACE_ID) { if (known.size >= 500 && !known.has(id)) known.clear(); known.set(id, state); } };
   const recordAt = (cwd) => store().list().find((p) => p.id !== WORKSPACE_ID && absOf(p.root) === cwd) ?? null;
-  // read(abs) -> {files, present, hash, verifiable}: the hash recomputed here from what was shown — each text's own
-  // SHA-256 checked against the one the sandbox gave — so a trusted hash covers exactly the texts the page showed
-  async function read(abs) {
-    const { result } = await call({ op: 'project.settings', ...(abs === WS ? {} : { root: abs }) }, { timeoutMs: 20000 });
+  // read(abs, {text}) -> {files, present, hash, verifiable}: with the texts (the dialog, a trust), the hash recomputed
+  // here from what was shown — each text's own SHA-256 checked against the one the sandbox gave — so a trusted hash
+  // covers exactly the texts the page showed; without (a session's start: the hash alone, cheap), the sandbox's hash of
+  // the same files, compared with the trusted one
+  async function read(abs, { text = true } = {}) {
+    const { result } = await call({ op: 'project.settings', ...(abs === WS ? {} : { root: abs }), ...(text ? {} : { text: false }) }, { timeoutMs: 20000 });
     const { files, ok } = checkFiles(result);
     for (const f of files) if (f.text !== null && (!f.sha256 || sha256(Buffer.from(f.text, 'utf8')) !== f.sha256)) f.text = null;
     const present = files.length > 0 || !ok || (result?.over !== null && result?.over !== undefined);
     const hash = hashOf(files);
     const verifiable = ok && present && result?.verifiable === true && !result?.over && hash !== null && result?.hash === hash
-      && files.every((f) => (f.type === 'file' || f.type === 'link') && f.text !== null);
+      && files.every((f) => (f.type === 'file' || f.type === 'link') && (!text || f.text !== null));
     return { files, present, hash: verifiable ? hash : null, verifiable, over: typeof result?.over === 'string' ? short(result.over, 200) : null };
   }
   /** decide(cwd) -> {state, sources, strictMcp, project, hash}: what a Claude Code process started there now gets.
@@ -258,7 +262,7 @@ export function makeTrust({ call, store, log = () => {} }) {
     let rec = null;
     try {
       rec = recordAt(cwd);
-      const r = await read(cwd);
+      const r = await read(cwd, { text: false });
       const state = stateOf({ present: r.present, hash: r.hash, trust: rec?.trust, verifiable: r.verifiable });
       note(rec?.id, state);
       // (not applied: your own settings, and of MCP servers only the stack's own — whatever Claude Code would read)

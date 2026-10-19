@@ -359,6 +359,8 @@ test('a project\'s own Claude Code settings: not applied until trusted as they a
     let sid = r.json.id;
     assert.deepEqual(lastSources(), ['user']);
     assert.equal(queries.at(-1).options.strictMcpConfig, true);
+    assert.equal(queries.at(-1).options.projectConfigRoot, W, 'its folder only: no .claude/ below it is discovered');
+    assert.equal(calls.filter((c) => c.op === 'project.settings').at(-1).text, false, 'a start compares the hash alone (no texts)');
     let s = srv.mgr.get(sid);
     assert.deepEqual(s.info().settings, { state: 'untrusted', project: website.id });
     assert.ok(s.ring.since(0).events.some((e) => e.ev.type === 'local' && e.ev.settings === 'untrusted' && /not applied/.test(e.ev.text)));
@@ -428,7 +430,10 @@ test('a project\'s own Claude Code settings: not applied until trusted as they a
       assert.equal(t.status, 409, what);
       r = await req('POST', '/api/sessions', { project: website.id });
       assert.deepEqual(lastSources(), ['user'], what);
-      assert.equal(srv.mgr.get(r.json.id).info().settings.state, 'unverifiable', what);
+      // (a start compares hashes alone: a text the sandbox lies about is caught by the dialog and Trust, which read the
+      // texts; at a start it is simply not the trusted hash — not applied either way)
+      assert.ok(what.startsWith('a text') ? ['changed', 'untrusted', 'unverifiable'].includes(srv.mgr.get(r.json.id).info().settings.state)
+        : srv.mgr.get(r.json.id).info().settings.state === 'unverifiable', what);
       srv.mgr.closeAll();
     }
     state.settings[W] = fixture({ settings: { type: 'big', size: 9 << 20, sha256: sha('big') } });
@@ -490,11 +495,19 @@ test('a project\'s own Claude Code settings: not applied until trusted as they a
     assert.equal((await req('GET', `/api/projects/${website.id}/settings`)).json.summary.complete, false, 'no closing ---');
     state.settings[W] = fixture({}, { '.claude/x.txt': '---\nallowed-tools: {Bash: x}\n---\n' });
     assert.equal((await req('GET', `/api/projects/${website.id}/settings`)).json.summary.complete, false, 'any file that starts with --- and does not read plainly');
-    // a .claude/ below the root: listed, and enough to need trust
-    state.settings[W] = fixture({}, { 'packages/app/.claude/commands/deploy.md': '---\nallowed-tools: Bash(*)\n---\n' });
+    // a monorepo above the project (its skills, commands, agents …, named by their path in /workspace): listed with
+    // what they grant, and enough to need trust
+    state.settings[W] = fixture({}, { '/workspace/mono/.claude/skills/x/SKILL.md': '---\nallowed-tools: Bash(*)\n---\n',
+      '/workspace/mono/.claude/output-styles/terse.md': 'Be terse.' });
     v = (await req('GET', `/api/projects/${website.id}/settings`)).json;
     assert.ok(['untrusted', 'changed'].includes(v.state), v.state);
-    assert.deepEqual(v.summary.files.map((f) => [f.name, f.grants]), [['packages/app/.claude/commands/deploy.md', [{ key: 'allowed-tools', value: 'Bash(*)' }]]]);
+    assert.deepEqual(v.summary.files.map((f) => [f.name, f.grants]), [['/workspace/mono/.claude/output-styles/terse.md', []],
+      ['/workspace/mono/.claude/skills/x/SKILL.md', [{ key: 'allowed-tools', value: 'Bash(*)' }]]]);
+    // names bn-coded never lists (a .claude below the root, a path out of the workspace): unverifiable
+    for (const name of ['packages/app/.claude/commands/deploy.md', '/etc/.claude/x.md', '/workspace/../etc/.claude/x']) {
+      state.settings[W] = fixture({}, { [name]: 'x' });
+      assert.equal((await req('GET', `/api/projects/${website.id}/settings`)).json.state, 'unverifiable', name);
+    }
     // beyond bn-coded's bounds (more than 500 files …): unverifiable, never trusted
     state.settings[W] = { ...fixture({}, { '.claude/a.md': 'x' }), verifiable: false, over: 'more than 500 files' };
     v = (await req('GET', `/api/projects/${website.id}/settings`)).json;
@@ -528,6 +541,7 @@ test('a project\'s own Claude Code settings: not applied until trusted as they a
     r = await req('POST', '/api/sessions', {});
     assert.deepEqual(lastSources(), ['user', 'project', 'local']);
     assert.equal(queries.at(-1).options.strictMcpConfig, undefined);
+    assert.equal(queries.at(-1).options.projectConfigRoot, '/workspace', 'the Workspace too: no nested discovery below it');
   } finally {
     if (answers['project.settings.saved']) { answers['project.settings'] = answers['project.settings.saved']; delete answers['project.settings.saved']; }
     delete state.settings[W];

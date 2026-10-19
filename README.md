@@ -727,17 +727,17 @@ sessions from before projects are listed under it.
 
   A project's folder is 1 to 4 levels below `/workspace`, no name in it starts with `.`, at most 160 bytes. At most
   64 projects.
-- **A project's own Claude Code configuration** (everything under `.claude/` — settings, skills, commands, agents —,
-  also in `.claude/` folders below it, and `.mcp.json`; a cloned repository may bring it) applies only once you trusted
-  it as it is: until then a session
+- **A project's own Claude Code configuration** (everything under its `.claude/` — settings, skills, commands, agents
+  —, its `.mcp.json`, and the skills, commands and agents of the folders above it up to the git root, a monorepo's
+  for instance; a cloned repository may bring it) applies only once you trusted it as it is: until then a session
   there runs with your own settings only and, of MCP servers, only the stack's own, and says so above the prompt
   (*Review them…*). The project's ⋯ › *Claude Code settings…* — shown by itself before a new session there — lists what
   it sets (hooks and their commands, permission rules, environment, MCP servers, every other key, and each skill's or
   agent's granted tools), with *Trust this project's Claude Code settings* (or *Start without them*). Changed since (a
   pull adding a skill too): asked again. What the page cannot show in full (a link out of the workspace, a very long
-  value, more than 500 files) is never trusted; scripts a trusted hook runs are not shown — read them too. A folder
-  with neither needs nothing (its `CLAUDE.md` is read). The Workspace's own apply as before.
-  [docs/security.md](docs/security.md#projects)
+  value, more than 500 files, a linked git worktree) is never trusted; scripts a trusted hook runs are not shown —
+  read them too. A folder with none of it needs nothing (its `CLAUDE.md` is read). The Workspace's own apply as
+  before. [docs/security.md](docs/security.md#projects)
 - **Add to project…** (a session's ⋯; or the tick button above the list, pick several, then *Add to project…*): the
   session is listed in that project from then on. It still runs in its own folder (Claude Code keeps a conversation by
   the folder it started in).

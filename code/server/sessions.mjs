@@ -239,6 +239,10 @@ export class Session {
       stderr: (s) => this.mgr.logStderr(this.id, `sdk ${this.id.slice(0, 8)}: ${short(s, 300)}`),
     };
     if (settings.strictMcp) options.strictMcpConfig = true;
+    // its folder's configuration (what the decision covered) from that folder only — no .claude/ below it (Claude Code's
+    // discovery of nested skills is off with it); bn-coded starts no Claude Code without it. The Workspace's own
+    // .claude/ applies as before projects; only the nested discovery below it is off
+    options.projectConfigRoot = this.cwd;
     if (this.model) options.model = this.model;
     if (this.effort) options.effort = this.effort;
     // stop at the budget: Claude Code's own limit for this process, what is left of it now

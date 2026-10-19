@@ -888,8 +888,8 @@ spawn server, Claude Code or any file at will.
   read-only `terminal.capture` (below, "Context mentions and plan comments"), and the projects' `project.create`,
   `project.check`, `git.init` and `terminal.window` (below, "Projects"). Claude Code's
   arguments must start with the SDK's fixed stream-json prefix and every other one must be on an allowlist in
-  `--name=value` form (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`, `--resume=<uuid>` …) or one of
-  a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*; and two that only take
+  `--name=value` form, each valued one at most once (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`,
+  `--resume=<uuid>` …; `--project-config-root` exactly once, the process's own folder) or one of a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*; and two that only take
   away, for the Git panel's *Write message* helper: `--tools=` with an empty value — no built-in tool — and
   `--no-session-persistence`; `--tools` naming any tool is refused); refused, among
   others: `--settings`, `--mcp-config` (bn-coded adds the shared MCP server's itself), `--plugin-dir`, `--add-dir`,
@@ -1243,46 +1243,51 @@ direction-changing character; a record that does not fit (a file someone changed
   folder, whose files the cards name as paths of the workspace (`app/.envrc`); Revert puts each back in its own
   folder. Other projects' folders are checked by their own sessions' turns, not this one's.
 - [x] **A project's own Claude Code configuration applies only once you trusted it, as it is.** Claude Code started
-  by the SDK applies what it finds in its folder with no trust step (the terminal's `claude` asks whether to trust a
-  folder first): everything under `.claude/` — `settings.json` and `settings.local.json`, and the skills, commands,
-  agents and output styles whose front matter can grant tools (`allowed-tools`), declare hooks or MCP servers; also
-  in `.claude/` folders below the project's root, where Claude Code finds skills and commands too — and `.mcp.json`. A
-  cloned repository's `SessionStart` hook would run, its allow rules or a skill's `allowed-tools` would
-  silence the permission cards, its `env` would change what runs, its MCP servers would start. So a process in a
-  project's folder starts with your own settings only (`settingSources: user` — the sandbox's `~/.claude`; the
-  project's `CLAUDE.md`, skills, commands and agents are not read either) and, of MCP servers, only the stack's own
-  (`--strict-mcp-config`), and the session says so, until you trusted that configuration exactly as it is: the
-  project's ⋯ › *Claude Code settings…* (also shown before a new session there) lists what the settings files set —
-  hooks with their commands, allow/ask/deny rules, the default mode, extra folders, environment variables, programs
-  they name (`apiKeyHelper` …), MCP servers with everything they say, and every other key — and every other file
-  under `.claude/` with the front matter keys that grant something (`allowed-tools`, `tools`, `hooks`, `mcpServers`,
-  `permissionMode`, `model`, `disallowed-tools`); the project's record keeps the hash of the whole tree you trusted.
-  Changed since — a pull that adds an agent too: not applied until you look again. A folder with no file under
-  `.claude/` and no `.mcp.json` needs nothing (its `CLAUDE.md` is read: instructions, it grants nothing). Trusting
-  works from anywhere the page does (like answering a permission card: it runs things in the sandbox, not on your
-  computer).
+  by the SDK applies what it finds with no trust step (the terminal's `claude` asks whether to trust a folder first).
+  Every session runs it with `--project-config-root=<its folder>` (Claude Code 2.1.296 has the flag; bn-coded starts no
+  Claude Code without it, exactly once, as the folder the process runs in, real paths compared — it only narrows; in
+  the Workspace it only turns off the discovery of `.claude/` folders below, its own applying as before). Then it
+  reads the folder's `.claude/` — `settings.json` and `settings.local.json`, and the commands, agents, output styles,
+  skills, workflows and routines whose front matter can grant tools (`allowed-tools`), declare hooks or MCP servers —
+  and its `.mcp.json`; from every folder above it up to the git root (the first with a `.git`; outside a repository,
+  up to `/workspace` itself) those six `.claude/` trees as well — a monorepo's skill counts for a package inside it;
+  and nothing from `.claude/` folders below it (the flag turns that discovery off). A cloned repository's
+  `SessionStart` hook would run, its allow rules or a skill's `allowed-tools` would silence the permission cards, its
+  `env` would change what runs, its MCP servers would start. So a process in a project's folder starts with your own
+  settings only (`settingSources: user` — the sandbox's `~/.claude`; the project's `CLAUDE.md`, skills, commands and
+  agents are not read either) and, of MCP servers, only the stack's own (`--strict-mcp-config`), and the session says
+  so, until you trusted that configuration exactly as it is: the project's ⋯ › *Claude Code settings…* (also shown
+  before a new session there) lists what the settings files set — hooks with their commands, allow/ask/deny rules,
+  the default mode, extra folders, environment variables, programs they name (`apiKeyHelper` …), MCP servers with
+  everything they say, and every other key — and every other file, the folders' above it too, with the front matter
+  keys that grant something (`allowed-tools`, `tools`, `hooks`, `mcpServers`, `permissionMode`, `model`,
+  `disallowed-tools`); the project's record keeps the hash of all of it. Changed since — a pull that adds an agent,
+  here or in the monorepo above: not applied until you look again. A folder with nothing of it (no file in those
+  places, no `.mcp.json`) needs nothing (its `CLAUDE.md` is read: instructions, it grants nothing). Trusting works
+  from anywhere the page does (like answering a permission card: it runs things in the sandbox, not on your
+  computer). The Workspace's own `.claude/` applies to the Workspace by policy, as before projects; for a project
+  outside any repository it is one of the folders above, and so part of what you trust there.
   - *What you were shown, and what not.* The code container recomputes the hash from the texts it read (each text's
-    own SHA-256 checked against the sandbox's; the list itself checked: names under `.claude/` only, sorted, once
-    each). bn-coded reads at most 500 files, 2 MiB in all, 256 KiB each, 12 folders deep, and looks for nested
-    `.claude/` folders — in any case (a macOS workspace reads `.Claude` as `.claude`), in `node_modules` too, anywhere
-    but the repository's own top `.git` and the workspace's trash — in at most 20,000 folders, 24 deep. Beyond that,
-    a link to a folder anywhere below the root (a `.claude` could hide behind it), or a file that cannot be read whole
-    as text — a link out of the workspace, a link to a folder in a `.claude/`, a FIFO, a `.claude` that is a link —
-    and it is *unverifiable*, never trusted. Front matter — of every text file under a `.claude/`, whatever its name —
-    is read strictly:
-    only top-level `key: value` lines and `- item` lists, a grant key's value a plain scalar (its key in any case);
-    anything a YAML parser could read differently — flow style, quotes, anchors and aliases, tags, explicit keys,
-    block scalars, a key twice, no closing `---` — leaves the summary incomplete, never trusted. The settings files and
-    `.mcp.json` are summarised whole or not at all:
-    more than 200 entries in a section, a value over 2,000 characters or invalid JSON leave no hash to trust. Each
-    hook and MCP server is shown whole (its entry as JSON with sorted keys, beside a friendly line; one naming more
-    than one of a command, a URL and a prompt is marked); every character but printable ASCII, a tab or a line break
-    is shown as `⟨U+…⟩` (line breaks, tabs and runs of spaces as ⏎, →, ·), and a value with such a character, a long
-    run of whitespace (or much of it) or many lines must be opened in full before *Trust* is offered — one rule,
-    written in the backend and the page alike (a test compares them). Not shown in the dialog: the rest of a skill,
-    command or agent file (instructions for Claude — the dialog says to read them in the explorer), and the scripts
-    and packages a trusted hook or MCP server runs (`bash scripts/x.sh`, `npx some-package`): those are not covered
-    by the hash either, and the dialog says so.
+    own SHA-256 checked against the sandbox's; the list itself checked: the project's `.claude/` and `.mcp.json`, and
+    paths under a `.claude` above it, sorted, once each). bn-coded reads at most 500 files, 2 MiB in all, 256 KiB each,
+    12 folders deep, names in any case (a macOS workspace reads `.Claude` as `.claude`). Beyond that, a linked git
+    worktree or a submodule (a `.git` that is a file, here or above: Claude Code reads another checkout's
+    configuration then), or a file that cannot be read whole as text — a link out of the workspace, a link to a
+    folder, a FIFO, a `.claude` that is a link — and it is *unverifiable*, never trusted. Front matter — of every text
+    file there, whatever its name — is read strictly: only top-level `key: value` lines and `- item` lists, a grant
+    key's value a plain scalar (its key in any case); anything a YAML parser could read differently — flow style,
+    quotes, anchors and aliases, tags, explicit keys, block scalars, a key twice, no closing `---` — leaves the
+    summary incomplete, never trusted. The settings files and `.mcp.json` are summarised whole or not at all: more
+    than 200 entries in a section, a value over 2,000 characters or invalid JSON leave no hash to trust. Each hook and
+    MCP server is shown whole (its entry as JSON with sorted keys, beside a friendly line; one naming more than one of
+    a command, a URL and a prompt is marked); every character but printable ASCII, a tab or a line break is shown as
+    `⟨U+…⟩` (line breaks, tabs and runs of spaces as ⏎, →, ·), and a value with such a character, a long run of
+    whitespace (or much of it) or many lines must be opened in full before *Trust* is offered — one rule, written in
+    the backend and the page alike (a test compares them). Not shown in the dialog: the rest of a skill, command or
+    agent file (instructions for Claude — the dialog says to read them in the explorer), and the scripts and packages
+    a trusted hook or MCP server runs (`bash scripts/x.sh`, `npx some-package`): those are not covered by the hash
+    either, and the dialog says so. A session's start (and each prompt of a running one) compares the hash alone —
+    bn-coded hashes the same files, no texts sent; the texts are read for the dialog and for *Trust*.
   - *Every start decides, and fails closed.* A decision is made for each process start — a new session, a resume, a
     prompt that restarts one, a switch to *Bypass permissions*, a file restore, *Allow once*, a new conversation Claude
     Code started — and taken by that start only; a start without one gets your own settings only. A decision that
