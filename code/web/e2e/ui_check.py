@@ -3879,6 +3879,8 @@ def git_signin(browser):
     expect(page.get_by_test_id("git-host-signin")).to_be_enabled()
     # gitlab.com: no application of bedrock-now's — Sign in explains how to register one, and takes its ID
     page.get_by_test_id("git-host-kind").select_option("gitlab")
+    # (no application for gitlab.com: the form's default follows — an access token — until you choose)
+    expect(page.get_by_test_id("git-host-auth-token")).to_be_checked()
     page.get_by_test_id("git-host-auth-oauth").check()
     na = page.get_by_test_id("git-host-no-app")
     expect(na).to_contain_text("Sign-in needs an app registered with GitLab once (2 minutes; only a public ID, no secret)")
