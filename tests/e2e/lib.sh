@@ -256,7 +256,7 @@ e2e_helper_stop() {
 e2e_helper_jobs() { awk -v t="${HELPER_T0:-0}" '$1 + 0 >= t' "$STACK/.state/helper/$1" 2>/dev/null | wc -l | tr -d ' '; }
 
 teardown() {
-  local img id left others ws
+  local img id left others ws net n
   # the throwaway's update helper (--helper), also one a killed run left: only from a checkout this suite created
   [ ! -f "$STACK/.bedrock-now-e2e" ] || _e2e_helper_sweep
   if [ "$OWNED" != 1 ]; then
@@ -268,9 +268,16 @@ teardown() {
     docker compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1 || warn "docker compose -p $PROJECT down failed"
     docker volume rm "${PROJECT}_bedrock-now-owner" >/dev/null 2>&1 || true
     # The browser terminal (--terminal) lives in overlay files that `down` without them does not read: its volume
-    # and networks go by name.
+    # and networks go by name — a network up to 5 times, a second apart (Docker may still hold the endpoint of a
+    # container that has just gone; one it never lets go is said below).
     docker volume rm "${PROJECT}_terminal-home" "${PROJECT}_terminal-socket" "${PROJECT}_code-socket" "${PROJECT}_preview-socket" "${PROJECT}_code-state" >/dev/null 2>&1 || true
-    docker network rm "${PROJECT}_terminal" "${PROJECT}_terminal-out" "${PROJECT}_terminal-link" "${PROJECT}_terminal-proxy" >/dev/null 2>&1 || true
+    for net in "${PROJECT}_terminal" "${PROJECT}_terminal-out" "${PROJECT}_terminal-link" "${PROJECT}_terminal-proxy"; do
+      for n in 1 2 3 4 5; do
+        docker network rm "$net" >/dev/null 2>&1 && break
+        docker network inspect "$net" >/dev/null 2>&1 || break
+        [ "$n" = 5 ] || sleep 1
+      done
+    done
     for img in "$PROJECT/portal:local" "$PROJECT/shared-mcp:local" "$PROJECT/portal:previous" "$PROJECT/shared-mcp:previous" \
                "$PROJECT/caddy-dns:local" "$PROJECT/e2e-playwright:local" "$PROJECT/stt:local" "$PROJECT/stt:previous" \
                "$PROJECT/terminal:local" "$PROJECT/terminal:previous" "$PROJECT/terminal-egress:local" "$PROJECT/terminal-egress:previous" \
@@ -296,8 +303,9 @@ teardown() {
   if [ -f "$ws/.bedrock-now-e2e" ]; then chmod -R u+rwX "$ws" 2>/dev/null; rm -rf "$ws" || warn "could not delete $ws"
   elif [ -e "$ws" ]; then warn "not deleting $ws: it was not created by this suite (no .bedrock-now-e2e marker)"; fi
   [ "$OWNED" = 1 ] || return 0
-  left="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT"; docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT")"
-  if [ -z "$left" ] && [ ! -e "$STACK" ]; then say "teardown complete: no containers, volumes or checkout of $PROJECT left"
+  left="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT"; docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT"
+    docker network ls --format '{{.Name}}' --filter "label=com.docker.compose.project=$PROJECT")"
+  if [ -z "$left" ] && [ ! -e "$STACK" ]; then say "teardown complete: no containers, volumes, networks or checkout of $PROJECT left"
   else warn "teardown left something behind: $left $( [ -e "$STACK" ] && echo "$STACK")"; fi
 }
 

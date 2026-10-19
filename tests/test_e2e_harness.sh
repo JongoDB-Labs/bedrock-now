@@ -9,7 +9,7 @@ _fake_docker() {
   PROJECT=bne2e; OUT="$TMP/out"; LOGS="$OUT/logs"; RESULTS="$OUT/results.tsv"; mkdir -p "$LOGS"
   STACK="${STACK:-$ROOT/tests/e2e/work/bne2e}"
   FAKE_DIRS="${FAKE_DIRS:-}"; FAKE_OWNER="${FAKE_OWNER:-}"; FAKE_VOLS="${FAKE_VOLS:-}"; FAKE_PS="${FAKE_PS:-}"
-  FAKE_USERS="${FAKE_USERS:-}"; FAKE_FAIL="${FAKE_FAIL:-}"
+  FAKE_USERS="${FAKE_USERS:-}"; FAKE_FAIL="${FAKE_FAIL:-}"; FAKE_NETS="${FAKE_NETS:-}"
   docker() {
     printf 'docker %s\n' "$*" >> "$TMP/docker"
     case "$FAKE_FAIL" in ?*) case "$*" in "$FAKE_FAIL"*) return 1 ;; esac ;; esac
@@ -20,6 +20,7 @@ _fake_docker() {
         [ -z "$FAKE_DIRS" ] || printf '%s\n' "$FAKE_DIRS" ;;
       "volume inspect --format"*bedrock-now-owner) [ -n "$FAKE_OWNER" ] || return 1; printf '%s\n' "$FAKE_OWNER" ;;
       "volume ls -q --filter label=com.docker.compose.project=bne2e") [ -z "$FAKE_VOLS" ] || printf '%s\n' "$FAKE_VOLS" ;;
+      "network ls --format {{.Name}} --filter label=com.docker.compose.project=bne2e") [ -z "$FAKE_NETS" ] || printf '%s\n' "$FAKE_NETS" ;;
       "ps -a --filter label=com.docker.compose.project=bne2e --format {{.Label \"com.docker.compose.service\"}}"*)
         [ -z "$FAKE_PS" ] || printf '%s\n' "$FAKE_PS" ;;
     esac
@@ -68,6 +69,22 @@ test_e2e_a_marked_folder_another_project_uses_is_kept() {
   [ -d "$STACK" ] || return 1
   FAKE_FAIL=''; OWNED=1 teardown 2>/dev/null
   [ ! -e "$STACK" ] || { echo "folder kept although only bne2e uses it" >&2; return 1; }
+}
+
+test_e2e_teardown_retries_networks_and_says_what_it_left() {
+  _fake_docker; mkdir -p "$STACK"; : > "$STACK/.bedrock-now-e2e"
+  sleep() { echo "sleep $*" >> "$TMP/docker"; }
+  # a network Docker will not let go (an endpoint of a container already gone): 5 tries, a second apart, then said
+  FAKE_FAIL="network rm bne2e_terminal-out"; FAKE_NETS="bne2e_terminal-out"
+  OWNED=1 teardown 2> "$TMP/err"
+  assert_eq "$(grep -c '^docker network rm bne2e_terminal-out$' "$TMP/docker")" 5
+  assert_eq "$(grep -c '^docker network rm bne2e_terminal-link$' "$TMP/docker")" 1
+  assert_eq "$(grep -c '^sleep 1$' "$TMP/docker")" 4
+  assert_contains "$(cat "$TMP/err")" "teardown left something behind: bne2e_terminal-out"
+  # none left: complete
+  : > "$TMP/docker"; FAKE_FAIL=''; FAKE_NETS=''
+  OWNED=1 teardown 2> "$TMP/err"
+  assert_contains "$(cat "$TMP/err")" "teardown complete: no containers, volumes, networks or checkout of bne2e left"
 }
 
 test_e2e_unanswered_spend_is_an_error_not_zero() {
@@ -218,7 +235,9 @@ test_e2e_teardown_removes_the_terminal_workspace_only_with_its_marker() {
   OWNED=1 teardown 2>/dev/null
   [ ! -e "$ws" ] || { echo "marked workspace kept" >&2; return 1; }
   assert_contains "$(_mutating_calls)" "docker volume rm bne2e_terminal-home bne2e_terminal-socket"
-  assert_contains "$(cat "$TMP/docker")" "docker network rm bne2e_terminal bne2e_terminal-out bne2e_terminal-link bne2e_terminal-proxy"
+  for n in bne2e_terminal bne2e_terminal-out bne2e_terminal-link bne2e_terminal-proxy; do
+    assert_contains "$(cat "$TMP/docker")" "docker network rm $n" || return 1
+  done
   assert_contains "$(cat "$TMP/docker")" "docker image rm bne2e/terminal-egress:local"
   # (the suite's git server, --git-server: by its own names, never compose's)
   assert_contains "$(cat "$TMP/docker")" "docker rm -f bne2e-gitsrv"
