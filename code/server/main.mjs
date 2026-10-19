@@ -491,8 +491,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       const [status, msg] = e instanceof HttpError || e instanceof HostError || e instanceof ProjectError ? [e.status, e.message] : sandboxStatus(e);
       if (status >= 500) logger(`${req.method} ${url.pathname}: ${short(e.message, 300)}`);
       if (res.headersSent) return res.destroy();
-      // (a failure on the Git panel's routes in the sandbox's own words — any refusal of bn-coded's, git's reason, Claude
-      // Code's for Write message: a fixed sentence of ours, its words apart, and the line the page shows above them)
+      // (a failure in the sandbox's own words, on any route — a refusal of bn-coded's not one of its fixed texts, git's
+      // reason, Claude Code's: a fixed sentence of ours, its words apart, and the line the page shows above them — said.mjs)
       const w = sandboxWords(e, url.pathname);
       return send(res, status, w ? { error: w.error, said: w.said, saidBy: w.saidBy, neverAsks: NEVER_ASKS } : { error: short(msg, 500) });
     }

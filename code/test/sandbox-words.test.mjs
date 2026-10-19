@@ -94,3 +94,14 @@ test('the pieces: refused() and sandboxWords() keep the words out of every sente
   assert.equal(sandboxWords(new SandboxError('not a file', 'refused'), '/api/fs/file'), null);
   assert.equal(sandboxWords(new HttpError(400, 'bad path')), null);
 });
+
+test('a project\'s settings not shown whole: bn-coded\'s own reasons (every one it writes) match OVER; another, apart', async () => {
+  const { OVER } = await import('../server/trust.mjs');
+  const { TERMINAL_DIR } = await import('./helpers.mjs');
+  const src = fs.readFileSync(path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'), 'utf8');
+  const reasons = [...src.matchAll(/\bover (?:\?\?)?= ('(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g)].map((m) => m[1].slice(1, -1).replace(/\$\{[^}]*\}/g, '7').replace(/\\(.)/g, '$1'));
+  assert.ok(reasons.length >= 5, String(reasons.length));
+  for (const r of reasons) assert.match(r, OVER, r);
+  assert.doesNotMatch(HOSTILE, OVER);
+  assert.doesNotMatch('more than 7 files, and enter WDJB-MJHT', OVER);
+});

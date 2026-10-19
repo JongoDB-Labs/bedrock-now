@@ -776,9 +776,9 @@ export async function getProjects(): Promise<Project[]> {
   return normProjects(o.projects ?? o.items);
 }
 /** A new project: a new folder of the workspace (git: `git init` in it) or a folder that is there. */
-export async function addProject(b: { kind: 'new' | 'folder'; folder: string; name?: string; git?: boolean }): Promise<{ project: Project | null; git: boolean; gitError: string }> {
+export async function addProject(b: { kind: 'new' | 'folder'; folder: string; name?: string; git?: boolean }): Promise<{ project: Project | null; git: boolean; gitError: string; said: SandboxWords | null }> {
   const o = await request('POST', '/api/projects', { kind: b.kind, folder: b.folder, ...(b.name ? { name: b.name } : {}), ...(b.kind === 'new' ? { git: b.git === true } : {}) });
-  return { project: normProject(o.project), git: o.git === true, gitError: label(o.gitError, 300) };
+  return { project: normProject(o.project), git: o.git === true, gitError: label(o.gitError, 300), said: wordsOf(o) };
 }
 export async function renameProject(id: string, name: string): Promise<void> {
   if (!projectIdOk(id)) throw new ApiError(400, 'bad project id');

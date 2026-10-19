@@ -170,6 +170,15 @@ export const SANDBOX_REFUSALS = Object.freeze([
   'unknown op',
   'open first',
   'the user settings changed since they were shown: look again',
+  // (the projects' among them: a project's folder, a session's, Claude Code's --project-config-root)
+  'not a project folder of the workspace',
+  'no such project folder in the workspace (or a link on its way)',
+  'bad session folder',
+  'no such session',
+  "the session's folder is not in the workspace any more",
+  'the project folder is not there',
+  '--project-config-root: exactly once, as the folder Claude Code runs in',
+  '--project-config-root must be the folder Claude Code runs in',
 ]);
 const KNOWN = new Set(GIT_REASONS);
 const PLAIN = new Set([...GIT_REASONS, ...GIT_REFUSALS, ...SANDBOX_REFUSALS]);

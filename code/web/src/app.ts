@@ -327,6 +327,8 @@ export interface AppState {
   /** the projects (GET /api/projects: the Workspace first, always there) */
   projects: Project[];
   projectsError: string | null;
+  /** projectsError's words from the sandbox, when it is in them: apart */
+  projectsSaid?: SandboxWords | null;
   /** the project shown: what the file tree, Search, Git, Review, Run & test, launch.json, memory, @-mentions and new
    *  sessions work on (remembered per browser) */
   project: string;
@@ -1801,10 +1803,10 @@ function noteWhere(rows: { id: string; cwd: string; project: string }[]): void {
 export async function refreshProjects(): Promise<void> {
   try {
     const projects = await api.getProjects();
-    set((s) => ({ ...s, projects, projectsError: null }));
+    set((s) => ({ ...s, projects, projectsError: null, projectsSaid: null }));
   } catch (e) {
     // (an older backend has no projects: the Workspace alone, as before)
-    set((s) => ({ ...s, projectsError: e instanceof api.ApiError && e.status === 404 ? null : errText(e) }));
+    set((s) => ({ ...s, projectsError: e instanceof api.ApiError && e.status === 404 ? null : errText(e), projectsSaid: api.saidOf(e) }));
   }
   if (!get().projects.some((p) => p.id === get().project)) setProject(WORKSPACE_ID);
 }
@@ -1856,20 +1858,23 @@ export function openProjectDialog(d: ProjectDialog | null): void {
 
 /** New project: an empty folder of the workspace (git: `git init` in it) or a folder that is there — then shown.
  *  -> '' or why not */
-export async function createProject(b: { kind: 'new' | 'folder'; folder: string; name?: string; git?: boolean }): Promise<string> {
+/** What a project action came to when it did not work: ours, and the sandbox's own words apart when it is in them. */
+export type Problem = { text: string; said: SandboxWords | null };
+const problem = (text: string): Problem => ({ text, said: null });
+export async function createProject(b: { kind: 'new' | 'folder'; folder: string; name?: string; git?: boolean }): Promise<Problem | null> {
   try {
     const r = await api.addProject(b);
     await refreshProjects();
     const p = r.project && get().projects.find((x) => x.id === r.project?.id);
-    if (!p) return 'The project was made, but the list does not show it: reload the page.';
+    if (!p) return problem('The project was made, but the list does not show it: reload the page.');
     setProject(p.id);
     if (b.kind === 'folder') settingsHint(p.id);
-    if (r.gitError) toast(`${p.name}: the folder is there, but git init failed (${r.gitError}).`, 'error');
+    if (r.gitError) toast(r.said ? `${p.name}: the folder is there, but ${r.gitError}` : `${p.name}: the folder is there, but git init failed (${r.gitError}).`, 'error', undefined, r.said);
     else toast(b.kind === 'new' ? `New project ${p.name} in ${p.path}${r.git ? ', a git repository' : ''}` : `${p.name} (${p.path}) is a project now`, 'ok');
     void refreshSessions();
-    return '';
+    return null;
   } catch (e) {
-    return errText(e);
+    return api.problemOf(e);
   }
 }
 
@@ -1888,16 +1893,16 @@ function settingsHint(id: string): void {
 
 /** Trust a project's own Claude Code settings as shown (hash: what the dialog showed) — or, trust false, no longer.
  *  -> '' or why not */
-export async function setProjectTrust(id: string, hash: string | null, trust: boolean): Promise<string> {
+export async function setProjectTrust(id: string, hash: string | null, trust: boolean): Promise<Problem | null> {
   try {
     await api.trustProject(id, hash, trust);
     await refreshProjects();
     const name = get().projects.find((p) => p.id === id)?.name ?? 'The project';
     toast(trust ? `${name}: its own Claude Code settings apply now — to new sessions there, and to open ones from their next prompt (Claude Code restarts for it).`
       : `${name}: its own Claude Code settings no longer apply (open sessions there restart without them at their next prompt).`, 'ok');
-    return '';
+    return null;
   } catch (e) {
-    return errText(e);
+    return api.problemOf(e);
   }
 }
 
@@ -1913,7 +1918,8 @@ async function cloneBecomesProject(folder: string): Promise<void> {
       settingsHint(r.project.id);
     }
   } catch (e) {
-    toast(`The clone is in ${folder}, but it did not become a project: ${errText(e)} (New project › A folder in the workspace).`, 'error');
+    failed(e, `The clone is in ${folder}, but it did not become a project (New project › A folder in the workspace)`,
+      (m) => `The clone is in ${folder}, but it did not become a project: ${m} (New project › A folder in the workspace).`);
   }
 }
 
@@ -1928,18 +1934,18 @@ export async function renameProjectTo(id: string, name: string): Promise<void> {
 
 /** Remove from Code: the record goes (its sessions are shown where their folder is); `trash` with the folder named
  *  again: the folder too, into the workspace trash. -> '' or why not */
-export async function removeProjectById(id: string, opts: { trash?: boolean; confirm?: string } = {}): Promise<string> {
+export async function removeProjectById(id: string, opts: { trash?: boolean; confirm?: string } = {}): Promise<Problem | null> {
   const p = get().projects.find((x) => x.id === id);
-  if (!p || p.workspace) return 'The Workspace is always there.';
+  if (!p || p.workspace) return problem('The Workspace is always there.');
   try {
     const r = await api.removeProject(id, opts);
     if (get().project === id) setProject(WORKSPACE_ID);
     await refreshProjects();
     void refreshSessions();
     toast(r.trash ? `Removed ${p.name}; its folder is in the workspace trash (${r.trash}).` : `Removed ${p.name} from Code; its folder ${p.path} is still there.`, 'ok');
-    return '';
+    return null;
   } catch (e) {
-    return errText(e);
+    return api.problemOf(e);
   }
 }
 

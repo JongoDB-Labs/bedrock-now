@@ -235,6 +235,12 @@ export function withheldText(d) {
 
 /** makeTrust({call, store, log}) — what a Claude Code process started in a folder gets of the folder's own settings
  *  (decided anew before every start: never cached), the page's view of a project's settings, trust and untrust. */
+// bn-coded's own reasons for not showing a project's settings whole (project.settings' over: its fixed texts and the
+// shapes with its limits in them): as they are; anything else is the sandbox's words, apart (code/test checks every
+// over bn-coded writes matches)
+export const OVER = new RegExp('^(more than \\d+ MiB in all|too much to show|a folder that could not be read|folders more than \\d+ deep|more than \\d+ files'
+  + '|a linked git worktree or a submodule( above it)? \\(Claude Code reads another checkout\'s configuration then\\))$');
+
 export function makeTrust({ call, store, log = () => {} }) {
   // each project's state as last looked at (a start's decision, the dialog, a trust) — for the list only; a decision is
   // always made anew
@@ -272,19 +278,22 @@ export function makeTrust({ call, store, log = () => {} }) {
       return { state: 'unchecked', project: rec?.id ?? null, sources: USER_SOURCES, strictMcp: true, hash: null };
     }
   }
-  /** view(rec) -> GET /api/projects/ID/settings: the files, what they set, the hash to trust, the state */
+  /** view(rec) -> GET /api/projects/ID/settings: the files, what they set, the hash to trust, the state — and, when
+   *  bn-coded's reason for not showing them all is not one of its own (OVER), the sandbox's words apart (said) */
   async function view(rec) {
     const abs = absOf(rec.root);
     const r = await read(abs);
     const state = stateOf({ workspace: rec.id === WORKSPACE_ID, present: r.present, hash: r.hash, trust: rec.trust, verifiable: r.verifiable });
     const summary = summarize(r.files);
-    if (r.over) { summary.complete = false; summary.missing.push(r.over); }
+    const own = r.over && OVER.test(r.over);
+    if (r.over) { summary.complete = false; summary.missing.push(own ? r.over : 'a reason of the sandbox\'s own (below)'); }
     note(rec.id, state);
     return {
       // (a hash to trust only for settings the summary shows whole: nothing you were not shown can apply)
       project: rec.id, path: abs, state, hash: state === 'workspace' || !summary.complete ? null : r.hash, trustedAt: rec.trust?.at ?? null,
       files: r.files.map(({ name, type, size, target }) => ({ name, type, size, target })),
       summary,
+      ...(r.over && !own ? { said: r.over, saidBy: 'sandbox' } : {}),
     };
   }
   /** trust(rec, hash) — only the files exactly as the page showed them (a conflict when they changed since, when there

@@ -5,7 +5,7 @@
 // backend says only when that is a project of the list — else in the Workspace: nothing a list says makes a project.
 // Kept free of DOM and network (test/projects.test.ts).
 import { label } from './text';
-import type { SessionInfo } from './types';
+import type { SandboxWords, SessionInfo } from './types';
 
 export const WORKSPACE_ID = 'ws';
 export const WORKSPACE_PATH = '/workspace';
@@ -225,6 +225,8 @@ export interface SettingsView {
   trustedAt: number | null;
   files: SettingsFile[];
   summary: SettingsSummary;
+  /** why not all of them could be shown, in the sandbox's own words (not one of bn-coded's): apart (SandboxSaid) */
+  said: SandboxWords | null;
 }
 const FILE_TYPES = ['file', 'link', 'big', 'other'];
 const FILES_MAX = 500;
@@ -289,5 +291,6 @@ export function normSettingsView(v: unknown): SettingsView | null {
       .map((f) => ({ name: f.name as string, type: f.type as SettingsFile['type'], size: typeof f.size === 'number' && f.size >= 0 ? f.size : null, target: typeof f.target === 'string' ? label(f.target, 300) : null }))
       : [],
     summary,
+    said: typeof o.said === 'string' && o.said ? { said: label(o.said, 300), by: 'sandbox' } : null,
   };
 }

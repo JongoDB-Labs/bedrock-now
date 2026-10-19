@@ -31,6 +31,7 @@ import {
   showGit,
   type NewSessionOptions,
   type ProjectDialog,
+  type Problem,
 } from '../app';
 import * as api from '../api';
 import { GROUP_LABEL, groupOf, type Group } from '../groups';
@@ -39,6 +40,7 @@ import type { SessionView } from '../session';
 import type { SessionInfo } from '../types';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
+import { SandboxSaid } from './Said';
 import { Dialog, Dropdown, MenuItem } from './ui';
 import { modelLabel } from './Pickers';
 
@@ -180,6 +182,7 @@ export function ProjectsPanel() {
   const loading = useSel(store, (s) => s.sessionsLoading);
   const error = useSel(store, (s) => s.sessionsError);
   const projectsError = useSel(store, (s) => s.projectsError);
+  const projectsSaid = useSel(store, (s) => s.projectsSaid ?? null);
   const opening = useSel(store, (s) => s.opening);
   const models = useSel(store, (s) => s.models?.models);
   const [q, setQ] = useState(store.get().sessionsQuery);
@@ -234,7 +237,12 @@ export function ProjectsPanel() {
         </button>
       </div>
       <div class="sess-scroll">
-        {projectsError && <div class="side-note err">Projects: {label(projectsError, 200)}</div>}
+        {projectsError && (
+          <div class="side-note err">
+            Projects: {label(projectsError, 200)}
+            {projectsSaid && <SandboxSaid words={projectsSaid} compact />}
+          </div>
+        )}
         {projects.map((p) => {
           const mine = by[p.id];
           const groups: Record<Group, string[]> = { needs: [], working: [], done: [] };
@@ -405,7 +413,7 @@ function NewProjectDialog({ tab, onClose }: { tab: Extract<ProjectDialog, { kind
   const [git, setGit] = useState(true);
   const [folder, setFolder] = useState('');
   const [folders, setFolders] = useState<string[] | null>(null);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   // the folders of the workspace that could be projects: its top-level ones and the repositories two levels down
   useEffect(() => {
@@ -433,7 +441,7 @@ function NewProjectDialog({ tab, onClose }: { tab: Extract<ProjectDialog, { kind
   const target = kind === 'empty' ? name.trim() : folder;
   const valid = kind === 'clone' || (rootOk(target) && !taken.has(target));
   const go = async () => {
-    setErr('');
+    setErr(null);
     if (kind === 'clone') {
       // the Git panel's Clone (its plan shown first; the new folder becomes a project)
       onClose();
@@ -502,7 +510,12 @@ function NewProjectDialog({ tab, onClose }: { tab: Extract<ProjectDialog, { kind
         Claude Code runs a project's sessions in its folder, and the file tree, Search, Git, Review and Run & test show that folder. Every project is in the one
         sandbox: a session in one can read and change the others.
       </p>
-      {err && <p class="plg-err small" role="alert" data-testid="new-project-error">{label(err, 300)}</p>}
+      {err && (
+        <div class="plg-err small" role="alert" data-testid="new-project-error">
+          {label(err.text, 300)}
+          {err.said && <SandboxSaid words={err.said} />}
+        </div>
+      )}
       <div class="dlg-actions">
         <button type="button" class="btn" onClick={onClose}>
           Cancel
@@ -520,7 +533,7 @@ function RemoveProjectDialog({ id, onClose }: { id: string; onClose: () => void 
   const p = useSel(store, (s) => s.projects.find((x) => x.id === id));
   const [trash, setTrash] = useState(false);
   const [confirm, setConfirm] = useState('');
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   if (!p || p.workspace) return null;
   const go = async () => {
@@ -547,7 +560,12 @@ function RemoveProjectDialog({ id, onClose }: { id: string; onClose: () => void 
             data-testid="remove-project-confirm" />
         </label>
       )}
-      {err && <p class="plg-err small" role="alert">{label(err, 300)}</p>}
+      {err && (
+        <div class="plg-err small" role="alert">
+          {label(err.text, 300)}
+          {err.said && <SandboxSaid words={err.said} />}
+        </div>
+      )}
       <div class="dlg-actions">
         <button type="button" class="btn" onClick={onClose}>
           Cancel
@@ -590,19 +608,19 @@ function FileDialog({ ids, onClose }: { ids: string[]; onClose: () => void }) {
 function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSessionOptions; onClose: () => void }) {
   const p = useSel(store, (s) => s.projects.find((x) => x.id === id));
   const [v, setV] = useState<SettingsView | null>(null);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   // the entries that need a careful look, opened in full (Trust waits until every one was)
   const [opened, setOpened] = useState<Set<string>>(new Set());
   useEffect(() => {
     let live = true;
-    api.getProjectSettings(id).then((x) => { if (live) { setV(x); noteProjectSettings(id, x.state); } }, (e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    api.getProjectSettings(id).then((x) => { if (live) { setV(x); noteProjectSettings(id, x.state); } }, (e) => live && setErr(api.problemOf(e)));
     return () => { live = false; };
   }, [id]);
   if (!p) return null;
   const go = async (trust: boolean | null) => {
     setBusy(true);
-    setErr('');
+    setErr(null);
     const e = trust === null ? '' : await setProjectTrust(id, v?.hash ?? null, trust);
     setBusy(false);
     if (e) return setErr(e);
@@ -691,10 +709,11 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
             </p>
           )}
           {!v.summary.complete && v.state !== 'workspace' && v.state !== 'none' && (
-            <p class="warn-text small" data-testid="settings-incomplete">
+            <div class="warn-text small" data-testid="settings-incomplete">
               Not everything in them can be shown here ({label(v.summary.missing.join('; ') || 'not said', 400)}): they cannot be trusted. Shorten them, or use the
               folder without them.
-            </p>
+              {v.said && <SandboxSaid words={v.said} />}
+            </div>
           )}
           {v.state !== 'workspace' && v.state !== 'none' && (
             <p class="muted small" data-testid="settings-not-covered">
@@ -708,7 +727,12 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
           )}
         </>
       )}
-      {err && <p class="plg-err small" role="alert" data-testid="settings-error">{label(err, 300)}</p>}
+      {err && (
+        <div class="plg-err small" role="alert" data-testid="settings-error">
+          {label(err.text, 300)}
+          {err.said && <SandboxSaid words={err.said} />}
+        </div>
+      )}
       <div class="dlg-actions">
         <button type="button" class="btn" onClick={onClose}>
           {start ? 'Cancel' : 'Close'}

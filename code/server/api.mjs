@@ -715,7 +715,9 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     let made = {}, settings = 'none';   // (a new folder holds no settings of its own)
     if (kind === 'new') {
       const { result } = await call({ op: 'project.create', root: absOf(folder), git: b.git === true }, { timeoutMs: 30000 });
-      made = { git: result?.git === true, gitError: short(result?.gitError, 300) || null };
+      // (git init's failure: bn-coded's fixed reason as it is, git's own words apart — gitreasons.mjs)
+      const ge = result?.git === true || !result?.gitError ? null : reasonOf(result.gitError, { other: 'git init failed' });
+      made = { git: result?.git === true, gitError: ge?.reason ?? null, ...(ge?.said ? { said: ge.said, saidBy: 'git' } : {}) };
     } else {
       const f = (await folders([{ id: 'x', root: folder }])).get('x');
       if (!f) throw new HttpError(502, 'the sandbox did not say whether that folder is there');
@@ -783,7 +785,7 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
       await call({ op: 'git.init', repo: root?.rel ?? '' }, { timeoutMs: 30000 });
     } catch (e) {
       if (unknownOp(e)) throw new HttpError(501, 'the sandbox is older than this Code page: ./stack up restarts it');
-      if (e instanceof SandboxError && e.kind === 'refused' && /already/.test(e.message)) throw new HttpError(409, e.message);
+      if (e instanceof SandboxError && e.kind === 'refused' && /already/.test(e.message)) throw refused(409, e, HttpError);
       throw e;
     }
     return { ok: true };
