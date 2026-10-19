@@ -21,6 +21,8 @@ import {
   undoAsks,
   undoReview,
   type UndoOpts,
+  whySaid,
+  whyText,
 } from '../app';
 import { rowsOf, sessionStart, shownFiles, totals, undoBlocker, type ReviewFile, type ReviewHunk, type Row } from '../review';
 import { label, safe } from '../text';
@@ -182,7 +184,7 @@ function FileBlock({ f, busy, kept }: { f: ReviewFile; busy: string | null; kept
   const [ask, setAsk] = useState<{ o: UndoOpts; text: string } | null>(null);
   const go = async (o: UndoOpts) => {
     const why = await undoReview(f, o);
-    if (why) toast(`Not undone (${label(f.path, 80)}): ${why}`, 'error');
+    if (why) toast(`Not undone (${label(f.path, 80)}): ${whyText(why)}`, 'error', undefined, whySaid(why));
     else toast(o.only ? `Undid a change in ${label(f.path, 80)}` : f.status === 'added' ? `Moved ${label(f.path, 80)} to the workspace trash` : `Undid the changes in ${label(f.path, 80)}`, 'ok');
   };
   const run = (only?: string) => {

@@ -2862,7 +2862,11 @@ export function undoAsks(f: ReviewFile, o: UndoOpts = {}, s: AppState = get()): 
  *  file is still as it was read (and, for git's view, as the diff saw it). For a file Claude edited, the file's Undo
  *  reverses Claude's own edits (what was not Claude's stays); changes that are not Claude's are undone only once
  *  confirmed. A new file goes to the workspace trash, a deleted one is written back. -> '' or why it was not undone. */
-export async function undoReview(f: ReviewFile, o: UndoOpts | string = {}): Promise<string> {
+/** Why an undo did not happen ('' — it did): ours, or a failure carrying the sandbox's own words (the box). */
+export type UndoWhy = string | Problem;
+export const whyText = (w: UndoWhy): string => (typeof w === 'string' ? w : w.text);
+export const whySaid = (w: UndoWhy): SandboxWords | null => (typeof w === 'string' ? null : w.said);
+export async function undoReview(f: ReviewFile, o: UndoOpts | string = {}): Promise<UndoWhy> {
   const opts: UndoOpts = typeof o === 'string' ? { only: o } : o;
   const why = undoBlocker(f);
   if (why) return why;
@@ -2901,7 +2905,7 @@ async function makeParents(path: string): Promise<void> {
   }
 }
 
-async function undoOne(f: ReviewFile, o: UndoOpts): Promise<string> {
+async function undoOne(f: ReviewFile, o: UndoOpts): Promise<UndoWhy> {
   const changed = 'it changed since the review was loaded: Refresh, then look again';
   const { undone, kept } = get().review;
   const only = o.only;
@@ -2927,7 +2931,8 @@ async function undoOne(f: ReviewFile, o: UndoOpts): Promise<string> {
         const w = await api.fsWrite(f.path, text, null, { create: true });
         return w.ok ? '' : 'there is a file of that name again';
       } catch (e) {
-        return `not written back: ${errText(e)}`;
+        const said = api.saidOf(e);
+        return said ? { text: `not written back: ${errText(e)}`, said } : `not written back: ${errText(e)}`;
       }
     }
     const cur = await api.fsRead(f.path);
@@ -2954,15 +2959,15 @@ async function undoOne(f: ReviewFile, o: UndoOpts): Promise<string> {
   } catch (e) {
     if (e instanceof api.ApiError && e.status === 409) return changed;
     if (e instanceof api.ApiError && e.status === 404) return 'it is not there any more';
-    return errText(e);
+    return api.saidOf(e) ? api.problemOf(e) : errText(e);
   }
 }
 
 /** Undo all: Claude's changes of every listed file (and, with `everything`, also the changes that are not Claude's),
  *  one file after another. -> how many were undone, how many were left (not Claude's), and the failures. */
-export async function undoAllReview(files: ReviewFile[], everything = false): Promise<{ done: number; left: number; failed: { path: string; why: string }[] }> {
+export async function undoAllReview(files: ReviewFile[], everything = false): Promise<{ done: number; left: number; failed: { path: string; why: string; said: SandboxWords | null }[] }> {
   set((s) => ({ ...s, dialog: null, review: { ...s.review, busy: '*' } }));
-  const failed: { path: string; why: string }[] = [];
+  const failed: { path: string; why: string; said: SandboxWords | null }[] = [];
   let done = 0;
   let left = 0;
   try {
@@ -2974,7 +2979,7 @@ export async function undoAllReview(files: ReviewFile[], everything = false): Pr
       }
       const why = await undoReview(f, { confirmed: everything });
       if (why === NOT_MINE) left++;
-      else if (why) failed.push({ path: f.path, why });
+      else if (why) failed.push({ path: f.path, why: whyText(why), said: whySaid(why) });
       else done++;
     }
   } finally {
@@ -2985,7 +2990,7 @@ export async function undoAllReview(files: ReviewFile[], everything = false): Pr
   const sid = get().active;
   if (done && sid) void wsRequest({ type: 'watch_check', session: sid }, 30_000);
   if (done) toast(`Undid the changes of ${done} file${done === 1 ? '' : 's'}${left ? ` (${left} not Claude's left as they are)` : ''}.`, 'ok');
-  if (failed.length) toast(`${failed.length} not undone: ${label(failed[0].path, 80)} (${failed[0].why})${failed.length > 1 ? ' …' : ''}`, 'error');
+  if (failed.length) toast(`${failed.length} not undone: ${label(failed[0].path, 80)} (${failed[0].why})${failed.length > 1 ? ' …' : ''}`, 'error', undefined, failed[0].said);
   return { done, left, failed };
 }
 
