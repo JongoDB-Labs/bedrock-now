@@ -373,46 +373,61 @@ test('project.settings: everything under a folder\'s .claude/ and its .mcp.json,
   assert.deepEqual([r.verifiable, r.over], [false, 'folders more than 12 deep']);
   fs.rmSync(path.join(D, '.claude/d'), { recursive: true });
   assert.equal((await call({ op: 'project.settings', root: D })).verifiable, true, 'within the bounds again');
-  // .claude/ folders below the root count too (Claude Code finds skills there) — in node_modules, in a folder named
-  // .git that is not the repository's own, in any case; only the repository's own top .git is not looked in
+  // the hash alone (what a session's start compares): no texts
+  const hashOnly = await call({ op: 'project.settings', root: D, text: false });
+  assert.equal(hashOnly.hash, (await call({ op: 'project.settings', root: D })).hash);
+  assert.ok(hashOnly.files.every((f) => f.text === undefined), 'no texts');
+  // .claude/ folders below the root are not read (Claude Code started with --project-config-root does not look there)
   fs.mkdirSync(path.join(D, 'packages/app/.claude/commands'), { recursive: true });
   fs.writeFileSync(path.join(D, 'packages/app/.claude/commands/deploy.md'), '---\nallowed-tools: Bash(*)\n---\n');
-  for (const where of ['src/node_modules/pkg/.claude', 'a/.git/.claude', 'lib/.Claude', '.git/hooks/.claude']) {
-    fs.mkdirSync(path.join(D, where), { recursive: true });
-    fs.writeFileSync(path.join(D, where, 'x.md'), 'x');
-  }
+  fs.symlinkSync(path.join(WS, 'p2'), path.join(D, 'linked-dir'));
   r = await call({ op: 'project.settings', root: D });
-  const names = r.files.map((f) => f.name);
-  for (const n of ['packages/app/.claude/commands/deploy.md', 'src/node_modules/pkg/.claude/x.md', 'a/.git/.claude/x.md', 'lib/.Claude/x.md']) assert.ok(names.includes(n), n);
-  assert.ok(!names.some((n) => n.startsWith('.git/')), 'the repository\'s own .git: not looked in');
-  assert.equal(r.verifiable, true);
-  // a link to a folder anywhere below the root: a .claude could hide behind it — never trustable
-  fs.symlinkSync(path.join(WS, 'p2'), path.join(D, 'src/elsewhere'));
-  r = await call({ op: 'project.settings', root: D });
-  assert.deepEqual([r.verifiable, r.over], [false, 'a link to a folder below the root (src/elsewhere)']);
-  fs.rmSync(path.join(D, 'src/elsewhere'));
-  for (const where of ['src', 'a', 'lib', '.git']) fs.rmSync(path.join(D, where), { recursive: true });
+  assert.ok(!r.files.some((f) => f.name.startsWith('packages/')), 'not below the root');
+  assert.equal(r.verifiable, true, 'a link to a folder below the root: not read either');
+  fs.rmSync(path.join(D, 'linked-dir'));
+  fs.rmSync(path.join(D, 'packages'), { recursive: true });
+  // the folders above it, to the git root: their six trees (commands, agents, output styles, skills, workflows,
+  // routines) — not their settings or .mcp.json; a monorepo's skill counts for a project inside it
+  const M = path.join(WS, 'mono'), A = path.join(M, 'packages/app');
+  fs.mkdirSync(path.join(M, '.git'), { recursive: true });
+  fs.mkdirSync(path.join(M, '.claude/skills/x'), { recursive: true });
+  fs.writeFileSync(path.join(M, '.claude/skills/x/SKILL.md'), '---\nallowed-tools: Bash(*)\n---\n');
+  fs.mkdirSync(path.join(M, '.claude/agents'), { recursive: true });
+  fs.writeFileSync(path.join(M, '.claude/agents/a.md'), '---\ntools: Bash\n---\n');
+  fs.writeFileSync(path.join(M, '.claude/settings.json'), '{"hooks": {}}');
+  fs.writeFileSync(path.join(M, '.mcp.json'), '{}');
+  fs.mkdirSync(path.join(M, 'packages/.Claude/Commands'), { recursive: true });
+  fs.writeFileSync(path.join(M, 'packages/.Claude/Commands/c.md'), 'x');
+  fs.mkdirSync(A, { recursive: true });
+  // (and above the git root: the workspace's own, never read for a project in a repository below it)
+  fs.mkdirSync(path.join(WS, '.claude/commands'), { recursive: true });
+  fs.writeFileSync(path.join(WS, '.claude/commands/ws.md'), 'x');
+  r = await call({ op: 'project.settings', root: A });
+  assert.deepEqual(r.files.map((f) => f.name), [path.join(M, '.claude/agents/a.md'), path.join(M, '.claude/skills/x/SKILL.md'), path.join(M, 'packages/.Claude/Commands/c.md')],
+    'the two folders above it (any case), to the git root: their six trees only');
+  assert.match(r.hash, /^[0-9a-f]{64}$/);
+  // a project outside any repository: the trees of every folder above it, the workspace's own included
+  const N = path.join(WS, 'plain/sub');
+  fs.mkdirSync(N, { recursive: true });
+  r = await call({ op: 'project.settings', root: N });
+  assert.deepEqual(r.files.map((f) => f.name), [path.join(WS, '.claude/commands/ws.md')]);
+  // a linked worktree or a submodule (a .git that is a file, here or above): unverifiable
+  fs.writeFileSync(path.join(N, '.git'), 'gitdir: /workspace/mono/.git/worktrees/sub\n');
+  r = await call({ op: 'project.settings', root: N });
+  assert.equal(r.verifiable, false);
+  assert.match(r.over, /linked git worktree or a submodule/);
+  fs.rmSync(path.join(WS, 'plain'), { recursive: true });
+  fs.rmSync(M, { recursive: true });
+  fs.rmSync(path.join(WS, '.claude'), { recursive: true });
   // the root's own .claude and .mcp.json in any case (a case-insensitive workspace reads .CLAUDE as .claude)
   const C = path.join(WS, 'cased');
   fs.mkdirSync(path.join(C, '.CLAUDE/skills/x'), { recursive: true });
+  fs.mkdirSync(path.join(C, '.git'));
   fs.writeFileSync(path.join(C, '.CLAUDE/skills/x/SKILL.md'), '---\nallowed-tools: Bash(*)\n---\n');
   fs.writeFileSync(path.join(C, '.MCP.json'), '{}');
   r = await call({ op: 'project.settings', root: C });
   assert.deepEqual(r.files.map((f) => f.name), ['.CLAUDE/skills/x/SKILL.md', '.MCP.json']);
   fs.rmSync(C, { recursive: true });
-  // a project with only a nested .claude/ needs trust too
-  const N = path.join(WS, 'nested-only');
-  fs.mkdirSync(path.join(N, 'sub/.claude/skills/x'), { recursive: true });
-  fs.writeFileSync(path.join(N, 'sub/.claude/skills/x/SKILL.md'), '---\nname: x\n---\n');
-  assert.match((await call({ op: 'project.settings', root: N })).hash, /^[0-9a-f]{64}$/);
-  // too deep to look in: unverifiable (too many: NESTED_DIRS, the same check)
-  fs.mkdirSync(path.join(N, 'deep'), { recursive: true });
-  fs.rmSync(path.join(N, 'deep'), { recursive: true });
-  fs.mkdirSync(path.join(N, ...Array(25).fill('deep')), { recursive: true });
-  assert.deepEqual([(await call({ op: 'project.settings', root: N })).verifiable, (await call({ op: 'project.settings', root: N })).over],
-    [false, 'folders more than 24 deep to look for .claude/ in']);
-  fs.rmSync(N, { recursive: true });
-  fs.rmSync(path.join(D, 'packages'), { recursive: true });
   // a .claude that is a link: one entry, never walked, never trustable
   fs.renameSync(path.join(D, '.claude'), path.join(D, 'real-claude'));
   fs.symlinkSync(path.join(D, 'real-claude'), path.join(D, '.claude'));
@@ -420,6 +435,18 @@ test('project.settings: everything under a folder\'s .claude/ and its .mcp.json,
   assert.deepEqual([r.files.map((f) => [f.name, f.type]), r.verifiable], [[['.claude', 'link']], false]);
   assert.match((await call({ op: 'project.settings', root: OUT })).error, /not a project folder/);
   fs.rmSync(D, { recursive: true });
+});
+
+test('--project-config-root: only the folder Claude Code runs in (it only narrows what it reads)', async () => {
+  assert.equal(coded.checkClaudeArgs([...coded.FIXED, `--project-config-root=${P1}`]), null);
+  for (const bad of ['--project-config-root=/etc', '--project-config-root=relative', '--project-config-root=']) assert.ok(coded.checkClaudeArgs([...coded.FIXED, bad]), bad);
+  // another folder than the one it runs in, or a link to it: refused before anything starts
+  const other = await call({ op: 'claude', args: [...coded.FIXED, `--project-config-root=${P2}`], cwd: P1, env: {} });
+  assert.match(other.error, /must be the folder Claude Code runs in/);
+  fs.symlinkSync(P1, path.join(WS, 'link-to-p1'));
+  const viaLink = await call({ op: 'claude', args: [...coded.FIXED, `--project-config-root=${path.join(WS, 'link-to-p1')}`], cwd: P1, env: {} });
+  assert.doesNotMatch(String(viaLink.error ?? ''), /must be the folder/, 'the same folder through a link (real paths compared)');
+  fs.rmSync(path.join(WS, 'link-to-p1'));
 });
 
 test('terminal.window: a new window of the terminal\'s session in the project\'s folder, nothing typed', async () => {

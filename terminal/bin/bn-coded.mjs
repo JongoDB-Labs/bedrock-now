@@ -185,6 +185,8 @@ const VALUED = {
   '--allowedTools': (v) => RULES.test(v),
   '--disallowedTools': (v) => RULES.test(v),
   '--tools': (v) => v === '',
+  // the project folder a session runs in (it only narrows what Claude Code reads: open() checks it is the process's cwd)
+  '--project-config-root': (v) => v.startsWith(`${WORKSPACE}/`) && v.length <= 1024 && !/[\x00-\x1f\x7f]/.test(v),
 };
 export function checkClaudeArgs(args) {
   if (!Array.isArray(args) || args.length > 64 || FIXED.some((a, i) => args[i] !== a)) return 'the stream-json prefix is missing';
@@ -1755,52 +1757,27 @@ export function projectCheck(req) {
 }
 
 // --- a folder's own Claude Code configuration (project.settings): what Claude Code started there reads of it ---
-// Everything under .claude/ — settings.json and settings.local.json (hooks, permission rules, env, …), and the skills,
-// commands, agents, output styles … whose front matter can grant tools (allowed-tools), declare hooks or MCP servers —
-// and .mcp.json (MCP servers it starts): a cloned repository's can run commands or silence the page's permission cards,
-// so the code container applies them only once you trusted exactly these files (their hash). Read as Claude Code reads
-// them — through links, but only what is in the workspace (a link out of it is named, never read); a FIFO or device is
-// never opened. Bounded: at most CONFIG_FILES files, CONFIG_BYTES in all, CONFIG_FILE each, CONFIG_DEPTH folders deep —
-// beyond that it cannot be verified (and is never trusted).
+// A session in a project's folder runs Claude Code with --project-config-root=<that folder> (bn-coded allows only the
+// folder it runs in: it only narrows), so it reads: the folder's .claude/ — settings.json and settings.local.json
+// (hooks, permission rules, env, …), and the commands, agents, output styles, skills, workflows and routines whose front
+// matter can grant tools (allowed-tools), declare hooks or MCP servers — and its .mcp.json; and from every folder above it
+// up to the git root (the first with a .git; else /workspace) those six .claude/ trees too — no settings, no .mcp.json,
+// and no .claude/ below it (the flag turns that discovery off). A cloned repository's, or a monorepo's above it, can
+// run commands or silence the page's permission cards, so the code container applies them only once you trusted exactly
+// these files (their hash). Read as Claude Code reads them — through links, but only what is in the workspace (a link
+// out of it is named, never read), names in any case (a macOS workspace is case-insensitive); a FIFO or device is never
+// opened. Bounded: at most CONFIG_FILES files, CONFIG_BYTES in all, CONFIG_FILE each, CONFIG_DEPTH folders deep — beyond
+// that, or in a linked git worktree or a submodule (Claude Code reads another checkout's configuration then), it cannot
+// be verified (and is never trusted).
 export const CONFIG_FILES = 500, CONFIG_BYTES = 2 << 20, CONFIG_FILE = 256 << 10, CONFIG_DEPTH = 12, CONFIG_SHOWN = 3 << 20;
-// .claude/ folders below the root too (Claude Code finds skills and commands in nested ones), whatever their case (a
-// macOS workspace is case-insensitive): looked for in every folder — node_modules too — but the repository's own top
-// .git and the workspace's trash, in at most NESTED_DIRS folders, NESTED_DEPTH deep; a link to a folder anywhere below
-// the root, or more than that, and it cannot be verified (a .claude could hide there)
-export const NESTED_DIRS = 20000, NESTED_DEPTH = 24;
-// nestedClaude(abs) -> {dirs: [rel …] of the .claude entries below abs (a folder, or anything else named so), over}
-function nestedClaude(abs) {
-  const dirs = [];
-  let seen = 0, over = null;
-  const queue = [[abs, '', 0]];
-  while (queue.length && !over) {
-    const [dir, rel, depth] = queue.shift();
-    let list;
-    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { over = 'a folder that could not be read'; break; }
-    for (const d of list) {
-      const name = rel ? `${rel}/${d.name}` : d.name;
-      const lower = d.name.toLowerCase();
-      if (!rel && (lower === '.git' || (abs === WORKSPACE && d.name === TRASH))) continue;   // (the repository's own, the trash)
-      if (lower === '.claude') { if (rel) dirs.push(name); continue; }                       // (the root's own: walked as such)
-      if (d.isSymbolicLink()) {
-        let st;
-        try { st = fs.statSync(path.join(dir, d.name)); } catch { st = null; }
-        if (st?.isDirectory()) { over = `a link to a folder below the root (${printable(name, 200)})`; break; }
-        continue;
-      }
-      if (!d.isDirectory()) continue;
-      if (depth + 1 > NESTED_DEPTH) { over = `folders more than ${NESTED_DEPTH} deep to look for .claude/ in`; break; }
-      if (++seen > NESTED_DIRS) { over = `more than ${NESTED_DIRS.toLocaleString('en')} folders to look for .claude/ in`; break; }
-      queue.push([path.join(dir, d.name), name, depth + 1]);
-    }
-  }
-  return { dirs: dirs.sort(), over };
-}
+// the .claude/ trees Claude Code reads from the folders above the project's (to the git root)
+export const CONFIG_SURFACES = Object.freeze(['commands', 'agents', 'output-styles', 'skills', 'workflows', 'routines']);
 // settingsFiles(abs, {text}) -> {files: [{name, type: file|link|big|other, size, sha256, target, text}], hash,
-// verifiable, over}: every file under abs/.claude and abs/.mcp.json (names relative to abs, sorted); hash: the
-// SHA-256 of what is there (null when nothing is); verifiable: each was read whole as text and the bounds held (a
-// link out of the workspace, a big file, a FIFO, a link to a folder, a .claude that is a link are not: their hash does
-// not cover what Claude Code would read); over: why the bounds did not hold (null when they did)
+// verifiable, over}: every file of abs/.claude and abs/.mcp.json (names relative to abs), and of the six trees above it
+// (names absolute: /workspace/…), sorted; hash: the SHA-256 of what is there (null when nothing is); verifiable: each
+// was read whole as text and the bounds held (a link out of the workspace, a big file, a FIFO, a link to a folder, a
+// .claude that is a link are not: their hash does not cover what Claude Code would read); over: why not (null: fine).
+// text false: no texts (the hash alone — what a session's start compares)
 export function settingsFiles(abs, { text = false } = {}) {
   const files = [];
   let over = null, bytes = 0, shown = 0;
@@ -1845,25 +1822,47 @@ export function settingsFiles(abs, { text = false } = {}) {
       one(name, p);
     }
   };
-  // .claude (the root's, and every one below it): a folder is walked; anything else there (a link, a file) is one
-  // entry — never trustable
-  const tree = (rel) => {
+  // a .claude (or one of its trees): a folder is walked; anything else there (a link, a file) is one entry — never
+  // trustable
+  const tree = (p, name) => {
     let c;
-    try { c = fs.lstatSync(path.join(abs, rel)); } catch { c = null; }
-    if (c?.isDirectory()) walk(path.join(abs, rel), rel, 1);
+    try { c = fs.lstatSync(p); } catch { c = null; }
+    if (c?.isDirectory()) walk(p, name, 1);
     else if (c?.isSymbolicLink()) {
-      const target = (() => { try { return printable(fs.readlinkSync(path.join(abs, rel)), 1000); } catch { return '?'; } })();
-      files.push({ name: rel, type: 'link', target, sha256: sha256(`link:${target}`) });
-    } else if (c) files.push({ name: rel, type: 'other', target: null, sha256: sha256('other:') });
+      const target = (() => { try { return printable(fs.readlinkSync(p), 1000); } catch { return '?'; } })();
+      files.push({ name, type: 'link', target, sha256: sha256(`link:${target}`) });
+    } else if (c) files.push({ name, type: 'other', target: null, sha256: sha256('other:') });
   };
-  // the root's own .claude and .mcp.json, in any case (a case-insensitive workspace reads .Claude as .claude)
-  let top;
-  try { top = fs.readdirSync(abs); } catch { top = []; }
-  for (const n of top.filter((x) => x.toLowerCase() === '.claude').sort()) tree(n);
-  const nested = nestedClaude(abs);
-  if (nested.over) over ??= nested.over;
-  for (const rel of nested.dirs) { if (over) break; tree(rel); }
-  for (const n of top.filter((x) => x.toLowerCase() === '.mcp.json').sort()) one(n, path.join(abs, n));
+  const named = (dir, want) => { try { return fs.readdirSync(dir).filter((x) => x.toLowerCase() === want).sort(); } catch { return []; } };
+  // .git here: a folder (the git root: nothing above it is read), a file (a linked worktree or a submodule), or none
+  const gitOf = (dir) => {
+    for (const n of named(dir, '.git')) {
+      let st;
+      try { st = fs.lstatSync(path.join(dir, n)); } catch { continue; }
+      return st.isDirectory() ? 'dir' : 'file';
+    }
+    return null;
+  };
+  // the folder's own .claude/ and .mcp.json
+  for (const n of named(abs, '.claude')) tree(path.join(abs, n), n);
+  for (const n of named(abs, '.mcp.json')) one(n, path.join(abs, n));
+  // the folders above it, to the git root (else the workspace itself): their six trees
+  let g = gitOf(abs);
+  if (g === 'file') over ??= 'a linked git worktree or a submodule (Claude Code reads another checkout\'s configuration then)';
+  for (let d = path.dirname(abs); g === null && !over && abs !== WORKSPACE && inside(d); d = path.dirname(d)) {
+    g = gitOf(d);
+    if (g === 'file') { over = 'a linked git worktree or a submodule above it (Claude Code reads another checkout\'s configuration then)'; break; }
+    for (const c of named(d, '.claude')) {
+      const cp = path.join(d, c);
+      let st;
+      try { st = fs.lstatSync(cp); } catch { continue; }
+      if (!st.isDirectory()) { tree(cp, cp); continue; }
+      for (const sname of (() => { try { return fs.readdirSync(cp).sort(); } catch { return []; } })()) {
+        if (CONFIG_SURFACES.includes(sname.toLowerCase())) tree(path.join(cp, sname), path.join(cp, sname));
+      }
+    }
+    if (d === WORKSPACE) break;
+  }
   files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const hash = files.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null;
   const verifiable = !over && files.every((f) => f.readable === true);
@@ -1874,7 +1873,7 @@ const isUtf8Buf = (b) => { try { new TextDecoder('utf-8', { fatal: true }).decod
 // project.settings {root?} -> {files (with their text, ≤ 256 KiB each), hash, verifiable, over}: a project's folder
 // (none: the workspace)
 export function projectSettings(req) {
-  return settingsFiles(rootArg(req?.root).abs, { text: true });
+  return settingsFiles(rootArg(req?.root).abs, { text: req?.text !== false });
 }
 // project.trash {root} -> {trash}: Remove from Code with its folder — the project's folder itself (a real folder of
 // the workspace, every part of its path too: never through a link, never the workspace) moved to the workspace's trash
@@ -3883,6 +3882,9 @@ export function serve(sock) {
       if (why) return fail(why);
       const cwd = confine(typeof req.cwd === 'string' ? req.cwd : WORKSPACE);
       if (!cwd) return fail('cwd must be in /workspace');
+      // --project-config-root: only the folder the process runs in (real paths), never another folder's configuration
+      const pcr = req.args.find((a) => typeof a === 'string' && a.startsWith('--project-config-root='));
+      if (pcr && confine(pcr.slice('--project-config-root='.length)) !== cwd) return fail('--project-config-root must be the folder Claude Code runs in');
       const args = [...FIXED, ...(fs.existsSync(MCP_CONFIG) ? [`--mcp-config=${MCP_CONFIG}`] : []), ...req.args.slice(FIXED.length)];
       return startProcess(args, cwd, childEnv(req.env, req.litellmSession));
     }
