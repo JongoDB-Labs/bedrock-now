@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-19
+
 ### Added
 
 - **Projects in the Code page.** A project is a folder of the workspace the page works in: the sidebar's Sessions
@@ -1932,7 +1934,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.14.0...v0.14.1
