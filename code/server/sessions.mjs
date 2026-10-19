@@ -11,6 +11,7 @@ import { START_MODES, SET_MODES, normMode, cliMode, pageMode, permissionsFor, un
 import { checkSnapshot, diffSnapshots, mergeSnapshots, watchEvent, revertOf } from './watch.mjs';
 import { WS, cwdOk } from './projects.mjs';
 import { ALL_SOURCES, APPLIED as APPLIED_STATES, withheldText } from './trust.mjs';
+import { gitNote } from './gitnote.mjs';
 
 const KEEP = 16;   // session objects kept (open or ended) for re-attaching; the oldest ended ones go first
 const STDERR_LINES = 20, STDERR_WINDOW_MS = 10000;   // Claude Code's stderr in the log: at most this much per session
@@ -152,6 +153,15 @@ export class Session {
       || (APPLIED_STATES.includes(this.settings.state) && (d.state !== this.settings.state || d.hash !== this.settings.hash))));
   }
 
+  /** its process restarts at the next prompt that starts a turn when the Git note would read differently now (a host
+   *  connected or removed, Let Claude use this host turned on or off, a sign-in ended): what Claude may use is in its
+   *  system prompt. Not when the hosts cannot be read just now (the note it has stays). */
+  gitRestart() {
+    if (typeof this.gitNote !== 'string') return false;
+    const now = this.mgr.gitNoteNow({ strict: true });
+    return now !== null && now !== this.gitNote;
+  }
+
   // --- the budget ---
   /** What is left of the budget: its amount less the larger of the page's figure and Claude Code's estimate. */
   left() { return this.budget ? this.budget.usd - Math.max(this.spent, this.estimates() ? this.cliCost : 0) : Infinity; }
@@ -224,12 +234,15 @@ export class Session {
     const settings = this.mgr.takeSettings(this.cwd);
     this.settings = settings;
     this.settingsDirty = false;
+    // how git gets a login here, and the Git hosts Claude may use now (gitnote.mjs): at the end of the system prompt
+    this.gitNote = this.mgr.gitNoteNow();
     const options = {
       cwd: this.cwd,
       pathToClaudeCodeExecutable: '/usr/local/bin/claude',   // a path in the sandbox: only the arguments travel
       spawnClaudeCodeProcess: (o) => this.mgr.spawn(o, { litellmSession: this.id, onStderr: (s) => this.mgr.logStderr(this.id, `claude ${this.id.slice(0, 8)} stderr: ${short(s, 300)}`) }),
       env: {},                                                 // nothing of this container's environment
-      systemPrompt: { type: 'preset', preset: 'claude_code' },  // the SDK's default is an empty system prompt
+      // (the SDK's default is an empty system prompt)
+      systemPrompt: { type: 'preset', preset: 'claude_code', ...(this.gitNote !== null ? { append: this.gitNote } : {}) },
       // the sandbox's plugins, skills, CLAUDE.md — and the folder's own .claude settings only when they apply (trust.mjs)
       settingSources: [...settings.sources],
       includePartialMessages: true,
@@ -495,6 +508,7 @@ export class Session {
     }
     if (this.open && startsTurn && this.budgetRestart()) this.close('budget');
     else if (this.open && startsTurn && this.settingsRestart()) this.close('settings');
+    else if (this.open && startsTurn && this.gitRestart()) this.close('git');
     if (this.open) this.mgr.dropSettings(this.cwd);   // (no start: the decision made for one goes)
     if (!this.open) this.start({ resume: this.id });
     const id = isUuid(uuid) ? uuid : crypto.randomUUID();
@@ -844,6 +858,7 @@ export class Session {
           : reason === 'budget' ? `Restarting Claude Code for this session so its new budget applies${this.budget?.hard ? ` (stop at ${money(this.budget.usd)})` : ''}${wasBypass ? ', in Manual (Bypass permissions ends with its process)' : ''}; its next turn may write the prompt cache again.`
             : reason === 'settings-changed' ? 'Claude Code stopped here: this folder\'s own Claude Code configuration changed while it started (after it was checked). Your next prompt starts it again without it until you look at it again.'
             : reason === 'settings' ? 'Restarting Claude Code for this session: the folder\'s own Claude Code settings apply differently now (you trusted them, or they changed); its next turn writes the prompt cache again.'
+            : reason === 'git' ? `Restarting Claude Code for this session: your Git hosts changed, and the ones Claude may use are in its instructions${wasBypass ? ' (in Manual: Bypass permissions ends with its process)' : ''}; its next turn writes the prompt cache again.`
             : reason === 'terminal' ? `Continued in the terminal${wasBypass ? ' (in Manual)' : ''}: exit Claude Code there (/exit) before you send a prompt here — two Claude Code processes would both write this conversation.`
               : `Session closed; a prompt resumes it${wasBypass ? ' (in Manual)' : ''}.`;
     this.emit({ type: 'local', text });
@@ -862,11 +877,13 @@ export class SessionManager {
   // folder of the workspace gets your own settings only (the Workspace: its own too, as before projects)
   // watchRootOf(cwd) -> {rel, abs} of the project folder that holds a session's folder (its watchlist's), or null: the
   // workspace's
+  // gitHosts() -> the Git hosts as the page sees them (GitHosts.list: no secret), for the note at the end of every
+  // process's system prompt (gitnote.mjs); none: no note
   constructor({ query, spawn, broker, log = () => {}, onEvent = () => {}, onState = () => {}, onReload = () => {}, onReset = () => {},
     transcriptExists = async () => false, maxOpen = LIMITS.maxOpen, idleMs = LIMITS.idleMinutes * 60000, allowBypass = false, allowAuto = false, watcher = null,
-    watchRootOf = () => null, decideSettings = null }) {
+    watchRootOf = () => null, decideSettings = null, gitHosts = null }) {
     Object.assign(this, { query, spawn, broker, log, onEvent, onState, onReload, onReset, transcriptExists, maxOpen, idleMs, allowBypass: allowBypass === true,
-      allowAuto: allowAuto === true, watcher, watchRootOf, decideSettings });
+      allowAuto: allowAuto === true, watcher, watchRootOf, decideSettings, gitHosts });
     this.decisions = new Map();   // cwd -> {d, at}: made just before a start (prepare), taken by it (takeSettings)
     this.sessions = new Map();
     this.stderrSeen = new Map();   // session -> {from, n, dropped}
@@ -893,6 +910,16 @@ export class SessionManager {
     return d ?? { ...NOT_DECIDED };
   }
   dropSettings(cwd) { this.decisions.delete(cwd); }
+  // gitNoteNow({strict}) -> the Git note for a process starting now, or null (no gitHosts; strict: not read just now)
+  gitNoteNow({ strict = false } = {}) {
+    if (typeof this.gitHosts !== 'function') return null;
+    let hosts = null;
+    try { hosts = this.gitHosts(); } catch (e) {
+      if (strict) return null;
+      this.log(`git note: the Git hosts could not be read (${short(e?.message || String(e), 200)})`);
+    }
+    return gitNote(hosts);
+  }
   list() { return [...this.sessions.values()].map((s) => s.info()); }
 
   // Claude Code's stderr in this container's log: at most STDERR_LINES per session every STDERR_WINDOW_MS (a sandbox

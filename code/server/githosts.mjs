@@ -19,7 +19,8 @@ import { newKey, loadKey, knownHostFingerprint, KNOWN_HOSTS } from './sshagent.m
 export const STATE_DIR = process.env.BN_CODE_STATE || '/var/lib/bn-code';
 export const KINDS = ['github', 'gitlab', 'other'];
 export const HOSTS_MAX = 32, EVENTS_MAX = 200, KNOWN_MAX = 16;
-const HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*$/;
+// a host name (lower case, as kept): also what the note in Claude's instructions may name (gitnote.mjs)
+export const HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*$/;
 const LABEL = /^[^\x00-\x1f\x7f]{1,60}$/;
 const USER = /^[A-Za-z0-9._@+-]{1,100}$/;
 // a token as git sends it: printable ASCII without spaces (GitHub's, GitLab's, Bitbucket's, Gitea's)
@@ -29,7 +30,7 @@ const PEM = /^-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{40,20000}\n-----END 
 export const knownOk = (l) => typeof l === 'string' && KNOWN.test(l);
 // a sign-in's parts: the application (client) ID it came from, the account, its scopes, the GitHub App's name in its URL
 export const CLIENT_ID = /^[A-Za-z0-9._-]{1,128}$/;
-const ACCOUNT = /^[A-Za-z0-9._@+-]{1,100}$/;
+export const ACCOUNT = /^[A-Za-z0-9._@+-]{1,100}$/;
 const SCOPE = /^[A-Za-z0-9:_./-]{1,80}$/;
 export const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/;
 export const PROVIDERS = ['github', 'gitlab'];

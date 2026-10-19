@@ -152,8 +152,12 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   const sandboxInfo = { egress: typeof sandbox.egress === 'boolean' ? sandbox.egress : null,
     egressHost: typeof sandbox.egressHost === 'boolean' ? sandbox.egressHost : null,
     workspace: typeof sandbox.workspace === 'string' && sandbox.workspace ? short(sandbox.workspace, 1000) : null };
+  // Git hosts (githosts.mjs; the file made on first write): the Git panel's, Claude's own git's — and what every
+  // session's process is told of them (gitnote.mjs)
+  const hostStore = gitHosts || new GitHosts();
   const mgr = new SessionManager({
     query, spawn, broker, log: logger, allowBypass: allowBypass === true, allowAuto: allowAuto === true, watcher, watchRootOf, decideSettings: trust.decide,
+    gitHosts: () => hostStore.list(),
     onEvent: (s, seq, ev) => {
       toAttached(s.id, { type: 'event', session: s.id, epoch: s.epoch, seq, ev });
       // a title given before the session had a transcript: written once its first turn is over
@@ -208,7 +212,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   const listed = () => { let place = null; try { place = proj().placer(); } catch { /* none */ } return mgr.list().map((x) => ({ ...x, project: place ? place(x.id, x.cwd) : 'ws' })); };
   // Git hosts and the Git panel's remote operations (gitremote.mjs): every use goes to the pages (Activity)
   let gitRemoteApi = null;
-  const gitRemote = () => (gitRemoteApi ??= makeGitRemote({ call, openBroker, store: gitHosts || new GitHosts(), log: logger, connect: gitConnect, apps: gitApps,
+  const gitRemote = () => (gitRemoteApi ??= makeGitRemote({ call, openBroker, store: hostStore, log: logger, connect: gitConnect, apps: gitApps,
     oauthDelay: gitOAuthDelay,
     onEvent: (event) => toAll({ type: 'git_event', event }) }));
   if (openBroker) setTimeout(() => { gitRemote().syncBroker().catch((e) => logger(`git broker: ${short(e.message, 200)}`)); }, 1000).unref?.();
