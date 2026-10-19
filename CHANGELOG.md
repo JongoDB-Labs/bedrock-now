@@ -33,6 +33,10 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Changed
 
+- **Every Code page session starts Claude Code with `--project-config-root`** (its folder; the Workspace's too):
+  skills in `.claude/skills` folders below a session's folder are no longer picked up (put them in the project's own
+  `.claude/skills`), and `claude mcp add --scope project` is refused there ("Project-scope MCP server changes are
+  unavailable…") — add MCP servers in the page's MCP panel or with user scope.
 - The Git panel's repository picker lists projects; a clone becomes a project of its own; a repository in a folder
   that is not a project has *Open as a project*.
 - A session in a project checks the watched files of the workspace's own top folder too (its git hooks, `.envrc`,

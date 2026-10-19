@@ -738,6 +738,11 @@ sessions from before projects are listed under it.
   value, more than 500 files, a linked git worktree) is never trusted; scripts a trusted hook runs are not shown —
   read them too. A folder with none of it needs nothing (its `CLAUDE.md` is read). The Workspace's own apply as
   before. [docs/security.md](docs/security.md#projects)
+- **Two things that work differently in Code page sessions** (the Workspace's too: every session starts Claude Code
+  with `--project-config-root` set to its folder). Skills in `.claude/skills` folders *below* the session's folder are
+  not picked up (Claude Code's discovery of nested skills is off): put them in the project's own `.claude/skills`, or
+  make that folder a project. And `claude mcp add --scope project` is refused there ("Project-scope MCP server changes
+  are unavailable…"): add MCP servers in the page's MCP panel (⋯ › *MCP servers*) or with user scope.
 - **Add to project…** (a session's ⋯; or the tick button above the list, pick several, then *Add to project…*): the
   session is listed in that project from then on. It still runs in its own folder (Claude Code keeps a conversation by
   the folder it started in).

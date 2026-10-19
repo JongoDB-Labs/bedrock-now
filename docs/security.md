@@ -1304,6 +1304,11 @@ direction-changing character; a record that does not fit (a file someone changed
   - *The Workspace keeps applying its own*, as before projects: it is the folder you chose for the sandbox, and
     turning its configuration off would change existing installs silently. *Open in the terminal* runs the
     terminal's `claude`, which asks its own folder-trust question.
+  - *What the flag changes for you.* Every Code page session, the Workspace's too, runs with `--project-config-root`
+    (its own folder), so Claude Code's discovery of `.claude/skills` folders below the session's folder is off
+    everywhere: skills there are not picked up (put them in the project's own `.claude/skills`). And Claude Code
+    refuses `claude mcp add --scope project` in such a session ("Project-scope MCP server changes are unavailable…"):
+    add an MCP server in the page's MCP panel or with user scope.
 - [x] **Sessions are placed by their folder, checked twice.** Claude Code keeps a conversation in
   `~/.claude/projects/<its folder, every character but letters and digits as ->/`, a lossy name (`/workspace/a-b` and
   `/workspace/a/b` share one). bn-coded reads only the `-workspace` and `-workspace-*` store folders (real folders,
