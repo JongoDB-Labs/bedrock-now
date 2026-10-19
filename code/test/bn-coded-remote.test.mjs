@@ -615,7 +615,8 @@ test('Claude\'s own git through the broker: only while the code container keeps 
       if (t !== T.ASK) continue;
       const q = JSON.parse(p.toString('utf8'));
       asked.push(q);
-      c.write(frame(T.ANSWER, { ...(allow ? credAnswer(q) : {}), id: q.id }));
+      const gh = q.kind === 'cred' && q.purpose === 'gh' && q.host === 'github.com' ? { username: 'x-access-token', password: TOKEN } : null;
+      c.write(frame(T.ANSWER, { ...(allow ? gh || credAnswer(q) : {}), id: q.id }));
     }
   });
   // (in finally: a failure must not leave the broker's connection keeping this process alive)
@@ -626,6 +627,14 @@ test('Claude\'s own git through the broker: only while the code container keeps 
     assert.match(r1.out, /refs\/heads\/main/);
     assert.equal(asked.length, 1);
     assert.equal(asked[0].host, `127.0.0.1:${good.port}`);
+    assert.equal(asked[0].purpose, 'git');
+    // the sandbox's gh (bn-gh) asks the same socket, saying so; its token only in that gh's environment
+    const fakeGh = path.join(ROOT, 'fake-gh');
+    fs.writeFileSync(fakeGh, '#!/bin/sh\nprintf "%s" "$GH_TOKEN"\n', { mode: 0o755 });
+    const g = spawnSync(process.execPath, [path.join(TERMINAL_DIR, 'bin/bn-gh'), 'pr', 'list'], { cwd: ROOT, encoding: 'utf8', timeout: 30000,
+      env: { PATH: PLAIN.PATH, HOME, BN_GIT_TMP: GTMP, BN_GH_REAL: fakeGh } });
+    assert.equal(g.stdout, TOKEN, g.stderr);
+    assert.deepEqual([asked.at(-1).purpose, asked.at(-1).host, asked.at(-1).path], ['gh', 'github.com', 'pr list']);
     allow = false;
     assert.notEqual((await claudeGit()).code, 0, 'the code container said no');
   } finally { c.destroy(); }

@@ -58,6 +58,19 @@ test("Code sessions: each wait is an item of its own, kept across reports while 
   assert.equal(A.codeItems(null, {}, now).items.length, 0);
 });
 
+test("Git hosts' uses: Claude's git and gh each said as theirs, worth a notification; yours plain", () => {
+  const now = 1_800_000_000_000;
+  const git = [{ id: "aaaaaaaaaaaa", at: now, who: "claude", action: "credential", host: "GitHub", target: "github.com/o/r.git", ok: true },
+    { id: "bbbbbbbbbbbb", at: now, who: "claude", action: "gh", host: "GitHub", target: "github.com: gh pr create", ok: true },
+    { id: "cccccccccccc", at: now, who: "claude", action: "gh", host: "GitHub", target: "github.com", ok: false },
+    { id: "dddddddddddd", at: now, who: "you", action: "push", host: "GitHub", target: "github.com/o/r", ok: true }];
+  const items = plain(A.codeItems({ sessions: [], git }, {}, now)).items;
+  assert.deepEqual(items.map((i) => i.title), ["Claude's git used the Git host GitHub", "Claude's gh used the Git host GitHub",
+    "Claude's gh was refused the Git host GitHub", "Pushed (GitHub)"]);
+  assert.deepEqual(items.map((i) => i.notify), [true, true, true, false]);
+  assert.equal(items[1].text, "github.com: gh pr create");
+});
+
 test("the server's items are checked again: ids, levels, links (a place in the portal, nothing else)", () => {
   const ok = { id: "job:helper:abc:done", kind: "job", level: "good", title: "Update finished", text: "Updated to v0.11.0", at: 1800000000, link: "#home", notify: true,
     data: { origin: "helper", action: "update", phase: "done" } };

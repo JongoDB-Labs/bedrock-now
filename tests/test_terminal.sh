@@ -789,6 +789,15 @@ test_image_pins() {
   grep -q '^FROM node:[0-9.]*-[a-z]*-slim@sha256:[0-9a-f]\{64\}$' "$d" || { echo "base image not pinned by digest" >&2; return 1; }
   grep -q '^ARG TTYD_SHA256_AMD64=[0-9a-f]\{64\}$' "$d" && grep -q '^ARG TTYD_SHA256_ARM64=[0-9a-f]\{64\}$' "$d" || return 1
   grep -q 'sha256sum -c' "$d" && grep -q 'npm ci' "$d" || return 1
+  # gh: an exact release, both architectures' checksums checked; the gh on PATH is the wrapper (bin/bn-gh), the real
+  # one beside it, never logged in
+  grep -q '^ARG GH_VERSION=[0-9]*\.[0-9]*\.[0-9]*$' "$d" || { echo "gh not pinned to an exact version" >&2; return 1; }
+  grep -q '^ARG GH_SHA256_AMD64=[0-9a-f]\{64\}$' "$d" && grep -q '^ARG GH_SHA256_ARM64=[0-9a-f]\{64\}$' "$d" || return 1
+  assert_contains "$(cat "$d")" 'echo "$sum  /tmp/gh.tgz" | sha256sum -c -' || return 1
+  assert_contains "$(cat "$d")" 'install -D -m 755 "/tmp/$d/bin/gh" /usr/local/lib/gh/gh' || return 1
+  assert_contains "$(cat "$d")" 'ln -s bn-gh /usr/local/bin/gh && gh --version' || return 1
+  assert_contains "$(head -1 "$STACK_DIR/terminal/bin/bn-gh")" '#!/usr/bin/env node' || return 1
+  assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-gh")" "const REAL = process.env.BN_GH_REAL || '/usr/local/lib/gh/gh';" || return 1
   v="$(sed -n 's/.*"@anthropic-ai\/claude-code": "\([0-9.]*\)".*/\1/p' "$STACK_DIR/terminal/claude-code/package.json")"
   [ -n "$v" ] || { echo "Claude Code not pinned to an exact version" >&2; return 1; }
   python3 - "$STACK_DIR/terminal/claude-code/package-lock.json" "$v" <<'PY' || return 1

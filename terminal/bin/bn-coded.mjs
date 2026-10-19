@@ -2209,9 +2209,10 @@ export function tunnelConnect(host, port, { proxy = egressProxy(), connectMs = T
 
 // git.broker — Claude's own git (Settings › Git hosts › "Let Claude use this host", off by default): while the code
 // container keeps this connection open, /tmp/bn-git/claude/cred.sock answers bn-git-credential run by any git in the
-// sandbox, and /tmp/bn-git/claude/agent.sock is an SSH agent (the image's ssh configuration names it while it is
-// there) — every question relayed to the code container, which answers only for the hosts you let Claude use, and
-// says so in Activity. One broker at a time; closed, both sockets go.
+// sandbox (and bn-gh, the gh there: its question says purpose "gh" — what the asker says, for Activity), and
+// /tmp/bn-git/claude/agent.sock is an SSH agent (the image's ssh configuration names it while it is there) — every
+// question relayed to the code container, which answers only for the hosts you let Claude use, and says so in
+// Activity. One broker at a time; closed, both sockets go.
 let broker = null;
 export function brokerStart(ask, { dir = path.join(GIT_TMP, 'claude') } = {}) {
   brokerStop();
@@ -2230,7 +2231,7 @@ export function brokerStart(ask, { dir = path.join(GIT_TMP, 'claude') } = {}) {
       const reply = (v) => { try { c.end(`${JSON.stringify(v)}\n`); } catch { /* gone */ } };
       if (!q || typeof q.host !== 'string' || typeof q.protocol !== 'string') return reply({});
       ask({ kind: 'cred', protocol: printable(q.protocol, 16), host: printable(q.host, 300), path: typeof q.path === 'string' ? printable(q.path, 1000) : '',
-        username: typeof q.username === 'string' ? printable(q.username, 200) : '' })
+        username: typeof q.username === 'string' ? printable(q.username, 200) : '', purpose: q.purpose === 'gh' ? 'gh' : 'git' })
         .then((a) => reply(a && CRED_FIELD.test(a.username || '') && CRED_FIELD.test(a.password || '') ? { username: a.username, password: a.password } : {}), () => reply({}));
     });
   });

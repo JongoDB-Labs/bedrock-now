@@ -127,9 +127,9 @@
         el("span", { class: "code-title", text: s.title || "Untitled session" }), el("span", { class: "note code-state", text: STATES[s.state] }), resume));
     }
   }
-  // the framed page's Git hosts uses (its Git panel: your pushes and pulls, Claude's own git getting a credential),
-  // checked: ids, times, a few words each, at most 10 — shown as text by Activity
-  const GIT_ACTIONS = ["fetch", "pull", "push", "publish", "clone", "test", "credential", "ssh-login", "claude"];
+  // the framed page's Git hosts uses (its Git panel: your pushes and pulls, Claude's own git or gh getting a
+  // credential), checked: ids, times, a few words each, at most 10 — shown as text by Activity
+  const GIT_ACTIONS = ["fetch", "pull", "push", "publish", "clone", "test", "credential", "ssh-login", "gh", "claude"];
   function takeGit(v) {
     if (!Array.isArray(v)) return [];
     return v.slice(0, 10).filter((x) => x && typeof x.id === "string" && /^[0-9a-f]{12}$/.test(x.id) && Number.isFinite(x.at) && x.at > 0 && GIT_ACTIONS.includes(x.action))

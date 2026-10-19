@@ -91,15 +91,17 @@
         text: typeof s.title === "string" && s.title ? s.title.slice(0, 120) : "Untitled session",
         at: Math.floor(ep / 1000), link: "", notify: true, data: { session: s.id } });
     }
-    // Git hosts' uses the Code page reports (code.js checked them): Claude's own git getting a credential (it may push
-    // where the token reaches: worth a look, and a notification), a failed operation, your pushes and pulls
+    // Git hosts' uses the Code page reports (code.js checked them): Claude's own git or gh getting a credential (it
+    // may push — gh: do anything — where the token reaches: worth a look, and a notification), a failed operation,
+    // your pushes and pulls
     const git = report && Array.isArray(report.git) ? report.git.slice(0, 10) : [];
     const VERB = { fetch: "Fetched", pull: "Pulled", push: "Pushed", publish: "Published", clone: "Cloned", test: "Tested a git host",
       claude: "Changed whether Claude may use a Git host" };
     for (const g of git) {
       if (!g || typeof g.id !== "string" || !Number.isFinite(g.at)) continue;
       const claude = g.who === "claude";
-      const title = claude ? (g.ok ? `Claude's git used the Git host ${g.host || ""}`.trim() : `Claude's git was refused the Git host ${g.host || ""}`.trim())
+      const tool = g.action === "gh" ? "gh" : "git";
+      const title = claude ? (g.ok ? `Claude's ${tool} used the Git host ${g.host || ""}`.trim() : `Claude's ${tool} was refused the Git host ${g.host || ""}`.trim())
         : g.ok ? `${VERB[g.action] || "Git"}${g.host ? ` (${g.host})` : ""}` : `A git ${g.action} failed`;
       const look = claude || !g.ok || g.action === "claude";
       items.push({ id: `git:${g.id}`, kind: "git", level: look ? "warn" : "info", title, text: String(g.target || "").slice(0, 200),

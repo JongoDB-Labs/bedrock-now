@@ -1,0 +1,168 @@
+#!/usr/bin/env node
+// gh in the sandbox: /usr/local/bin/gh is this (bn-gh); the GitHub CLI itself is /usr/local/lib/gh/gh, never logged
+// in here. For each command it asks /tmp/bn-git/claude/cred.sock — the question git's credential helper asks there
+// (bin/bn-git-credential), marked as gh's, with the command's first words — for the login of the GitHub host the
+// command goes to. The code container answers only while you let Claude use that host (Git panel › Hosts › Let
+// Claude use this host, off by default), only for a GitHub host, within git's limit (30 a minute), and Activity lists
+// each use as gh's. The token goes into that one gh process's environment (GH_TOKEN for github.com and *.ghe.com;
+// GH_ENTERPRISE_TOKEN and GH_HOST for GitHub Enterprise Server): never a file, never ~/.config/gh, never this
+// process's own environment. No answer: gh runs without one (public reads work, the rest says it is not logged in),
+// after one line on stderr saying how to allow it — unless gh has a login of its own for that host.
+// Not asked for: gh's help and version, completion, config, alias, and auth (but auth status, which says whether gh
+// has a login; auth token never prints one of ours); nor with a token of yours in the environment (GH_TOKEN …): that
+// one is used as it is. Node built-ins only. gh's exit status is this one's.
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn, execFileSync } from 'node:child_process';
+
+const REAL = process.env.BN_GH_REAL || '/usr/local/lib/gh/gh';
+const SOCK = path.join(process.env.BN_GIT_TMP || '/tmp/bn-git', 'claude', 'cred.sock');
+const FIELD = /^[\x21-\x7e]{1,1024}$/;
+const HOST = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*$/;
+const OWN_TOKENS = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'];
+const NO_LOGIN = new Set(['help', 'version', 'completion', 'config', 'alias']);
+const args = process.argv.slice(2);
+
+// wants(args) -> whether this command may need a login (help, version and gh's own settings never do)
+function wants(a) {
+  const cmd = a[0];
+  if (!cmd || cmd.startsWith('-') || NO_LOGIN.has(cmd) || a.includes('--help')) return false;
+  if (cmd === 'auth') return a[1] === 'status' && !a.includes('-t') && !a.includes('--show-token');
+  return true;
+}
+
+const hostOk = (h) => { const v = String(h ?? '').trim().toLowerCase(); return HOST.test(v) ? v : null; };
+// repoHost(s) -> the host of a remote's URL (https://, ssh://, git@host:…) or of [HOST/]OWNER/REPO (OWNER/REPO:
+// github.com), or null
+function repoHost(s) {
+  if (typeof s !== 'string' || !s) return null;
+  let m = s.match(/^(?:https?|ssh|git):\/\/(?:[^@/]*@)?([^/:?#]+)/i);
+  if (m) return hostOk(m[1]);
+  m = s.match(/^(?:[^@/:]+@)?([^/:]+):(?!\/)/);
+  if (m) return hostOk(m[1]);
+  const parts = s.split('/');
+  if (parts.length === 3) return hostOk(parts[0]);
+  return parts.length === 2 ? 'github.com' : null;
+}
+// remoteHosts() -> the hosts of this folder's git remotes, in gh's order (upstream, github, origin, the rest)
+function remoteHosts() {
+  let out = '';
+  try {
+    out = execFileSync('git', ['config', '--get-regexp', '^remote\\..*\\.url$'], { encoding: 'utf8', timeout: 3000, maxBuffer: 1 << 16, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch { return []; }
+  const urls = new Map();
+  for (const line of out.split('\n')) {
+    const m = line.match(/^remote\.(.+?)\.url (.+)$/);
+    if (m && !urls.has(m[1])) urls.set(m[1], m[2]);
+  }
+  const names = [...['upstream', 'github', 'origin'].filter((n) => urls.has(n)), ...[...urls.keys()].filter((n) => !['upstream', 'github', 'origin'].includes(n))];
+  return [...new Set(names.map((n) => repoHost(urls.get(n))).filter(Boolean))];
+}
+// targets(args) -> the hosts to ask for, in order (the first that answers is gh's): GH_HOST, --hostname, -R/--repo,
+// GH_REPO — one host, as gh takes it; else this repository's remotes (three at most); else github.com
+function targets(a) {
+  if (process.env.GH_HOST) { const h = hostOk(process.env.GH_HOST); return h ? [h] : []; }
+  for (let i = 0; i < a.length && a[i] !== '--'; i++) {
+    const x = a[i];
+    let v = null;
+    if (x === '--hostname' || (x === '-h' && a[0] === 'auth')) v = a[i + 1] ?? '';
+    else if (x.startsWith('--hostname=')) v = x.slice(11);
+    if (v !== null) { const h = hostOk(v); return h ? [h] : []; }
+    if (x === '-R' || x === '--repo') v = a[i + 1] ?? '';
+    else if (x.startsWith('--repo=')) v = x.slice(7);
+    else if (x.startsWith('-R') && x.length > 2) v = x.slice(2);
+    if (v !== null) { const h = repoHost(v); return h ? [h] : []; }
+  }
+  if (process.env.GH_REPO) { const h = repoHost(process.env.GH_REPO); return h ? [h] : []; }
+  const r = remoteHosts().slice(0, 3);
+  return r.length ? r : ['github.com'];
+}
+// (gh api's flags that take a value: their value is never the endpoint)
+const API_VALUE_FLAGS = new Set(['-H', '--header', '-f', '--raw-field', '-F', '--field', '-q', '--jq', '-t', '--template', '--input', '--cache', '-p', '--preview',
+  '--hostname']);
+// describe(args) -> the command for Activity: its first words ("pr create"), or gh api's method and endpoint
+function describe(a) {
+  const word = /^[a-z][a-z0-9-]{0,30}$/;
+  if (a[0] === 'api') {
+    let method = '', endpoint = '';
+    for (let i = 1; i < a.length; i++) {
+      const x = a[i];
+      if (x === '-X' || x === '--method') method = a[++i] ?? '';
+      else if (x.startsWith('--method=')) method = x.slice(9);
+      else if (/^-X[A-Za-z]/.test(x)) method = x.slice(2);
+      else if (API_VALUE_FLAGS.has(x)) i++;
+      else if (!endpoint && !x.startsWith('-') && /^\/?[A-Za-z0-9._{}:@-]+(?:\/[A-Za-z0-9._{}:@-]*)*(?:\?.*)?$/.test(x)) endpoint = x.split('?')[0];
+    }
+    return ['api', /^[A-Za-z]{3,7}$/.test(method) ? method.toUpperCase() : '', endpoint.slice(0, 100)].filter(Boolean).join(' ');
+  }
+  const out = [];
+  for (const x of a) { if (!word.test(x) || out.length === 2) break; out.push(x); }
+  return out.join(' ');
+}
+
+// ask(host) -> the token, or null (30 s at most)
+function ask(host, command) {
+  return new Promise((resolve) => {
+    try { if (!fs.statSync(SOCK).isSocket()) { resolve(null); return; } } catch { resolve(null); return; }
+    const sock = net.connect(SOCK);
+    let buf = '';
+    const end = (v) => { clearTimeout(t); sock.destroy(); resolve(v); };
+    const t = setTimeout(() => end(null), 30000);
+    sock.on('error', () => end(null));
+    sock.on('close', () => end(null));
+    sock.on('data', (d) => {
+      buf += d.toString('utf8');
+      if (buf.length > 16384) return end(null);
+      const i = buf.indexOf('\n');
+      if (i < 0) return undefined;
+      let v = null;
+      try { v = JSON.parse(buf.slice(0, i)); } catch { /* none */ }
+      return end(v && FIELD.test(v.password || '') ? v.password : null);
+    });
+    sock.write(`${JSON.stringify({ action: 'get', protocol: 'https', host, path: command, username: '', purpose: 'gh' })}\n`);
+  });
+}
+// ownLogin(host) -> whether gh has a login of its own for that host (its hosts.yml names it)
+function ownLogin(host) {
+  const dir = process.env.GH_CONFIG_DIR || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'gh');
+  try {
+    const fd = fs.openSync(path.join(dir, 'hosts.yml'), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    try {
+      const b = Buffer.alloc(65536);
+      const n = fs.readSync(fd, b, 0, b.length, 0);
+      return b.subarray(0, n).toString('utf8').split('\n').some((l) => l.replace(/["']/g, '').trimEnd() === `${host}:`);
+    } finally { fs.closeSync(fd); }
+  } catch { return false; }
+}
+
+const env = { ...process.env };
+// (the image's gh is pinned: no update notices; no telemetry unless you set GH_TELEMETRY yourself)
+env.GH_NO_UPDATE_NOTIFIER ??= '1';
+env.GH_TELEMETRY ??= 'false';
+if (wants(args) && !OWN_TOKENS.some((k) => process.env[k])) {
+  const hosts = targets(args);
+  const command = describe(args);
+  let got = null;
+  for (const host of hosts) {
+    const token = await ask(host, command);
+    if (token) { got = { host, token }; break; }
+  }
+  if (got) {
+    if (got.host === 'github.com' || got.host.endsWith('.ghe.com')) env.GH_TOKEN = got.token;
+    else env.GH_ENTERPRISE_TOKEN = got.token;
+    if (got.host !== 'github.com' && !env.GH_HOST) env.GH_HOST = got.host;
+  } else if (hosts.length && !ownLogin(hosts[0])) {
+    process.stderr.write(`gh: no login for ${hosts[0]} from bedrock-now — to give gh yours, connect that host in the Code page's Git panel › Hosts and turn on Let Claude use this host (gh goes on without one)\n`);
+  }
+}
+
+const child = spawn(REAL, args, { stdio: 'inherit', env });
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']) process.on(sig, () => { try { child.kill(sig); } catch { /* gone */ } });
+child.on('error', (e) => { process.stderr.write(`gh: ${REAL}: ${e.code || e.message}\n`); process.exit(127); });
+child.on('exit', (code, sig) => {
+  if (!sig) process.exit(code ?? 1);
+  process.removeAllListeners(sig);
+  process.kill(process.pid, sig);
+});

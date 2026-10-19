@@ -35,7 +35,7 @@ RUN apk add --no-cache "git~2.54" "git-daemon~2.54" "nodejs~24" openssh-client o
 WORKDIR /opt/code
 COPY server/frames.mjs server/sshagent.mjs ./server/
 COPY test/helpers.mjs test/git-servers.mjs test/bn-coded-git.test.mjs test/bn-coded-remote.test.mjs ./test/
-COPY --from=terminal bin/bn-coded.mjs bin/bn-git-credential /opt/terminal/bin/
+COPY --from=terminal bin/bn-coded.mjs bin/bn-git-credential bin/bn-gh /opt/terminal/bin/
 ENV BN_TERMINAL_DIR=/opt/terminal BN_TEST_REQUIRE_CONFIG_HOOKS=1
 RUN git --version && node --test --test-reporter=spec test/bn-coded-git.test.mjs test/bn-coded-remote.test.mjs && touch /tmp/gitnew-tested
 
@@ -60,7 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep tmu
 COPY server/ ./server/
 COPY plain/ ./plain/
 COPY test/ ./test/
-COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs bin/bn-git-credential /opt/terminal/bin/
+COPY --from=terminal bin/bn-coded.mjs bin/bn-preview.mjs bin/bn-git-credential bin/bn-gh /opt/terminal/bin/
 COPY --from=terminal ssh_known_hosts /opt/terminal/ssh_known_hosts
 COPY --from=terminal egress/bn-egress.mjs /opt/terminal/egress/
 COPY --from=terminal claude-code/package.json /opt/terminal/claude-code/package.json

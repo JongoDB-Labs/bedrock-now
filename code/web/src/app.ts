@@ -736,7 +736,7 @@ function handle(m: ServerMsg): void {
       return;
     case 'git_event':
       setGit((g) => (g.events.some((e) => e.id === m.event.id) ? g : { ...g, events: [m.event, ...g.events].slice(0, 50) }));
-      if (m.event.who === 'claude' && m.event.ok) toast(`Claude's git used ${label(m.event.host, 60)}: ${label(m.event.target, 120)}`, 'info');
+      if (m.event.who === 'claude' && m.event.ok) toast(`Claude's ${m.event.action === 'gh' ? 'gh' : 'git'} used ${label(m.event.host, 60)}: ${label(m.event.target, 120)}`, 'info');
       announce();
       return;
     case 'permission': {
@@ -937,8 +937,8 @@ function announce(): void {
   }
 }
 
-/** What the portal's Activity shows of Git hosts: the uses of the last 7 days this page heard of (Claude's own git
- *  getting a credential, your pushes and pulls), at most 10 — text the portal shows as text. */
+/** What the portal's Activity shows of Git hosts: the uses of the last 7 days this page heard of (Claude's own git or
+ *  gh getting a credential, your pushes and pulls), at most 10 — text the portal shows as text. */
 function portalGitEvents(s: AppState): { id: string; at: number; who: string; action: string; host: string; target: string; ok: boolean }[] {
   const since = Date.now() - 7 * 86400_000;
   return s.git.events.filter((e) => e.at >= since && e.action !== 'host').slice(0, 10)

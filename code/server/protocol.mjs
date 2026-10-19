@@ -372,9 +372,10 @@
 //   {type: "context", session, usage: {totalTokens, maxTokens, percentage, model, categories: [{name, tokens, kind}]}}
 //   {type: "pending", count}                                  prompts waiting in all sessions (the badge)
 //   {type: "git_event", event: {id, at, who: you|claude, action, host, target, ok, text}}   a use of a Git host: an
-//                                                             operation of yours, or Claude's own git getting a token or
-//                                                             a login signed (Git hosts › "Let Claude use this host"); the
-//                                                             page shows it, and in Activity
+//                                                             operation of yours, or Claude's own git (or gh:
+//                                                             action gh) getting a token or a login signed (Git
+//                                                             hosts › "Let Claude use this host"); the page shows
+//                                                             it, and in Activity
 //   {type: "error", session?, req?, message}                  a request that failed
 // ev (every string capped, every id checked; anything else from the sandbox is dropped; `parent`: the Task tool use
 // an event belongs to, or null):

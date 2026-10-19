@@ -287,10 +287,22 @@ test('Test connection learns a host key only locally; the broker answers Claude 
   assert.deepEqual(await onAsk({ kind: 'cred', protocol: 'https', host: 'gitlab.com' }), {});
   assert.deepEqual(await onAsk({ kind: 'cred', protocol: 'https', host: 'git.example' }), {}, 'a host Claude may not use');
   assert.equal(events.filter((e) => e.who === 'claude' && e.action === 'credential').length, 1);
+  // gh (bn-gh): the same switch and limit, its own event with the command it says it runs; a GitHub host only
+  assert.deepEqual(await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com', path: 'pr create', purpose: 'gh' }), { username: 'x-access-token', password: TOKEN });
+  const ghEvent = events.find((e) => e.action === 'gh');
+  assert.equal(ghEvent.who, 'claude'); assert.equal(ghEvent.target, 'github.com: gh pr create'); assert.match(ghEvent.text, /^gh in the sandbox got the token$/);
+  await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com', path: 'pr\ncreate <b>', purpose: 'gh' });
+  assert.equal(events.filter((e) => e.action === 'gh').at(-1).target, 'github.com', 'a command that is not one: not said');
+  const lab = s.add({ kind: 'gitlab', auth: 'token', token: TOKEN });
+  gb.setClaude(lab.id, { on: true }, false);
+  assert.deepEqual(await onAsk({ kind: 'cred', protocol: 'https', host: 'gitlab.com', purpose: 'gh' }), {}, 'gh: not for a GitLab host');
+  assert.equal((await onAsk({ kind: 'cred', protocol: 'https', host: 'gitlab.com' })).password, TOKEN, 'git: yes');
+  gb.setClaude(lab.id, { on: false }, true);
   assert.ok(!JSON.stringify(events).includes(TOKEN));
   let given = 0;
-  for (let i = 0; i < 40; i++) if ((await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com' })).password) given++;
-  assert.equal(given, 29, 'at most 30 a minute');
+  for (let i = 0; i < 40; i++) if ((await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com', ...(i % 2 ? { purpose: 'gh' } : {}) })).password) given++;
+  assert.equal(given, 26, 'at most 30 a minute, git\'s and gh\'s together');
+  assert.equal(events.at(-1).ok, false);
   gb.setClaude(tok.id, { on: false }, true);   // (off works over remote access too)
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(gb.brokerOpen, false);

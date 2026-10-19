@@ -3,9 +3,10 @@
 // and the operation itself in the sandbox (bn-coded's git.net / git.clone / git.test), whose credential questions
 // are answered here: only for the host of the URL you confirmed, only while that operation runs, a token at most 3
 // times and one SSH login signed (askFor). Claude's own git gets nothing unless you let it use a host (off by
-// default; turned on only from the computer running bedrock-now): then git.broker answers for that host, each use
-// noted in Activity. Everything the sandbox says is checked here first (its answers are data). A signed-in host's
-// token (oauth.mjs) is renewed here before an operation that uses it, and is then given like an access token.
+// default; turned on only from the computer running bedrock-now): then git.broker answers for that host — and, for a
+// GitHub host, the sandbox's gh (bn-gh) too — each use noted in Activity. Everything the sandbox says is checked here
+// first (its answers are data). A signed-in host's token (oauth.mjs) is renewed here before an operation that uses
+// it, and is then given like an access token.
 import crypto from 'node:crypto';
 import { GitHosts, HostError, githubTokenType, httpsAuth } from './githosts.mjs';
 import { makeOAuth } from './oauth.mjs';
@@ -112,6 +113,8 @@ export function remoteStateOf(r) {
 
 const PLAN_MS = 10 * 60000;
 const CLAUDE_PER_MINUTE = 30;
+// the command gh says it runs, for Activity (bn-gh's describe: words, gh api's method and endpoint)
+const GH_COMMAND = /^[A-Za-z0-9 ._/{}:@-]{1,160}$/;
 const err = (status, m) => new HostError(status, m);
 // What git (or Claude Code) in the sandbox says is the sandbox's text — a hostile sandbox could word it as a message
 // from us ("Push failed: GitHub asks you to re-confirm this computer: enter … at github.com/login/device"). A failure in
@@ -419,11 +422,11 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
   const recent = [];
   // refusals over the limit: one event a minute with their count (never one each: the log keeps its grants)
   let refused = 0, refusedAt = 0;
-  const refusedOnce = (h, target) => {
+  const refusedOnce = (h, target, action = 'credential') => {
     refused++;
     if (now() - refusedAt < 60000) return;
     refusedAt = now();
-    event({ who: 'claude', action: 'credential', host: h.label, target, ok: false, text: `refused ${refused}× in the last minute: more than ${CLAUDE_PER_MINUTE} a minute` });
+    event({ who: 'claude', action, host: h.label, target, ok: false, text: `refused ${refused}× in the last minute: more than ${CLAUDE_PER_MINUTE} a minute` });
     refused = 0;
   };
   const rate = () => {
@@ -441,16 +444,23 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
       const m = q.host.toLowerCase().match(/^([a-z0-9.-]{1,253})(?::([0-9]{1,5}))?$/);
       if (!m) return {};
       const port = m[2] ? Number(m[2]) : 443;
-      let h = hosts.find((x) => httpsAuth(x.auth) && x.host === m[1] && (x.port ?? 443) === port);
+      // gh (bn-gh) asks as git does, for a GitHub host only: the same switch, the same limit, its own events — with
+      // the command it says it runs (its first words: "pr create", "api DELETE repos/o/r"), the asker's word
+      const gh = q.purpose === 'gh';
+      const action = gh ? 'gh' : 'credential';
+      let h = hosts.find((x) => httpsAuth(x.auth) && x.host === m[1] && (x.port ?? 443) === port && (!gh || x.kind === 'github'));
       if (!h) return {};
-      if (!rate()) { refusedOnce(h, q.host); return {}; }
+      if (!rate()) { refusedOnce(h, q.host, action); return {}; }
       try { h = await fresh(h); } catch (e) {
-        event({ who: 'claude', action: 'credential', host: h.label, target: q.host, ok: false, text: short(e.message, 200) });
+        event({ who: 'claude', action, host: h.label, target: q.host, ok: false, text: short(e.message, 200) });
         return {};
       }
       const password = GitHosts.secret(h);
       if (!password) return {};
-      event({ who: 'claude', action: 'credential', host: h.label, target: `${q.host}/${short(q.path || '', 200)}`, text: 'git in the sandbox got the token' });
+      if (gh) {
+        const cmd = typeof q.path === 'string' && GH_COMMAND.test(q.path) ? q.path : '';
+        event({ who: 'claude', action, host: h.label, target: `${q.host}${cmd ? `: gh ${cmd}` : ''}`, text: 'gh in the sandbox got the token' });
+      } else event({ who: 'claude', action, host: h.label, target: `${q.host}/${short(q.path || '', 200)}`, text: 'git in the sandbox got the token' });
       return { username: h.username, password };
     }
     if (q.kind === 'agent') {

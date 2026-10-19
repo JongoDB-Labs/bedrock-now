@@ -1,7 +1,7 @@
 # The optional browser terminal (./stack terminal; compose.terminal.yaml): Claude Code in a sandbox container,
 # shown in the portal by ttyd, inside a tmux session that outlives the browser. Built on your computer, never pulled
 # from a registry: Debian's packages, Claude Code from npm at the version and SHA-512 checksums in
-# claude-code/package-lock.json, and ttyd's release binary checked against its SHA-256.
+# claude-code/package-lock.json, and ttyd's and gh's release binaries checked against their SHA-256.
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
 
 # ./stack passes the ISO week (lib/terminal.sh): a new value invalidates Docker's cache from here on, so Debian's
@@ -27,6 +27,25 @@ RUN set -eu; \
     curl -fsSL -o /tmp/ttyd "https://github.com/tsl0922/ttyd/releases/download/$TTYD_VERSION/ttyd.$a"; \
     echo "$sum  /tmp/ttyd" | sha256sum -c -; \
     install -m 755 /tmp/ttyd /usr/local/bin/ttyd; rm /tmp/ttyd; ttyd --version
+
+# gh, the GitHub CLI: its release tarball checked against its SHA-256. It is never logged in here: the gh on PATH is
+# bin/bn-gh, which gives this one (/usr/local/lib/gh/gh) your login for one command at a time, and only for a GitHub
+# host you let Claude use (Git panel › Hosts) — through the same broker as git's, each use in Activity.
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256_AMD64=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+ARG GH_SHA256_ARM64=7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) a=amd64; sum="$GH_SHA256_AMD64" ;; \
+      arm64) a=arm64; sum="$GH_SHA256_ARM64" ;; \
+      *) echo "gh: no pinned checksum for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    d="gh_${GH_VERSION}_linux_$a"; \
+    curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v$GH_VERSION/$d.tar.gz"; \
+    echo "$sum  /tmp/gh.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/gh.tgz -C /tmp "$d/bin/gh"; \
+    install -D -m 755 "/tmp/$d/bin/gh" /usr/local/lib/gh/gh; rm -rf /tmp/gh.tgz "/tmp/$d"; \
+    /usr/local/lib/gh/gh --version | grep -qF "gh version $GH_VERSION "
 
 # ttyd's own page, served with --index: the same page plus a viewport for phones and a bedrock-now icon (ttyd-page.py).
 # Its inline script must hash to this: the main Caddy's CSP for the terminal host allows that script alone
@@ -79,6 +98,8 @@ RUN chmod 755 /etc/claude-code && chmod 644 /etc/claude-code/managed-settings.js
  && chmod 644 /etc/tmux.conf /etc/bedrock-now.bashrc /etc/ssh/ssh_config.d/bedrock-now.conf /etc/gitconfig /etc/ssh/ssh_known_hosts \
  && chmod 755 /usr/local/bin/claude-bedrock /usr/local/bin/bn-terminal \
       /usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs /usr/local/bin/bn-preview.mjs /usr/local/bin/bn-ssh-proxy /usr/local/bin/bn-git-credential \
+      /usr/local/bin/bn-gh \
+ && ln -s bn-gh /usr/local/bin/gh && gh --version | grep -qF "gh version $GH_VERSION " \
  && make --version >/dev/null && test -x /usr/bin/nc.openbsd \
  && printf '\n# bedrock-now terminal\n[ -r /etc/bedrock-now.bashrc ] && . /etc/bedrock-now.bashrc\n' >> /etc/bash.bashrc
 
