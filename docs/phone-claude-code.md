@@ -102,7 +102,7 @@ battery it only notes that servers don't sleep. `--background` is macOS-only; on
 | Runs | on the machine, as you | in a sandbox container |
 | Sees | everything your user can | only its workspace folder (`/workspace`) |
 | Needs | Tailscale (or the same Wi-Fi), SSH on, an SSH app | the portal (and, away from home, remote access with `REMOTE_TERMINAL=true`) |
-| Tools | yours (brew, your projects, Docker) | git, node/npm, python/pip, ripgrep, jq, nano inside the container |
+| Tools | yours (brew, your projects, Docker) | git, gh, node/npm, python/pip, ripgrep, jq, nano inside the container |
 | Signing in | your SSH key | the portal password again (12 h per browser; Sign out locks it) |
 
 ## Why not Claude Code's Remote Control?

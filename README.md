@@ -494,8 +494,8 @@ Shift (Option on a Mac) to select text; an external keyboard helps a lot on a ph
 It is a sandbox, not a shell on your computer:
 
 - Claude Code and the shell run in their own container, built on your machine from `terminal/` (Claude Code
-  pinned by version and checksum, ttyd for the browser, git, node/npm, `python3` with pip and venv, ripgrep, jq,
-  curl, ssh, GNU `make`; no C compiler, so packages that build native code do not install): as your user id,
+  pinned by version and checksum, ttyd for the browser, git, gh, node/npm, `python3` with pip and venv, ripgrep,
+  jq, curl, ssh, GNU `make`; no C compiler, so packages that build native code do not install): as your user id,
   without root, capabilities or the Docker socket, on a read-only system. Of your files it sees **only the
   workspace folder** (at `/workspace`); `enable` — and every later `./stack up` — refuses your home folder
   itself and the folders above it, hidden folders like `~/.ssh`, `~/Library`, system folders, `/Volumes`, `/mnt`
@@ -1052,6 +1052,18 @@ credentials ever being kept in the sandbox.
   from the computer running bedrock-now) changes that: git and ssh in the sandbox then get that host's token or key
   logins too — so Claude, or text it reads and follows, could push to any repository the token or key reaches — and
   each use is listed in the host's *Recent use* and in Activity. Prefer a fine-grained token or a deploy key for that.
+- **gh in the sandbox.** The sandbox has the GitHub CLI (`gh`), never logged in there. While *Let Claude use this
+  host* is on for a GitHub host, each gh command gets that host's token the way git does — in that command's
+  environment only, each use in Activity with its command (*Claude's gh used the Git host GitHub*: `gh pr create`).
+  gh does far more than push: whatever the token may do — issues, pull requests, repository settings, deleting
+  repositories when it has `delete_repo` — so for a GitHub host that is what the switch hands over too (its warning
+  says so). Otherwise gh runs without a login (public reads work) and says in one line how to allow it. For a GitHub
+  Enterprise host, run gh inside a clone from it, or with `GH_HOST=<host>`; a `gh auth login` of your own in the
+  terminal is used as gh always uses it.
+- **What Claude is told.** Each Code page session's instructions say how git gets a login here and list the
+  connected Git hosts with whether Claude may use each — host names, kinds and accounts only, never a token — so
+  Claude neither hunts for credentials in `~/.gitconfig` nor says git is not set up. After you change Git hosts, a
+  session's next prompt restarts its Claude Code (the session says so) to take the new list.
 
 ##### Your own app for sign-in
 

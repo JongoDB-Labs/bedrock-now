@@ -1808,6 +1808,28 @@ operation you started, sent only where you saw it go.
   times a minute, and notes each use in Activity (and the host's *Recent use*) — refusals once a minute with their
   count, and Claude's entries never push yours out of the log (each keeps its last 200); turned off (from anywhere),
   the broker closes and both sockets go.
+- [x] **gh in the sandbox: the same switch, a wider reach.** The image has gh (an exact release, its tarball's
+  SHA-256 checked for both architectures) at `/usr/local/lib/gh/gh`; the `gh` on PATH is `bn-gh`, which asks
+  `cred.sock` git's question, marked `purpose: "gh"` with the command's first words (`pr create`, `api DELETE
+  repos/o/r`), for the host the command goes to (`GH_HOST`, `--hostname`, `-R`, `GH_REPO`, the repository's
+  remotes, else github.com). The code container answers only for a GitHub host (kind `github`) you let Claude use,
+  within the same 30 a minute, and notes it as gh's (*Claude's gh used the Git host …*, with that command). The token
+  goes into that one gh process's environment (`GH_TOKEN`; `GH_ENTERPRISE_TOKEN` and `GH_HOST` for GitHub Enterprise
+  Server) — not the wrapper's own, not a file, not `~/.config/gh`. Help, version, completion, config, alias and
+  `auth` (but `auth status`) never ask, so `gh auth token` cannot print it. A token is not withheld from gh: the
+  broker already answers any program in the sandbox that asks as git does (`purpose` is the asker's word, kept for
+  Activity), so refusing gh would stop nothing a command Claude was talked into could do — it would only make the
+  use less visible. But gh with the token does far more than git: whatever the token may do on that host — issues,
+  pull requests, repository settings, deleting repositories when it has `delete_repo`. For a GitHub host the
+  switch's warning says so; the boundaries stay the switch (per host) and the token's own scopes: prefer a
+  fine-grained token, or a GitHub App installed on only the repositories Claude should touch.
+- [x] **What a Code page session is told.** Every session's system prompt ends with a note in fixed words
+  (`gitnote.mjs`): how git gets a login here (the helper and the agent, each use in Activity; never ask for a token
+  or write one anywhere), and the connected Git hosts — each by its host name (the store's rule: lower-case letters,
+  digits, dots and dashes), kind, port and the account a sign-in or an imported login names (its own rule), and
+  whether Claude may use it. Never a host's label (free text), never a credential; a name that fails the rule is
+  counted, not named. The note is what the hosts were when the process started: a change (a host added or removed,
+  the switch, a sign-in that ended) restarts the session's process at its next prompt that starts a turn.
 - [x] **Activity.** Each operation and each use by Claude's git is an entry of Git hosts' file (the last 200: who, what,
   the host's name and the URL — never a credential). The Code page shows them; framed by the portal it reports the
   last 10 of the past week to Activity (`bn-code-status`, checked by code.js: ids, times and a few words, shown as
@@ -1821,7 +1843,8 @@ operation you started, sent only where you saw it go.
   token that may have been seen. bn-coded itself runs in the sandbox: a sandbox that replaced it could ask for the
   operation's credential in its place — which the code container gives only during an operation you started, only for
   its host, a few times. With *Let Claude use this host* on, the token or key logins are Claude's to use for that host
-  as long as it is on.
+  as long as it is on — and for a GitHub host, through gh, everything else the token may do there (a gh extension or
+  shell alias gh runs gets the same environment).
 - **Proof** (`code/test/bn-coded-remote.test.mjs`, with Debian's git 2.47 and again in the `gitnew` stage with git
   2.54; real servers on 127.0.0.1: smart HTTPS — `git http-backend` behind Node's https with a CA of the test's own —
   and the system's sshd with a key whose private half only the test's stand-in code container holds): push, publish,
@@ -1840,7 +1863,11 @@ operation you started, sent only where you saw it go.
   nothing), Claude's broker (only allowed hosts, 30 a minute), and the routes over remote access.
   `code/test/import-host.test.mjs`: an imported login kept as an access token (never printed), refusals, the lock with
   another process writing at the same time; `tests/test_githost.sh`: `./stack git-host import` with fake gh, glab and
-  docker programs.
+  docker programs. `code/test/bn-gh.test.mjs`: gh's wrapper with a stand-in broker and gh — the token only in gh's
+  environment (not the wrapper's, on Linux read from `/proc`; nothing in `~/.config/gh`), none and one line when not
+  answered, the host as gh takes it, help, version and `auth token` never asking, a token of yours left alone; through
+  the real bn-coded broker in `bn-coded-remote.test.mjs`. `code/test/gitnote.test.mjs`: the note for no, one and two
+  hosts, allowed or not, odd names and labels never in it, and the restart after a change.
 
 ### Signing in to a Git host (OAuth)
 

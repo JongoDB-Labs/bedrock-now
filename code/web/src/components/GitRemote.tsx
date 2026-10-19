@@ -532,6 +532,8 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
   const [againErr, setAgainErr] = useState('');
   const links = hostLinks(h, remote);
   const o = h.oauth;
+  // (the sandbox's gh gets a GitHub host's token too while Claude may use it: bn-gh)
+  const ghToo = h.kind === 'github' && h.auth !== 'ssh';
   const signInAgain = async () => {
     setAgainErr('');
     try {
@@ -708,7 +710,7 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
           <i />
         </button>
         <span>
-          Let Claude use this host {h.claude ? <strong>(on{h.claudeSince ? `, since ${ago(h.claudeSince)}` : ''})</strong> : '(off)'} — its own git in the sandbox gets this {h.auth === 'token' ? 'token' : h.auth === 'oauth' ? 'sign-in\'s token' : 'key\'s logins'} too, each use in Activity.
+          Let Claude use this host {h.claude ? <strong>(on{h.claudeSince ? `, since ${ago(h.claudeSince)}` : ''})</strong> : '(off)'} — its own git{ghToo ? ' and gh' : ''} in the sandbox {ghToo ? 'get' : 'gets'} this {h.auth === 'token' ? 'token' : h.auth === 'oauth' ? 'sign-in\'s token' : 'key\'s logins'} too, each use in Activity.
           {!local && !h.claude && <span class="muted"> Turned on only from the computer running bedrock-now.</span>}
         </span>
       </div>
@@ -718,6 +720,13 @@ function HostCard({ h, local, remote }: { h: GitHostView; local: boolean; remote
             Claude's own git commands — and anything that runs in the sandbox, or text Claude reads and follows — could then push to, or read, <strong>any repository this
             {h.auth === 'token' ? ' token' : h.auth === 'oauth' ? ' sign-in' : ' key'} reaches</strong> on {label(h.host, 120)}, while this is on.
           </p>
+          {ghToo && (
+            <p class="warn-text" data-testid="git-claude-gh">
+              gh, the GitHub CLI in the sandbox, gets this {h.auth === 'oauth' ? 'sign-in\'s token' : 'token'} too, one command at a time — and gh does far more than git:
+              whatever the token may do on {label(h.host, 120)}, such as opening, closing and merging issues and pull requests, changing a repository's settings, or
+              (with delete_repo) deleting repositories. Each use is in Activity, with its command.
+            </p>
+          )}
           {h.imported?.source === 'gh' && h.imported.tokenType !== 'fine-grained' && (
             <p class="warn-text" data-testid="git-claude-imported">
               This is {h.imported.tokenType === 'oauth' ? "gh's own token" : 'a token gh was given'}

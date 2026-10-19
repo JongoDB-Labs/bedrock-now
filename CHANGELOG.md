@@ -32,6 +32,17 @@ All notable changes to bedrock-now are documented here. The format follows
   — a pull adding a skill too) a session there runs with your own settings only and only the stack's MCP server, and
   says so. Sessions in a project run Claude Code with `--project-config-root` (its folder), so no `.claude/` below it
   is read. What the page cannot show in full is never trusted. The Workspace's own apply as before.
+- **Claude knows how git gets a login here.** Every Code page session's instructions now say that git's logins come
+  through the sandbox's credential helper and SSH agent (not `~/.gitconfig`, `~/.ssh` or the environment) and list
+  the connected Git hosts — host names, kinds and accounts only, never a token — with whether Claude may use each,
+  or that none is connected. Asked whether it has git access, Claude no longer says nothing is set up while its git
+  works. After you change Git hosts, a session's next prompt restarts its Claude Code to take the new list.
+- **gh in the sandbox.** The terminal image has the GitHub CLI (gh 2.102.0, checksum-checked), never logged in.
+  While *Let Claude use this host* is on for a GitHub host, each gh command gets that host's token through the same
+  broker as git — in that command's environment only, within the same 30 a minute, each use in Activity as gh's,
+  with its command. gh can do far more than git with it (issues, pull requests, repository settings, deleting
+  repositories when the token may), and the switch's warning says so. Otherwise gh runs without a login and says in
+  one line how to allow it.
 
 ### Changed
 

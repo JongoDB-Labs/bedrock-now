@@ -3522,6 +3522,7 @@ def git_remotes(browser):
     # Claude's use of a host: a warning first; Cancel leaves it off
     gl.get_by_test_id("git-host-claude").click()
     expect(page.get_by_test_id("git-claude-dialog")).to_contain_text("any repository this key reaches")
+    expect(page.get_by_test_id("git-claude-gh")).to_have_count(0)
     p.shot("git-hosts-claude.png")
     page.get_by_test_id("git-claude-dialog").get_by_role("button", name="Cancel").click()
     expect(gl.get_by_test_id("git-host-claude")).to_have_attribute("aria-checked", "false")
@@ -3713,6 +3714,9 @@ def git_import(browser):
     row.get_by_test_id("git-host-claude").click()
     expect(page.get_by_test_id("git-claude-imported")).to_contain_text("gh's own token (gist, read:org, repo, workflow): it reaches every repository of your account")
     expect(page.get_by_test_id("git-claude-imported")).to_contain_text("workflow files too")
+    # … and that gh gets it too, which can do far more than git
+    expect(page.get_by_test_id("git-claude-gh")).to_contain_text("gh, the GitHub CLI in the sandbox, gets this token too")
+    expect(page.get_by_test_id("git-claude-gh")).to_contain_text("(with delete_repo) deleting repositories")
     page.get_by_test_id("git-claude-dialog").get_by_role("button", name="Cancel").click()
     dlg.get_by_role("button", name="Close").click()
     # (imported from outside the page: the panel's remote state again names its host)
