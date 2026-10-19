@@ -631,8 +631,15 @@ test('Claude\'s own git through the broker: only while the code container keeps 
     // the sandbox's gh (bn-gh) asks the same socket, saying so; its token only in that gh's environment
     const fakeGh = path.join(ROOT, 'fake-gh');
     fs.writeFileSync(fakeGh, '#!/bin/sh\nprintf "%s" "$GH_TOKEN"\n', { mode: 0o755 });
-    const g = spawnSync(process.execPath, [path.join(TERMINAL_DIR, 'bin/bn-gh'), 'pr', 'list'], { cwd: ROOT, encoding: 'utf8', timeout: 30000,
-      env: { PATH: PLAIN.PATH, HOME, BN_GIT_TMP: GTMP, BN_GH_REAL: fakeGh } });
+    // (not spawnSync: bn-coded and this stand-in code container answer from this very process)
+    const g = await new Promise((res) => {
+      const p = spawn(process.execPath, [path.join(TERMINAL_DIR, 'bin/bn-gh'), 'pr', 'list'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { PATH: PLAIN.PATH, HOME, BN_GIT_TMP: GTMP, BN_GH_REAL: fakeGh } });
+      let stdout = '', stderr = '';
+      const t = setTimeout(() => p.kill('SIGKILL'), 30000);
+      p.stdout.on('data', (d) => (stdout += d)); p.stderr.on('data', (d) => (stderr += d));
+      p.on('close', () => { clearTimeout(t); res({ stdout, stderr }); });
+    });
     assert.equal(g.stdout, TOKEN, g.stderr);
     assert.deepEqual([asked.at(-1).purpose, asked.at(-1).host, asked.at(-1).path], ['gh', 'github.com', 'pr list']);
     allow = false;
