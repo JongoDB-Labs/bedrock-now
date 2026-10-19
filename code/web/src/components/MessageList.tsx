@@ -272,7 +272,11 @@ function Welcome() {
           <Icon name="folder" size={13} /> New project
         </button>
       </div>
-      <p class="muted small">Project settings in {project.path}/.claude (including hooks) apply here as they do in the terminal.</p>
+      <p class="muted small">
+        {project.workspace
+          ? 'Project settings in /workspace/.claude (including hooks) apply here as they do in the terminal.'
+          : `This project's own Claude Code configuration (${project.path}/.claude, .mcp.json) applies only once you trust it: ⋯ › Claude Code settings…`}
+      </p>
     </div>
   );
 }
