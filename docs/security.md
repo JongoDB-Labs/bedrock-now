@@ -889,7 +889,8 @@ spawn server, Claude Code or any file at will.
   `project.check`, `git.init` and `terminal.window` (below, "Projects"). Claude Code's
   arguments must start with the SDK's fixed stream-json prefix and every other one must be on an allowlist in
   `--name=value` form, each valued one at most once (`--model`, `--permission-mode=default|acceptEdits|plan|dontAsk`,
-  `--resume=<uuid>` …; `--project-config-root` exactly once, the process's own folder) or one of a few bare flags (among them `--allow-dangerously-skip-permissions`: see *Bypass permissions*; and two that only take
+  `--resume=<uuid>` …; `--project-config-root` exactly once, the process's own folder) or one of a few bare flags (among
+  them `--allow-dangerously-skip-permissions`: see *Bypass permissions*; and two that only take
   away, for the Git panel's *Write message* helper: `--tools=` with an empty value — no built-in tool — and
   `--no-session-persistence`; `--tools` naming any tool is refused); refused, among
   others: `--settings`, `--mcp-config` (bn-coded adds the shared MCP server's itself), `--plugin-dir`, `--add-dir`,
