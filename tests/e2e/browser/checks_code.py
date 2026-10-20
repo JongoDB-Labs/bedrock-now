@@ -3217,7 +3217,8 @@ def host_folders_a(ctx):
     note.click()
     see(page.get_by_test_id("file-read-only")).to_be_visible(timeout=30000)
     r = c.api("PUT", f"/api/fs/file?path=/projects/{HOST_NOTES}/written.txt", {"text": "x"})
-    expect(r["status"] >= 400 and re.search(r"read-only|erofs", r["text"], re.I), f"a write in the read-only folder: {r['status']} {r['text'][:200]}")
+    refused = r["status"]
+    expect(refused >= 400 and re.search(r"read-only|erofs", r["text"], re.I), f"a write in the read-only folder: {refused} {r['text'][:200]}")
     shot(page, "h1-code-host-folders-read-only")
     # a Haiku session in the read-write folder: it runs there, at its path on this computer
     page.get_by_test_id("side-sessions").click()
@@ -3251,7 +3252,7 @@ def host_folders_a(ctx):
     see(sp.locator("#set-projects-pick")).to_be_disabled()
     shot(sp, "h3-settings-project-folders")
     srec.save()
-    return (f"both folders in the Projects tab and Settings; the read-only one refused a write ({r['status']}); a Haiku session ran at {root} "
+    return (f"both folders in the Projects tab and Settings; the read-only one refused a write ({refused}); a Haiku session ran at {root} "
             "(pwd); a file written there through the page")
 
 
@@ -3282,7 +3283,9 @@ def host_folders_b(ctx):
     r = c.api("POST", "/api/sessions", {"mode": "default", "resume": sid})
     expect(r["status"] >= 400, f"a resume in a folder no longer added: {r['status']} {r['text'][:200]}")
     shot(page, "h4-code-host-folders-gone")
-    csp_clean(page, rec)
+    # (expected: the resume the API sent for a session of a folder no longer added, refused)
+    csp_clean(page, rec, allow=[r"^400 POST " + re.escape(CODE) + r"/api/sessions$",
+                                r"console.error Failed to load resource: the server responded with a status of 400"])
     return "the removed folder's session listed under Folders no longer added, its transcript shown read only; a resume refused"
 
 
