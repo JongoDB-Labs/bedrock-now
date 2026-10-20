@@ -154,7 +154,8 @@ test('a project\'s sessions copied: listed, picked, checked (secrets redacted, t
   const key = fake.awsKeyId(), gh = fake.github();
   const ea = session({ id: a, cwd: APP, prompts: [`deploy with ${key}`, 'next'], thinking: true, title: 'Deploy' });
   const eb = session({ id: b, cwd: APP, prompts: [`token ${gh}`] });
-  const dir = hostStore(APP, [[a, ea, { 'subagents/agent-1.jsonl': 'sub\n' }], [b, eb]]);
+  const subLines = jsonl(session({ cwd: APP, sidechain: true, prompts: ['a subagent'] }));
+  const dir = hostStore(APP, [[a, ea, { 'subagents/agent-1.jsonl': subLines }], [b, eb]]);
   const scan = nonce();
   assert.deepEqual(imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP }), { rows: 2 });
   const ix = imports.index('p_00000001');
@@ -180,7 +181,7 @@ test('a project\'s sessions copied: listed, picked, checked (secrets redacted, t
   const ca = fs.readFileSync(path.join(storeOf(APP), `${a}.jsonl`), 'utf8');
   assert.ok(!ca.includes(key) && ca.includes('[REDACTED:aws-key-id]'));
   assert.ok(!ca.includes('"thinking"'));
-  assert.equal(fs.readFileSync(path.join(storeOf(APP), a, 'subagents', 'agent-1.jsonl'), 'utf8'), 'sub\n');
+  assert.equal(fs.readFileSync(path.join(storeOf(APP), a, 'subagents', 'agent-1.jsonl'), 'utf8'), subLines, 'a subagent\'s transcript, as it was (nothing to change in it)');
   assert.ok(fs.readFileSync(path.join(storeOf(APP), `${b}.jsonl`), 'utf8').includes(gh));
   assert.deepEqual(imports.staged('p_00000001'), [], 'the stage is dropped');
   const rec = imports.imported()[a];
@@ -215,6 +216,40 @@ test('a project\'s sessions copied: listed, picked, checked (secrets redacted, t
   const forked = fs.readFileSync(path.join(storeOf(APP), `${r3[0].as}.jsonl`), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.ok(forked.every((e) => !e.sessionId || e.sessionId === r3[0].as));
   assert.equal(imports.imported()[r3[0].as].forkedFrom, a);
+});
+
+test('the files beside a transcript go through the same scan: a secret only in a subagent\'s transcript or a tool\'s output is listed, redacted, kept only when kept; one that cannot be read stays behind', async () => {
+  const id = uuid();
+  const sub = fake.github(), out = fake.awsKeyId(), json = fake.gitlab();
+  const subEntries = session({ cwd: APP, sidechain: true, prompts: [`use ${sub}`], thinking: true });
+  const dir = hostStore(APP, [[id, session({ id, cwd: APP }), {
+    'subagents/agent-1.jsonl': jsonl(subEntries),
+    'subagents/agent-1.meta.json': JSON.stringify({ note: `token ${json}` }),
+    'tool-results/toolu_1.txt': `line 1\nAWS_ACCESS_KEY_ID=${out}\n${APP}/x\n`,
+    'tool-results/toolu_2.bin': Buffer.from([0xff, 0xfe, 0x00, 0x81]),
+    'subagents/agent-2.meta.json': '{not json',
+  }]]);
+  const scan = nonce();
+  imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
+  await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
+  const pv = await preview(imports, 'p_00000001', id);
+  assert.deepEqual(pv.findings.map((x) => [x.kind, x.part]).sort(), [['aws-key-id', 'tool-results/toolu_1.txt'], ['github-token', 'subagents/agent-1.jsonl'],
+    ['gitlab-token', 'subagents/agent-1.meta.json']].sort());
+  assert.ok(pv.findings.every((x) => /^p[0-9]+:[0-9]+\.[0-9]+$/.test(x.id)), 'ids of their own');
+  assert.deepEqual(pv.left.map((l) => [l.part, l.why]).sort(), [['subagents/agent-2.meta.json', 'not valid JSON'], ['tool-results/toolu_2.bin', 'not text (not UTF-8)']]);
+  assert.ok(!JSON.stringify(pv).includes(sub) && !JSON.stringify(pv).includes(out) && !JSON.stringify(pv).includes(json));
+  // copied: redacted (the subagent's thinking out too), the unreadable ones not copied; one finding kept on request
+  const keep = pv.findings.find((x) => x.kind === 'gitlab-token').id;
+  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [keep] }]);
+  assert.equal(r[0].ok, true, JSON.stringify(r));
+  assert.deepEqual([r[0].redacted, r[0].kept, r[0].left], [2, 1, 2]);
+  const base = path.join(storeOf(APP), id);
+  const s1 = fs.readFileSync(path.join(base, 'subagents', 'agent-1.jsonl'), 'utf8');
+  assert.ok(!s1.includes(sub) && s1.includes('[REDACTED:github-token]') && !s1.includes('"thinking"'));
+  const t1 = fs.readFileSync(path.join(base, 'tool-results', 'toolu_1.txt'), 'utf8');
+  assert.equal(t1, `line 1\nAWS_ACCESS_KEY_ID=[REDACTED:aws-key-id]\n${APP}/x\n`);
+  assert.ok(fs.readFileSync(path.join(base, 'subagents', 'agent-1.meta.json'), 'utf8').includes(json), 'kept when asked');
+  assert.ok(!fs.existsSync(path.join(base, 'tool-results', 'toolu_2.bin')) && !fs.existsSync(path.join(base, 'subagents', 'agent-2.meta.json')));
 });
 
 test('a folder whose path is hidden: the copy\'s working folder and paths rewritten to where the sandbox sees it', async () => {

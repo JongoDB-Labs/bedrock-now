@@ -4,7 +4,7 @@
 // rewritten only where it stands as a path of its own, lines that are no JSON dropped). Fake secrets are made at run time.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scan, scanEntries, redactEntries, entropy, masked, KINDS } from '../server/secrets.mjs';
+import { scan, scanEntries, redactEntries, entropy, masked, KINDS, MAX_TEXT } from '../server/secrets.mjs';
 import { parseLines, toJsonl, stripThinking, thinkingCount, rewriteString, rewritePaths, outsidePaths } from '../server/transcript.mjs';
 import { session, fake, rand, uuid } from './transcripts.mjs';
 
@@ -69,15 +69,14 @@ test('redaction: every finding replaced by [REDACTED:<kind>], kept ones left as 
   assert.ok(JSON.stringify(e).includes(k1));
 });
 
-test('placeholders, variables, low-entropy values and the data of images or signatures are not findings', () => {
+test('placeholders, variables, low-entropy values and a thinking block\'s signature are not findings', () => {
   for (const s of ['password=${DB_PASSWORD}', 'token: <your-token-here>', 'api_key = "xxxxxxxxxxxxxxxx"', 'password: process.env.PASS', 'secret = [REDACTED:assignment]',
     'Authorization: Bearer [REDACTED:authorization]', 'export PATH_TO_THINGS=aaaaaaaaaaaaaaaaaaaaaaaa', 'the password field is required', 'https://user@example.com/x',
     'TOKEN=changeme1234', 'password=aaaaaaaabbbb']) {
     assert.deepEqual(scan(s), [], s);
   }
-  const img = { type: 'user', message: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: `AAAA${fake.awsKeyId()}AAAA` } }] } };
-  const sig = { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'x', signature: fake.github() }] } };
-  assert.deepEqual(scanEntries([img, sig]), []);
+  const sig = { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'x', signature: fake.github() }, { type: 'redacted_thinking', data: 'x', signature: fake.github() }] } };
+  assert.deepEqual(scanEntries([sig]), []);
   assert.ok(entropy('aaaa') === 0 && entropy('abcd') === 2);
   assert.equal(masked('abcdefghijklmnop', 'github-token'), 'abcd… (16 characters)');
   assert.equal(masked('abc', 'url-password'), '… (3 characters)');
@@ -152,4 +151,61 @@ test('paths outside the project the session\'s tool calls named: counted and lis
     { type: 'tool_use', name: 'Read', input: { file_path: 'relative' } },
   ] } }];
   assert.deepEqual(outsidePaths(e, ['/Users/test/src/app']), { count: 2, sample: ['/Users/test/.zshrc', '/etc'] });
+});
+
+test('nothing hides a secret: a "signature" anywhere but on a thinking block, an image\'s data, an object\'s key are scanned too', () => {
+  const gh = fake.github(), key = fake.awsKeyId(), tok = fake.gitlab();
+  const e = [
+    { type: 'user', message: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: `${key} ` } }] }, signature: gh },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'x', signature: tok }] } },
+    { type: 'user', toolUseResult: { [gh]: 'a value', [`${'[REDACTED:'}github-token]`]: 'already here', ok: { [`k ${key}`]: 1 } } },
+    JSON.parse('{"type":"user","__proto__":{"x":"${1}"}}'),
+  ];
+  const f = scanEntries(e);
+  assert.deepEqual(f.map((x) => [x.kind, x.path]), [
+    ['aws-key-id', 'message.content[0].source.data'], ['github-token', 'signature'], ['gitlab-token', 'message.content[0].signature'],
+    ['github-token', 'toolUseResult.' + gh.slice(0, 40) + ' (a key)'], ['aws-key-id', 'toolUseResult.ok.k ' + key.slice(0, 38) + ' (a key)'],
+  ]);
+  const r = redactEntries(e);
+  const text = JSON.stringify(r.entries);
+  for (const s of [gh, key, tok]) assert.ok(!text.includes(s), s.slice(0, 6));
+  // a key redacted into one the object has already: kept apart (#2), the object still one object with both values
+  assert.deepEqual(Object.entries(r.entries[2].toolUseResult).slice(0, 2), [['[REDACTED:github-token]', 'a value'], ['[REDACTED:github-token]#2', 'already here']]);
+  assert.deepEqual(Object.keys(r.entries[2].toolUseResult.ok), ['k [REDACTED:aws-key-id]']);
+  // a "__proto__" key stays an own key, never the object's prototype
+  assert.ok(Object.prototype.hasOwnProperty.call(r.entries[3], '__proto__'));
+  assert.equal(Object.getPrototypeOf(r.entries[3]), Object.prototype);
+  assert.deepEqual(scanEntries(r.entries), []);
+});
+
+test('the scan takes time in proportion to the text, and fails closed: too long, too many, a key\'s start with no end', () => {
+  // 50,000 beginnings of a private key and no end: one finding, to the end of the text — fast
+  const begins = `-----BEGIN ${['RSA', 'PRIVATE KEY'].join(' ')}-----x`.repeat(50000);
+  let t0 = Date.now();
+  const fb = scan(begins);
+  assert.ok(Date.now() - t0 < 1000, `${Date.now() - t0} ms`);
+  assert.deepEqual(fb.map((x) => [x.kind, x.start, x.end]), [['private-key', 0, begins.length]]);
+  // an end with no beginning (the key's start in another piece of a large tool output): from the start to it
+  const end = `MIIEow${rand(60)}\n-----END ${['RSA', 'PRIVATE KEY'].join(' ')}-----\nafter`;
+  assert.deepEqual(scan(end).map((x) => [x.kind, x.start]), [['private-key', 0]]);
+  assert.ok(!redactEntries([end]).entries[0].includes('MIIEow'));
+  // 100,000 small findings: bounded — the whole text left out, never kept
+  const many = Array.from({ length: 100000 }, () => fake.awsKeyId()).join(' ');
+  t0 = Date.now();
+  const fm = scanEntries([{ type: 'user', message: { content: many } }]);
+  assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
+  assert.deepEqual(fm.map((x) => [x.kind, x.keepable]), [['too-many', false]]);
+  const rm = redactEntries([{ type: 'user', message: { content: many } }], new Set([fm[0].id]));
+  assert.deepEqual([rm.entries[0].message.content, rm.kept], ['[REDACTED:too-many]', 0]);
+  // a text longer than 8 MiB: left out whole, not scanned piecemeal
+  const long = `${'x'.repeat(MAX_TEXT)} ${fake.github()}`;
+  assert.deepEqual(scan(long).map((x) => x.kind), ['too-long']);
+  assert.equal(redactEntries([long]).entries[0], '[REDACTED:too-long]');
+  // adversarial runs for every pattern: each well under a second for 4 MiB
+  for (const s of ['eyJ-', 'eyJaaaaaaaaa.', 'a.', 'a://a:', `password${' '.repeat(50)}`, 'Bearer ', 'sk-ant-', 'ghp_', 'github_pat_', 'ABC=xxxxxxxxxxxxxxxxxxxxxxxx\n', '-', 'Authorization: x ']) {
+    const text = s.repeat(Math.ceil((4 << 20) / s.length));
+    t0 = Date.now();
+    scan(text);
+    assert.ok(Date.now() - t0 < 1500, `${JSON.stringify(s)}: ${Date.now() - t0} ms`);
+  }
 });

@@ -17,13 +17,14 @@
 //     imported.json             what was copied: session id -> where from, its SHA-256 then and as written, redactions
 //   /run/bn-imports/<project>/<session>/   (tmpfs) the picked sessions' files, until copied, dropped, or an hour old
 import fs from 'node:fs';
+import { isUtf8 } from 'node:buffer';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from './githosts.mjs';
 import { TOOLS, UUID, clean, encodeCwd, LIMITS as READER } from './harness/claude.mjs';
 import { scanEntries, redactEntries, LABELS } from './secrets.mjs';
-import { parseLines, stripThinking, thinkingCount, rewritePaths, outsidePaths } from './transcript.mjs';
+import { parseLines, toJsonl, stripThinking, thinkingCount, rewritePaths, outsidePaths } from './transcript.mjs';
 import { Projects } from './projects.mjs';
 
 export const IMPORTS_DIR = process.env.BN_IMPORTS_DIR || path.join(STATE_DIR, 'imports');
@@ -113,6 +114,33 @@ export function parseIndex(text) {
   }
   if (!head || !end) throw new ImportError(400, 'not the reader\'s list (cut short)');
   return { head, rows };
+}
+
+// readPart(part, k) -> a file beside the transcript, read to be scanned and copied like it: a subagent's transcript
+// (lines: as the transcript's), a JSON file, or a tool's large output (text, in pieces of at most 4 MiB, cut at a
+// line's end) — {part, kind, prefix, entries, findings}; or {part, left: why} for one that is none of these, text that
+// is not UTF-8, or JSON that does not parse: it is not copied (the preview says so)
+const TEXT_PIECE = 4 << 20;
+export function readPart({ part, data }, k) {
+  const prefix = `p${k}:`;
+  let kind, entries;
+  if (/^subagents\/[^/]+\.jsonl$/.test(part)) { kind = 'lines'; ({ entries } = parseLines(data)); }
+  else if (/\.json$/.test(part)) {
+    if (!isUtf8(data)) return { part, left: 'not text (not UTF-8)' };
+    try { entries = [JSON.parse(data.toString('utf8'))]; kind = 'json'; } catch { return { part, left: 'not valid JSON' }; }
+  } else if (/^tool-results\//.test(part)) {
+    if (!isUtf8(data)) return { part, left: 'not text (not UTF-8)' };
+    kind = 'text';
+    const text = data.toString('utf8');
+    entries = [];
+    for (let at = 0; at < text.length;) {
+      let end = Math.min(text.length, at + TEXT_PIECE);
+      if (end < text.length) { const nl = text.lastIndexOf('\n', end); if (nl > at) end = nl + 1; }
+      entries.push(text.slice(at, end));
+      at = end;
+    }
+  } else return { part, left: 'not a kind of file the copy knows' };
+  return { part, kind, prefix, entries, findings: scanEntries(entries, { prefix }).map((f) => ({ ...f, part })) };
 }
 
 /** The imports of this container: the lists, the picked sessions, the requests to the helper, what was copied. */
@@ -271,21 +299,36 @@ export class Imports {
     const s = this.stagedSession(pid, id);
     const row = ix?.rows.find((r) => r.id === id && r.tool === s.meta.tool) ?? null;
     const { entries, bad } = parseLines(s.main);
-    const findings = scanEntries(entries);
-    const keepSet = new Set(keep.filter((k) => findings.some((f) => f.id === k)));
-    const red = redactEntries(entries, keepSet);
+    // the files beside it (subagents' transcripts, large tool results): read the same way, findings of their own
+    const read = s.parts.map((pt, i) => readPart(pt, i + 1));
+    const findings = [...scanEntries(entries).map((f) => ({ ...f, part: null })), ...read.flatMap((r) => r.findings ?? [])];
+    const keepSet = new Set(keep.filter((k) => findings.some((f) => f.id === k && f.keepable)));
     const source = row?.source ?? (s.meta.tool === 'claude-bedrock' ? 'bedrock-now' : 'unknown');
     // (thinking blocks out, by default, when the session ran elsewhere than on Bedrock: their signatures are that platform's)
     const strip = thinking === null ? !['bedrock-now', 'bedrock'].includes(source) : thinking === 'strip';
-    const th = strip ? stripThinking(red.entries) : { entries: red.entries, blocks: 0, dropped: 0 };
     const host = ix?.host ?? p.root;
     const pairs = [];
     if (host !== p.root) pairs.push([host, p.root]);
     if (s.meta.store) pairs.push([`${s.meta.store}/${encodeCwd(host)}`, `${SANDBOX_STORE}/${encodeCwd(p.root)}`]);
+    // the transcript: findings redacted (but those kept), thinking out or not, paths rewritten
+    const red = redactEntries(entries, keepSet);
+    const th = strip ? stripThinking(red.entries) : { entries: red.entries, blocks: 0, dropped: 0 };
     const rw = rewritePaths(th.entries, pairs);
+    // … and each file beside it the same way; one that cannot be read so is left behind (said)
+    let redacted = red.redacted, kept = red.kept, removed = th.blocks, rewritten = rw.n;
+    const parts = [], left = [];
+    for (const r of read) {
+      if (r.left) { left.push({ part: r.part, why: r.left }); continue; }
+      const pr = redactEntries(r.entries, keepSet, { prefix: r.prefix });
+      const pt = strip && r.kind === 'lines' ? stripThinking(pr.entries) : { entries: pr.entries, blocks: 0 };
+      const pw = rewritePaths(pt.entries, pairs);
+      redacted += pr.redacted; kept += pr.kept; removed += pt.blocks; rewritten += pw.n;
+      const data = r.kind === 'lines' ? toJsonl(pw.entries) : r.kind === 'json' ? Buffer.from(JSON.stringify(pw.entries[0]), 'utf8') : Buffer.from(pw.entries.join(''), 'utf8');
+      parts.push({ part: r.part, data });
+    }
     return {
-      project: p, row, meta: s.meta, parts: s.parts, size: s.main.length, entries: rw.entries, bad, findings, kept: red.kept, redacted: red.redacted,
-      thinking: { blocks: thinkingCount(entries), removed: th.blocks, strip, source }, rewritten: rw.n, hidden: host !== p.root,
+      project: p, row, meta: s.meta, parts, left, size: s.main.length, entries: rw.entries, bad, findings, kept, redacted,
+      thinking: { blocks: thinkingCount(entries), removed, strip, source }, rewritten, hidden: host !== p.root,
       outside: outsidePaths(entries, [host]), sourceSha: crypto.createHash('sha256').update(s.main).digest('hex'),
     };
   }

@@ -4,9 +4,10 @@
 // An imported session keeps its id — the same conversation, resumed natively on any model of the catalog — unless
 // its copy here was continued since it was copied (or something else of that id is here): then it comes in as a new
 // session, a fork with fresh ids (the Agent SDK's own forkSession, over this container's memory: nothing on disk here).
-// Its subagents' transcripts and large tool results come along with the same id; a fork starts without them, as the
-// SDK's forks do. Continue in this project forks a session of the sandbox into another project's folder: its working
-// folder rewritten there wherever it stands as a path of its own (transcript.mjs).
+// Its subagents' transcripts and large tool results come along with the same id — through the same scan, redaction,
+// thinking and path rewriting as the transcript (a file that cannot be read so stays behind: never copied as it was);
+// a fork starts without them, as the SDK's forks do. Continue in this project forks a session of the sandbox into
+// another project's folder: its working folder rewritten there wherever it stands as a path of its own (transcript.mjs).
 import crypto from 'node:crypto';
 import { forkSession, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { fromHistory } from './normalize.mjs';
@@ -61,9 +62,10 @@ export async function preview(imports, pid, id, choices = {}) {
   const copied = imports.imported()[id];
   return {
     id, tool: pl.meta.tool, title: pl.row?.title ?? '', messages: pl.row?.messages ?? null, size: pl.size,
-    findings: pl.findings.map((f) => ({ id: f.id, kind: f.kind, label: f.label, message: f.message, preview: f.preview, context: f.context })).slice(0, 500),
+    findings: pl.findings.map((f) => ({ id: f.id, kind: f.kind, label: f.label, message: f.message, part: f.part, preview: f.preview, context: f.context, keepable: f.keepable }))
+      .slice(0, 500),
     findingsTotal: pl.findings.length, thinking: pl.thinking, outside: pl.outside, bad: pl.bad, rewritten: pl.rewritten, hidden: pl.hidden,
-    parts: pl.parts.length, format: pl.row?.format ?? 'unknown', version: pl.row?.version ?? null,
+    parts: pl.parts.length, left: pl.left, format: pl.row?.format ?? 'unknown', version: pl.row?.version ?? null,
     again: copied ? { at: copied.at } : null, events, total,
   };
 }
@@ -75,7 +77,7 @@ export async function copy(imports, call, pid, items) {
   const out = [];
   for (const it of items) {
     if (!it || !UUID.test(String(it.id))) { out.push({ id: null, ok: false, why: 'bad session id' }); continue; }
-    const keep = Array.isArray(it.keep) ? it.keep.filter((k) => typeof k === 'string' && /^[0-9]{1,7}\.[0-9]{1,5}$/.test(k)).slice(0, 1000) : [];
+    const keep = Array.isArray(it.keep) ? it.keep.filter((k) => typeof k === 'string' && /^(p[0-9]{1,4}:)?[0-9]{1,7}\.[0-9]{1,5}$/.test(k)).slice(0, 2000) : [];
     const thinking = it.thinking === 'keep' || it.thinking === 'strip' ? it.thinking : null;
     try {
       const pl = imports.plan(pid, it.id, { keep, thinking });
@@ -100,7 +102,7 @@ export async function copy(imports, call, pid, items) {
       imports.noteImported(as, { project: pid, tool: pl.meta.tool, source: it.id, sourceSha: pl.sourceSha, writtenSha: sha256(written), at: Date.now(),
         redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, bad: pl.bad, rewritten: pl.rewritten, ...(forked ? { forkedFrom: it.id } : {}) });
       imports.drop(pid, it.id);
-      out.push({ id: it.id, ok: true, as, forked, redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed });
+      out.push({ id: it.id, ok: true, as, forked, redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, left: pl.left.length + (forked ? pl.parts.length : 0) });
     } catch (e) {
       out.push({ id: it.id, ok: false, why: e instanceof ImportError || e instanceof SandboxError ? e.message : 'the copy failed', sandbox: e instanceof SandboxError });
     }
