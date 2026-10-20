@@ -312,6 +312,12 @@ const TRASH = '.bedrock-now-trash';
 // --- the paths it works on to the folders it was given. ---
 const SANDBOX_OWN = ['/home', '/workspace', '/tmp', '/run', '/etc', '/usr', '/opt', '/proc', '/sys', '/dev', '/var', '/srv', '/root', '/bin', '/sbin',
   '/lib', '/lib32', '/lib64', '/libx32', '/boot'];
+// claudePartsOk(p) -> false when a part of p is .claude (any case) other than as …/.claude/worktrees/<name>[/…] (a
+// worktree Claude Code made: not a configuration folder) — as ./stack project's rule (lib/projects.sh)
+export function claudePartsOk(p) {
+  const parts = String(p).split('/');
+  return parts.every((c, i) => c.toLowerCase() !== '.claude' || ((parts[i + 1] ?? '').toLowerCase() === 'worktrees' && !!parts[i + 2]));
+}
 export function hostTops(env = process.env.BN_CODE_ROOTS, workspace = WORKSPACE, own = workspace === '/workspace' ? SANDBOX_OWN : []) {
   let list = [];
   try { list = env ? JSON.parse(env) : []; } catch { return []; }
@@ -322,8 +328,8 @@ export function hostTops(env = process.env.BN_CODE_ROOTS, workspace = WORKSPACE,
     if (typeof t !== 'string' || !t.startsWith('/') || t === '/' || t.length > 1024 || path.posix.normalize(t) !== t || t.endsWith('/') || /[\x00-\x1f\x7f]/.test(t)) continue;
     if (around(t, workspace) || out.some((o) => around(t, o))) continue;
     // (never a .claude folder or one in it: Claude Code reads it as configuration of the folders below it — ./stack
-    // refuses such a folder too)
-    if (t.split('/').some((c) => c.toLowerCase() === '.claude')) continue;
+    // refuses such a folder too; but a worktree Claude Code made, .claude/worktrees/<name>, each .claude judged alone)
+    if (!claudePartsOk(t)) continue;
     // (in the sandbox: never one of its own folders — a test's workspace elsewhere has none of them)
     if (own.some((o) => t === o || (o !== '/home' && t.startsWith(`${o}/`))) || (own.length && (t === '/home/claude' || t.startsWith('/home/claude/')))) continue;
     try { if (!fs.lstatSync(t).isDirectory() || fs.realpathSync(t) !== t) continue; } catch { continue; }

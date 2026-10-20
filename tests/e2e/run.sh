@@ -57,7 +57,8 @@
 #                    refuses writes at once), read-write again with --later (said as pending until ./stack project
 #                    apply), and a folder in /tmp refused; both removed at the end, their files untouched.
 #                    E2E_HOST_FOLDERS_DIR=/abs/new-folder: their parent instead of OUT (for a checkout whose path
-#                    ./stack project refuses, e.g. one in a .claude folder; it must not exist yet and is removed after)
+#                    ./stack project refuses, e.g. one in a .claude folder that is not a worktree there; it must not
+#                    exist yet and is removed after)
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -764,7 +765,8 @@ if [ "$HOST_FOLDERS" = 1 ] && { [ "$CODE" = 0 ] || ! part_on browser; }; then
 elif [ "$HOST_FOLDERS" = 1 ]; then
   say "folders of this computer: ./stack project add, the sandbox's view, a session across restarts"
   # (their parent: OUT/host-folders, or E2E_HOST_FOLDERS_DIR when ./stack project refuses OUT's path — a checkout in a
-  # .claude folder, a Claude Code worktree say: then a folder that must not exist yet, made here and removed at the end)
+  # .claude folder other than a worktree there, say: then a folder that must not exist yet, made here and removed at
+  # the end)
   HF_OWN="${E2E_HOST_FOLDERS_DIR:-}"
   if [ -n "$HF_OWN" ]; then
     case "$HF_OWN" in /*) ;; *) die "E2E_HOST_FOLDERS_DIR must be an absolute path" ;; esac

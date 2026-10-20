@@ -195,9 +195,12 @@ _project_secrets() {
 
 # _project_path_rules REAL -> fails, printing why, for a path a project folder never has (beyond the workspace's
 # rules): in a temporary or runtime folder, through a folder of sockets, a .claude folder or one in it (Claude Code
-# would read it as configuration above another project's folder), or in a Time Machine backup
+# would read it as configuration above another project's folder) — but a Claude Code worktree, .claude/worktrees/<name>
+# (not a configuration folder: nothing there feeds a neighbour), each .claude part judged on its own — or in a Time
+# Machine backup
 _project_path_rules() {
-  local r t c IFS
+  local r t c i n IFS
+  local -a parts
   r="$(_fold "$1")"
   for t in $PROJECTS_TEMP_ROOTS ${XDG_RUNTIME_DIR:-}; do
     t="$(_fold "$t")"
@@ -206,10 +209,16 @@ _project_path_rules() {
   if c="$(socket_dir_component "$1")"; then
     echo "its path goes through $c, a folder where programs of this computer keep their sockets (a way to run commands on it)"; return 1
   fi
-  IFS=/
-  for c in $1; do
+  IFS=/ read -r -a parts <<< "$1"
+  n="${#parts[@]}"
+  for ((i = 0; i < n; i++)); do
+    c="${parts[i]}"
     case "$(printf '%s' "$c" | tr '[:upper:]' '[:lower:]')" in
-      .claude) echo "its path goes through a .claude folder (Claude Code reads that as configuration of the folders below it)"; return 1 ;;
+      .claude)
+        # (X/.claude/worktrees/<name>[/…]: a worktree Claude Code made — allowed; X/.claude, X/.claude/worktrees itself
+        # and anything else under .claude: not)
+        if [ "$(printf '%s' "${parts[i + 1]:-}" | tr '[:upper:]' '[:lower:]')" = worktrees ] && [ -n "${parts[i + 2]:-}" ]; then continue; fi
+        echo "its path goes through a .claude folder (Claude Code reads that as configuration of the folders below it; only a worktree in .claude/worktrees is fine)"; return 1 ;;
       backups.backupdb | *.backupbundle | .timemachine) echo "it is in a Time Machine backup ($c)"; return 1 ;;
     esac
   done

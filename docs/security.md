@@ -2535,9 +2535,11 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
     folder of sockets, and a socket in it is said at `./stack up`;
   - *a `.claude` folder or a folder in it* (any case): Claude Code reads `.claude` trees of the folders above a
     session's folder as configuration, so such a folder mounted next to another project's would put configuration
-    above it that nobody reviewed. bn-coded refuses one as a top too, and lists what is above a folder of this
-    computer in the sandbox (up to `/`, stopping at the first `.git`) in its trust summary — outside every top, never
-    trustable;
+    above it that nobody reviewed. The one exception is a worktree Claude Code made, `.claude/worktrees/<name>`:
+    `worktrees` is not a configuration folder, so nothing there feeds a neighbour (`.claude/worktrees` itself stays
+    refused, and a later `.claude` part is judged on its own). bn-coded refuses one as a top too, and lists what is
+    above a folder of this computer in the sandbox (up to `/`, stopping at the first `.git`) in its trust summary —
+    outside every top, never trustable;
   - *keys and logins* — a folder with `.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`, `.azure`, the gh, glab and gcloud
     logins under `.config`, `Library/Keychains`, `.netrc` or `.git-credentials` in it or one level down; an `.npmrc` or
     `.pypirc` at its top with a token or password in it; another bedrock-now folder (`stack`, `.env` and

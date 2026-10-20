@@ -805,10 +805,11 @@ sandbox, so the Code page's sessions (and the terminal) work in it directly, wit
   …) and `~/Library`; `/`, system folders and the folder that holds every disk; temporary and runtime folders and
   anything in them (`/tmp`, `/var/tmp`, a Mac's `/private/var/folders`, `/dev/shm`, `/run/user`): programs of this
   computer keep their sockets there (tmux, ssh-agent, X11 …), and a socket is a way to run commands on it; a path
-  through such a folder of sockets (`tmux-<uid>`, `ssh-…` of ssh-agent, `.X11-unix` …), a `.claude` folder or a Time
-  Machine backup; a folder holding a socket (down to 3 levels: git's fsmonitor daemon leaves one in `.git` — stop it
-  first); this bedrock-now folder and the workspace, or a folder inside or around them; another project's folder, or
-  one inside or around it; a folder with keys or logins in it or one level down (`.ssh`, `.aws`, `.gnupg`, `.kube`,
+  through such a folder of sockets (`tmux-<uid>`, `ssh-…` of ssh-agent, `.X11-unix` …), a `.claude` folder (a worktree
+  Claude Code made, `.claude/worktrees/<name>`, is fine: nothing there is configuration) or a Time Machine backup; a
+  folder holding a socket (down to 3 levels: git's fsmonitor daemon leaves one in `.git` — stop it first); this
+  bedrock-now folder and the workspace, or a folder inside or around them; another project's folder, or one inside or
+  around it; a folder with keys or logins in it or one level down (`.ssh`, `.aws`, `.gnupg`, `.kube`,
   `.docker`, `.azure`, the gh, glab and gcloud logins under `.config`, a keychain, `.netrc`, `.git-credentials`), an
   `.npmrc` or `.pypirc` at its top with a token or password, another bedrock-now folder or a Time Machine backup down
   to 3 levels (a heuristic; in a terminal, `--yes-it-holds-keys` adds such a folder anyway); a path with `:` or `,`.

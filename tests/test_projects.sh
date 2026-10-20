@@ -367,11 +367,17 @@ test_temporary_folders_sockets_and_claude_folders_are_never_project_folders() {
     assert_contains "$why" "a folder where programs of this computer keep their sockets"
   done
   mkdir -p "$TMP/f/ssh-tools"; project_check "$TMP/f/ssh-tools" >/dev/null || return 1
-  # a .claude folder (any case) or one in it: Claude Code reads it as the configuration of the folders below it
-  for n in src/.claude src/.Claude/commands; do
+  # a .claude folder (any case) or one in it: Claude Code reads it as the configuration of the folders below it — but
+  # a worktree Claude Code made, .claude/worktrees/<name> (each .claude part judged on its own)
+  for n in src/.claude src/.Claude/commands src/.claude/skills/x src/.claude/worktrees src/.CLAUDE/Worktrees \
+           src/.claude/worktreesX/w src/.claude/settings/worktrees/w r2/.claude/worktrees/w/.claude r3/.claude/worktrees/w/sub/.claude/skills; do
     mkdir -p "$TMP/f/$n"
     why="$(project_check "$TMP/f/$n")" && { echo "accepted $n" >&2; return 1; }
     assert_contains "$why" "its path goes through a .claude folder"
+  done
+  for n in w1/.claude/worktrees/feature w2/.Claude/WORKTREES/fix-1/sub w3/.claude/worktrees/a/.claude/worktrees/b; do
+    mkdir -p "$TMP/f/$n"
+    project_check "$TMP/f/$n" >/dev/null || { echo "refused the worktree $n" >&2; return 1; }
   done
   # a Time Machine backup, or a folder in one
   mkdir -p "$TMP/f/Backups.backupdb/mac/x"

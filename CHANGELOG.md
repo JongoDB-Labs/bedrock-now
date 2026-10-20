@@ -21,8 +21,9 @@ All notable changes to bedrock-now are documented here. The format follows
   restarts") in Settings, on the Code page and in `./stack project list`, as Docker reports it. Refused: your home
   folder and those around it, its hidden folders and `~/Library`, system folders, temporary and runtime folders and
   folders of sockets (`/tmp`, `/private/var/folders`, `tmux-<uid>` …: a socket is a way to run commands on your
-  computer), a folder holding a socket, a `.claude` folder, the workspace and this checkout (and folders inside or
-  around them, or around another project), folders holding keys or logins (`.ssh`, `.aws`, gh/glab/gcloud logins,
+  computer), a folder holding a socket, a `.claude` folder (not a worktree in `.claude/worktrees`), the workspace and
+  this checkout (and folders inside or around them, or around another project), folders holding keys or logins (`.ssh`,
+  `.aws`, gh/glab/gcloud logins,
   `.netrc`, an `.npmrc` with a token, another bedrock-now folder, a Time Machine backup …), paths Docker would
   misread; at most 16; every `./stack up` checks them again. `./stack project remove|mode|list`; Settings lists them
   (Remove and Make read-only from any device, Add only on this computer); `./stack code status`, `terminal status`

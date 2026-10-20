@@ -505,8 +505,11 @@ test('a folder of this computer: Claude Code configuration above it in the sandb
     assert.ok(r.files.some((f) => f.name === path.join(above, 'deploy.md')), JSON.stringify(r.files.map((f) => f.name)));
     assert.equal(r.verifiable, false, 'outside every top: never verifiable');
     assert.ok(r.hash, 'a hash: a change there is a change');
-    // and a .claude folder (or one in it) is never a top of its own
+    // and a .claude folder (or one in it) is never a top of its own — a worktree Claude Code made is
     assert.deepEqual(coded.hostTops(JSON.stringify([path.join(ROOT, '.claude'), above]), WS), []);
+    for (const ok of ['/r/.claude/worktrees/w', '/r/.Claude/WORKTREES/w/sub', '/r/.claude/worktrees/a/.claude/worktrees/b']) assert.equal(coded.claudePartsOk(ok), true, ok);
+    for (const bad of ['/r/.claude', '/r/.claude/worktrees', '/r/.CLAUDE/Worktrees', '/r/.claude/worktreesX/w', '/r/.claude/skills/x',
+      '/r/.claude/settings/worktrees/w', '/r/.claude/worktrees/w/.claude', '/r/.claude/worktrees/w/x/.claude/skills']) assert.equal(coded.claudePartsOk(bad), false, bad);
   } finally {
     fs.rmSync(path.join(ROOT, '.claude'), { recursive: true, force: true });
   }
