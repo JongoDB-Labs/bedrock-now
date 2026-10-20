@@ -729,6 +729,7 @@ sessions from before projects are listed under it.
   - *Clone a repository*: the Git panel's Clone dialog
     ([remote repositories](#remote-repositories-git-hosts-clone-push-and-pull)); the new folder becomes a project.
   - *A folder in the workspace*: one that is there already.
+  - *A folder of this computer*: says where one is added ([below](#folders-of-this-computer)); the page takes no path.
 
   A project's folder is 1 to 4 levels below `/workspace`, no name in it starts with `.`, at most 160 bytes. At most
   64 projects.
@@ -765,6 +766,53 @@ sessions from before projects are listed under it.
 The records (names and folders, and the sessions you added to a project) are kept by the code container, in its
 volume `<project>_code-state`, not in the workspace. A project is not a boundary: every project is in the same sandbox,
 and a session in one can read and change the others. Details: [docs/security.md](docs/security.md#projects).
+
+##### Folders of this computer
+
+A folder you work in on this computer (a repository under `~/src`, say) can be a project too: it is mounted into the
+sandbox, so the Code page's sessions (and the terminal) work in it directly, with no copy in the workspace.
+
+- **It is added on this computer**, never by a path typed into a page: in a terminal,
+  `./stack project add ~/src/my-app` (`--read-only`, `--hide-path`, `--name NAME`), or Settings › Claude Code ›
+  **Project folders** › **Choose on this computer…**, which opens a folder chooser on this computer's screen (with the
+  [update helper](#updating) installed and a screen to show it on; from a phone or another computer it is not
+  offered). At most 16.
+- **Where the sandbox sees it**: at the same path as on this computer, so absolute paths keep working — or, with
+  *Hide its path* (`--hide-path`), at `/projects/<name>`. A path the sandbox uses itself (`/home/claude`, `/tmp`,
+  `/usr` …) always becomes `/projects/<name>`.
+- **Read-write or read-only.** Read-write by default: Claude, and anything it runs, can change the folder — and what
+  it writes there can run on this computer when your own tools open the folder (git hooks, `.envrc`, VS Code tasks,
+  `package.json` scripts; read the watchlist's cards). *Read-only for Claude* (`--read-only`, or **Make read-only** in
+  Settings, from any device) mounts it read-only: writes fail in the sandbox ("read-only file system"), and the page
+  greys out editing, new files, staging and commits there. Read-write again only in a terminal on this computer:
+  `./stack project mode NAME rw`.
+- **The sandbox restarts** when a folder is added, removed or changed (~15 s; the gateway, the code container and the
+  rest keep running): open Code page sessions resume with your next prompt; the terminal's windows, dev servers and
+  runs end. With a turn running, `./stack project` asks: now, when no turn runs (it waits up to 30 minutes), or later
+  (`./stack project apply` or the next `./stack up`); Settings offers *When idle* or *Now*. Until then the project
+  says "the sandbox sees it once it restarts".
+- **What is refused**: your home folder and any folder around it, its hidden folders (`~/.ssh`, `~/.aws`, `~/.config`
+  …) and `~/Library`; `/`, system folders and the folder that holds every disk; this bedrock-now folder and the
+  workspace, or a folder inside or around them; another project's folder, or one inside or around it; a folder with
+  keys (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker` or a keychain, in it or one level down; in a terminal,
+  `--yes-it-holds-keys` adds it anyway); a path with `:` or `,`. The folder is resolved first (a link counts as the
+  folder it leads to; on a Mac `/tmp` is `/private/tmp`, and names differing only in case are one folder). Every
+  `./stack up` checks the list again: a folder that is gone, or is now a link, is left out and said.
+- **Removing** (`./stack project remove NAME`; **Remove** in Settings, from any device; the project's ⋯ › *Remove
+  folder from Code…* says where): the folder leaves the sandbox, nothing in it is touched. Its sessions are listed
+  under **Folders no longer added**, read only; add the folder again to go on with them (*Forget this folder…* takes
+  them off the list).
+- **The rest works as in any project**: its own Claude Code configuration applies only once trusted; the Git panel,
+  Git hosts, Review and the watchlist work in it. `./stack project list` lists the folders (so do `./stack code status`
+  and `./stack terminal status`), and `./stack test` checks that the sandbox sees each one. A backup keeps the list
+  (`project-folders.tsv`) and `./stack restore` puts it back; `./stack uninstall` removes the generated files, never
+  a folder of yours.
+- **Docker Desktop** shares `/Users`, `/Volumes`, `/private` and `/tmp` by default: for a folder elsewhere, the restart
+  fails and `./stack` says to add it under Docker Desktop › *Settings › Resources › File sharing* (the list is put back
+  as it was).
+
+Every project is in the one sandbox, a folder of this computer too: a session in one can read and change the others.
+Details: [docs/security.md](docs/security.md#folders-of-this-computer).
 
 #### Models for Claude Code
 
@@ -1291,7 +1339,7 @@ by what you came to do — a list on the left (on a phone, a section picker at t
 | **AWS & models** | the AWS key (with *Check*), region, **Re-check models** |
 | **Spending & budgets** | the budgets of Chat, `claude-bedrock` and the Terminal/Code page (with this period's spend), alert threshold and webhook; *More*: the setup key's budget, daily price updates |
 | **Chat & voice** | Chat's default model, models hidden from its picker, speech-to-text, OpenRouter; *More*: the title/tag model, OpenRouter's cap and aliases |
-| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code* and the *Default model for new sessions*; *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
+| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code*, the *Default model for new sessions* and *Project folders* ([folders of this computer](#folders-of-this-computer)); *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
 | **Files & sharing** | the Files (RustFS) key pair and the shared MCP token (**Regenerate**) |
 | **Remote access** | status, allowed Tailscale login, remote admin actions, the Terminal and Code page remotely, previews remotely; *More*: Tailscale and own-domain details |
 | **Updates & backups** | daily release check (when it last checked, and **Check for updates**), automatic updates and their window, nightly backups (window, how many), **Back up now** and the list of backups; *More*: signed releases only, the helper's switches |
@@ -1692,6 +1740,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack stt …` | Speech-to-text for the microphone and voice calls: `status`, `set bedrock [small\|mini]`, `set openai\|groq [model]`, `remove` ([docs/voice.md](docs/voice.md)) | none |
 | `./stack terminal status\|enable [--workspace DIR]\|disable` | Claude Code in the browser, a sandbox that sees one folder; on by default with the Code page ([above](#claude-code-in-the-browser)) | none (its sessions: per token) |
 | `./stack code status\|enable [--workspace DIR]\|disable` | The Code tab, Claude Code with a chat, permission prompts and your files, in the terminal's sandbox; on by default, `disable` keeps it off ([above](#the-code-page)) | none (its sessions: per token) |
+| `./stack project add DIR [--read-only] [--hide-path] [--name N]\|remove N\|mode N ro\|rw\|list` | A folder of this computer as a Code page project, mounted into the sandbox (it restarts; [above](#folders-of-this-computer)) | none |
 | `./stack git-host import gh\|glab [--host HOST]` | A login of the GitHub CLI or the GitLab CLI on this computer as a Git host of the Code page ([above](#remote-repositories-git-hosts-clone-push-and-pull)): the token goes to the code container on stdin (never a command line, a file or the browser); what it reaches is shown and confirmed first. glab: a personal access token only (an OAuth login of glab's is refused) | none |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |

@@ -2497,6 +2497,79 @@ to everything it shows), and Node has no `openat`, so its checks race anything r
 sandbox — which could write these files directly anyway. The copies Revert writes back are kept in the code
 container's memory (the last 10 cards per session, 4 MiB), gone with a restart.
 
+## Projects and the coding tools on your computer
+
+What widens what the sandbox sees is decided on the computer running bedrock-now: in its terminal, or in a dialog on
+its screen. Nothing a page, the portal or the sandbox sends names a folder of yours.
+
+### Folders of this computer
+
+A folder of this computer can be a Code page project: `./stack project add DIR` mounts it into the sandbox
+(README: [Folders of this computer](../README.md#folders-of-this-computer)).
+
+- [x] **Added one by one, on this computer.** In a terminal (`./stack project add DIR`), or by Settings › Claude Code
+  › Project folders › *Choose on this computer…*: the portal writes the update helper a request with fixed fields only
+  (`project-pick`, when to restart, read-only or not, hide its path or not, `origin: local`; the password again, at
+  most 768 bytes) — never a path; a request from another device is refused (403), and so is one with any other field.
+  The helper opens the system's folder chooser on this computer's screen (macOS `choose folder`, `zenity` or
+  `kdialog`) with fixed text saying what the folder is for, then runs `./stack project add` on the folder you chose.
+  At most one dialog a minute and 10 a day; without a screen it says to use the terminal. A taken-over portal can at
+  most open a dialog that you cancel.
+- [x] **Checked before it is mounted, and at every `./stack up`.** The folder is resolved to its physical path first
+  (a link counts as what it leads to; on a Mac case and `/private` spellings are one folder) and refused when it is
+  `/`, a system folder or the folder that holds every disk; your home folder or a folder around it, a hidden folder
+  of it (`~/.ssh`, `~/.aws`, `~/.config` …) or `~/Library`; this bedrock-now folder or the workspace, or a folder
+  inside or around them; another project folder, or one inside or around it; a folder with keys in it or one level
+  down (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`, `Library/Keychains` — only `--yes-it-holds-keys`, typed in a
+  terminal, adds it anyway); a path with `:` or `,` (Docker reads them as separators), a quote, `$`, a backtick, a
+  backslash or a control character. At most 16. Every `./stack up` (and `setup`, `update`, `restore`) checks the list
+  again: a folder that is gone, or is now a link, is left out of the sandbox and said. Tests:
+  `tests/test_projects.sh` (the rules with macOS spellings, nesting both ways, the 17th, a link made after adding).
+- [x] **The list is ./stack's, not the sandbox's.** It lives in `.state/projects/folders.tsv` (mode 600 in a folder of
+  mode 700), which no container mounts. From it ./stack writes `.state/projects/compose.yaml`: for each folder a bind
+  mount into the terminal container (`create_host_path: false`: Docker never creates a folder; `read_only` for a
+  read-only one; `selinux: z`, so on an SELinux host Docker relabels the folder's files for containers) and
+  `BN_CODE_ROOTS`, the list of their paths for bn-coded. `BN_CODE_ROOTS` is not a boundary — the mounts are: a process
+  in the sandbox reaches exactly what is mounted, whatever bn-coded is told. The code container gets
+  `.state/projects/public/roots.json` (ids, names, paths in the sandbox, read-only or not: no secret; its folder
+  mounted read-only) and checks every path it sends bn-coded against it, never the sandbox's word; bn-coded checks
+  them again (absolute, plain, real folders not reached through a link, none around the workspace or another).
+- [x] **What Claude writes in a read-write folder can run on your computer.** That folder is one you use with your own
+  tools, not a workspace you open only here: git hooks, `.envrc`, VS Code tasks, `package.json` scripts and the rest
+  of [the watchlist](#the-watchlist-files-that-run-on-your-computer) run on this computer when your tools open it
+  (threat 1 of the browser terminal, now on your real repositories). The watchlist covers each folder of this computer
+  as it covers a project of the workspace; `./stack project add` and the folder chooser say it in plain words before
+  the folder is added. A folder Claude should only read: *read-only* (`--read-only`, or **Make read-only** in Settings
+  from any device, by the folder's id — it only narrows). Read-write again only in a terminal on this computer
+  (`./stack project mode NAME rw`).
+- [x] **Read-only is Docker's.** The bind is read-only: a write in the sandbox fails ("read-only file system"); the
+  page also greys out editing, new files, staging and commits there and refuses those calls before sending them (a
+  convenience: the mount is what holds). Not detectable cheaply, and so said: a **hard link** in the folder to a file
+  outside it is the same file (the sandbox can read it, and write it in a read-write folder), and a **disk mounted
+  below the folder** comes along (Docker binds recursively; with read-only, Docker 25+ makes those read-only too where
+  the kernel supports it). Links inside the folder are followed in the sandbox's view: one pointing to `~/.ssh` leads
+  nowhere there.
+- [x] **Your path and user name.** At the same path as on this computer, a folder's path (and so your user name, on
+  a Mac) is in what Claude Code sends the model (its working folder) — to Bedrock in your AWS account, or to
+  OpenRouter when you use it. *Hide its path* (`--hide-path`) mounts it at `/projects/<name>` instead; a path the
+  sandbox uses itself (`/home/claude`, `/tmp`, `/usr` …) always is.
+- [x] **Every project shares the one sandbox.** A session in one project can read and change every other — the
+  workspace and every folder of this computer included (read-only ones only read). Projects organise your work; they
+  do not isolate it.
+- [x] **Adding, removing or changing a folder restarts the sandbox** (`docker compose up -d --no-deps terminal`): its
+  processes end — the terminal's windows, Code page sessions (they resume at your next prompt), dev servers, runs,
+  `/tmp`; its home (sessions, plugins, settings), the workspace and every folder stay. With a turn running, it waits
+  for none to run (at most 30 minutes) unless you say now. A restart that fails puts the list back as it was (on a
+  Mac, a folder Docker Desktop does not share is said: *Settings › Resources › File sharing*).
+- [x] **Removing narrows, from anywhere.** `./stack project remove NAME`, or **Remove** in Settings (the helper, by
+  the folder's id from the list — never a path; the password again). The mount goes, nothing in the folder is
+  touched. The code container keeps a record of the folder (path and name, at most 16) so that its sessions are
+  listed under *Folders no longer added*: their transcripts are read from the sandbox's store, never resumed (the
+  folder is not in the sandbox; the page starts nothing there and names no file of it); *Forget* drops the record.
+- [x] **Backups, restore, uninstall.** A backup copies `folders.tsv` (`project-folders.tsv`); `./stack restore` puts
+  it back and checks it again as at `./stack up`. `./stack uninstall` removes the generated files, never a folder of
+  yours.
+
 ## Code provenance
 
 `./stack update` runs the code it downloads: on a release install, the newest `vX.Y.Z` tag of the `origin`

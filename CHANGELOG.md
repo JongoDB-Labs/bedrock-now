@@ -6,6 +6,24 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Folders of this computer as Code page projects.** `./stack project add ~/src/my-app` (or Settings › Claude Code ›
+  **Project folders** › **Choose on this computer…**, a folder chooser the update helper opens on this computer's
+  screen — no request names a folder) mounts the folder into the sandbox at the same path, or at `/projects/<name>`
+  with *Hide its path*; the sandbox restarts (~15 s: now, or when no turn runs) and open sessions resume with your
+  next prompt. Read-write by default, said plainly (what Claude writes there can run on your computer when your tools
+  open the folder: git hooks, `.envrc`, VS Code tasks, npm scripts); *Read-only for Claude* mounts it read-only, and
+  the page greys out editing, new files, staging and commits there. Refused: your home folder and those around it,
+  its hidden folders and `~/Library`, system folders, the workspace and this checkout (and folders inside or around
+  them, or around another project), folders holding keys, paths Docker would misread; at most 16; every `./stack up`
+  checks them again. `./stack project remove|mode|list`; Settings lists them (Remove and Make read-only from any
+  device, Add only on this computer); `./stack code status`, `terminal status` and `test` show them; backups keep the
+  list. A removed folder's sessions are listed under *Folders no longer added*, read only. The project's trust step,
+  the Git panel, Git hosts, Review and the watchlist work in them as in a folder of the workspace. New project has a
+  fourth option, *A folder of this computer*, that says where one is added.
+  [docs/security.md](docs/security.md#folders-of-this-computer)
+
 ## [0.19.0] - 2026-10-20
 
 ### Added
