@@ -873,13 +873,27 @@ function AddHost({ onDone, signIn }: { onDone: () => void; signIn: GitSignInConf
   const hint = compareHint(kind, host);
   const provider = kind === 'gitlab' ? 'gitlab' : 'github';
   const ready = signInReady(signIn, kind, host);
-  // (the hosts' view arrives after the form opened: its default follows it until you choose)
-  useEffect(() => { if (!chosen && kind !== 'other') setAuth(ready ? 'oauth' : 'token'); }, [ready]);
+  // the way to connect it offers until you choose one: Sign in where it is ready (an app set up for that host), else
+  // a token — set in the same event as the kind or host that changes it, never a moment later (a click on Sign in
+  // right after choosing GitLab must not be undone by it)
+  const suggest = (k: GitHostKind, h: string) => { if (!chosen && k !== 'other') setAuth(signInReady(signIn, k, h) ? 'oauth' : 'token'); };
+  // (the hosts' view arriving after the form opened: its default follows it until you choose — never on the form's
+  // first render, whose state took it already, and with the kind and host as they are by then)
+  const live = useRef({ kind, host, chosen });
+  live.current = { kind, host, chosen };
+  const seenSignIn = useRef(signIn);
+  useEffect(() => {
+    if (signIn === seenSignIn.current) return;
+    seenSignIn.current = signIn;
+    const now = live.current;
+    if (!now.chosen && now.kind !== 'other') setAuth(signInReady(signIn, now.kind, now.host) ? 'oauth' : 'token');
+  }, [signIn]);
   const choose = (a: GitAuth) => { setChosen(true); setAuth(a); };
   const defaultHost = !host.trim() || host.trim().toLowerCase() === (kind === 'gitlab' ? 'gitlab.com' : 'github.com');
   const pickKind = (k: GitHostKind) => {
     setKind(k);
     if (k === 'other' && auth === 'oauth') setAuth('token');
+    else if (!chosen) suggest(k, host);
     else if (k !== 'other' && auth === 'token' && !token && signInReady(signIn, k, host)) setAuth('oauth');
   };
   const add = async () => {
@@ -935,7 +949,7 @@ function AddHost({ onDone, signIn }: { onDone: () => void; signIn: GitSignInConf
         <label>
           {kind === 'other' ? 'Its name' : auth === 'oauth' ? `Its address (blank: ${kind === 'gitlab' ? 'gitlab.com' : 'github.com'}; or your own ${KIND_LABEL[kind]})` : 'Its name (blank: the usual one)'}
           <input type="text" value={host} spellcheck={false} maxLength={253} placeholder={kind === 'github' ? 'github.com' : kind === 'gitlab' ? 'gitlab.com' : 'git.example.com'}
-            onInput={(e) => setHost((e.currentTarget as HTMLInputElement).value)} data-testid="git-host-name" />
+            onInput={(e) => { const v = (e.currentTarget as HTMLInputElement).value; setHost(v); suggest(kind, v); }} data-testid="git-host-name" />
         </label>
         <fieldset class="wide gitr-auth">
           <legend>Connect with</legend>

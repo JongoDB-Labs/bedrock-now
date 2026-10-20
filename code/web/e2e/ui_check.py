@@ -3760,7 +3760,7 @@ def signin_code(page):
     return code.inner_text()
 
 
-@check("git sign-in: Sign in with GitHub (recommended while an app is set) — the code large with Copy, the host's page as a link (never opened by the page), a countdown, Cancel; approved: the host row (account, what it reaches, Choose repositories, the token's life); the plan names it; Sign in again after it ended; declined; no app set: how to register one; desktop and phone")
+@check("git sign-in: Sign in with GitHub (recommended while an app is set) — GitLab chosen right after: a token offered at once, Sign in kept when clicked; the code large with Copy, the host's page as a link (never opened by the page), a countdown, Cancel; approved: the host row (account, what it reaches, Choose repositories, the token's life); the plan names it; Sign in again after it ended; declined; no app set: how to register one; desktop and phone")
 def git_signin(browser):
     post(NORMAL + "/__mock/reset")
     p = Page(browser, NORMAL, "git-signin", **DESKTOP)
@@ -3843,6 +3843,23 @@ def git_signin(browser):
     # removed: where to revoke it on GitHub (a GitHub App's token needs its secret to revoke: you do it there)
     row.get_by_test_id("git-host-remove").click()
     expect(page.get_by_test_id("toast").last).to_contain_text("revoke it on the host too: https://github.com/settings/apps/authorizations", timeout=10_000)
+    # GitLab right after the form opened with GitHub's sign-in ready: a token is offered at once (gitlab.com has no app
+    # here), and a click on Sign in at once stays — a GitLab of your own then takes its application ID
+    page.get_by_test_id("git-host-add").click()
+    expect(page.get_by_test_id("git-host-auth-oauth")).to_be_checked()
+    page.get_by_test_id("git-host-kind").select_option("gitlab")
+    page.get_by_test_id("git-host-auth-oauth").check()
+    page.get_by_test_id("git-host-name").fill("gitlab.example.com:8443")
+    page.wait_for_timeout(300)
+    expect(page.get_by_test_id("git-host-auth-oauth")).to_be_checked()
+    expect(page.get_by_test_id("git-host-client-id")).to_be_visible()
+    page.get_by_test_id("git-host-form").get_by_role("button", name="Cancel").click()
+    page.get_by_test_id("git-host-add").click()
+    page.get_by_test_id("git-host-kind").select_option("gitlab")
+    expect(page.get_by_test_id("git-host-auth-token")).to_be_checked()
+    page.get_by_test_id("git-host-kind").select_option("github")
+    expect(page.get_by_test_id("git-host-auth-oauth")).to_be_checked()
+    page.get_by_test_id("git-host-form").get_by_role("button", name="Cancel").click()
     # declined there: said, and the form again
     page.get_by_test_id("git-host-add").click()
     page.get_by_test_id("git-host-signin").click()

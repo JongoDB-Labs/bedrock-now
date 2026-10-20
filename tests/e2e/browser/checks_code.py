@@ -2012,6 +2012,9 @@ def ui_projects(ctx):
         page.get_by_test_id("side-sessions").click()
         page.get_by_test_id("model-picker").click()
         page.get_by_test_id("model-haiku").click()
+        # (after the reload the page shows the session it showed last — another check's, in the Workspace, when one ran
+        # before in this browser: the other projects are folded)
+        unfold(clone["id"])
         proj(clone["id"]).get_by_test_id("project-new-session").click()
         sdlg = page.get_by_test_id("settings-dialog")
         see(sdlg.get_by_test_id("settings-hooks")).to_contain_text(f"SessionStart: touch {cwd}/{marker}", timeout=30000)
