@@ -1074,7 +1074,8 @@ credentials ever being kept in the sandbox.
 Optional. Sign in with GitHub on github.com uses bedrock-now's own GitHub App (`bedrock-now`) unless Settings ›
 Claude Code › More names another. An application of your own is for GitHub Enterprise, for gitlab.com (which has no
 bedrock-now application) and a GitLab of your own, or for when you would rather authorize an app you own than
-bedrock-now's. Its ID is public (no client secret, no private key: the device flow needs none):
+bedrock-now's. Its ID is public, and sign-in uses neither a client secret nor a private key (the device flow needs
+neither — GitHub only asks a GitHub App for one key before it can be installed; delete its downloaded .pem):
 
 - **GitHub** — *Settings › Developer settings › GitHub Apps › New GitHub App*: a name, a homepage URL (this
   repository's will do), no callback URL, **Enable Device Flow** ticked, *Expire user authorization tokens* left
