@@ -33,6 +33,7 @@
 PROJECTS_MAX=16
 PROJECTS_IDLE_MAX_S="${PROJECTS_IDLE_MAX_S:-1800}"   # --when-idle waits at most this long for no turn to be running
 PROJECTS_IDLE_POLL_S="${PROJECTS_IDLE_POLL_S:-10}"
+PROJECTS_DOCKER_S="${PROJECTS_DOCKER_S:-30}"   # how long an add waits on Docker for what the sandbox has mounted
 # The sandbox's own top folders: a folder of yours whose path is one of these (or inside one) is mounted at
 # /projects/<name> instead (Linux: /home/<you>/… collides only for a user named claude; /tmp is the sandbox's own)
 PROJECTS_SANDBOX_OWN="/home/claude /workspace /projects /tmp /run /etc /usr /opt /proc /sys /dev /var /srv /root /bin /sbin /lib /lib32 /lib64 /libx32 /boot"
@@ -219,20 +220,33 @@ _project_secrets() {
   done <<< "$hit"
   return 1
 }
+# _pj_docker_down -> 0 only when it is certain that Docker does not run: docker info ended at once, failing, and said it
+# could not connect to the daemon (its socket missing, the connection refused). A docker info that hangs (a daemon
+# stuck: its containers may still run) or fails any other way is not that: 1 (fail closed).
+_pj_docker_down() {
+  local err rc=0
+  err="$(_with_deadline "$PROJECTS_DOCKER_S" docker info 2>&1 >/dev/null)" || rc=$?
+  [ "$rc" != 0 ] && [ "$rc" != 124 ] || return 1
+  case "$err" in
+    *"Cannot connect to the Docker daemon"* | *"Is the docker daemon running?"* | *"error during connect"* \
+      | *"docker.sock: connect: no such file or directory"* | *"docker.sock: connect: connection refused"*) return 0 ;;
+  esac
+  return 1
+}
 # _pj_mounted_sources -> every folder (or file) of this computer the running sandbox has bind-mounted, by Docker's word
 # (its container's mounts): the project folders — removed ones still there until it restarts — and the workspace it
 # started with, whatever .env says now; each as Docker names it and as it resolves (a hand-written /tmp/ws is
-# /private/tmp/ws on a Mac). Nothing (0) when it does not run — or Docker itself does not (then nothing is mounted);
-# 2 when Docker runs but could not be asked.
+# /private/tmp/ws on a Mac). Nothing (0) when it does not run — or Docker itself certainly does not (_pj_docker_down:
+# then nothing is mounted); 2 when Docker could not be asked (a hang included).
 _pj_mounted_sources() {
   local c mounts src r
-  if ! c="$(_with_deadline 30 dc ps -q --status running terminal 2>/dev/null)"; then
-    _with_deadline 20 docker info >/dev/null 2>&1 || return 0
+  if ! c="$(_with_deadline "$PROJECTS_DOCKER_S" dc ps -q --status running terminal 2>/dev/null)"; then
+    _pj_docker_down && return 0
     return 2
   fi
   c="${c%%$'\n'*}"
   [ -n "$c" ] || return 0
-  mounts="$(_with_deadline 30 docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\n"}}{{end}}{{end}}' "$c" 2>/dev/null)" || return 2
+  mounts="$(_with_deadline "$PROJECTS_DOCKER_S" docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\n"}}{{end}}{{end}}' "$c" 2>/dev/null)" || return 2
   while IFS= read -r src; do
     # (Docker Desktop names a Mac's folder /host_mnt/…)
     src="${src#/host_mnt}"; [ -n "$src" ] || continue

@@ -2568,7 +2568,8 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
   running sandbox still has bind-mounted (any of its mounts, by Docker's word: a removed folder not applied yet, a
   workspace changed in `.env` but not restarted), or one around or inside such a folder, is refused until `./stack
   project apply` (or `./stack up`); and with the terminal on, a Docker that runs but cannot be asked refuses the add
-  too (fail closed) — one that does not run at all has nothing mounted. Mount sources are compared as Docker names
+  too (fail closed) — one that certainly does not run (`docker info` said at once that it cannot connect) has
+  nothing mounted; a hang or any other error refuses. Mount sources are compared as Docker names
   them and as they resolve. What is needed is kept in `folders.tsv`. `./stack up`, `list`, `status`, `test` and `apply` open nothing
   in a folder from this computer: only its path's rules and `find -P` with a depth limit, which looks at names and
   types without following a link (sockets, folders of sockets, the names of key files). `./stack test` alone, from

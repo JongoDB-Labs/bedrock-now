@@ -30,7 +30,11 @@ _stubs() {
       "inspect -f {{range .Config.Env}}"*) [ -z "${SANDBOX_ROOTS:-}" ] || printf 'PATH=/usr/bin\nBN_CODE_ROOTS=%s\n' "$SANDBOX_ROOTS" ;;
       "inspect -f {{range .Mounts}}{{if eq .Type"*) [ -z "${SANDBOX_MOUNTS:-}" ] || printf '%s\n' "$SANDBOX_MOUNTS" | awk -F'\t' 'NF > 2 { print $3 }' ;;
       "inspect -f {{range .Mounts}}"*) [ -z "${SANDBOX_MOUNTS:-}" ] || printf '%s\n' "$SANDBOX_MOUNTS" ;;
-      info) [ -z "${DOCKER_DOWN:-}" ] || return 1 ;;
+      info) case "${DOCKER_INFO:-}" in
+              hang) sleep 30 ;;
+              down) echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; return 1 ;;
+              other) echo "permission denied while trying to connect to the docker API" >&2; return 1 ;;
+            esac ;;
     esac
     return 0
   }
@@ -648,10 +652,15 @@ test_a_folder_the_sandbox_still_has_mounted_is_not_added_again_until_applied() {
   SANDBOX_MOUNTS=''; DC_PS_FAIL=1
   out="$(project_add "$a" --later 2>&1)" && return 1
   assert_contains "$out" "couldn't ask Docker what the sandbox sees — try again"
-  # Docker not running at all: nothing can be mounted — added (the next ./stack up starts the sandbox with it)
-  local other; other="$(_dir other)"
-  DOCKER_DOWN=1; project_add "$other" --later 2>/dev/null || { echo "refused with Docker down" >&2; return 1; }
-  DOCKER_DOWN=''; DC_PS_FAIL=''
+  # what docker info says decides: only a Docker certainly not running (it said it cannot connect) lets the add go on —
+  # nothing can be mounted then; a hang (a stuck daemon whose containers may run) or any other error is refused
+  local other; other="$(_dir other)"; PROJECTS_DOCKER_S=1
+  DOCKER_INFO=hang; out="$(project_add "$other" --later 2>&1)" && return 1
+  assert_contains "$out" "couldn't ask Docker what the sandbox sees — try again"
+  DOCKER_INFO=other; out="$(project_add "$other" --later 2>&1)" && return 1
+  assert_contains "$out" "couldn't ask Docker what the sandbox sees — try again"
+  DOCKER_INFO=down; project_add "$other" --later 2>/dev/null || { echo "refused with Docker certainly down" >&2; return 1; }
+  DOCKER_INFO=''; DC_PS_FAIL=''
   # applied: added
   project_add "$a" --later 2>/dev/null || return 1
 }
