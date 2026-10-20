@@ -662,14 +662,23 @@ projects_status_lines() {
 # projects_test_checks — ./stack test while the terminal is on: the sandbox sees each folder at its path (read-only
 # where chosen: a write refused), and bn-coded is told the same list
 projects_test_checks() {
-  local id name mode sbx added keys host out want
+  local id name mode sbx added keys host out want pend
   terminal_ready || return 0
-  [ -f "$(projects_compose_file)" ] || return 0
-  want="$(sed -n "s/^      BN_CODE_ROOTS: '\(.*\)'$/\1/p" "$(projects_compose_file)")"
-  out="$(dc exec -T terminal sh -c 'printf %s "$BN_CODE_ROOTS"' 2>/dev/null || true)"
-  _check "the sandbox's project folders are the ones listed (BN_CODE_ROOTS)" "$out" "$want"
+  [ -f "$(projects_compose_file)" ] || [ -n "$(_pj_leaving_lines)" ] || return 0
+  projects_sync >/dev/null 2>&1 || true   # (what the running sandbox has now)
+  want="$(sed -n "s/^      BN_CODE_ROOTS: '\(.*\)'$/\1/p" "$(projects_compose_file)" 2>/dev/null || true)"
+  [ -n "$want" ] || want='[]'
+  # (a change not applied yet — --later, or turns kept running — is said, not failed: the list is ahead of the sandbox)
+  if [ -n "$(_pj_leaving_lines)" ] || case "$(cat "$(projects_status_file)" 2>/dev/null || true)" in *'"pending":"'*) true ;; *) false ;; esac; then
+    _skip "the sandbox's project folders are the ones listed" "pending: it has not restarted with the list yet — ./stack project apply"
+  else
+    out="$(dc exec -T terminal sh -c 'printf %s "$BN_CODE_ROOTS"' 2>/dev/null || true)"
+    _check "the sandbox's project folders are the ones listed (BN_CODE_ROOTS)" "${out:-[]}" "$want"
+  fi
   while IFS=$'\t' read -r id name mode sbx added keys host; do
     [ -z "$(_projects_left_out "$id")" ] || continue
+    pend="$(_pj_pending_of "$id")"
+    if [ -n "$pend" ]; then _skip "project folder $name in the sandbox at $sbx" "pending: $(_pj_pending_text "$pend")"; continue; fi
     out="$(dc exec -T -e P="$sbx" terminal sh -c 'test -d "$P" && echo there || echo missing; f="$P/.bn-probe-$$"; if (: > "$f") 2>/dev/null; then rm -f "$f"; echo writable; else echo read-only; fi' 2>/dev/null | tr '\n' ' ' || true)"
     _check "project folder $name in the sandbox at $sbx" "${out% }" "there $([ "$mode" = ro ] && echo read-only || echo writable)"
   done < <(projects_records 2>/dev/null)

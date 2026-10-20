@@ -471,6 +471,12 @@ test_pending_until_the_sandbox_has_it() {
   assert_contains "$(tr '{' '\n' < "$(projects_roots_file)" | grep '"name":"app"')" '"pending":"ro"'
   assert_contains "$(projects_list)" "pending: read-only once the sandbox restarts — until then Claude can still change it"
   assert_contains "$(projects_status_lines)" "pending: read-only once the sandbox restarts"
+  # ./stack test says it, never fails it (the list is ahead of the sandbox by choice)
+  local fails=0; out="$(projects_test_checks)"
+  assert_contains "$out" "skip  project folder app in the sandbox at $pa (pending: read-only once the sandbox restarts"
+  assert_contains "$out" "skip  the sandbox's project folders are the ones listed (pending: it has not restarted with the list yet"
+  assert_not_contains "$out" "FAIL  project folder app"
+  assert_not_contains "$out" "FAIL  the sandbox's project folders"
   # docs removed, later: still mounted until the sandbox restarts
   out="$(project_remove docs --later 2>&1)" || return 1
   assert_contains "$out" "docs is removed from the list; the sandbox keeps it until it restarts"
