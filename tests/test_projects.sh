@@ -77,6 +77,21 @@ services:
   assert_not_contains "$(cat "$TMP/dc" 2>/dev/null)" "up -d --no-deps --wait terminal"
 }
 
+test_list_find_and_remove_hold_under_the_stacks_shell_options() {
+  _stubs
+  local i rc
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do project_add "$(_dir "f$i")" --name "f$i" --later 2>/dev/null || return 1; done
+  # (./stack runs with set -euo pipefail: a lookup that stops at the first record, or a folder that was not left out
+  # — a grep matching nothing — must not end it; the subshells' status read apart: errexit is off on the left of ||)
+  ( set -euo pipefail; projects_list >/dev/null; projects_status_lines >/dev/null
+    for i in 1 2 3 4 5 6 7 8 9 10; do [ -n "$(project_find f1)" ]; done ); rc=$?
+  assert_eq "$rc" 0
+  ( set -euo pipefail; project_remove f1 --later >/dev/null 2>&1 ); rc=$?
+  assert_eq "$rc" 0
+  assert_eq "$(_rec f1)" ""
+  assert_eq "$(projects_records | grep -c .)" 11
+}
+
 test_the_workspace_rules_hold_and_more() {
   _stubs
   local ln why

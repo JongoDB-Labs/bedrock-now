@@ -140,12 +140,15 @@ projects_write() {
 
 # project_find NAME|ID -> the record's line (by id, else by name, case ignored), or nothing
 project_find() {
-  local id name rest want; want="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  projects_records | while IFS=$'\t' read -r id name rest; do
+  local id name rest want recs; want="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  # (the records read first: leaving a pipe's loop early would end its writer with SIGPIPE — a failure under pipefail)
+  recs="$(projects_records)"
+  [ -n "$recs" ] || return 0
+  while IFS=$'\t' read -r id name rest; do
     if [ "$id" = "$1" ] || [ "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" = "$want" ]; then
-      printf '%s\t%s\t%s\n' "$id" "$name" "$rest"; break
+      printf '%s\t%s\t%s\n' "$id" "$name" "$rest"; return 0
     fi
-  done
+  done <<< "$recs"
 }
 
 # --- the rules ---
@@ -446,7 +449,8 @@ projects_list() {
 _projects_left_out() {
   local f; f="$(projects_status_file)"
   [ -f "$f" ] || return 0
-  tr '{' '\n' < "$f" | grep "\"id\":\"$1\"" | grep '"ok":false' | sed -n 's/.*"why":"\([^"]*\)".*/\1/p' | head -n 1
+  # (|| true: a folder that was not left out matches nothing — not a failure under pipefail)
+  { tr '{' '\n' < "$f" | grep "\"id\":\"$1\"" | grep '"ok":false' | sed -n 's/.*"why":"\([^"]*\)".*/\1/p' | head -n 1; } || true
 }
 
 # --- hooks for the rest of ./stack ---
