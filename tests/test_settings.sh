@@ -1076,7 +1076,7 @@ test_helper_project_requests_never_carry_a_path() {
     if settings_poll_once 2>/dev/null; then echo "took $tail" >&2; return 1; fi
     assert_contains "$(cat "$(helper_status_file)")" "not a valid request"
   done
-  for tail in '"when":"now","project":"/Users/me/src"' '"when":"now","project":"p_1234"' '"when":"now","project":"p_12345678","path":"/x"' \
+  for tail in '"when":"now","project":"/Volumes/me/src"' '"when":"now","project":"p_1234"' '"when":"now","project":"p_12345678","path":"/x"' \
               '"when":"now","project":"../p_12345678"'; do
     _pact '"project-remove"' "$tail" 33333333333333333333333333333333
     if settings_poll_once 2>/dev/null; then echo "took $tail" >&2; return 1; fi

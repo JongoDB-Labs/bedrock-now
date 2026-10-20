@@ -18,7 +18,7 @@ const { createServer } = await import('../server/main.mjs');
 const { SandboxError } = await import('../server/spawn-client.mjs');
 const { fakeQuery } = await import('./fake-sdk.mjs');
 
-const APP = '/Users/me/src/app', NOTES = '/projects/notes', GONE = '/Users/me/src/old';
+const APP = '/Volumes/me/src/app', NOTES = '/projects/notes', GONE = '/Volumes/me/src/old';
 const ID = { app: 'p_0a0a0a0a', notes: 'p_0b0b0b0b', old: 'p_0c0c0c0c' };
 const writeRoots = (roots) => {
   const tmpf = `${ROOTS}.tmp`;
@@ -41,7 +41,7 @@ test('roots.json: each entry checked; a hostile one cannot widen anything', () =
   assert.deepEqual(hostRoots()[1], { id: ID.notes, name: 'notes', path: NOTES, mode: 'ro', hidden: true });
   // a working folder in one of them is one a session may have; a path next to them is not
   for (const ok of [APP, `${APP}/src`, NOTES, '/workspace']) assert.ok(cwdOk(ok), ok);
-  for (const bad of ['/Users/me/src/appx', '/Users/me', '/projects', '/etc', `${APP}/../x`]) assert.equal(cwdOk(bad), false, bad);
+  for (const bad of ['/Volumes/me/src/appx', '/Volumes/me', '/projects', '/etc', `${APP}/../x`]) assert.equal(cwdOk(bad), false, bad);
   assert.equal(absOf(APP), APP);
   assert.equal(absOf('web'), '/workspace/web');
   fs.writeFileSync(ROOTS, 'not json');
@@ -149,7 +149,7 @@ test('the API: folders of this computer listed with their switches; their root o
   assert.deepEqual(r.json.repos.map((x) => x.path), [APP]);
   // a path that is in no folder ./stack lists: refused before the sandbox is asked
   const n = calls.length;
-  for (const p of [`/api/git/status?repo=${encodeURIComponent('/Users/me/src')}`, `/api/git/status?repo=${encodeURIComponent('/etc')}`,
+  for (const p of [`/api/git/status?repo=${encodeURIComponent('/Volumes/me/src')}`, `/api/git/status?repo=${encodeURIComponent('/etc')}`,
     `/api/git/status?repo=${encodeURIComponent(GONE)}`, `/api/git/diff?project=${ID.old}`]) {
     const x = await req('GET', p);
     assert.ok(x.status === 400 || x.status === 404, `${p}: ${x.status}`);

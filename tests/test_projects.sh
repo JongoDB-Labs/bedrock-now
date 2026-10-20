@@ -167,9 +167,9 @@ test_at_most_sixteen_and_each_name_once() {
 
 test_where_the_sandbox_sees_a_folder() {
   _stubs
-  assert_eq "$(project_sandbox_path /Users/me/src/app app no)" /Users/me/src/app
+  assert_eq "$(project_sandbox_path /Volumes/me/src/app app no)" /Volumes/me/src/app
   assert_eq "$(project_sandbox_path /home/me/src/app app no)" /home/me/src/app
-  assert_eq "$(project_sandbox_path /Users/me/src/app app yes)" /projects/app
+  assert_eq "$(project_sandbox_path /Volumes/me/src/app app yes)" /projects/app
   # the sandbox's own folders: /projects/<name> instead
   for p in /home/claude/x /workspace /workspace/x /tmp/x /var/lib/x /opt/x /usr/local/src /root/x /etc/x /projects/x /srv/x; do
     assert_eq "$(project_sandbox_path "$p" n no)" /projects/n

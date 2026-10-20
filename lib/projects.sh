@@ -323,7 +323,7 @@ projects_apply() {
   log "the sandbox sees: $(projects_where)"
 }
 
-# projects_where -> "/workspace, /Users/you/src/app (ro)…" for a summary line
+# projects_where -> "/workspace, /home/you/src/app (ro)…" for a summary line
 projects_where() {
   local out='/workspace' id name mode sbx rest
   while IFS=$'\t' read -r id name mode sbx rest; do out="$out, $sbx$([ "$mode" = ro ] && echo ' (read-only)')"; done < <(projects_records)

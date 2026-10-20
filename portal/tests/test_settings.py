@@ -578,8 +578,8 @@ def projects_up(sd, screen=True, folders=None):
     cap.update({"projects": list(st.PROJECT_ACTIONS), "screen": screen})
     (sd / "helper-settings.json").write_text(json.dumps(cap))
     (sd / "projects.json").write_text(json.dumps({"version": 1, "written_at": int(time.time()), "max": 16, "folders": folders if folders is not None else [
-        {"id": "p_0123abcd", "name": "app", "host": "/Users/me/src/app", "path": "/Users/me/src/app", "mode": "rw", "hidden": False, "added": 1, "ok": True, "why": ""},
-        {"id": "p_89abcdef", "name": "notes", "host": "/Users/me/notes", "path": "/projects/notes", "mode": "ro", "hidden": True, "added": 2, "ok": False,
+        {"id": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "path": "/Volumes/me/src/app", "mode": "rw", "hidden": False, "added": 1, "ok": True, "why": ""},
+        {"id": "p_89abcdef", "name": "notes", "host": "/Volumes/me/notes", "path": "/projects/notes", "mode": "ro", "hidden": True, "added": 2, "ok": False,
          "why": "it is gone (or cannot be opened)"}]}))
 
 
@@ -590,7 +590,7 @@ def project(c, act, headers=H, **body):
 def test_project_folders_list_is_checked(dirs):
     sd, _ = dirs
     projects_up(sd, folders=[
-        {"id": "p_0123abcd", "name": "app", "host": "/Users/me/src/app", "path": "/Users/me/src/app", "mode": "rw", "hidden": False, "added": 1, "ok": True},
+        {"id": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "path": "/Volumes/me/src/app", "mode": "rw", "hidden": False, "added": 1, "ok": True},
         {"id": "../etc", "name": "x", "host": "/x", "path": "/x", "mode": "rw"},
         {"id": "p_00000001", "name": "a b", "host": "/x", "path": "/x", "mode": "rw"},
         {"id": "p_00000002", "name": "y", "host": "x", "path": "/x", "mode": "rw"},
@@ -598,7 +598,7 @@ def test_project_folders_list_is_checked(dirs):
         {"id": "p_00000004", "name": "w", "host": "/x", "path": "/x", "mode": "rwx"}])
     d = st.project_folders(sd)
     assert [f["id"] for f in d["folders"]] == ["p_0123abcd"]
-    assert d["folders"][0] == {"id": "p_0123abcd", "name": "app", "host": "/Users/me/src/app", "path": "/Users/me/src/app", "mode": "rw", "hidden": False,
+    assert d["folders"][0] == {"id": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "path": "/Volumes/me/src/app", "mode": "rw", "hidden": False,
                                "added": 1, "ok": True, "why": ""}
     assert st.capability(sd)["projects"] == list(st.PROJECT_ACTIONS) and st.capability(sd)["screen"] is True
 
@@ -621,7 +621,7 @@ def test_project_actions_write_fixed_requests_and_never_a_path(make, dirs):
     assert re.fullmatch(r'\{"action":"project-remove","requested_at":[0-9]+,"nonce":"[0-9a-f]{32}","auth":"[A-Za-z0-9+/=]+","when":"now","project":"p_89abcdef"\}', body), body
     c3 = make()
     # a path, an id not in the list, an unknown action, a bad choice: refused
-    assert project(c3, "project-remove", project="/Users/me").status_code == 400
+    assert project(c3, "project-remove", project="/Volumes/me").status_code == 400
     assert project(c3, "project-remove", project="p_ffffffff").status_code == 404
     assert project(c3, "project-add", project="p_0123abcd").status_code == 400
     assert project(c3, "project-pick", when="soon").status_code == 400
