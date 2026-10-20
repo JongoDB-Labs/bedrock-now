@@ -381,3 +381,20 @@ spend_cut() {
 spend_resume() { SPEND_MARK="$(_spend_read)" || SPEND_ERR="${SPEND_ERR:+$SPEND_ERR, }after a restore"; }
 spend_total() { spend_cut; [ -z "$SPEND_ERR" ] || { printf 'unanswered: %s\n' "$SPEND_ERR" >&2; return 1; }; printf '%.4f\n' "$SPEND_ACC"; }
 spend_ok() { awk -v s="${1:-0}" -v l="$2" 'BEGIN { exit !(s + 0 < l + 0) }'; }
+
+# host_folders_parent -> where --host-folders makes its two folders: E2E_HOST_FOLDERS_DIR, else
+# ROOT/tests/e2e/work/PROJECT-host-folders (gitignored) — never under --out, which may be a temporary folder that
+# ./stack project rightly refuses. Either one must not exist yet: the suite makes it and removes it at the end.
+host_folders_parent() { printf '%s\n' "${E2E_HOST_FOLDERS_DIR:-$ROOT/tests/e2e/work/$PROJECT-host-folders}"; }
+# host_folders_refused DIR -> why ./stack project would refuse a folder in DIR by its path alone (this checkout's own
+# rules, lib/projects.sh _project_path_rules: a temporary folder, a folder of sockets, a .claude part that is not a
+# Claude Code worktree, a Time Machine backup) — printed, 0; 1 when it would not. DIR need not exist yet: it is read
+# as the nearest folder above it that does, as that resolves, and the rest.
+host_folders_refused() {
+  local d="$1" base phys why
+  base="$d"; while [ ! -d "$base" ]; do base="$(dirname "$base")"; done
+  phys="$(cd "$base" && /bin/pwd -P)${d#"$base"}"
+  why="$(STACK_DIR="$ROOT" ENV_FILE=/nonexistent bash -c '. "$STACK_DIR/lib/common.sh" && . "$STACK_DIR/lib/terminal.sh" &&
+    . "$STACK_DIR/lib/projects.sh" && _project_path_rules "$1"' _ "$phys/app" 2>/dev/null)" && return 1
+  printf '%s\n' "${why:-its path breaks a rule of ./stack project}"
+}

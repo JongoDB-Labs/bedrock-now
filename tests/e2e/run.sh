@@ -47,7 +47,8 @@
 #                    terminal window in it, files a session (Add to project), removes a record. Never a real git host
 #                    or provider.
 #   --host-folders   folders of this computer as Code page projects (E2E_HOST_FOLDERS=1 does the same; needs the Code
-#                    page and the browser part): two folders made under this run's --out (never one of yours) added
+#                    page and the browser part): two folders made in tests/e2e/work/<project>-host-folders (never one
+#                    of yours, never under --out, which may be a temporary folder ./stack project refuses) added
 #                    with ./stack project add — one read-write at its own path, one read-only at /projects/<name> —
 #                    what the sandbox and the code container see then (and nothing else of your home folder), then
 #                    browser passes between ./stack project commands: browser/code-host-folders-a (both in the
@@ -56,9 +57,9 @@
 #                    (added again: the session resumes, Haiku); in between, made read-only with --now (the sandbox
 #                    refuses writes at once), read-write again with --later (said as pending until ./stack project
 #                    apply), and a folder in /tmp refused; both removed at the end, their files untouched.
-#                    E2E_HOST_FOLDERS_DIR=/abs/new-folder: their parent instead of OUT (for a checkout whose path
-#                    ./stack project refuses, e.g. one in a .claude folder that is not a worktree there; it must not
-#                    exist yet and is removed after)
+#                    E2E_HOST_FOLDERS_DIR=/abs/new-folder: their parent instead (for a checkout whose path ./stack
+#                    project refuses — in a temporary folder, or in a .claude folder that is not a worktree's: the run
+#                    says so at once). Either parent must not exist yet; the suite makes it and removes it after.
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -132,6 +133,19 @@ if [ "$TERMINAL" = 1 ]; then BUDGETS="$BUDGETS BUDGET_TERMINAL=0.06"; SPEND_LIMI
 # after them on the same key.
 if [ "$CODE" = 1 ]; then BUDGETS="${BUDGETS% BUDGET_TERMINAL=*} BUDGET_TERMINAL=0.30"; SPEND_LIMIT="0.40"; fi
 valid_project "$PROJECT" || { echo "--project: only bne2e or bne2e-<lowercase letters, digits, ->, not '$PROJECT' (teardown deletes the project's volumes)" >&2; exit 2; }
+
+# --host-folders: its folders' parent (host_folders_parent) said wrong at once, not after a setup: one already there
+# (an earlier run's: remove it), or one ./stack project would refuse by its path (a checkout in a temporary folder,
+# or in a .claude folder that is not a worktree's)
+if [ "$HOST_FOLDERS" = 1 ]; then
+  HF_PARENT="$(host_folders_parent)"
+  case "$HF_PARENT" in /*) ;; *) echo "E2E_HOST_FOLDERS_DIR must be an absolute path" >&2; exit 2 ;; esac
+  [ ! -e "$HF_PARENT" ] || { echo "--host-folders: $HF_PARENT is there already (an earlier run's? remove it), or set E2E_HOST_FOLDERS_DIR=/abs/new-folder" >&2; exit 2; }
+  if why="$(host_folders_refused "$HF_PARENT")"; then
+    echo "--host-folders: ./stack project would refuse folders in $HF_PARENT: $why — set E2E_HOST_FOLDERS_DIR=/abs/new-folder somewhere it accepts (a folder of yours, not a temporary one)" >&2
+    exit 2
+  fi
+fi
 
 mkdir -p "$OUT" || exit 2
 OUT="$(cd "$OUT" && pwd -P)"
@@ -764,15 +778,9 @@ if [ "$HOST_FOLDERS" = 1 ] && { [ "$CODE" = 0 ] || ! part_on browser; }; then
   record projects host-folders SKIP 0 "--host-folders needs the Code page and the browser part"
 elif [ "$HOST_FOLDERS" = 1 ]; then
   say "folders of this computer: ./stack project add, the sandbox's view, a session across restarts"
-  # (their parent: OUT/host-folders, or E2E_HOST_FOLDERS_DIR when ./stack project refuses OUT's path — a checkout in a
-  # .claude folder other than a worktree there, say: then a folder that must not exist yet, made here and removed at
-  # the end)
-  HF_OWN="${E2E_HOST_FOLDERS_DIR:-}"
-  if [ -n "$HF_OWN" ]; then
-    case "$HF_OWN" in /*) ;; *) die "E2E_HOST_FOLDERS_DIR must be an absolute path" ;; esac
-    [ ! -e "$HF_OWN" ] || die "E2E_HOST_FOLDERS_DIR ($HF_OWN) must not exist yet: the suite makes it, and removes it at the end"
-    HF="$HF_OWN"
-  else HF="$OUT/host-folders"; rm -rf "$HF"; fi
+  # (their parent: host_folders_parent, checked at the start — made here, removed at the end)
+  HF="$HF_PARENT"
+  [ ! -e "$HF" ] || die "--host-folders: $HF is there already (an earlier run's? remove it)"
   mkdir -p "$HF/app" "$HF/notes"; HF="$(cd "$HF" && pwd -P)"
   printf 'hello from this computer\n' > "$HF/app/hello.txt"; printf '# Notes\n\nRead only for Claude.\n' > "$HF/notes/notes.md"
   chmod 755 "$HF" "$HF/app" "$HF/notes"; chmod 644 "$HF/app/hello.txt" "$HF/notes/notes.md"
@@ -844,7 +852,7 @@ elif [ "$HOST_FOLDERS" = 1 ]; then
      [ "$(cat "$HF/notes/notes.md" 2>/dev/null | head -n 1)" != '# Notes' ] || [ -e "$HF/notes/.e2e-w" ]; then
     record projects host-folders-cleaned FAIL 0 "after removing both: still listed, the generated compose file left, or a folder changed"
   else record projects host-folders-cleaned PASS "$(( $(now) - t0 ))" "both removed: none listed, no generated compose file; the folders on this computer as they were"; fi
-  [ -z "$HF_OWN" ] || rm -rf "$HF"   # (the suite's own folder, made above)
+  rm -rf "$HF"   # (the suite's own folder, made above)
 fi
 
 # --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---

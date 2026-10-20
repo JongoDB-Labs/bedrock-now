@@ -320,3 +320,35 @@ test_e2e_teardown_stops_a_helper_a_killed_run_left_but_no_other_checkouts() {
   kill -TERM "$other" 2>/dev/null; wait "$other" 2>/dev/null || true
   return "$rc"
 }
+
+test_e2e_host_folders_default_to_the_work_folder_never_out() {
+  ROOT="$STACK_DIR"; PROJECT=bne2e-x; OUT="/tmp/somewhere-out"
+  local E2E_HOST_FOLDERS_DIR=''
+  assert_eq "$(host_folders_parent)" "$STACK_DIR/tests/e2e/work/bne2e-x-host-folders"
+  E2E_HOST_FOLDERS_DIR="$TMP/mine"
+  assert_eq "$(host_folders_parent)" "$TMP/mine"
+}
+
+test_e2e_host_folders_a_parent_stack_project_refuses_is_said_at_once() {
+  ROOT="$STACK_DIR"
+  local why
+  # a temporary folder (the tests' own folders are in one), a .claude folder that is not a worktree's
+  why="$(host_folders_refused "$TMP/new/host-folders")" || { echo "accepted a temporary folder" >&2; return 1; }
+  assert_contains "$why" "temporary or runtime folder"
+  why="$(host_folders_refused "/nonexistent-root/src/.claude/skills/host-folders")" || { echo "accepted a .claude folder" >&2; return 1; }
+  assert_contains "$why" "a .claude folder"
+  # a Claude Code worktree's folder is fine
+  if host_folders_refused "/nonexistent-root/repo/.claude/worktrees/w/tests/e2e/work/bne2e-host-folders" >/dev/null; then
+    echo "refused a worktree's folder" >&2; return 1
+  fi
+  # run.sh says it before anything is set up (no docker, no setup), naming E2E_HOST_FOLDERS_DIR
+  local out rc=0
+  out="$(cd "$TMP" && E2E_HOST_FOLDERS_DIR="$TMP/hf" bash "$STACK_DIR/tests/e2e/run.sh" --host-folders --project bne2e-hf --aws-env /nonexistent 2>&1)" || rc=$?
+  assert_eq "$rc" 2
+  assert_contains "$out" "--host-folders: ./stack project would refuse folders in $TMP/hf"
+  assert_contains "$out" "set E2E_HOST_FOLDERS_DIR=/abs/new-folder"
+  [ ! -e "$TMP/hf" ] || { echo "made the folder anyway" >&2; return 1; }
+  mkdir -p "$TMP/there"
+  out="$(E2E_HOST_FOLDERS_DIR="$TMP/there" bash "$STACK_DIR/tests/e2e/run.sh" --host-folders --project bne2e-hf --aws-env /nonexistent 2>&1)" && return 1
+  assert_contains "$out" "is there already"
+}
