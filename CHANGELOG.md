@@ -24,13 +24,15 @@ All notable changes to bedrock-now are documented here. The format follows
 - **Sign-in while no app is set up (gitlab.com, GitHub Enterprise) says so plainly**: "Sign-in needs an app
   registered with GitLab once (2 minutes; only a public ID, no secret): Set up sign-in" opens the exact steps in the
   dialog (GitLab's form requires a redirect URI: `http://localhost/`; a GitHub App for an organization's repositories
-  under the organization or *Any account*, installed from its page; GitHub's required private key deleted once made);
-  the field is **GitHub app client ID (Iv…)** / **GitLab application ID**; the waiting Sign in button says "Paste an
-  app ID first"; and "Already use gh on this computer? `./stack git-host import gh` Copy" is right there. With
-  bedrock-now's own GitHub App, the dialog only says where to install it (*Choose repositories*).
+  under the organization or *Any account*, installed from its page; GitHub's required private key made and its
+  downloaded .pem file deleted, never used); the field is **GitHub app client ID (Iv…)** / **GitLab application
+  ID**; the waiting Sign in button says "Paste an app ID first"; and "Already use gh on this computer?
+  `./stack git-host import gh` Copy" is right there. With bedrock-now's own GitHub App, the dialog only says where to
+  install it (*Choose repositories*).
 - **Activity names a gh command or a repository path only in their own shapes**: the command gh says it runs as
-  bn-gh makes it (its first two words, or gh api's method and endpoint), the path git asks a login for as a URL path —
-  anything else the sandbox says there is left out, never shown as a line of Activity.
+  bn-gh makes it — one of gh's own commands and the next word, or gh api with an HTTP method (GET, POST, PUT, PATCH,
+  DELETE, HEAD) and an endpoint path (no `:` or `@`) —, the path git asks a login for as a URL path; anything else the
+  sandbox says there is left out, never shown as a line of Activity.
 
 ### Fixed
 

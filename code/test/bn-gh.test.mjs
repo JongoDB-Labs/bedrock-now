@@ -12,6 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { tmp, TERMINAL_DIR } from './helpers.mjs';
+import { GH_COMMANDS, GH_COMMAND } from '../server/gitremote.mjs';
 
 const ROOT = tmp('bngh');
 after(() => fs.rmSync(ROOT, { recursive: true, force: true }));
@@ -84,6 +85,31 @@ test('allowed: the token in gh\'s environment only, never on disk; the question 
   assert.equal(asked[0].path, 'api DELETE repos/o/r');
   // gh's exit status is the wrapper's
   assert.equal((await gh(['repo', 'view'], { env: { FAKE_EXIT: '3' } })).code, 3);
+});
+
+test('the command said for Activity: one of gh\'s commands and the next word, or gh api with an HTTP method and a path', async () => {
+  const list = fs.readFileSync(WRAPPER, 'utf8').match(/const GH_COMMANDS = new Set\((\[[^\]]*\])\)/)[1];
+  assert.deepEqual(JSON.parse(list.replace(/'/g, '"')), GH_COMMANDS, 'the server\'s list of gh\'s commands is bn-gh\'s');
+  await broker(); allow = new Set(['github.com']);
+  for (const [args, said] of [
+    [['issue', 'view', '12'], 'issue view'],
+    [['pr', '12'], 'pr'],
+    [['api', 'graphql', '-f', 'query=x'], 'api graphql'],
+    [['api', '--method=post', '/repos/{owner}/{repo}/issues'], 'api POST /repos/{owner}/{repo}/issues'],
+    [['api', '-X', 'CONFIRM', 'WDJB-MJHT@login/device'], 'api'],
+    [['api', '-XENTER', 'repos/o/r'], 'api repos/o/r'],
+    [['api', '-X', 'GET', 'a:b/c', 'repos/o/r'], 'api GET'],
+    [['login-device', 'wdjb-mjht'], ''],
+  ]) {
+    asked.length = 0;
+    await gh(args);
+    assert.equal(asked[0]?.path, said, args.join(' '));
+    assert.equal(GH_COMMAND.test(said), said !== '', `the server says it: ${args.join(' ')}`);
+  }
+  // (a HOST/OWNER/REPO that is not a host name: nothing asked at all)
+  asked.length = 0;
+  await gh(['api', '-X', 'CONFIRM', 'WDJB-MJHT@github.com/login/device']);
+  assert.equal(asked.length, 0);
 });
 
 test('not allowed, or nothing to ask: no token, one line saying how to allow it — unless gh has a login of its own', async () => {

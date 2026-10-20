@@ -113,9 +113,18 @@ export function remoteStateOf(r) {
 
 const PLAN_MS = 10 * 60000;
 const CLAUDE_PER_MINUTE = 30;
-// the command gh says it runs, for Activity — exactly the shapes bn-gh's describe makes (its first two words, or gh
-// api's method and endpoint), never a sentence: what the sandbox says goes into Activity only in a shape of ours
-const GH_COMMAND = /^(?:[a-z][a-z0-9-]{0,30}(?: [a-z][a-z0-9-]{0,30})?|api(?: [A-Z]{3,7})?(?: \/?[A-Za-z0-9._{}:@-]+(?:\/[A-Za-z0-9._{}:@-]*)*)?)$/;
+// gh's own top-level commands (gh help) — terminal/bin/bn-gh has the same list (a test keeps the two equal)
+export const GH_COMMANDS = [
+  'accessibility', 'actions', 'agent-task', 'alias', 'api', 'attestation', 'auth', 'browse', 'cache', 'codespace',
+  'completion', 'config', 'copilot', 'extension', 'gist', 'gpg-key', 'help', 'issue', 'label', 'org', 'pr', 'preview',
+  'project', 'release', 'repo', 'ruleset', 'run', 'search', 'secret', 'ssh-key', 'status', 'variable', 'version',
+  'workflow'];
+// the command gh says it runs, for Activity — exactly the shapes bn-gh's describe makes: one of gh's commands and the
+// next word, or gh api, an HTTP method and an endpoint (a path: no ':' or '@'), never a sentence — what the sandbox
+// says goes into Activity only in a shape of ours
+export const GH_COMMAND = new RegExp('^(?=.{1,120}$)(?:'
+  + `(?:${GH_COMMANDS.filter((c) => c !== 'api').join('|')})(?: [a-z][a-z0-9-]{0,30})?`
+  + '|api(?: (?:GET|POST|PUT|PATCH|DELETE|HEAD))?(?: \\/?[A-Za-z0-9._{}-]+(?:\\/[A-Za-z0-9._{}-]*)*)?)$');
 // the path git says it asks for (git's credential protocol: the repository's path), for Activity — a URL path's
 // characters only, no spaces: anything else is not said
 const CRED_PATH = /^[A-Za-z0-9._~@%+=,/-]{1,200}$/;

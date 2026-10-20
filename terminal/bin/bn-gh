@@ -108,24 +108,35 @@ function target(a) {
 // (gh api's flags that take a value: their value is never the endpoint)
 const API_VALUE_FLAGS = new Set(['-H', '--header', '-f', '--raw-field', '-F', '--field', '-q', '--jq', '-t', '--template', '--input', '--cache', '-p', '--preview',
   '--hostname']);
-// describe(args) -> the command for Activity: its first words ("pr create"), or gh api's method and endpoint
+// gh's own top-level commands (gh help): the only first words said for Activity — code/server/gitremote.mjs has
+// the same list (a test keeps the two equal)
+const GH_COMMANDS = new Set([
+  'accessibility', 'actions', 'agent-task', 'alias', 'api', 'attestation', 'auth', 'browse', 'cache', 'codespace',
+  'completion', 'config', 'copilot', 'extension', 'gist', 'gpg-key', 'help', 'issue', 'label', 'org', 'pr', 'preview',
+  'project', 'release', 'repo', 'ruleset', 'run', 'search', 'secret', 'ssh-key', 'status', 'variable', 'version',
+  'workflow']);
+// describe(args) -> the command for Activity: its first words ("pr create"), or gh api's method (an HTTP one) and
+// endpoint (a path: no ':' or '@'); '' for a command that is not gh's
 function describe(a) {
-  const word = /^[a-z][a-z0-9-]{0,30}$/;
   if (a[0] === 'api') {
-    let method = '', endpoint = '';
+    let method = '', endpoint = '', named = false;
     for (let i = 1; i < a.length; i++) {
       const x = a[i];
       if (x === '-X' || x === '--method') method = a[++i] ?? '';
       else if (x.startsWith('--method=')) method = x.slice(9);
       else if (/^-X[A-Za-z]/.test(x)) method = x.slice(2);
       else if (API_VALUE_FLAGS.has(x)) i++;
-      else if (!endpoint && !x.startsWith('-') && /^\/?[A-Za-z0-9._{}:@-]+(?:\/[A-Za-z0-9._{}:@-]*)*(?:\?.*)?$/.test(x)) endpoint = x.split('?')[0];
+      else if (!named && !x.startsWith('-')) {
+        named = true;
+        if (/^\/?[A-Za-z0-9._{}-]+(?:\/[A-Za-z0-9._{}-]*)*(?:\?.*)?$/.test(x)) endpoint = x.split('?')[0];
+      }
     }
-    return ['api', /^[A-Za-z]{3,7}$/.test(method) ? method.toUpperCase() : '', endpoint.slice(0, 100)].filter(Boolean).join(' ');
+    method = method.toUpperCase();
+    if (!/^(?:GET|POST|PUT|PATCH|DELETE|HEAD)$/.test(method)) method = '';
+    return ['api', method, endpoint.slice(0, 100)].filter(Boolean).join(' ');
   }
-  const out = [];
-  for (const x of a) { if (!word.test(x) || out.length === 2) break; out.push(x); }
-  return out.join(' ');
+  if (!GH_COMMANDS.has(a[0])) return '';
+  return /^[a-z][a-z0-9-]{0,30}$/.test(a[1] ?? '') ? `${a[0]} ${a[1]}` : a[0];
 }
 
 // ask(host) -> the token, or null (30 s at most)

@@ -11,7 +11,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { GitHosts, HostError, KINDS } from '../server/githosts.mjs';
-import { makeGitRemote, parseRemoteUrl, prLink, remoteStateOf, reposOf, repoOk, credHost, NEVER_ASKS, GIT_SAID, SandboxSaid } from '../server/gitremote.mjs';
+import { makeGitRemote, parseRemoteUrl, prLink, remoteStateOf, reposOf, repoOk, credHost, NEVER_ASKS, GIT_SAID, SandboxSaid, GH_COMMAND }
+  from '../server/gitremote.mjs';
 import { SandboxError } from '../server/spawn-client.mjs';
 import { agentAnswer, AGENT, sshString, keyBlob, fingerprint, publicKeyBlob, newKey, loadKey, userauth, KNOWN_HOSTS, FAILURE } from '../server/sshagent.mjs';
 import { createServer } from '../server/main.mjs';
@@ -298,6 +299,18 @@ test('Test connection learns a host key only locally; the broker answers Claude 
   assert.equal(events.filter((e) => e.action === 'gh').at(-1).target, 'github.com: gh api DELETE repos/o/r');
   await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com', path: 'enter WDJB-MJHT at github.com/login/device', purpose: 'gh' });
   assert.equal(events.filter((e) => e.action === 'gh').at(-1).target, 'github.com');
+  // a method that is not an HTTP one, ':' or '@' in an endpoint, a first word that is not one of gh's commands
+  for (const p of ['api CONFIRM WDJB-MJHT@github.com/login/device', 'api ENTER WDJB-MJHT/at/github.com/login/device', 'login-device wdjb-mjht']) {
+    await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com', path: p, purpose: 'gh' });
+    assert.equal(events.filter((e) => e.action === 'gh').at(-1).target, 'github.com', p);
+  }
+  for (const p of ['pr', 'auth status', 'api', 'api graphql', 'api POST graphql', 'api GET /repos/{owner}/{repo}/pulls', 'api HEAD user/']) {
+    assert.ok(GH_COMMAND.test(p), p);
+  }
+  for (const p of ['', 'api GET WDJB-MJHT@github.com/login/device', 'api GET https://x.example/user', 'api get user',
+    'Pr create', 'pr Create', 'pr create now', 'api GET user extra', `api GET ${'a'.repeat(120)}`, 'pr create\n']) {
+    assert.ok(!GH_COMMAND.test(p), p);
+  }
   await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com', path: 'o/r.git — GitHub asks you to enter WDJB-MJHT at github.com/login/device' });
   assert.equal(events.filter((e) => e.action === 'credential').at(-1).target, 'github.com', 'a path that is not one: not said');
   const lab = s.add({ kind: 'gitlab', auth: 'token', token: TOKEN });
@@ -315,7 +328,7 @@ test('Test connection learns a host key only locally; the broker answers Claude 
   assert.ok(!JSON.stringify(events).includes(TOKEN));
   let given = 0;
   for (let i = 0; i < 40; i++) if ((await onAsk({ kind: 'cred', protocol: 'https', host: 'github.com', ...(i % 2 ? { purpose: 'gh' } : {}) })).password) given++;
-  assert.equal(given, 22, 'at most 30 a minute, git\'s and gh\'s together (8 given above)');
+  assert.equal(given, 19, 'at most 30 a minute, git\'s and gh\'s together (11 given above)');
   assert.equal(events.at(-1).ok, false);
   gb.setClaude(tok.id, { on: false }, true);   // (off works over remote access too)
   await new Promise((r) => setTimeout(r, 10));
