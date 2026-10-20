@@ -1110,6 +1110,8 @@ export async function activate(id: string): Promise<void> {
   ensureView(id);
   set((s) => ({ ...s, active: id, sheet: s.sheet === 'sessions' ? null : s.sheet }));
   updateView(id, (v) => (v.unseen ? { ...v, unseen: false } : v));
+  // (one the backend still had when its folder went — its process ended with the sandbox's restart: read only now)
+  noteGone(id);
   setPrefs((p) => ({ ...p, lastSession: id }));
   const v = get().views[id];
   if (v && !v.items.length && !loadedHistory.has(id)) {
@@ -1257,9 +1259,19 @@ async function showGone(id: string): Promise<void> {
     set((x) => ({ ...x, views: { ...x.views, [id]: newView(id, { state: 'closed', title: info?.title ?? '' }) } }));
     loadedHistory.add(id);
     await reloadHistory(id, true);
-    updateView(id, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: goneNote(p), level: 'warn' }], nextKey: v.nextKey + 1 }));
   }
+  noteGone(id);
   set((x) => ({ ...x, active: id, sheet: x.sheet === 'sessions' ? null : x.sheet }));
+}
+/** The line saying a session's folder is no longer added, last in its view (once: not again while it is last). */
+function noteGone(id: string): void {
+  const p = goneFolderOf(id);
+  if (!p) return;
+  const text = goneNote(p);
+  updateView(id, (v) => {
+    const last = v.items[v.items.length - 1];
+    return last && last.t === 'notice' && last.text === text ? v : { ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text, level: 'warn' }], nextKey: v.nextKey + 1 };
+  });
 }
 
 async function openExisting(id: string, fork: boolean, before?: string, text = ''): Promise<void> {
