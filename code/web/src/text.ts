@@ -90,12 +90,32 @@ export function isId(s: unknown): s is string {
 // The folders of this computer the sandbox sees beside the workspace (./stack project; the projects list the backend
 // gives — from ./stack's own list, never the sandbox's word): a path in one of them is the page's as its absolute path
 // (a workspace path is relative to /workspace). Set by app.ts when the projects are loaded.
+// Those added read-only: the page changes nothing there (api.ts refuses its writes, as the sandbox refuses Claude's).
+// Those no longer added (the sandbox no longer sees them): only a listed session's folder may be in one — its sessions
+// are listed there, read only; no path of the page is.
 let HOST_TOPS: readonly string[] = [];
-export function setHostTops(tops: readonly string[]): void { HOST_TOPS = Object.freeze([...tops]); }
+let READ_ONLY: readonly string[] = [];
+let GONE: readonly string[] = [];
+/** -> whether the folders changed (a session list read before may have left out sessions in them) */
+export function setHostTops(tops: readonly string[], readOnly: readonly string[] = [], gone: readonly string[] = []): boolean {
+  const was = [...HOST_TOPS, '', ...GONE].join('\n');
+  HOST_TOPS = Object.freeze([...tops]);
+  READ_ONLY = Object.freeze(readOnly.filter((t) => tops.includes(t)));
+  GONE = Object.freeze(gone.filter((t) => !tops.includes(t)));
+  return [...HOST_TOPS, '', ...GONE].join('\n') !== was;
+}
 export const hostTops = (): readonly string[] => HOST_TOPS;
+/** goneTopOf(p) -> the folder of this computer no longer added an absolute path is in (or is), else null */
+export function goneTopOf(p: string): string | null {
+  return GONE.find((t) => p === t || p.startsWith(`${t}/`)) ?? null;
+}
 /** hostTopOf(p) -> the folder of this computer an absolute path is in (or is), else null */
 export function hostTopOf(p: string): string | null {
   return HOST_TOPS.find((t) => p === t || p.startsWith(`${t}/`)) ?? null;
+}
+/** readOnlyTopOf(p) -> the read-only folder of this computer a page path is in (or is), else null */
+export function readOnlyTopOf(p: string): string | null {
+  return typeof p === 'string' ? (READ_ONLY.find((t) => p === t || p.startsWith(`${t}/`)) ?? null) : null;
 }
 
 /** A path of the page we are willing to request or show: relative to the workspace, or absolute in a folder of this

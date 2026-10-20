@@ -78,3 +78,14 @@
 .settings-guard { color: var(--warn); }
 .ps-json { display: block; margin: 2px 0 4px; color: var(--muted); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ps-careful > code:first-child { outline: 1px dashed var(--warn); outline-offset: 1px; }
+
+/* folders of this computer: the read-only mark, those no longer added (their sessions, read only), the New project
+   option's command line */
+.proj-ro { flex: none; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 10.5px; line-height: 16px; }
+.proj-gone { margin-top: 6px; border-top: 1px solid var(--line); }
+.proj-gone > .group-head { padding: 6px 10px 2px; }
+.proj.gone .proj-name { cursor: default; color: var(--muted); }
+.proj.gone .proj-name:hover { background: none; }
+.np-computer { display: flex; flex-direction: column; gap: 6px; }
+.np-cmd { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.np-cmd code { min-width: 0; overflow-wrap: anywhere; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }

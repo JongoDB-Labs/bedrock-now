@@ -10,7 +10,7 @@ import { addLines, insertIntoPrompt } from '../attach';
 import { RANGE_MAX, lineToken } from '../mentions';
 import * as api from '../api';
 import { countChanges, hunkLines } from '../diff';
-import { basename, bytes, dirname, label } from '../text';
+import { basename, bytes, dirname, label, readOnlyTopOf } from '../text';
 import { SandboxSaid } from './Said';
 import { downloadUrl } from '../api';
 import type { EditorHandle } from '../editor/cm';
@@ -64,6 +64,8 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
   const seen = useRef(-1);
   const phone = useMedia('(max-width: 699.98px)');
   const [readOnly, setReadOnly] = useState(phone);
+  // (a file in a folder of this computer added read-only: shown, never changed from here)
+  const locked = useSel(store, () => readOnlyTopOf(tab.path));
   const [failed, setFailed] = useState<string | null>(null);
   // (Split needs two columns: on a phone it shows the preview)
   const view = !tab.preview ? 'source' : phone && tab.view === 'split' ? 'preview' : tab.view;
@@ -104,7 +106,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
         const h = cm.mountEditor(host.current, {
           text: tab.saved ?? '',
           path: tab.path,
-          readOnly: readOnly || tab.truncated,
+          readOnly: readOnly || tab.truncated || !!locked,
           onDirty: (d) => markDirty(tab.key, d),
           onSave: () => void saveTab(tab.key),
           onCursor: (line, col) => setCursor({ line, col, lang: h.language }),
@@ -140,8 +142,8 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
   }, [tab.version]);
 
   useEffect(() => {
-    editors.get(tab.key)?.setReadOnly(readOnly || tab.truncated);
-  }, [readOnly, tab.truncated]);
+    editors.get(tab.key)?.setReadOnly(readOnly || tab.truncated || !!locked);
+  }, [readOnly, tab.truncated, locked]);
 
   useEffect(() => {
     const h = editors.get(tab.key);
@@ -191,7 +193,13 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
           <span>Only the first part of this file ({bytes(tab.size)} in all) is shown, read-only.</span>
         </div>
       )}
-      {phone && canMount && !tab.truncated && view !== 'preview' && (
+      {locked && (
+        <div class="banner subtle" data-testid="file-read-only">
+          <Icon name="eye" size={15} />
+          <span>Read-only: {label(locked, 200)} is a folder of this computer added read-only (Settings › Claude Code › Project folders).</span>
+        </div>
+      )}
+      {phone && canMount && !tab.truncated && !locked && view !== 'preview' && (
         <div class="banner subtle">
           <span>{readOnly ? 'Read-only on this screen.' : 'Editing.'}</span>
           <span class="banner-actions">

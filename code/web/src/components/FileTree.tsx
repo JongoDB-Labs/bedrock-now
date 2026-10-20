@@ -23,7 +23,7 @@ import {
 import { downloadUrl } from '../api';
 import { changedFiles } from '../session';
 import type { FsEntry } from '../types';
-import { basename, bytes, joinPath, visible } from '../text';
+import { basename, bytes, joinPath, readOnlyTopOf, visible } from '../text';
 import { Icon, Spinner } from './icons';
 import { copyText, Dialog, Dropdown, MenuItem, useMedia } from './ui';
 
@@ -54,6 +54,9 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
   const view = useSel(store, (s) => activeView(s));
   const project = useSel(store, (s) => currentProject(s));
   const root = project.root;
+  // (a folder of this computer added read-only: nothing made, renamed, uploaded or deleted from here)
+  const ro = useSel(store, () => readOnlyTopOf(root));
+  const roTitle = 'Read-only: a folder of this computer added read-only';
   const coarse = useMedia('(pointer: coarse)');
   const rowH = coarse ? 36 : 24;
   const [edit, setEdit] = useState<Edit>(null);
@@ -146,7 +149,7 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
       class={`tree${drop !== null ? ' drop-on' : ''}`}
       data-testid="file-tree"
       onDragOver={(e) => {
-        if (e.dataTransfer?.types.includes('Files')) {
+        if (!ro && e.dataTransfer?.types.includes('Files')) {
           e.preventDefault();
           if (drop === null) setDrop(root);
         }
@@ -154,17 +157,17 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
       onDragLeave={(e) => {
         if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) setDrop(null);
       }}
-      onDrop={(e) => onDropFiles(e, drop ?? root)}
+      onDrop={(e) => !ro && onDropFiles(e, drop ?? root)}
     >
       <div class="side-tools tree-tools">
         <span class="side-title" title={project.path} data-testid="tree-title">{project.name}</span>
-        <button type="button" class="icon-btn tiny" title="New file" aria-label="New file" onClick={() => startNew('newFile', targetDir())}>
+        <button type="button" class="icon-btn tiny" title={ro ? roTitle : 'New file'} aria-label="New file" disabled={!!ro} onClick={() => startNew('newFile', targetDir())}>
           <Icon name="newFile" size={15} />
         </button>
-        <button type="button" class="icon-btn tiny" title="New folder" aria-label="New folder" onClick={() => startNew('newDir', targetDir())}>
+        <button type="button" class="icon-btn tiny" title={ro ? roTitle : 'New folder'} aria-label="New folder" disabled={!!ro} onClick={() => startNew('newDir', targetDir())}>
           <Icon name="newFolder" size={15} />
         </button>
-        <button type="button" class="icon-btn tiny" title="Upload files" aria-label="Upload files" onClick={() => upload.current?.click()}>
+        <button type="button" class="icon-btn tiny" title={ro ? roTitle : 'Upload files'} aria-label="Upload files" disabled={!!ro} onClick={() => upload.current?.click()}>
           <Icon name="upload" size={15} />
         </button>
         <button
@@ -288,7 +291,7 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
                       <MenuItem icon="at" onSelect={() => (close(), mention(isDir ? `${r.path}/` : r.path))}>
                         Mention in chat
                       </MenuItem>
-                      {isDir && (
+                      {isDir && !ro && (
                         <>
                           <MenuItem icon="newFile" onSelect={() => (close(), startNew('newFile', r.path))}>
                             New file here
@@ -298,9 +301,11 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
                           </MenuItem>
                         </>
                       )}
-                      <MenuItem icon="pencil" onSelect={() => (close(), setEditVal(r.name), setEdit({ kind: 'rename', path: r.path }))}>
-                        Rename
-                      </MenuItem>
+                      {!ro && (
+                        <MenuItem icon="pencil" onSelect={() => (close(), setEditVal(r.name), setEdit({ kind: 'rename', path: r.path }))}>
+                          Rename
+                        </MenuItem>
+                      )}
                       <MenuItem icon="copy" onSelect={() => (close(), void copyText(r.path))}>
                         Copy path
                       </MenuItem>
@@ -319,9 +324,11 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
                           Download
                         </MenuItem>
                       )}
-                      <MenuItem icon="trash" danger onSelect={() => (close(), setConfirmDel(r.path))}>
-                        Delete
-                      </MenuItem>
+                      {!ro && (
+                        <MenuItem icon="trash" danger onSelect={() => (close(), setConfirmDel(r.path))}>
+                          Delete
+                        </MenuItem>
+                      )}
                     </>
                   )}
                 </Dropdown>

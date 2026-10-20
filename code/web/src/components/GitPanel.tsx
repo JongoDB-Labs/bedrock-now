@@ -26,7 +26,7 @@ import {
 } from '../app';
 import { codeTitle, commitBlocker } from '../git';
 import { MOD } from '../shortcuts';
-import { ago, label } from '../text';
+import { ago, label, readOnlyTopOf } from '../text';
 import type { GitEntry, GitScope, GitStatus } from '../types';
 import { Icon, Spinner } from './icons';
 import { ReadOnlyHunks } from './Review';
@@ -43,7 +43,10 @@ export function GitPanel() {
   const loading = useSel(store, (s) => s.git.loading);
   const error = useSel(store, (s) => s.git.error);
   const errorSaid = useSel(store, (s) => s.git.errorSaid ?? null);
-  const busy = useSel(store, (s) => s.git.busy);
+  const gitBusy = useSel(store, (s) => s.git.busy);
+  // (a folder of this computer added read-only: its changes shown, nothing staged, committed or discarded from here)
+  const ro = useSel(store, (s) => readOnlyTopOf(s.git.repo));
+  const busy = gitBusy ?? (ro ? '*read-only' : null);
   const [ask, setAsk] = useState<{ e: GitEntry; kind: Kind } | null>(null);
   // shown (also by a layout remembered from last time): git is asked now, and again after each turn
   useEffect(() => {
@@ -84,7 +87,14 @@ export function GitPanel() {
               A {st.state} is in progress{st.state === 'merge' ? ': resolve the conflicts, stage the files, then commit.' : ': finish it in the terminal.'}
             </div>
           )}
-          <CommitBox st={st} />
+          {ro ? (
+            <div class="banner subtle small" data-testid="git-read-only">
+              {label(ro, 300)} is a folder of this computer added read-only: its changes are shown here; staging, commits and discards are off (Settings ›
+              Claude Code › Project folders).
+            </div>
+          ) : (
+            <CommitBox st={st} />
+          )}
           <Group title="Conflicts" kind="conflicts" entries={st.conflicts} busy={busy} onDiscard={setAsk} />
           <Group title="Staged" kind="staged" entries={st.staged} busy={busy} onDiscard={setAsk}
             all={{ label: 'Unstage all', icon: 'minus', run: () => void unstageGit('all'), testid: 'git-unstage-all' }} />

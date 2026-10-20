@@ -17,13 +17,14 @@ import {
   LIMITS,
   nonneg,
   num,
+  readOnlyTopOf,
   safe,
 } from './text';
 import type { AvailablePlugin, BnModel, Compat, Catalog, KeyBudget, RuleLine, CliModel, Command, ContextUsage, EditInfo, Ev, FileData, FsEntry, GitBranch, GitCommit, GitEntry, GitEvent, GitFile, GitFileDiff, GitHostRef, GitHostView, GitImported, GitOAuthView, GitSignInConfig, GitSignInFlow, GitIdentity, GitPlan, GitRemote, GitRemoteState, GitRemoteUrl, GitReview, GitRunResult, GitScope, GitStatus, GrepResult, Hunk, ImageBlock, InitInfo, InstalledPlugin, LoadedPlugin, Marketplace, McpServer, Mode, LaunchEntry, LaunchList, OpenSession, Outcome, PermissionReq, PortInfo, PreviewInfo, PreviewLink, RunList, RunResult, RunSource, RunSourceInfo, RunTask, ServerMsg, ServerState, SessionInfo, SessionState, SpendRow, Suggestion, WatchChange, SandboxWords } from './types';
 import { MODES, COMPATS } from './types';
 import { normBudget, type Budget as SessionBudget } from './budget';
 import { promptTitle } from './mentions';
-import { cwdOk, normProject, normProjects, normSessionSettings, normSettingsView, projectIdOk, WORKSPACE_ID, WORKSPACE_PATH, type Project, type SettingsView } from './projects';
+import { cwdOk, goneCwdOk, normProject, normProjects, normSessionSettings, normSettingsView, projectIdOk, WORKSPACE_ID, WORKSPACE_PATH, type Project, type SettingsView } from './projects';
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : null);
@@ -523,6 +524,15 @@ export class ApiError extends Error {
   }
 }
 
+/** A change in a folder of this computer added read-only (text.ts readOnlyTopOf): refused here, before any request —
+ *  the sandbox refuses it too ("read-only file system"). */
+export function writable(...paths: (string | null | undefined)[]): void {
+  for (const p of paths) {
+    const top = typeof p === 'string' ? readOnlyTopOf(p) : null;
+    if (top) throw new ApiError(409, `${top} is read-only: a folder of this computer added read-only (Settings › Claude Code › Project folders)`);
+  }
+}
+
 async function request(method: string, url: string, body?: unknown, headers: Record<string, string> = {}): Promise<Obj> {
   const init: RequestInit = { method, credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json', ...headers } };
   if (body instanceof Blob || body instanceof ArrayBuffer) init.body = body;
@@ -633,7 +643,8 @@ export function normSessionInfo(v: unknown): SessionInfo | null {
   if (!o || !isUuid(id)) return null;
   // (a folder outside the workspace: a row the backend leaves out — and so does the page, whatever it is told)
   const cwd = o.cwd === undefined || o.cwd === null ? WORKSPACE_PATH : o.cwd;
-  if (!cwdOk(cwd)) return null;
+  // (or one of a folder of this computer no longer added: listed there, read only)
+  if (!cwdOk(cwd) && !goneCwdOk(cwd)) return null;
   return {
     id: id.toLowerCase(),
     title: label(o.title ?? o.customTitle ?? o.summary, LIMITS.title),
@@ -923,6 +934,7 @@ export type WriteResult = { ok: true; mtimeMs: number | null } | { ok: false; co
 /** PUT with the editor's precondition; a 409 (changed on disk; with `create`: there is such a file already) comes back
  *  as {conflict}. */
 export async function fsWrite(path: string, text: string, ifMtimeMs: number | null, opts: { create?: boolean } = {}): Promise<WriteResult> {
+  writable(path);
   const body: Obj = { text };
   if (ifMtimeMs !== null) body.ifMtimeMs = ifMtimeMs;
   if (opts.create) body.create = true;
@@ -1020,6 +1032,7 @@ export function normRewind(v: unknown): Rewind {
 }
 
 export async function fsUpload(dir: string, file: File): Promise<string> {
+  writable(dir);
   const o = await request('POST', '/api/fs/upload' + q({ dir: dir || '.' }), file, {
     'X-Filename': encodeURIComponent(file.name.slice(0, 255)),
     'Content-Type': 'application/octet-stream',
@@ -1028,14 +1041,17 @@ export async function fsUpload(dir: string, file: File): Promise<string> {
   return p ?? (dir ? `${dir}/${file.name}` : file.name);
 }
 export async function fsMkdir(path: string): Promise<void> {
+  writable(path);
   await request('POST', '/api/fs/mkdir', { path });
 }
 export async function fsRename(from: string, to: string): Promise<void> {
+  writable(from, to);
   await request('POST', '/api/fs/rename', { from, to });
 }
 /** Into the trash (the project's, for a file in it); `ifMtimeMs`: only while the file is unchanged (a 409 ApiError
  *  otherwise). */
 export async function fsDelete(path: string, ifMtimeMs?: number | null): Promise<void> {
+  writable(path);
   await request('DELETE', '/api/fs' + q({ path, ifMtimeMs: ifMtimeMs ?? undefined, ...inScope() }));
 }
 
@@ -1196,13 +1212,16 @@ export async function getGitFile(scope: GitScope, path: string | null, repo = ''
 }
 const withRepo = (repo: string) => (repo ? { repo } : {});
 export async function gitStage(paths: string[] | 'all', repo = ''): Promise<void> {
+  writable(repo);
   await request('POST', '/api/git/stage', paths === 'all' ? { all: true, ...withRepo(repo) } : { paths, ...withRepo(repo) });
 }
 export async function gitUnstage(paths: string[] | 'all', repo = ''): Promise<void> {
+  writable(repo);
   await request('POST', '/api/git/unstage', paths === 'all' ? { all: true, ...withRepo(repo) } : { paths, ...withRepo(repo) });
 }
 /** Commit what is staged with this message (the sandbox runs no hook, no signing program). */
 export async function gitCommit(message: string, repo = ''): Promise<{ head: string | null; subject: string; author: GitIdentity | null }> {
+  writable(repo);
   const o = await request('POST', '/api/git/commit', { message, ...withRepo(repo) });
   return { head: typeof o.head === 'string' && GIT_HEX.test(o.head) ? o.head : null, subject: label(o.subject, 300), author: normGitIdentity(o.author) };
 }
@@ -1213,6 +1232,7 @@ export async function gitDraft(model: string | null, repo = ''): Promise<{ messa
 }
 /** A file's unstaged changes gone (its current version to the workspace trash), only while it is as shown. */
 export async function gitDiscard(path: string, ifMtimeMs: number | null, repo = ''): Promise<{ action: 'restored' | 'trashed'; trash: string | null }> {
+  writable(repo);
   const o = await request('POST', '/api/git/discard', { path, ...(ifMtimeMs === null ? {} : { ifMtimeMs }), ...withRepo(repo) });
   return { action: o.action === 'trashed' ? 'trashed' : 'restored', trash: exactPath(o.trash) };
 }
@@ -1443,9 +1463,11 @@ export async function getGitRemote(repo = ''): Promise<GitRemoteState> {
   return normGitRemoteState(await request('GET', '/api/git/remote' + q({ repo: repo || undefined })));
 }
 export async function gitBranch(repo: string, action: 'switch' | 'create' | 'track', name: string, remote?: string): Promise<void> {
+  writable(repo);
   await request('POST', '/api/git/branch', { ...withRepo(repo), action, name, ...(remote ? { remote } : {}) });
 }
 export async function gitRemoteSet(repo: string, name: string, url: string): Promise<{ added: boolean }> {
+  writable(repo);
   const o = await request('POST', '/api/git/remote', { ...withRepo(repo), name, url });
   return { added: o.added === true };
 }
@@ -1459,10 +1481,13 @@ export function normGitPlan(o: Obj): GitPlan {
 }
 /** What a fetch, pull, push or publish of this repository would do (nothing is sent yet). */
 export async function gitPlan(repo: string, action: 'fetch' | 'pull' | 'push' | 'publish', remote?: string): Promise<GitPlan> {
+  // (a fetch and a pull write .git; a push and a publish of a branch too: its upstream)
+  writable(repo);
   return normGitPlan(await request('POST', '/api/git/plan', { ...withRepo(repo), action, ...(remote ? { remote } : {}) }));
 }
 /** What a clone would do (nothing is sent yet). */
 export async function gitClonePlan(url: string, target: string, depth: number | null): Promise<GitPlan> {
+  writable(target);
   return normGitPlan(await request('POST', '/api/git/clone', { url, target, ...(depth ? { depth } : {}) }));
 }
 // a link the page may open: GitHub's or GitLab's page on an https URL (the backend builds it; checked again)

@@ -44,7 +44,9 @@
 // project "website" with files, a repository and two sessions of its own; GET /__mock/project-log lists what the
 // project endpoints were asked (terminal windows, git init). In --hostile mode the projects list also carries records a
 // backend should never send (a folder outside the workspace, bad ids, markup in a name) and the session list sessions
-// that claim folders outside the workspace and projects that are not there.
+// that claim folders outside the workspace and projects that are not there. /__mock/projects?host=1 adds folders of this
+// computer (./stack project): one read-write, one read-only (its path hidden), one the sandbox does not see yet, and one
+// no longer added with a session of it (read only).
 // /__mock/spend?session=&add= books more spend for a session (its budget's warnings); /__mock/age?session=&ms= makes a
 // session's last activity that long ago (the cold-cache line); /__mock/terminal-exit?session= is Claude Code exiting in
 // the terminal after "Open in the terminal" (until then a resume here is refused); GET /__mock/terminal-log lists what
@@ -130,6 +132,13 @@ const MOCK_COMMITS = () => [
   ['Add the HTTP client with retries', 26 * 3600],
   ['Initial commit', 9 * 86400],
 ].map(([subject, ago]) => ({ hash: hex40(), author: 'Mock User', email: 'mock@example.invalid', time: Math.floor(Date.now() / 1000) - ago, subject }));
+// folders of this computer (./stack project; the backend reads ./stack's list): /__mock/projects?host=1 adds one
+// read-write, one read-only with its path hidden (/projects/<name>), one the sandbox does not see yet and one no longer
+// added (a session of it listed, read only). Their files are kept under their absolute paths, never in the workspace's
+// listing. hostForgotten: the folders no longer added whose record was forgotten (their sessions not listed).
+let hostMock = [];
+const hostForgotten = new Set();
+const hostOf = (p) => hostMock.find((h) => !h.gone && h.folder !== 'unmounted' && (p === h.root || p.startsWith(`${h.root}/`))) ?? null;
 resetFs();
 // the backend's text test (code/server/api.mjs isText): no NUL in the first 8 KiB, and UTF-8 (a cut-off last
 // character of a truncated read forgiven)
@@ -149,6 +158,11 @@ const dirs = () => {
 };
 function clean(p) {
   if (typeof p !== 'string') return null;
+  // (a path in a folder of this computer the sandbox sees: kept absolute, as the page names it)
+  if (p.startsWith('/') && !/^\/workspace(\/|$)/.test(p)) {
+    const n = p.replace(/\/+/g, '/').replace(/(.)\/$/, '$1');
+    if (hostOf(n)) return n.split('/').some((x) => x === '..' || x === '.') ? null : n;
+  }
   let s = p.replace(/^\/workspace\/?/, '').replace(/^\.\/?$/, '').replace(/^\/+|\/+$/g, '');
   if (s.split('/').some((x) => x === '..')) return null;
   return s;
@@ -158,7 +172,7 @@ function list(dir) {
   const out = new Map();
   const prefix = dir ? dir + '/' : '';
   for (const [p, f] of fsState) {
-    if (!p.startsWith(prefix)) continue;
+    if (!p.startsWith(prefix) || (!dir.startsWith('/') && p.startsWith('/'))) continue;
     const rest = p.slice(prefix.length);
     const name = rest.split('/')[0];
     if (rest.includes('/')) out.set(name, { name, type: 'dir', size: 0, mtimeMs: f.mtimeMs });
@@ -178,7 +192,7 @@ function find(q, limit) {
   const skip = (p) => /(^|\/)(\.git|node_modules|\.bedrock-now-trash)(\/|$)/.test(p);
   const all = new Set();
   for (const p of fsState.keys()) {
-    if (skip(p)) continue;
+    if (skip(p) || p.startsWith('/')) continue;
     const parts = p.split('/');
     for (let i = 1; i < parts.length; i++) all.add(parts.slice(0, i).join('/') + '/');
     all.add(p);
@@ -201,7 +215,7 @@ function writeFile(p, text) {
 
 // ------------------------------------------------------------------ the Git panel (code/server/api.mjs's answers)
 
-const GIT_SKIP = (x) => /^(\.git|\.bedrock-now-trash|node_modules)(\/|$)/.test(x);
+const GIT_SKIP = (x) => x.startsWith('/') || /^(\.git|\.bedrock-now-trash|node_modules)(\/|$)/.test(x);
 const bufEq = (a, b) => (a === undefined || b === undefined ? a === b : a.equals(b));
 const relOk = (x) => typeof x === 'string' && x.length > 0 && x.length <= 4096 && !x.startsWith('/') && !x.includes('\0') && x.split('/').every((y) => y && y !== '.' && y !== '..') && !x.split('/').some((y) => y.toLowerCase() === '.git');
 const watchOf = (x) => (WATCHED.test(x) ? { kind: x === 'package.json' ? 'npm' : x.startsWith('.git/hooks/') ? 'git-hook' : 'other', why: WATCH_WHY(x) } : null);
@@ -764,6 +778,8 @@ const PROJ_ODD = /[\x00-\x1f\x7f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\uf
 const rootOk = (v) => typeof v === 'string' && !!v && Buffer.byteLength(v) <= 160 && !PROJ_ODD.test(v) && !v.includes('\\')
   && v.split('/').length <= 4 && v.split('/').every((x) => x.length >= 1 && x.length <= 100 && !x.startsWith('.') && x.trim() === x);
 const folderOf = (cwd) => {
+  const h = hostMock.find((x) => cwd === x.root || cwd.startsWith(`${x.root}/`));
+  if (h) return h.id;
   let best = null;
   for (const p of projectsMock) if ((cwd === absOf(p.root) || cwd.startsWith(`${absOf(p.root)}/`)) && (!best || p.root.length > best.root.length)) best = p;
   return best?.id ?? 'ws';
@@ -772,7 +788,7 @@ const placeOf = (id, cwd) => (filedMock.has(id) && (filedMock.get(id) === 'ws' |
 const projectRoot = (url, body) => {
   const id = (url.searchParams.get('project') ?? body?.project) || 'ws';
   if (id === 'ws') return '';
-  const p = projectsMock.find((x) => x.id === id);
+  const p = projectsMock.find((x) => x.id === id) ?? hostMock.find((x) => x.id === id && !x.gone);
   return p ? p.root : null;
 };
 const isDir = (d) => d === '' || dirs().has(d) || extraDirs.has(d);
@@ -780,8 +796,30 @@ function projectView(p) {
   return { id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created, workspace: false, folder: isDir(p.root) ? 'dir' : 'missing', git: projectGit.has(p.root),
     settings: settingsStateOf(p) };
 }
+const folderView = (h) => ({ id: h.id, name: h.name, root: h.root, path: h.root, created: null, workspace: false, folder: h.gone ? null : h.folder, git: false,
+  settings: h.gone ? null : 'none', host: true, mode: h.mode, hidden: h.hidden, gone: h.gone });
+function seedHosts() {
+  if (hostMock.length) return;
+  const now = Date.now() - 3_600_000;
+  const add = (f, t) => fsState.set(f, { data: Buffer.from(t), mtimeMs: now + fsState.size, bin: false });
+  add('/home/you/src/tools/README.md', '# tools\n\nSmall scripts of mine.\n');
+  add('/home/you/src/tools/src/cli.ts', 'export const run = () => "tools";\n');
+  add('/projects/notes/notes.md', '# Notes\n\nRead-only for Claude.\n');
+  const id = () => `p_${crypto.randomBytes(4).toString('hex')}`;
+  hostMock = [
+    { id: id(), name: 'tools', root: '/home/you/src/tools', mode: 'rw', hidden: false, gone: false, folder: 'dir' },
+    { id: id(), name: 'notes', root: '/projects/notes', mode: 'ro', hidden: true, gone: false, folder: 'dir' },
+    { id: id(), name: 'later', root: '/home/you/src/later', mode: 'rw', hidden: false, gone: false, folder: 'unmounted' },
+    { id: id(), name: 'old-site', root: '/home/you/src/old-site', mode: 'rw', hidden: false, gone: true, folder: null },
+  ];
+  const sid = crypto.randomUUID();
+  saved.set(sid, { id: sid, title: 'Port the old site', firstPrompt: 'Port the old site', branch: 'main', modified: Date.now() - 5 * 86400e3, cwd: '/home/you/src/old-site',
+    transcript: [{ type: 'user', text: 'Port the old site', uuid: crypto.randomUUID() }, { type: 'text', text: 'Ported: the pages build.' },
+      { type: 'result', subtype: 'success', turns: 1, duration: 3000, usage: { input_tokens: 500, output_tokens: 70 } }] });
+}
 function projectsView() {
-  const list = [{ id: 'ws', name: 'Workspace', root: '', path: WS, created: null, workspace: true, folder: 'dir', git: gitRepo, settings: 'workspace' }, ...[...projectsMock].sort((a, b) => a.name.localeCompare(b.name)).map(projectView)];
+  const list = [{ id: 'ws', name: 'Workspace', root: '', path: WS, created: null, workspace: true, folder: 'dir', git: gitRepo, settings: 'workspace' }, ...[...projectsMock].sort((a, b) => a.name.localeCompare(b.name)).map(projectView),
+    ...hostMock.map(folderView)];
   if (HOSTILE_MODE) {
     // records a backend never sends: the page drops them (a folder outside the workspace, bad ids, the same folder twice)
     list.push({ id: 'p_0bad0bad', name: 'Outside', root: '../../etc', path: '/etc', folder: 'dir', git: false },
@@ -1756,7 +1794,8 @@ async function api(req, res, url) {
   }
   if (p === '/api/sessions' && m === 'GET') {
     const q = (url.searchParams.get('q') || '').toLowerCase();
-    const rows = [...saved.values()].filter((x) => !q || `${x.title} ${x.firstPrompt}`.toLowerCase().includes(q)).sort((a, b) => b.modified - a.modified);
+    const forgotten = (cwd) => typeof cwd === 'string' && [...hostForgotten].some((r) => cwd === r || cwd.startsWith(`${r}/`));
+    const rows = [...saved.values()].filter((x) => (!q || `${x.title} ${x.firstPrompt}`.toLowerCase().includes(q)) && !forgotten(x.cwd)).sort((a, b) => b.modified - a.modified);
     return json(res, 200, { sessions: rows.map(sessionInfo) });
   }
   if (p === '/api/sessions' && m === 'POST') {
@@ -1767,13 +1806,17 @@ async function api(req, res, url) {
     // the folder it runs in: a resumed or forked session's own, a new one's its project's
     let cwd = WS;
     if (b.resume && UUID.test(b.resume)) cwd = sessions.get(b.resume)?.cwd ?? saved.get(b.resume)?.cwd ?? WS;
-    else if (b.project !== undefined && b.project !== 'ws') {
+    else if (b.project !== undefined && b.project !== 'ws' && hostMock.some((x) => x.id === b.project)) {
+      const h = hostMock.find((x) => x.id === b.project);
+      if (h.gone || h.folder === 'unmounted') return json(res, 409, { error: `the sandbox does not see ${h.root} yet: it sees a newly added folder once it restarts (Settings › Claude Code › Project folders)` });
+      cwd = h.root;
+    } else if (b.project !== undefined && b.project !== 'ws') {
       const pr = projectsMock.find((x) => x.id === b.project);
       if (!pr) return json(res, 404, { error: 'no such project (it was removed?)' });
       if (!isDir(pr.root)) return json(res, 409, { error: `the project's folder ${absOf(pr.root)} is not there (any more)` });
       cwd = absOf(pr.root);
     }
-    if (!/^\/workspace(\/|$)/.test(cwd) || cwd.includes('..')) cwd = WS;
+    if (!(/^\/workspace(\/|$)/.test(cwd) || hostOf(cwd)) || cwd.includes('..')) cwd = WS;
     if (b.resume && UUID.test(b.resume) && !b.fork) {
       // the backend never opens a second process on one transcript: an open session is simply returned
       if (sessions.has(b.resume)) return json(res, 200, { id: b.resume, existing: true });
@@ -1919,6 +1962,22 @@ async function api(req, res, url) {
   let pm = /^\/api\/projects\/(ws|p_[0-9a-f]{8})(?:\/(sessions|terminal|git-init|settings|trust))?$/.exec(p);
   if (pm) {
     const id = pm[1], what = pm[2] || '';
+    const host = hostMock.find((x) => x.id === id);
+    if (host && !what && m === 'DELETE') {
+      // (a folder of this computer is removed there; one no longer added: its record forgotten)
+      if (!host.gone) return json(res, 400, { error: 'a folder of this computer is removed on this computer: Settings › Claude Code › Project folders, or ./stack project remove NAME' });
+      hostMock = hostMock.filter((x) => x !== host);
+      hostForgotten.add(host.root);
+      projectLog.push(`forget ${host.root}`);
+      return json(res, 200, { ok: true, removed: { id, name: host.name, root: host.root }, trash: null });
+    }
+    if (host && !what && m === 'POST') return json(res, 400, { error: 'a folder of this computer keeps the name ./stack gave it' });
+    if (host && what === 'terminal' && m === 'POST') {
+      projectLog.push(`terminal ${host.root}`);
+      return json(res, 200, { ok: true, window: host.name });
+    }
+    if (host && what === 'settings' && m === 'GET') return json(res, 200, { project: id, path: host.root, state: 'none', hash: null, trustedAt: null, files: [], summary: { hooks: [], allow: [], ask: [], deny: [],
+      defaultMode: null, directories: [], env: [], commands: [], mcp: [], mcpServers: [], other: [], notes: [], files: [], complete: true, missing: [] } });
     const pr = id === 'ws' ? { id: 'ws', name: 'Workspace', root: '' } : projectsMock.find((x) => x.id === id);
     if (!pr) return json(res, 404, { error: 'no such project (it was removed?)' });
     if (what === 'settings' && m === 'GET') return json(res, 200, settingsView(pr));
@@ -1991,7 +2050,7 @@ async function api(req, res, url) {
     await sleep(120);
     if (!gitRepo) return json(res, 200, { repo: false, reason: 'not a git repository', head: null, files: [], truncated: false, timedOut: false });
     const files = [];
-    const skip = (x) => /^(\.git|\.bedrock-now-trash|node_modules)(\/|$)/.test(x);
+    const skip = (x) => x.startsWith('/') || /^(\.git|\.bedrock-now-trash|node_modules)(\/|$)/.test(x);
     for (const path of [...new Set([...gitHead.keys(), ...fsState.keys()])].sort()) {
       if (skip(path)) continue;
       const before = gitHead.get(path), now = fsState.get(path);
@@ -2050,7 +2109,7 @@ async function api(req, res, url) {
     const groot = projectRoot(url);
     if (groot === null) return json(res, 404, { error: 'no such project (it was removed?)' });
     for (const [path, e] of [...fsState].sort(([x], [y]) => (x < y ? -1 : 1))) {
-      if (groot && !path.startsWith(`${groot}/`)) continue;
+      if ((groot && !path.startsWith(`${groot}/`)) || (!groot && path.startsWith('/'))) continue;
       if (/(^|\/)(\.git|node_modules|\.bedrock-now-trash|dist|build)(\/|$)/.test(path) || e.bin || e.data.length > 1 << 20) continue;
       if ((inc.length && !inc.some((g) => fits(g, path))) || exc.some((g) => fits(g, path))) continue;
       const hits = [];
@@ -2717,6 +2776,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (url.pathname === '/__mock/projects') {
         const pr = url.searchParams.get('seed') === '1' ? seedProject() : null;
+        if (url.searchParams.get('host') === '1') seedHosts();
         // a project's settings changed in the sandbox (?settings=change&root=…), or one of them made unverifiable
         const root = url.searchParams.get('root');
         const st = root ? settingsMock.get(root) : null;
@@ -2726,6 +2786,10 @@ const server = http.createServer(async (req, res) => {
       }
       if (url.pathname === '/__mock/reset') {
         projectsMock = [];
+        for (const k of [...fsState.keys()]) if (k.startsWith('/')) fsState.delete(k);
+        for (const h of hostMock) for (const [k, v] of [...saved]) if (v.cwd === h.root || v.cwd?.startsWith(`${h.root}/`)) saved.delete(k);
+        hostMock = [];
+        hostForgotten.clear();
         settingsMock.clear();
         trustMock.clear();
         filedMock.clear();

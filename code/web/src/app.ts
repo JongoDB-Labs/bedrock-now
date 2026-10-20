@@ -24,7 +24,7 @@ import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from '
 import { pageTitle, waitingSessions } from './groups';
 import { parseDeepLink, withoutDeepLink } from './deeplink';
 import { sessionCost } from './spend';
-import { WORKSPACE, WORKSPACE_ID, inProject, liveHostTops, mentionPath, projectFor, projectIdOk, projectOfCwd, settingsApplied, type Project, type SettingsState, type Where } from './projects';
+import { WORKSPACE, WORKSPACE_ID, goneTops, inProject, liveHostTops, mentionPath, projectFor, projectIdOk, projectOfCwd, readOnlyTops, settingsApplied, type Project, type SettingsState, type Where } from './projects';
 
 export interface Toast {
   id: number;
@@ -230,7 +230,7 @@ export interface RewindState {
 /** The Projects tab's dialogs: New project (an empty folder, a clone, a folder of the workspace), Remove from Code,
  *  Add to project (one or more sessions). */
 export type ProjectDialog =
-  | { kind: 'new'; tab: 'empty' | 'clone' | 'folder' }
+  | { kind: 'new'; tab: 'empty' | 'clone' | 'folder' | 'computer' }
   | { kind: 'remove'; id: string }
   | { kind: 'file'; ids: string[] }
   /** a project's own Claude Code settings: what they set, Trust / Stop trusting (start: then a new session there) */
@@ -1240,9 +1240,33 @@ export function forkFrom(id: string, before: string, text = ''): Promise<void> {
   return whileOpening(openExisting(id, true, before, text));
 }
 
+/** The folder of this computer, no longer added, a session ran in (its project in the list) — or null. */
+function goneFolderOf(id: string, s: AppState = get()): Project | null {
+  const p = s.projects.find((x) => x.id === sessionProject(id, s));
+  return p?.gone ? p : null;
+}
+const goneNote = (p: Project): string =>
+  `${label(p.root, 300)} is no longer added to the sandbox: this session is shown read only. Add the folder again on this computer (Settings › Claude Code › Project folders, or ./stack project add) to go on with it.`;
+
+/** A session of a folder no longer added: its transcript shown, read only (no process: a prompt is refused, said). */
+async function showGone(id: string): Promise<void> {
+  const p = goneFolderOf(id);
+  if (!p) return;
+  if (!get().views[id]) {
+    const info = get().sessions.find((x) => x.id === id);
+    set((x) => ({ ...x, views: { ...x.views, [id]: newView(id, { state: 'closed', title: info?.title ?? '' }) } }));
+    loadedHistory.add(id);
+    await reloadHistory(id, true);
+    updateView(id, (v) => ({ ...v, items: [...v.items, { t: 'notice', k: v.nextKey, text: goneNote(p), level: 'warn' }], nextKey: v.nextKey + 1 }));
+  }
+  set((x) => ({ ...x, active: id, sheet: x.sheet === 'sessions' ? null : x.sheet }));
+}
+
 async function openExisting(id: string, fork: boolean, before?: string, text = ''): Promise<void> {
   const s = get();
   if (!fork && s.views[id] && s.views[id].state !== 'closed') return activate(id);
+  // (a session of a folder no longer added: its transcript, read only — it runs nowhere until the folder is back)
+  if (goneFolderOf(id, s)) return showGone(id);
   if (s.opening) return;
   set((x) => ({ ...x, opening: true }));
   try {
@@ -1376,6 +1400,11 @@ export async function renameSessionById(id: string, title: string): Promise<void
 /** A closed or ended session in view: open its process again (same id), keeping what the page shows. */
 async function revive(id: string): Promise<string | null> {
   const s = get();
+  const gone = goneFolderOf(id, s);
+  if (gone) {
+    toast(goneNote(gone), 'error');
+    return null;
+  }
   try {
     const v = s.views[id];
     // (the same session: Plan goes on; Bypass ended with its process — Manual)
@@ -1806,13 +1835,15 @@ export async function refreshProjects(): Promise<void> {
   try {
     const projects = await api.getProjects();
     // (the folders of this computer the sandbox sees: their paths are the page's own — text.ts cleanPath)
-    setHostTops(liveHostTops(projects));
+    const changed = setHostTops(liveHostTops(projects), readOnlyTops(projects), goneTops(projects));
     set((s) => ({ ...s, projects, projectsError: null, projectsSaid: null }));
+    // (a session list read before these folders were known left their sessions out)
+    if (changed) void refreshSessions();
   } catch (e) {
     // (an older backend has no projects: the Workspace alone, as before)
     set((s) => ({ ...s, projectsError: e instanceof api.ApiError && e.status === 404 ? null : errText(e), projectsSaid: api.saidOf(e) }));
   }
-  if (!get().projects.some((p) => p.id === get().project)) setProject(WORKSPACE_ID);
+  if (!get().projects.some((p) => p.id === get().project && !p.gone)) setProject(WORKSPACE_ID);
 }
 
 /** Show another project: the file tree, Search, Git, Review, Run & test, launch.json, memory and @-mentions follow;
@@ -1820,7 +1851,8 @@ export async function refreshProjects(): Promise<void> {
  *  keepSession (a session of it was just picked). */
 export function setProject(id: string, { keepSession = false }: { keepSession?: boolean } = {}): void {
   const p = get().projects.find((x) => x.id === id);
-  if (!p) return;
+  // (a folder of this computer no longer added is not in the sandbox: its sessions are listed, never shown as a project)
+  if (!p || p.gone) return;
   storeProject(p.id);
   api.setScope(p.id);
   const was = get().project;
@@ -1946,7 +1978,8 @@ export async function removeProjectById(id: string, opts: { trash?: boolean; con
     if (get().project === id) setProject(WORKSPACE_ID);
     await refreshProjects();
     void refreshSessions();
-    toast(r.trash ? `Removed ${p.name}; its folder is in the workspace trash (${r.trash}).` : `Removed ${p.name} from Code; its folder ${p.path} is still there.`, 'ok');
+    toast(p.gone ? `Forgot ${p.name}: its sessions stay in the sandbox and are listed again once the folder is added again.`
+      : r.trash ? `Removed ${p.name}; its folder is in the workspace trash (${r.trash}).` : `Removed ${p.name} from Code; its folder ${p.path} is still there.`, 'ok');
     return null;
   } catch (e) {
     return api.problemOf(e);

@@ -5,10 +5,12 @@
 // resolves them, and a ?project= link (an id's shape only: nothing is created by a link).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cwdOk, inProject, mentionPath, nameOk, needsLook, normProjects, normSessionSettings, normSettingsView, projectFor, projectOfCwd, rootOk, sessionsByProject, settingsApplied, shownIn, visibleWs, workspacePath, WORKSPACE_ID } from '../src/projects';
+import { cwdOk, hostPathOk, inProject, liveHostTops, mentionPath, nameOk, needsLook, normProjects, readOnlyTops, normSessionSettings, normSettingsView, projectFor, projectOfCwd, rootOk, sessionsByProject, settingsApplied, shownIn, visibleWs, workspacePath, WORKSPACE_ID } from '../src/projects';
 import { parseDeepLink, withoutDeepLink } from '../src/deeplink';
 import { normSessionInfo } from '../src/api';
 import type { SessionInfo } from '../src/types';
+import { cleanPath, exactPath, hostTopOf, readOnlyTopOf, setHostTops } from '../src/text';
+import { writable, ApiError } from '../src/api';
 
 const P = (id: string, root: string, name = root) => ({ id, name, root, path: `/workspace/${root}`, created: 1, workspace: false, folder: 'dir', git: true });
 
@@ -184,4 +186,82 @@ test('the trust dialog\'s text: whitespace made visible, a value that could hide
   const old = normSettingsView({ ...base, summary: { complete: true, missing: [], hooks: [{ file: 'f', event: 'Stop', matcher: '', command: 'echo' }] } });
   assert.equal(old?.summary.complete, false);
   assert.equal(old?.hash, null);
+});
+
+// Folders of this computer (./stack project): their path in the sandbox is the project's root, absolute; the page's
+// paths in them are absolute too, and only in those the list names (never one a session or a path claims).
+const H = (id: string, root: string, more: Record<string, unknown> = {}) => ({ id, name: root.split('/').pop(), root, host: true, mode: 'rw', folder: 'dir', git: true, ...more });
+
+test('folders of this computer: their paths, the list (read-only, hidden, no longer added), no two around each other', () => {
+  for (const ok of ['/srv2/app', '/Volumes/x/src/app', '/projects/app', '/home/me/a b']) assert.ok(hostPathOk(ok), ok);
+  for (const bad of ['/', '/workspace', '/workspace/a', '/a/', '/a//b', '/a/./b', '/a/../b', 'rel/a', '/a\nb', '/a\u202eb', 7, null, `/${'x'.repeat(1100)}`]) {
+    assert.equal(hostPathOk(bad), false, JSON.stringify(bad));
+  }
+  const list = normProjects([
+    { id: WORKSPACE_ID, name: 'Workspace', root: '' },
+    H('p_00000001', '/Volumes/x/src/app'),
+    H('p_00000002', '/projects/secret', { mode: 'ro', hidden: true }),
+    H('p_00000003', '/Volumes/x/src/app/inner'), // inside another folder of this computer: dropped
+    H('p_00000004', '/Volumes/x/old', { gone: true, folder: 'missing' }),
+    H('p_00000005', '/workspace/sneaky'), // a path of the workspace is never a folder of this computer
+    H('p_00000006', '/home/me/later', { folder: 'unmounted' }),
+  ]);
+  assert.deepEqual(list.map((p) => p.id), [WORKSPACE_ID, 'p_00000001', 'p_00000002', 'p_00000004', 'p_00000006']);
+  const by = Object.fromEntries(list.map((p) => [p.id, p]));
+  assert.equal(by.p_00000001.path, '/Volumes/x/src/app');
+  assert.equal(by.p_00000001.host, true);
+  assert.equal(by.p_00000001.readOnly, false);
+  assert.equal(by.p_00000002.readOnly, true);
+  assert.equal(by.p_00000002.hidden, true);
+  assert.equal(by.p_00000004.gone, true);
+  assert.equal(by.p_00000006.folder, 'unmounted');
+  assert.deepEqual(liveHostTops(list), ['/Volumes/x/src/app', '/projects/secret', '/home/me/later']);
+  assert.deepEqual(readOnlyTops(list), ['/projects/secret']);
+});
+
+test('folders of this computer: page paths, a session\'s folder, @-mentions and the read-only guard', () => {
+  setHostTops(['/Volumes/x/src/app', '/projects/secret'], ['/projects/secret', '/not/a/top']);
+  try {
+    assert.equal(hostTopOf('/Volumes/x/src/app/a.ts'), '/Volumes/x/src/app');
+    assert.equal(hostTopOf('/Volumes/x/src/apple'), null);
+    assert.equal(cleanPath('/Volumes/x/src/app/src//a.ts/'), '/Volumes/x/src/app/src/a.ts');
+    assert.equal(cleanPath('/Volumes/x/src/app'), '/Volumes/x/src/app');
+    assert.equal(cleanPath('/Volumes/x/src/app/../../etc'), null);
+    assert.equal(cleanPath('/etc/passwd'), null);
+    assert.equal(cleanPath('/workspace/a'), 'a');
+    assert.equal(exactPath('/Volumes/x/src/app/a.ts'), '/Volumes/x/src/app/a.ts');
+    assert.equal(exactPath('/Volumes/x/src/app/./a.ts'), null);
+    assert.equal(exactPath('/Volumes/x/src/other.ts'), null);
+    assert.ok(cwdOk('/Volumes/x/src/app'));
+    assert.ok(cwdOk('/Volumes/x/src/app/sub'));
+    for (const bad of ['/Volumes/x/src', '/Volumes/x/src/app/../b', '/Volumes/x/src/app//b', '/etc']) assert.equal(cwdOk(bad), false, bad);
+    assert.equal(mentionPath('/Volumes/x/src/app/src/a.ts', '/Volumes/x/src/app'), 'src/a.ts');
+    assert.equal(mentionPath('/Volumes/x/src/app/', '/Volumes/x/src/app'), './');
+    assert.equal(mentionPath('notes.md', '/Volumes/x/src/app'), '/workspace/notes.md');
+    assert.equal(mentionPath('/Volumes/x/src/app/a.ts', '/workspace'), '/Volumes/x/src/app/a.ts');
+    assert.equal(workspacePath('src/a.ts', '/Volumes/x/src/app'), '/Volumes/x/src/app/src/a.ts');
+    assert.equal(workspacePath('../x', '/Volumes/x/src/app'), null);
+    // read-only: only a folder the list names (a read-only path that is no folder of this computer is not one)
+    assert.equal(readOnlyTopOf('/projects/secret/a'), '/projects/secret');
+    assert.equal(readOnlyTopOf('/not/a/top/a'), null);
+    assert.equal(readOnlyTopOf('/Volumes/x/src/app/a'), null);
+    assert.throws(() => writable('a.ts', '/projects/secret/b.ts'), (e: unknown) => e instanceof ApiError && e.status === 409 && /read-only/.test(e.message));
+    assert.doesNotThrow(() => writable('a.ts', '/Volumes/x/src/app/b.ts', '', null));
+  } finally {
+    setHostTops([]);
+  }
+  // a folder no longer added: a listed session's folder may be in it (read only); no path of the page is
+  assert.equal(setHostTops(['/Volumes/x/src/app'], [], ['/Volumes/x/old', '/Volumes/x/src/app']), true);
+  try {
+    assert.equal(setHostTops(['/Volumes/x/src/app'], [], ['/Volumes/x/old']), false, 'the same folders: not a change');
+    assert.ok(normSessionInfo({ id: '0b6e7c2a-1d2f-4e5a-9b8c-7d6e5f4a3b2c', cwd: '/Volumes/x/old/sub', project: 'p_00000004' }));
+    assert.equal(normSessionInfo({ id: '0b6e7c2a-1d2f-4e5a-9b8c-7d6e5f4a3b2c', cwd: '/Volumes/x/old/../etc' }), null);
+    assert.equal(normSessionInfo({ id: '0b6e7c2a-1d2f-4e5a-9b8c-7d6e5f4a3b2c', cwd: '/Volumes/x/older' }), null);
+    assert.equal(cleanPath('/Volumes/x/old/a'), null);
+    assert.equal(cwdOk('/Volumes/x/old'), false);
+  } finally {
+    setHostTops([]);
+  }
+  assert.equal(cleanPath('/Volumes/x/src/app/a'), null, 'no longer named: no longer the page\'s');
+  assert.equal(cwdOk('/Volumes/x/src/app'), false);
 });

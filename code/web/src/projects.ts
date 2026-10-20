@@ -6,7 +6,7 @@
 // the workspace by the same rules as the backend's, a name of one line), and a session is shown in the project the
 // backend says only when that is a project of the list — else in the Workspace: nothing a list says makes a project.
 // Kept free of DOM and network (test/projects.test.ts).
-import { label, hostTopOf } from './text';
+import { goneTopOf, label, hostTopOf } from './text';
 import type { SandboxWords, SessionInfo } from './types';
 
 export const WORKSPACE_ID = 'ws';
@@ -146,6 +146,16 @@ export function normProjects(list: unknown): Project[] {
 }
 /** The folders of this computer the sandbox sees now (not those no longer added): their paths, for text.ts setHostTops. */
 export const liveHostTops = (projects: Project[]): string[] => projects.filter((p) => p.host && !p.gone).map((p) => p.root);
+/** …and those of them added read-only (text.ts readOnlyTopOf: the page edits, stages and commits nothing there). */
+export const readOnlyTops = (projects: Project[]): string[] => projects.filter((p) => p.host && !p.gone && p.readOnly).map((p) => p.root);
+/** …and those no longer added (text.ts goneTopOf: a listed session may have run there; nothing else of the page is). */
+export const goneTops = (projects: Project[]): string[] => projects.filter((p) => p.host && p.gone).map((p) => p.root);
+/** A session's folder in a folder of this computer no longer added (absolute, plain) — a session listed read only. */
+export function goneCwdOk(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length > 1024 || /[\x00-\x1f\x7f]/.test(v)) return false;
+  const top = goneTopOf(v);
+  return !!top && (v === top || v.slice(top.length + 1).split('/').every((s) => s !== '' && s !== '.' && s !== '..'));
+}
 
 /** The project a session is shown in: the one the backend says when it is in the list, else the Workspace. */
 export function projectFor(id: string, where: Record<string, Where>, projects: Project[]): string {

@@ -1,10 +1,13 @@
 // The Projects tab (the side panel's; on a phone the Projects sheet), the top bar's project chip, and the projects'
-// dialogs. A project is a folder the sandbox sees — the Workspace, or a folder of it (projects.ts) — and each one lists
+// dialogs. A project is a folder the sandbox sees — the Workspace, a folder of it, or a folder of this computer added on
+// that computer (./stack project; read-only or not) (projects.ts) — and each one lists
 // its sessions: the ones open in this page grouped Needs you / Working / Done, as Claude Code's agent view groups them
 // (a dot on one that finished while you were elsewhere), then the others it ran (search, resume, fork, rename, open in
 // the terminal, Add to project). New project: an empty folder of the workspace (with git init), a clone (the Git panel's
-// Clone: its new folder becomes a project) or a folder of the workspace. Names, paths and titles come from the backend
-// and the sandbox: shown as text.
+// Clone: its new folder becomes a project), a folder of the workspace, or a folder of this computer (added there, never
+// by a path typed here: the dialog says where). A folder of this computer no longer added is listed under "Folders no
+// longer added" with its sessions, read only. Names, paths and titles come from the backend and the sandbox: shown as
+// text.
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import {
@@ -41,7 +44,7 @@ import type { SessionInfo } from '../types';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
 import { SandboxSaid } from './Said';
-import { Dialog, Dropdown, MenuItem } from './ui';
+import { copyText, Dialog, Dropdown, MenuItem } from './ui';
 import { modelLabel } from './Pickers';
 
 function StateDot({ v }: { v: SessionView | undefined }) {
@@ -59,7 +62,8 @@ function StateDot({ v }: { v: SessionView | undefined }) {
   return <span class="sdot live" title="open" />;
 }
 
-function Row(props: { id: string; title: string; sub: string; view?: SessionView; active: boolean; picking: boolean; picked: boolean; onPick: (on: boolean) => void }) {
+function Row(props: { id: string; title: string; sub: string; view?: SessionView; active: boolean; picking: boolean; picked: boolean; onPick: (on: boolean) => void;
+  gone?: boolean }) {
   const [renaming, setRenaming] = useState(false);
   const [val, setVal] = useState(props.title);
   const input = useRef<HTMLInputElement>(null);
@@ -95,7 +99,7 @@ function Row(props: { id: string; title: string; sub: string; view?: SessionView
         </form>
       ) : (
         <button type="button" class="sess-main" onClick={() => (props.picking ? props.onPick(!props.picked) : void (open ? activate(props.id) : resumeSession(props.id)))}
-          title={open ? 'Show this session' : 'Resume this session'}>
+          title={props.gone ? 'Show this session (read only: its folder is no longer added)' : open ? 'Show this session' : 'Resume this session'}>
           <span class="sess-title">{props.title || 'Untitled session'}</span>
           <span class="sess-sub">{props.sub}</span>
         </button>
@@ -103,6 +107,7 @@ function Row(props: { id: string; title: string; sub: string; view?: SessionView
       <span class="sess-state">
         <StateDot v={props.view} />
       </span>
+      {props.gone ? null : (
       <Dropdown title="Session actions" class="sess-more" align="right" trigger={<Icon name="more" />} testid="session-menu">
         {(close) => (
           <>
@@ -129,17 +134,40 @@ function Row(props: { id: string; title: string; sub: string; view?: SessionView
           </>
         )}
       </Dropdown>
+      )}
     </li>
   );
 }
 
 /** What a project's folder is, said in a few words (the sandbox's word: shown, never acted on). */
 function folderNote(p: Project): string {
-  return p.folder === 'missing' ? 'its folder is not there' : p.folder === 'link' ? 'its folder is a link' : p.folder === 'other' ? 'not a folder' : '';
+  return p.folder === 'missing' ? 'its folder is not there' : p.folder === 'link' ? 'its folder is a link' : p.folder === 'other' ? 'not a folder'
+    : p.folder === 'unmounted' ? 'the sandbox sees it once it restarts' : '';
 }
+/** A project's icon: the Workspace, a folder of it, or a folder of this computer. */
+const iconOf = (p: Project): string => (p.workspace ? 'files' : p.host ? 'monitor' : 'folder');
+/** Where a project's folder is, said for a hint: its path in the sandbox, and for a folder of this computer what it is. */
+function whereOf(p: Project): string {
+  if (!p.host) return p.path;
+  return `${p.path} — a folder of this computer${p.readOnly ? ', read-only' : ''}${p.hidden ? ' (its path on the computer hidden from Claude)' : ''}`;
+}
+// a name ./stack gives a folder (folders.tsv): one a command line can carry as it is
+const STACK_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** Settings › Claude Code › Project folders on the portal (a new tab), when this page knows the portal. */
+const foldersLink = (portal: string | null): string | null => (portal ? `${portal.replace(/\/+$/, '')}/#settings/+project-folders` : null);
 
 /** A project's ⋯ menu: New session, a terminal in its folder, Connect a git repository, Rename, Remove from Code. */
 function ProjectMenu({ p, onRename }: { p: Project; onRename: () => void }) {
+  if (p.gone)
+    return (
+      <Dropdown title={`${p.name}: actions`} class="sess-more proj-more" align="right" trigger={<Icon name="more" />} testid="project-menu">
+        {(close) => (
+          <MenuItem icon="trash" onSelect={() => (close(), openProjectDialog({ kind: 'remove', id: p.id }))} testid="project-menu-remove">
+            Forget this folder…
+          </MenuItem>
+        )}
+      </Dropdown>
+    );
   return (
     <Dropdown title={`${p.name}: actions`} class="sess-more proj-more" align="right" trigger={<Icon name="more" />} testid="project-menu">
       {(close) => (
@@ -150,13 +178,18 @@ function ProjectMenu({ p, onRename }: { p: Project; onRename: () => void }) {
           <MenuItem icon="terminal" onSelect={() => (close(), void openProjectTerminal(p.id))} testid="project-menu-terminal">
             Open a terminal here
           </MenuItem>
-          <MenuItem icon="branch" onSelect={() => (close(), void connectGitRepo(p.id))} testid="project-menu-git">
-            Connect a git repository
+          <MenuItem icon="branch" disabled={p.readOnly} onSelect={() => (close(), void connectGitRepo(p.id))} testid="project-menu-git">
+            {p.readOnly ? 'Connect a git repository (read-only folder)' : 'Connect a git repository'}
           </MenuItem>
           <MenuItem icon="shield" onSelect={() => (close(), openProjectDialog({ kind: 'settings', id: p.id }))} testid="project-menu-settings">
             Claude Code settings…
           </MenuItem>
-          {!p.workspace && (
+          {p.host && (
+            <MenuItem icon="trash" danger onSelect={() => (close(), openProjectDialog({ kind: 'remove', id: p.id }))} testid="project-menu-remove">
+              Remove folder from Code…
+            </MenuItem>
+          )}
+          {!p.workspace && !p.host && (
             <>
               <MenuItem icon="pencil" onSelect={() => (close(), onRename())} testid="project-menu-rename">
                 Rename
@@ -204,11 +237,114 @@ export function ProjectsPanel() {
   };
   const subOf = (v: SessionView) => [v.permissions.length ? 'waiting for you' : v.state === 'busy' ? 'working' : v.state === 'starting' ? 'starting' : v.unseen ? 'done — new' : v.state,
     modelLabel(models, v.model)].filter(Boolean).join(' · ');
-  const isOpen = (p: Project) => expanded[p.id] ?? (p.id === current || by[p.id].open.some((id) => groupOf(views[id]) !== 'done'));
+  const isOpen = (p: Project) => expanded[p.id] ?? (!p.gone && (p.id === current || by[p.id].open.some((id) => groupOf(views[id]) !== 'done')));
   const pick = (id: string, on: boolean) => setPicked((x) => (on ? [...new Set([...x, id])] : x.filter((y) => y !== id)));
-  const row = (id: string, title: string, sub: string, v?: SessionView) => (
-    <Row key={id} id={id} view={v} active={id === active} title={title} sub={sub} picking={picking} picked={picked.includes(id)} onPick={(on) => pick(id, on)} />
+  const row = (id: string, title: string, sub: string, v?: SessionView, gone = false) => (
+    <Row key={id} id={id} view={v} active={id === active} title={title} sub={sub} picking={picking && !gone} picked={picked.includes(id)} onPick={(on) => pick(id, on)}
+      gone={gone} />
   );
+  const live = projects.filter((p) => !p.gone);
+  const gone = projects.filter((p) => p.gone);
+  // one project with its sessions (one no longer added: its sessions only, read only — nothing starts there)
+  const section = (p: Project) => {
+    const mine = by[p.id];
+    const groups: Record<Group, string[]> = { needs: [], working: [], done: [] };
+    for (const id of mine.open) if (!needle || titleOf(id, views[id]).toLowerCase().includes(needle)) groups[groupOf(views[id])].push(id);
+    const needs = mine.open.filter((id) => views[id].permissions.length > 0).length;
+    const open = isOpen(p);
+    const note = folderNote(p);
+    const head = (
+      <>
+        <Icon name={iconOf(p)} size={14} />
+        <span class="proj-title">{p.name}</span>
+        {(p.workspace || p.host || p.root !== p.name) && <span class="proj-path">{p.workspace ? '/workspace' : p.root}</span>}
+      </>
+    );
+    return (
+      <section key={p.id} class={`proj${p.id === current ? ' current' : ''}${p.gone ? ' gone' : ''}`} data-testid="project" data-project={p.id}
+        data-host={p.host ? (p.readOnly ? 'ro' : 'rw') : undefined}>
+        <div class="proj-head">
+          <button type="button" class="proj-toggle icon-btn tiny" aria-expanded={open} aria-label={open ? `Fold ${p.name}` : `Unfold ${p.name}`}
+            onClick={() => setExpanded((x) => ({ ...x, [p.id]: !open }))} data-testid="project-toggle">
+            <Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />
+          </button>
+          {p.gone ? (
+            <span class="proj-name" title={`${p.path}: a folder of this computer no longer added — its sessions, read only`} data-testid="project-show">
+              {head}
+            </span>
+          ) : renaming === p.id ? (
+            <form class="proj-rename" onSubmit={(e) => { e.preventDefault(); setRenaming(null); if (newName.trim()) void renameProjectTo(p.id, newName); }}>
+              <input value={newName} maxLength={80} aria-label="Project name" ref={(el) => { if (el && document.activeElement !== el) el.focus(); }}
+                onInput={(e) => setNewName((e.currentTarget as HTMLInputElement).value)} onKeyDown={(e) => e.key === 'Escape' && setRenaming(null)}
+                onBlur={() => setRenaming(null)} data-testid="project-rename-input" />
+            </form>
+          ) : (
+            <button type="button" class="proj-name" title={`${whereOf(p)}${note ? ` — ${note}` : ''}: show this project (its files, Git, Review, Run & test; new sessions start here)`}
+              onClick={() => { setProject(p.id); setExpanded((x) => ({ ...x, [p.id]: true })); }} data-testid="project-show">
+              {head}
+            </button>
+          )}
+          {p.readOnly && !p.gone && (
+            <span class="proj-ro" title="Read-only: Claude, the commands it runs and this page change nothing in it" data-testid="project-read-only">read-only</span>
+          )}
+          {p.git && !p.gone && <span class="proj-tag" title="A git repository"><Icon name="branch" size={12} /></span>}
+          {note && !p.gone && <span class="proj-tag warn-text" title={note} data-testid="project-folder-note"><Icon name="alert" size={12} /></span>}
+          {!p.gone && !settingsApplied(p.settings) && (
+            <button type="button" class="proj-tag proj-settings warn-text" onClick={() => openProjectDialog({ kind: 'settings', id: p.id })}
+              title="Its own Claude Code settings are not applied: review them" aria-label={`${p.name}: its own Claude Code settings are not applied — review them`}
+              data-testid="project-settings-flag">
+              <Icon name="shield" size={12} />
+            </button>
+          )}
+          {needs > 0 && <span class="badge warn" title="Sessions waiting for you">{needs}</span>}
+          <ProjectMenu p={p} onRename={() => { setNewName(p.name); setRenaming(p.id); }} />
+        </div>
+        {open && (
+          <div class="proj-body">
+            {p.folder === 'unmounted' && !p.gone && (
+              <div class="side-note small" data-testid="project-unmounted">Added on this computer: the sandbox sees it once it restarts (as chosen there: now, or when no turn runs).</div>
+            )}
+            {(['needs', 'working', 'done'] as Group[]).map((g) =>
+              groups[g].length > 0 ? (
+                <div key={g} class={`sess-group sess-group-${g}`} data-testid={`session-group-${g}`}>
+                  <div class="group-head">
+                    {GROUP_LABEL[g]}
+                    {g === 'needs' && <span class="badge warn">{groups[g].length}</span>}
+                  </div>
+                  <ul class="sess-list">{groups[g].map((id) => row(id, titleOf(id, views[id]), subOf(views[id]), views[id], p.gone))}</ul>
+                </div>
+              ) : null,
+            )}
+            {mine.recent.length > 0 && (
+              <>
+                <div class="group-head">
+                  Recent {loading && <Spinner size={11} />}
+                  <button type="button" class="icon-btn tiny" title="Refresh" aria-label="Refresh sessions" onClick={() => void refreshSessions()}>
+                    <Icon name="refresh" size={13} />
+                  </button>
+                </div>
+                <ul class="sess-list">
+                  {mine.recent.map((x: SessionInfo) => row(x.id, x.title || x.firstPrompt, [ago(x.modified), x.branch].filter(Boolean).join(' · '), undefined, p.gone))}
+                </ul>
+              </>
+            )}
+            {!mine.open.length && !mine.recent.length && (
+              <div class="side-note">{q ? 'No sessions match.' : loading ? 'Loading…' : 'No sessions here yet.'}</div>
+            )}
+            {p.gone ? (
+              <div class="side-note small" data-testid="project-gone-note">
+                Read only: add {p.path} again on this computer (Settings › Claude Code › Project folders, or ./stack project add) to go on with these sessions.
+              </div>
+            ) : (
+              <button type="button" class="proj-new linkish" disabled={opening} onClick={() => void newSession({ project: p.id })} data-testid="project-new-session">
+                <Icon name="plus" size={13} /> New session
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+    );
+  };
 
   return (
     <div class="sessions projects" data-testid="sessions">
@@ -243,83 +379,15 @@ export function ProjectsPanel() {
             {projectsSaid && <SandboxSaid words={projectsSaid} compact />}
           </div>
         )}
-        {projects.map((p) => {
-          const mine = by[p.id];
-          const groups: Record<Group, string[]> = { needs: [], working: [], done: [] };
-          for (const id of mine.open) if (!needle || titleOf(id, views[id]).toLowerCase().includes(needle)) groups[groupOf(views[id])].push(id);
-          const needs = mine.open.filter((id) => views[id].permissions.length > 0).length;
-          const open = isOpen(p);
-          const note = folderNote(p);
-          return (
-            <section key={p.id} class={`proj${p.id === current ? ' current' : ''}`} data-testid="project" data-project={p.id}>
-              <div class="proj-head">
-                <button type="button" class="proj-toggle icon-btn tiny" aria-expanded={open} aria-label={open ? `Fold ${p.name}` : `Unfold ${p.name}`}
-                  onClick={() => setExpanded((x) => ({ ...x, [p.id]: !open }))} data-testid="project-toggle">
-                  <Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />
-                </button>
-                {renaming === p.id ? (
-                  <form class="proj-rename" onSubmit={(e) => { e.preventDefault(); setRenaming(null); if (newName.trim()) void renameProjectTo(p.id, newName); }}>
-                    <input value={newName} maxLength={80} aria-label="Project name" ref={(el) => { if (el && document.activeElement !== el) el.focus(); }}
-                      onInput={(e) => setNewName((e.currentTarget as HTMLInputElement).value)} onKeyDown={(e) => e.key === 'Escape' && setRenaming(null)}
-                      onBlur={() => setRenaming(null)} data-testid="project-rename-input" />
-                  </form>
-                ) : (
-                  <button type="button" class="proj-name" title={`${p.path}${note ? ` — ${note}` : ''}: show this project (its files, Git, Review, Run & test; new sessions start here)`}
-                    onClick={() => { setProject(p.id); setExpanded((x) => ({ ...x, [p.id]: true })); }} data-testid="project-show">
-                    <Icon name={p.workspace ? 'files' : 'folder'} size={14} />
-                    <span class="proj-title">{p.name}</span>
-                    {(p.workspace || p.root !== p.name) && <span class="proj-path">{p.workspace ? '/workspace' : p.root}</span>}
-                  </button>
-                )}
-                {p.git && <span class="proj-tag" title="A git repository"><Icon name="branch" size={12} /></span>}
-                {note && <span class="proj-tag warn-text" title={note}><Icon name="alert" size={12} /></span>}
-                {!settingsApplied(p.settings) && (
-                  <button type="button" class="proj-tag proj-settings warn-text" onClick={() => openProjectDialog({ kind: 'settings', id: p.id })}
-                    title="Its own Claude Code settings are not applied: review them" aria-label={`${p.name}: its own Claude Code settings are not applied — review them`}
-                    data-testid="project-settings-flag">
-                    <Icon name="shield" size={12} />
-                  </button>
-                )}
-                {needs > 0 && <span class="badge warn" title="Sessions waiting for you">{needs}</span>}
-                <ProjectMenu p={p} onRename={() => { setNewName(p.name); setRenaming(p.id); }} />
-              </div>
-              {open && (
-                <div class="proj-body">
-                  {(['needs', 'working', 'done'] as Group[]).map((g) =>
-                    groups[g].length > 0 ? (
-                      <div key={g} class={`sess-group sess-group-${g}`} data-testid={`session-group-${g}`}>
-                        <div class="group-head">
-                          {GROUP_LABEL[g]}
-                          {g === 'needs' && <span class="badge warn">{groups[g].length}</span>}
-                        </div>
-                        <ul class="sess-list">{groups[g].map((id) => row(id, titleOf(id, views[id]), subOf(views[id]), views[id]))}</ul>
-                      </div>
-                    ) : null,
-                  )}
-                  {mine.recent.length > 0 && (
-                    <>
-                      <div class="group-head">
-                        Recent {loading && <Spinner size={11} />}
-                        <button type="button" class="icon-btn tiny" title="Refresh" aria-label="Refresh sessions" onClick={() => void refreshSessions()}>
-                          <Icon name="refresh" size={13} />
-                        </button>
-                      </div>
-                      <ul class="sess-list">
-                        {mine.recent.map((x: SessionInfo) => row(x.id, x.title || x.firstPrompt, [ago(x.modified), x.branch].filter(Boolean).join(' · ')))}
-                      </ul>
-                    </>
-                  )}
-                  {!mine.open.length && !mine.recent.length && (
-                    <div class="side-note">{q ? 'No sessions match.' : loading ? 'Loading…' : 'No sessions here yet.'}</div>
-                  )}
-                  <button type="button" class="proj-new linkish" disabled={opening} onClick={() => void newSession({ project: p.id })} data-testid="project-new-session">
-                    <Icon name="plus" size={13} /> New session
-                  </button>
-                </div>
-              )}
-            </section>
-          );
-        })}
+        {live.map((p) => section(p))}
+        {gone.length > 0 && (
+          <div class="proj-gone" data-testid="projects-gone">
+            <div class="group-head" title="Folders of this computer removed from the sandbox: their sessions, read only (add the folder again to go on with them)">
+              Folders no longer added
+            </div>
+            {gone.map((p) => section(p))}
+          </div>
+        )}
         {error && <div class="side-note err">{error}</div>}
         <button type="button" class="proj-add" onClick={() => openProjectDialog({ kind: 'new', tab: 'empty' })} data-testid="new-project">
           <Icon name="plus" size={14} /> New project
@@ -354,7 +422,7 @@ export function ProjectChip({ compact = false }: { compact?: boolean }) {
       testid="project-chip"
       trigger={
         <>
-          <Icon name={p.workspace ? 'files' : 'folder'} size={14} />
+          <Icon name={iconOf(p)} size={14} />
           <span class="proj-chip-name" data-testid="project-chip-name">{p.name}</span>
           {!compact && !p.workspace && <span class="proj-chip-path">{p.path}</span>}
           {branch && (
@@ -371,8 +439,8 @@ export function ProjectChip({ compact = false }: { compact?: boolean }) {
       {(close) => (
         <>
           <div class="panel-head">Projects</div>
-          {projects.map((x) => (
-            <MenuItem key={x.id} checked={x.id === p.id} icon={x.workspace ? 'files' : 'folder'} hint={x.workspace ? '/workspace' : x.root !== x.name ? x.root : undefined}
+          {projects.filter((x) => !x.gone).map((x) => (
+            <MenuItem key={x.id} checked={x.id === p.id} icon={iconOf(x)} hint={x.workspace ? '/workspace' : x.host || x.root !== x.name ? x.root : undefined}
               onSelect={() => (close(), setProject(x.id))} testid="project-chip-item">
               {x.name}
             </MenuItem>
@@ -408,6 +476,7 @@ export function ProjectDialogs() {
 /** New project: an empty folder of the workspace (and git init), a clone, or a folder of the workspace. */
 function NewProjectDialog({ tab, onClose }: { tab: Extract<ProjectDialog, { kind: 'new' }>['tab']; onClose: () => void }) {
   const projects = useSel(store, (s) => s.projects);
+  const portal = useSel(store, (s) => s.server?.portalOrigin ?? null);
   const [kind, setKind] = useState(tab);
   const [name, setName] = useState('');
   const [git, setGit] = useState(true);
@@ -439,7 +508,7 @@ function NewProjectDialog({ tab, onClose }: { tab: Extract<ProjectDialog, { kind
   const taken = new Set(projects.map((p) => p.root));
   const choices = (folders ?? []).filter((f) => !taken.has(f));
   const target = kind === 'empty' ? name.trim() : folder;
-  const valid = kind === 'clone' || (rootOk(target) && !taken.has(target));
+  const valid = kind === 'clone' || (kind !== 'computer' && rootOk(target) && !taken.has(target));
   const go = async () => {
     setErr(null);
     if (kind === 'clone') {
@@ -505,6 +574,13 @@ function NewProjectDialog({ tab, onClose }: { tab: Extract<ProjectDialog, { kind
             )}
           </span>
         </label>
+        <label class={`np-opt${kind === 'computer' ? ' on' : ''}`}>
+          <input type="radio" name="np-kind" checked={kind === 'computer'} onChange={() => setKind('computer')} data-testid="new-project-computer" />
+          <span class="np-body">
+            <span class="np-title">A folder of this computer</span>
+            {kind === 'computer' && <ComputerFolder portal={portal} />}
+          </span>
+        </label>
       </div>
       <p class="muted small">
         Claude Code runs a project's sessions in its folder, and the file tree, Search, Git, Review and Run & test show that folder. Every project is in the one
@@ -520,9 +596,112 @@ function NewProjectDialog({ tab, onClose }: { tab: Extract<ProjectDialog, { kind
         <button type="button" class="btn" onClick={onClose}>
           Cancel
         </button>
-        <button type="button" class="btn primary" disabled={!valid || busy} onClick={() => void go()} data-testid="new-project-create">
-          {busy ? <Spinner size={12} /> : null} {kind === 'clone' ? 'Next: the repository' : 'Create'}
+        {kind === 'computer' && foldersLink(portal) ? (
+          <a class="btn primary" href={foldersLink(portal) ?? undefined} target="_blank" rel="noopener noreferrer" onClick={onClose} data-testid="new-project-open-settings">
+            Open Project folders
+          </a>
+        ) : (
+          <button type="button" class="btn primary" disabled={!valid || busy} onClick={() => void go()} data-testid="new-project-create">
+            {busy ? <Spinner size={12} /> : null} {kind === 'clone' ? 'Next: the repository' : 'Create'}
+          </button>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** A command line, with Copy (it says Copied once the browser took it). */
+function Cmd({ text, testid }: { text: string; testid: string }) {
+  const [copied, setCopied] = useState<boolean | null>(null);
+  return (
+    <span class="np-cmd">
+      <code data-testid={testid}>{text}</code>
+      <button type="button" class="linkish small" onClick={() => void copyText(text).then(setCopied)} data-testid={`${testid}-copy`}>
+        {copied === null ? 'Copy' : copied ? 'Copied' : 'Copy it by hand'}
+      </button>
+    </span>
+  );
+}
+
+/** New project › A folder of this computer: where it is added (never from here: a page cannot name a folder of the
+ *  computer, and one that could would be a page anyone reaching it could use), and what that means. */
+function ComputerFolder({ portal }: { portal: string | null }) {
+  return (
+    <span class="np-fields np-computer" data-testid="new-project-computer-info">
+      <span class="small">
+        It is added on the computer running bedrock-now: in Settings › Claude Code › Project folders, <b>Choose on this computer…</b> opens a folder chooser
+        on its screen — or in a terminal there:
+      </span>
+      <Cmd text="./stack project add ~/src/my-app" testid="new-project-computer-cmd" />
+      <span class="small warn-text">
+        Claude — and anything it runs — will read and change everything in it, and what it writes there can run on your computer when your own tools open the
+        folder (git hooks, .envrc, VS Code tasks, npm scripts). Read-only for Claude is offered (--read-only).
+      </span>
+      <span class="muted small">
+        The sandbox restarts to see it (~15 s): open sessions resume with your next prompt.{portal ? '' : ' (Settings is on the bedrock-now portal.)'}
+      </span>
+    </span>
+  );
+}
+
+/** A folder of this computer: removed on that computer's Settings or ./stack (the page asks nothing of the sandbox for
+ *  it). One no longer added: Forget takes its record (and so its sessions) off the list — they stay in the sandbox. */
+function HostRemoveDialog({ p, onClose }: { p: Project; onClose: () => void }) {
+  const portal = useSel(store, (s) => s.server?.portalOrigin ?? null);
+  const [err, setErr] = useState<Problem | null>(null);
+  const [busy, setBusy] = useState(false);
+  const link = foldersLink(portal);
+  if (p.gone) {
+    const forget = async () => {
+      setBusy(true);
+      const e = await removeProjectById(p.id);
+      setBusy(false);
+      if (e) setErr(e);
+      else onClose();
+    };
+    return (
+      <Dialog title={`Forget ${p.name}?`} onClose={onClose} testid="remove-project-dialog">
+        <p>
+          <code>{p.path}</code> is no longer added to the sandbox; the Code page kept its record so that its sessions are listed. Forgetting it takes them off
+          the list: they stay in the sandbox, and are listed again once the folder is added again.
+        </p>
+        {err && (
+          <div class="plg-err small" role="alert">
+            {label(err.text, 300)}
+            {err.said && <SandboxSaid words={err.said} />}
+          </div>
+        )}
+        <div class="dlg-actions">
+          <button type="button" class="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" class="btn danger" disabled={busy} onClick={() => void forget()} data-testid="remove-project-go">
+            {busy ? <Spinner size={12} /> : null} Forget
+          </button>
+        </div>
+      </Dialog>
+    );
+  }
+  return (
+    <Dialog title={`Remove ${p.name} from Code?`} onClose={onClose} testid="remove-project-dialog">
+      <p>
+        <code>{p.path}</code> is a folder of this computer: it is removed where it was added — in Settings › Claude Code › Project folders (<b>Remove</b>, from
+        any device), or in a terminal on the computer:
+      </p>
+      <Cmd text={`./stack project remove ${STACK_NAME.test(p.name) ? p.name : 'NAME'}`} testid="remove-project-cmd" />
+      <p class="muted small">
+        The sandbox restarts without it (open sessions resume with your next prompt); the folder on the computer stays as it is, and its sessions are listed
+        under Folders no longer added.
+      </p>
+      <div class="dlg-actions">
+        <button type="button" class="btn" onClick={onClose}>
+          Close
         </button>
+        {link && (
+          <a class="btn primary" href={link} target="_blank" rel="noopener noreferrer" onClick={onClose} data-testid="remove-project-open-settings">
+            Open Project folders
+          </a>
+        )}
       </div>
     </Dialog>
   );
@@ -536,6 +715,7 @@ function RemoveProjectDialog({ id, onClose }: { id: string; onClose: () => void 
   const [err, setErr] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   if (!p || p.workspace) return null;
+  if (p.host) return <HostRemoveDialog p={p} onClose={onClose} />;
   const go = async () => {
     setBusy(true);
     const e = await removeProjectById(p.id, trash ? { trash: true, confirm } : {});
@@ -587,11 +767,11 @@ function FileDialog({ ids, onClose }: { ids: string[]; onClose: () => void }) {
     <Dialog title={ids.length === 1 ? 'Add the session to a project' : `Add ${ids.length} sessions to a project`} onClose={onClose} testid="file-dialog">
       <p class="muted small">It is listed there from now on; it still runs in its own folder ({ids.length === 1 && where[ids[0]] ? label(where[ids[0]].cwd, 200) : 'each its own'}).</p>
       <ul class="np-list" role="list">
-        {projects.map((p) => (
+        {projects.filter((p) => !p.gone).map((p) => (
           <li key={p.id}>
             <button type="button" class="gitr-item" disabled={p.id === now} onClick={() => void addToProject(ids, p.id).then((ok) => ok && onClose())}
               data-testid="file-dialog-item" data-project={p.id}>
-              <Icon name={p.workspace ? 'files' : 'folder'} size={13} />
+              <Icon name={iconOf(p)} size={13} />
               <span class="gitr-name">{p.name}</span>
               <span class="muted small">{p.path}</span>
               {p.id === now && <span class="pill">here now</span>}
