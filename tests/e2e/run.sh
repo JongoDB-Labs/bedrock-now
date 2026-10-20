@@ -46,6 +46,14 @@
 #                    makes an empty project and one by a clone, runs and resumes a Haiku session there, opens a
 #                    terminal window in it, files a session (Add to project), removes a record. Never a real git host
 #                    or provider.
+#   --host-folders   folders of this computer as Code page projects (E2E_HOST_FOLDERS=1 does the same; needs the Code
+#                    page and the browser part): two folders made under this run's --out (never one of yours) added
+#                    with ./stack project add — one read-write at its own path, one read-only at /projects/<name> —
+#                    what the sandbox and the code container see then (and nothing else of your home folder), then
+#                    browser passes between ./stack project commands: browser/code-host-folders-a (both in the
+#                    Projects tab and Settings, the read-only one refusing writes, a Haiku session in the read-write
+#                    one at its path), -b (removed: its session under "Folders no longer added", read only) and -c
+#                    (added again: the session resumes, Haiku); both removed at the end, their files untouched.
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -76,6 +84,7 @@ TERMINAL=0; [ "${E2E_TERMINAL:-0}" != 1 ] || TERMINAL=1
 CODE=1; [ "${E2E_NO_CODE:-0}" != 1 ] || CODE=0   # (on by default, as on a new install; E2E_CODE=1 is that too)
 HELPER=0; [ "${E2E_HELPER:-0}" != 1 ] || HELPER=1
 GIT_SERVER=0; [ "${E2E_GIT_SERVER:-0}" != 1 ] || GIT_SERVER=1
+HOST_FOLDERS=0; [ "${E2E_HOST_FOLDERS:-0}" != 1 ] || HOST_FOLDERS=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -93,6 +102,7 @@ while [ $# -gt 0 ]; do
     --no-code) CODE=0; shift ;;
     --helper) HELPER=1; shift ;;
     --git-server) GIT_SERVER=1; shift ;;
+    --host-folders) HOST_FOLDERS=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
@@ -525,7 +535,7 @@ if [ "$CODE" = 1 ]; then
              terminal-upstream:7681 1.1.1.1:443 host.docker.internal:80; do
       printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"
     done
-    for kv in caddy:8080=open secrets-in-env=CODE_PROXY_SECRET workspace=absent mounts=/run/bn-code,/tmp,/usr/sbin/docker-init,/var/lib/bn-code rootfs-writable=no \
+    for kv in caddy:8080=open secrets-in-env=CODE_PROXY_SECRET workspace=absent mounts=/etc/bn-code/projects,/run/bn-code,/tmp,/usr/sbin/docker-init,/var/lib/bn-code rootfs-writable=no \
               socket-dir-writable=no claude-binary=absent; do
       printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
     done
@@ -541,7 +551,7 @@ if [ "$CODE" = 1 ]; then
     for k in LITELLM_KEY_TERMINAL LITELLM_KEY_CLAUDE_CODE LITELLM_MASTER_KEY SHARED_MCP_TOKEN TERMINAL_PROXY_SECRET; do ! env_has "$k" "$ins" || bad="$bad has-$k"; done
     unset ins
     if [ -z "$bad" ]; then
-      record code code-isolation PASS "$(( $(now) - t0 ))" "code container: only Caddy (code-link), no LiteLLM, portal, Open WebUI, data, stt, sandbox, gateway or internet; no workspace mount (mounts: the socket folder :ro, /tmp, Docker's init, its own state volume for Git hosts), read-only, no Claude Code binary, its only secret CODE_PROXY_SECRET, your uid; 407 without the secret; the sandbox cannot reach it; bn-coded's socket folder 700"
+      record code code-isolation PASS "$(( $(now) - t0 ))" "code container: only Caddy (code-link), no LiteLLM, portal, Open WebUI, data, stt, sandbox, gateway or internet; no workspace mount (mounts: the socket folder :ro, the project folders' list :ro, /tmp, Docker's init, its own state volume for Git hosts), read-only, no Claude Code binary, its only secret CODE_PROXY_SECRET, your uid; 407 without the secret; the sandbox cannot reach it; bn-coded's socket folder 700"
     else record code code-isolation FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/code-isolation.log)"; fi
   fi
 fi
@@ -725,6 +735,73 @@ if part_on browser; then
     if [ "$n" = 0 ]; then record code caddy-log-no-secret PASS 0 "CODE_PROXY_SECRET appears 0 times in the main Caddy's log"
     else record code caddy-log-no-secret FAIL 0 "CODE_PROXY_SECRET appears $n times in the main Caddy's log"; fi
   fi
+fi
+
+# --- 3a. folders of this computer (--host-folders): ./stack project, what the sandbox sees, a session across restarts ---
+# Two folders made under this run's --out (never one of yours). The sandbox restarts at each ./stack project command
+# (--now); the browser passes a, b and c run in between (browser/code-host-folders-*; pass a keeps its session's id
+# in OUT/browser/host-folders-session.txt for b and c).
+svc_id() { docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$1"; }
+# host_probe TERMINAL_CONTAINER APP NOTES_HOST HOME -> lines: what the sandbox sees of the two folders and of HOME
+host_probe() {
+  # shellcheck disable=SC2016  # expanded in the container
+  docker exec "$1" sh -c '
+    cat "$1/hello.txt" >/dev/null 2>&1 && echo app-read || echo app-read-failed
+    if touch "$1/.e2e-w" 2>/dev/null; then echo app-write; rm -f "$1/.e2e-w"; else echo app-write-failed; fi
+    cat /projects/e2e-host-notes/notes.md >/dev/null 2>&1 && echo notes-read || echo notes-read-failed
+    if touch /projects/e2e-host-notes/.e2e-w 2>/dev/null; then echo notes-writable; else echo notes-read-only; fi
+    test -e "$2" && echo notes-host-path-visible || echo notes-host-path-absent
+    test -e "$3/.ssh" && echo home-ssh-visible || echo home-ssh-absent
+    echo "home-entries $(ls -A "$3" 2>/dev/null | tr "\n" " ")"
+    echo "roots $BN_CODE_ROOTS"' sh "$2" "$3" "$4" 2>&1
+}
+if [ "$HOST_FOLDERS" = 1 ] && { [ "$CODE" = 0 ] || ! part_on browser; }; then
+  record projects host-folders SKIP 0 "--host-folders needs the Code page and the browser part"
+elif [ "$HOST_FOLDERS" = 1 ]; then
+  say "folders of this computer: ./stack project add, the sandbox's view, a session across restarts"
+  HF="$OUT/host-folders"; rm -rf "$HF"; mkdir -p "$HF/app" "$HF/notes"; HF="$(cd "$HF" && pwd -P)"
+  printf 'hello from this computer\n' > "$HF/app/hello.txt"; printf '# Notes\n\nRead only for Claude.\n' > "$HF/notes/notes.md"
+  chmod 755 "$HF" "$HF/app" "$HF/notes"; chmod 644 "$HF/app/hello.txt" "$HF/notes/notes.md"
+  rm -f "$OUT/browser/host-folders-session.txt"
+  tc0="$(svc_id terminal)"
+  cli project-add-rw 0 "e2e-host-app: .* → $HF/app in the sandbox \(read-write\)" project add "$HF/app" --name e2e-host-app --now
+  cli project-add-ro 0 'e2e-host-notes: .* → /projects/e2e-host-notes in the sandbox \(read-only\)' project add "$HF/notes" --name e2e-host-notes --read-only --hide-path --now
+  cli project-list 0 'e2e-host-notes' project list
+  t0="$(now)"; tc="$(svc_id terminal)"; cc="$(svc_id code)"
+  probe="$(host_probe "$tc" "$HF/app" "$HF/notes" "$HOME")"; printf '%s\n' "$probe" > "$LOGS/host-folders-probe.log"
+  rel="${HF#"$HOME"/}"; first="${rel%%/*}"; bad=''
+  for k in app-read app-write notes-read notes-read-only notes-host-path-absent home-ssh-absent; do printf '%s\n' "$probe" | grep -qx "$k" || bad="$bad $k"; done
+  case "$HF" in "$HOME"/*) printf '%s\n' "$probe" | grep -qx "home-entries $first " || bad="$bad home:$(printf '%s\n' "$probe" | sed -n 's/^home-entries //p')" ;; esac
+  printf '%s\n' "$probe" | grep -qF "roots [\"$HF/app\",\"/projects/e2e-host-notes\"]" || bad="$bad roots:$(printf '%s\n' "$probe" | sed -n 's/^roots //p')"
+  [ -n "$tc" ] && [ "$tc" != "$tc0" ] || bad="$bad sandbox-not-recreated"
+  roots="$(docker exec "$cc" cat /etc/bn-code/projects/roots.json 2>&1)"
+  case "$roots" in *"\"path\":\"$HF/app\",\"mode\":\"rw\",\"hidden\":false"*"\"path\":\"/projects/e2e-host-notes\",\"mode\":\"ro\",\"hidden\":true"*) ;; *) bad="$bad code-roots:${roots:0:200}" ;; esac
+  # (the code container mounts no folder of yours: only the list)
+  docker exec "$cc" sh -c 'cat /proc/self/mounts' 2>/dev/null | awk '{ print $2 }' | grep -qF "$HF" && bad="$bad code-container-mounts-a-folder"
+  if [ -z "$bad" ]; then
+    record projects host-folders-sandbox PASS "$(( $(now) - t0 ))" "the sandbox restarted; it sees the read-write folder at its own path (read, write) and the read-only one only at /projects/e2e-host-notes (writes refused); of your home folder only the way to the folder (${first:-—}), no .ssh; BN_CODE_ROOTS and the code container's roots.json list both; the code container mounts neither"
+  else record projects host-folders-sandbox FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $LOGS/host-folders-probe.log)"; fi
+  cli project-test 0 'all checks passed' test
+  E2E_HOST_PASS=a browser_run "folders of this computer: added" 'browser/code-host-folders-a$' host-a runner-host-a
+  t0="$(now)"
+  if [ "$(cat "$HF/app/from-the-page.txt" 2>/dev/null)" = 'written in the sandbox' ]; then
+    record projects host-folders-write-lands PASS 0 "a file the page wrote in the sandbox is in the folder on this computer"
+  else record projects host-folders-write-lands FAIL 0 "no $HF/app/from-the-page.txt with the page's text"; fi
+  cli project-remove 0 'e2e-host-app is no longer in the sandbox' project remove e2e-host-app --now
+  t0="$(now)"; tc="$(svc_id terminal)"
+  if docker exec "$tc" test -e "$HF/app" 2>/dev/null; then record projects host-folders-removed FAIL 0 "the sandbox still sees $HF/app"
+  elif [ "$(cat "$HF/app/hello.txt" 2>/dev/null)" != 'hello from this computer' ]; then record projects host-folders-removed FAIL 0 "the folder on this computer changed"
+  else record projects host-folders-removed PASS "$(( $(now) - t0 ))" "the sandbox no longer sees the folder; the folder on this computer is as it was"; fi
+  E2E_HOST_PASS=b browser_run "folders of this computer: one removed" 'browser/code-host-folders-b$' host-b runner-host-b
+  cli project-add-again 0 'e2e-host-app: .* \(read-write\)' project add "$HF/app" --name e2e-host-app --now
+  E2E_HOST_PASS=c browser_run "folders of this computer: added again" 'browser/code-host-folders-c$' host-c runner-host-c
+  cli project-remove-app 0 'no longer in the sandbox' project remove e2e-host-app --now
+  cli project-remove-notes 0 'no longer in the sandbox' project remove e2e-host-notes --now
+  t0="$(now)"
+  if st project list 2>&1 | grep -qE 'e2e-host-(app|notes)' || [ -e "$STACK/.state/projects/compose.yaml" ] ||
+     [ "$(cat "$HF/notes/notes.md" 2>/dev/null | head -n 1)" != '# Notes' ] || [ -e "$HF/notes/.e2e-w" ]; then
+    record projects host-folders-cleaned FAIL 0 "after removing both: still listed, the generated compose file left, or a folder changed"
+  else record projects host-folders-cleaned PASS "$(( $(now) - t0 ))" "both removed: none listed, no generated compose file; the folders on this computer as they were"; fi
 fi
 
 # --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---

@@ -3152,3 +3152,163 @@ def settings_sandbox_internet(ctx):
         _egress_choice(ctx, "Internet only", "internet")
     _egress_state(Code(ctx, "settings-sandbox-internet-after"), False)
     return "Internet only → + this computer (the code container: egressHost true) → Internet only again (egressHost false), each through the update helper"
+
+
+# --- folders of this computer (tests/e2e/run.sh --host-folders): passes a, b and c run between ./stack project commands ---
+
+HOST_PASS = os.environ.get("E2E_HOST_PASS", "")
+HOST_APP, HOST_NOTES = "e2e-host-app", "e2e-host-notes"
+HOST_SID = Path("/out/host-folders-session.txt")   # (pass a's session, for b and c)
+PWD_PROMPT = "Use the Bash tool to run exactly this command, then reply with exactly what it printed and nothing else: pwd"
+
+
+def need_host_pass(p):
+    need_on()
+    if HOST_PASS != p:
+        raise Skip("runs in a pass of its own between ./stack project commands (tests/e2e/run.sh --host-folders)")
+
+
+def _host_projects(c):
+    return {x["name"]: x for x in c.api("GET", "/api/projects")["json"]["projects"] if x.get("host")}
+
+
+def _proj(page, pid):
+    return page.locator(f"[data-testid=project][data-project='{pid}']")
+
+
+def _unfold(page, pid):
+    t = _proj(page, pid).get_by_test_id("project-toggle")
+    if t.get_attribute("aria-expanded") == "false":
+        t.click()
+
+
+@check("browser", "code-host-folders-a")
+@saved
+def host_folders_a(ctx):
+    """run.sh added two folders of this computer (the sandbox restarted): e2e-host-app read-write at its own path,
+    e2e-host-notes read-only at /projects/e2e-host-notes. Both are in the Projects tab (the notes marked read-only) and
+    in Settings › Claude Code › Project folders (Choose on this computer… off: no update helper); a notes file opens
+    read-only, New file is off there, and a write the page's API sends anyway is refused by the sandbox; a Haiku session
+    in the app folder runs at its path (pwd); a file written through the API lands in the folder (run.sh checks it on
+    this computer)."""
+    need_haiku()
+    need_host_pass("a")
+    page, rec = ui_page(ctx, "code-host-folders-a")
+    c = Code.on(page, rec, goto=False)
+    hp = _host_projects(c)
+    expect(HOST_APP in hp and HOST_NOTES in hp, f"the folders of this computer: {sorted(hp)}")
+    app, notes = hp[HOST_APP], hp[HOST_NOTES]
+    root = app["root"]
+    expect(app["mode"] == "rw" and not app["hidden"] and app["folder"] == "dir" and root.startswith("/") and not root.startswith("/projects/"),
+           f"the read-write folder: {app}")
+    expect(notes["mode"] == "ro" and notes["hidden"] and notes["root"] == f"/projects/{HOST_NOTES}" and notes["folder"] == "dir", f"the read-only folder: {notes}")
+    page.get_by_test_id("side-sessions").click()
+    see(_proj(page, app["id"])).to_have_attribute("data-host", "rw", timeout=30000)
+    see(_proj(page, notes["id"])).to_have_attribute("data-host", "ro")
+    see(_proj(page, notes["id"]).get_by_test_id("project-read-only")).to_have_count(1)
+    see(_proj(page, app["id"]).get_by_test_id("project-show")).to_contain_text(root)
+    # read-only: shown, never changed from the page; the sandbox refuses a write sent anyway
+    _proj(page, notes["id"]).get_by_test_id("project-show").click()
+    see(page.get_by_test_id("project-chip-name")).to_have_text(HOST_NOTES, timeout=30000)
+    page.get_by_test_id("side-files").click()
+    note = page.locator(f".tree-row[data-path='/projects/{HOST_NOTES}/notes.md']")
+    see(note).to_have_count(1, timeout=30000)
+    see(page.get_by_role("button", name="New file", exact=True)).to_be_disabled()
+    note.click()
+    see(page.get_by_test_id("file-read-only")).to_be_visible(timeout=30000)
+    r = c.api("PUT", f"/api/fs/file?path=/projects/{HOST_NOTES}/written.txt", {"text": "x"})
+    expect(r["status"] >= 400 and re.search(r"read-only|erofs", r["text"], re.I), f"a write in the read-only folder: {r['status']} {r['text'][:200]}")
+    shot(page, "h1-code-host-folders-read-only")
+    # a Haiku session in the read-write folder: it runs there, at its path on this computer
+    page.get_by_test_id("side-sessions").click()
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    _unfold(page, app["id"])
+    _proj(page, app["id"]).get_by_test_id("project-new-session").click()
+    ask(page, PWD_PROMPT)
+    page.wait_for_function(f"(t) => !!document.querySelector('[data-testid=permission]') || ({ANSWERED})(t)", arg=_asked[id(page)], timeout=120000)
+    if page.get_by_test_id("perm-once").count():
+        page.get_by_test_id("perm-once").click()
+    answered(page)
+    expect(root in last_answer(page), f"pwd in the folder's session: {last_answer(page)!r}")
+    sid = page.evaluate("JSON.parse(localStorage.getItem('bn.code.v1')).lastSession")
+    st = state_of(c, sid)
+    expect(st.get("cwd") == root and st.get("project") == app["id"], f"the session's folder: {st}")
+    r = c.api("PUT", f"/api/fs/file?path={root}/from-the-page.txt", {"text": "written in the sandbox"})
+    expect(r["status"] == 200, f"a write in the read-write folder: {r['status']} {r['text'][:200]}")
+    HOST_SID.write_text(sid, encoding="ascii")
+    shot(page, "h2-code-host-folders-session")
+    csp_clean(page, rec)
+    # Settings › Claude Code › Project folders lists both (added only with the update helper, on this computer's screen)
+    sp, srec = ctx.page("code-host-folders-settings")
+    login(sp)
+    open_settings(sp, "+project-folders")
+    row = sp.locator('#settings .set-card [data-own="+project-folders"]')
+    see(row).to_contain_text(HOST_APP, timeout=30000)
+    see(row).to_contain_text(HOST_NOTES)
+    see(sp.locator("#set-projects-pick")).to_be_disabled()
+    shot(sp, "h3-settings-project-folders")
+    srec.save()
+    return (f"both folders in the Projects tab and Settings; the read-only one refused a write ({r['status']}); a Haiku session ran at {root} "
+            "(pwd); a file written there through the page")
+
+
+@check("browser", "code-host-folders-b")
+@saved
+def host_folders_b(ctx):
+    """run.sh removed e2e-host-app (the sandbox restarted): it is under Folders no longer added with pass a's session,
+    read only — its transcript shown with a notice, no New session, a resume refused; never the project shown."""
+    need_host_pass("b")
+    sid = HOST_SID.read_text(encoding="ascii").strip()
+    page, rec = ui_page(ctx, "code-host-folders-b")
+    c = Code.on(page, rec, goto=False)
+    gone = next((x for x in c.api("GET", "/api/projects")["json"]["projects"] if x.get("name") == HOST_APP), None)
+    expect(gone and gone.get("gone") is True and gone.get("host") is True, f"the removed folder: {gone}")
+    row = next((x for x in c.api("GET", "/api/sessions")["json"]["sessions"] if x["id"] == sid), None)
+    expect(row and row.get("gone") is True and row.get("project") == gone["id"], f"its session: {row}")
+    page.get_by_test_id("side-sessions").click()
+    g = page.get_by_test_id("projects-gone")
+    see(g).to_contain_text("Folders no longer added", timeout=30000)
+    _unfold(page, gone["id"])
+    srow = _proj(page, gone["id"]).locator(f"[data-testid=session-row][data-session='{sid}']")
+    see(srow).to_have_count(1, timeout=30000)
+    see(_proj(page, gone["id"]).get_by_test_id("project-new-session")).to_have_count(0)
+    srow.locator(".sess-main").click()
+    see(page.locator(".notice").filter(has_text="no longer added")).to_be_visible(timeout=30000)
+    see(page.get_by_test_id("msg-user").filter(has_text="reply with exactly what it printed")).to_be_visible(timeout=30000)
+    see(page.get_by_test_id("project-chip-name")).not_to_have_text(HOST_APP)
+    r = c.api("POST", "/api/sessions", {"mode": "default", "resume": sid})
+    expect(r["status"] >= 400, f"a resume in a folder no longer added: {r['status']} {r['text'][:200]}")
+    shot(page, "h4-code-host-folders-gone")
+    csp_clean(page, rec)
+    return "the removed folder's session listed under Folders no longer added, its transcript shown read only; a resume refused"
+
+
+@check("browser", "code-host-folders-c")
+@saved
+def host_folders_c(ctx):
+    """run.sh added e2e-host-app again (the sandbox restarted): pass a's session is the folder's again and resumes — a
+    Haiku prompt answers from its transcript (the folder pwd printed), in that folder."""
+    need_haiku()
+    need_host_pass("c")
+    sid = HOST_SID.read_text(encoding="ascii").strip()
+    page, rec = ui_page(ctx, "code-host-folders-c")
+    c = Code.on(page, rec, goto=False)
+    app = _host_projects(c).get(HOST_APP)
+    expect(app and not app.get("gone") and app.get("folder") == "dir", f"the folder added again: {app}")
+    row = next((x for x in c.api("GET", "/api/sessions")["json"]["sessions"] if x["id"] == sid), None)
+    expect(row and not row.get("gone") and row.get("project") == app["id"] and row.get("cwd") == app["root"], f"its session: {row}")
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    page.get_by_test_id("side-sessions").click()
+    _unfold(page, app["id"])
+    _proj(page, app["id"]).locator(f"[data-testid=session-row][data-session='{sid}'] .sess-main").click()
+    see(page.get_by_test_id("msg-user").filter(has_text="reply with exactly what it printed")).to_be_visible(timeout=60000)
+    settled(page, "msg-user")
+    ask(page, "Which folder did pwd print in this conversation? Reply with that path only.")
+    answered(page)
+    expect(app["root"] in last_answer(page), f"the resumed session's answer: {last_answer(page)!r}")
+    expect(state_of(c, sid).get("cwd") == app["root"], f"the resumed session's folder: {state_of(c, sid)}")
+    shot(page, "h5-code-host-folders-resumed")
+    csp_clean(page, rec)
+    return f"the session resumed in {app['root']} after the sandbox restarted twice"
