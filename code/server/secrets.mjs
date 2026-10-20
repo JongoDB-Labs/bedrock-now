@@ -6,10 +6,11 @@
 // goes into the sandbox as it is). Redacting is idempotent: a redacted text has nothing left to find. A secret in a shape
 // this does not know, or in prose, can still go along — you see the transcript before it is copied.
 //
-// The scan takes time in proportion to the text (each pattern can only start a costly match where its literal start
-// begins a run of its own characters, and every quantifier is bounded). It fails closed: a text longer than MAX_TEXT,
-// or with more than MAX_FINDINGS findings, is redacted whole (said; never kept); a private key's beginning with no end
-// after it is redacted to the end of its text.
+// The scan takes time in proportion to the text (a pattern's costly part starts once per run of its characters, then
+// takes the whole run: nothing to try again). Every bound fails closed — it redacts more, never matches less: a token
+// longer than its usual length is redacted whole; a text longer than MAX_TEXT, or with more than MAX_FINDINGS findings,
+// is redacted whole (said; never kept); a private key's BEGIN with no END is redacted to the end of the text, an END
+// with no BEGIN from its start.
 export const MARK = '[REDACTED';
 export const redactedAs = (kind) => `[REDACTED:${kind}]`;
 export const MAX_TEXT = 8 << 20, MAX_FINDINGS = 1000;
@@ -17,7 +18,7 @@ export const MAX_TEXT = 8 << 20, MAX_FINDINGS = 1000;
 export const WHOLE = Object.freeze(['too-long', 'too-many']);
 
 // private keys: BEGIN and END markers paired in one pass (no scan between them): a BEGIN, the first END after it
-const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/g, PEM_END = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/g;
+const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g, PEM_END = /-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g;
 function pemBlocks(text) {
   const ends = [];
   PEM_END.lastIndex = 0;
@@ -27,7 +28,7 @@ function pemBlocks(text) {
   PEM_BEGIN.lastIndex = 0;
   for (let m; (m = PEM_BEGIN.exec(text)) !== null;) {
     if (m.index < after) continue;
-    // (an END with no BEGIN before it — the key's beginning in another piece of the text: from there to it)
+    // (an END with no BEGIN before it — the key's beginning cut off: from the start, or the last block, to it)
     for (; j < ends.length && ends[j] <= m.index; j++) if (ends[j] > after) { out.push({ start: after, end: ends[j] }); after = ends[j]; }
     if (m.index < after) continue;
     const end = j < ends.length ? ends[j] : text.length;   // (no end: to the end of the text)
@@ -39,33 +40,67 @@ function pemBlocks(text) {
   for (; j < ends.length; j++) if (ends[j] > after) { out.push({ start: after, end: ends[j] }); after = ends[j]; }
   return out;
 }
+// JSON web tokens, by hand: each run of [A-Za-z0-9_.-] once (linear); where a segment of it starts with eyJ and the next
+// one does too, with a third after it, the run is redacted from that segment to its end — however long its parts are
+const RUN = /[A-Za-z0-9_.-]+/g;
+function jwts(text) {
+  const out = [];
+  RUN.lastIndex = 0;
+  for (let m; (m = RUN.exec(text)) !== null;) {
+    const run = m[0];
+    if (run.length < 30 || !run.includes('eyJ')) continue;
+    const segs = run.split('.');
+    let at = 0;
+    for (let i = 0; i + 2 < segs.length; i++) {
+      if (segs[i].startsWith('eyJ') && segs[i].length >= 11 && segs[i + 1].startsWith('eyJ') && segs[i + 1].length >= 11 && segs[i + 2].length >= 8) {
+        // (a JWT's first segment starts the run or follows a dot, as a token's start does)
+        out.push({ start: m.index + at, end: m.index + run.length });
+        break;
+      }
+      at += segs[i].length + 1;
+    }
+  }
+  return out;
+}
 
-// (the specific shapes first: a token inside an assignment is found as the token). generic: a shape that also matches
+// (the specific shapes first: a token inside an assignment is found as the token). Every shape takes the whole run of
+// its characters (no upper bound: a longer one is redacted whole, never missed). generic: a shape that also matches
 // placeholders and examples (checked against PLACEHOLDER); entropy: the least a value must have, in bits a character
 const KINDS_ = [
   { kind: 'private-key', label: 'a private key', find: pemBlocks },
-  { kind: 'aws-key-id', label: 'an AWS access key ID', re: /\b((?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16})\b/g },
+  { kind: 'aws-key-id', label: 'an AWS access key ID', re: /\b((?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16,})/g },
   { kind: 'aws-secret', label: 'an AWS secret access key',
-    re: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|SecretAccessKey|secretAccessKey|aws_secret_key)["']?[ \t]{0,10}[:=][ \t]{0,10}["']?([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])/g },
-  { kind: 'github-token', label: 'a GitHub token', re: /\b(gh[pousr]_[A-Za-z0-9]{36,251}|github_pat_[A-Za-z0-9_]{22,251})\b/g },
-  { kind: 'gitlab-token', label: 'a GitLab token', re: /\b(gl(?:pat|dt|rt|ptt|cbt|oas|ft|imt|soat|agent)-[A-Za-z0-9_-]{20,200})/g },
-  { kind: 'slack-token', label: 'a Slack token', re: /\b(xox[abposrce]-[A-Za-z0-9-]{10,200})/g },
-  { kind: 'anthropic-key', label: 'an Anthropic API key', re: /\b(sk-ant-[A-Za-z0-9_-]{20,300})/g },
-  { kind: 'openai-key', label: 'an OpenAI-style API key', re: /\b(sk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,300})/g },
-  { kind: 'google-api-key', label: 'a Google API key', re: /\b(AIza[0-9A-Za-z_-]{35})/g },
-  { kind: 'stripe-key', label: 'a Stripe secret key', re: /\b((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,200})/g },
-  { kind: 'npm-token', label: 'an npm token', re: /\b(npm_[A-Za-z0-9]{36})\b/g },
-  { kind: 'huggingface-token', label: 'a Hugging Face token', re: /\b(hf_[A-Za-z]{34})\b/g },
-  // (its first part starts a run of its own characters: one try per run, each bounded)
-  { kind: 'jwt', label: 'a JSON web token', re: /(?<![A-Za-z0-9_-])(eyJ[A-Za-z0-9_-]{8,4096}\.eyJ[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{8,4096})/g },
+    re: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|SecretAccessKey|secretAccessKey|aws_secret_key)["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9/+]{40,})/g },
+  { kind: 'github-token', label: 'a GitHub token', re: /\b(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})/g },
+  { kind: 'gitlab-token', label: 'a GitLab token', re: /\b(gl(?:pat|dt|rt|ptt|cbt|oas|ft|imt|soat|agent)-[A-Za-z0-9_-]{20,})/g },
+  { kind: 'slack-token', label: 'a Slack token', re: /\b(xox[abposrce]-[A-Za-z0-9-]{10,})/g },
+  { kind: 'anthropic-key', label: 'an Anthropic API key', re: /\b(sk-ant-[A-Za-z0-9_-]{20,})/g },
+  { kind: 'openai-key', label: 'an OpenAI-style API key', re: /\b(sk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,})/g },
+  { kind: 'google-api-key', label: 'a Google API key', re: /\b(AIza[0-9A-Za-z_-]{35,})/g },
+  { kind: 'stripe-key', label: 'a Stripe secret key', re: /\b((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,})/g },
+  { kind: 'npm-token', label: 'an npm token', re: /\b(npm_[A-Za-z0-9]{36,})/g },
+  { kind: 'huggingface-token', label: 'a Hugging Face token', re: /\b(hf_[A-Za-z]{34,})/g },
+  { kind: 'jwt', label: 'a JSON web token', find: jwts },
   { kind: 'authorization', label: 'an Authorization header or bearer token', generic: true,
-    re: /(?:\b[Aa]uthorization["']?[ \t]{0,10}[:=][ \t]{0,10}["']?(?:[Bb]earer|[Bb]asic|[Tt]oken)[ \t]{1,10}|\b[Bb]earer[ \t]{1,10})([A-Za-z0-9._~+/=-]{16,500})/g },
-  { kind: 'url-password', label: 'a password in a URL', generic: true, re: /\b[a-z][a-z0-9+.-]{1,20}:\/\/[^\s/:@"'`]{1,64}:([^\s/@"'`]{3,128})@/g },
+    re: /(?:\b[Aa]uthorization["']?[ \t]*[:=][ \t]*["']?(?:[Bb]earer|[Bb]asic|[Tt]oken)[ \t]+|\b[Bb]earer[ \t]+)([A-Za-z0-9._~+/=-]{16,})/g },
+  // (the scheme starts a run of its own characters: one try per run)
+  { kind: 'url-password', label: 'a password in a URL', generic: true, re: /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s/:@"'`]+:([^\s/@"'`]{3,})@/gi },
   { kind: 'assignment', label: 'a password, token or key set to a value', generic: true, entropy: 2.5,
-    re: /(?:password|passwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|credentials?)["']?[ \t]{0,10}[:=][ \t]{0,10}["']?([^\s"'`,;)}\]]{8,200})/gi },
+    re: /(?:password|passwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|credentials?)["']?[ \t]*[:=][ \t]*["']?([^\s"'`,;)}\]]{8,})/gi },
   { kind: 'env-line', label: 'a .env-style line with a long random value', generic: true, entropy: 3.5,
-    re: /^(?:export[ \t]{1,10})?[A-Z][A-Z0-9_]{2,63}=["']?([A-Za-z0-9_\-+/=.]{16,200})["']?[ \t]{0,40}$/gm },
+    re: /^(?:export[ \t]+)?[A-Z][A-Z0-9_]{2,}=["']?([A-Za-z0-9_\-+/=.]{16,})["']?[ \t]*$/gm },
 ];
+// What each bound does beyond it — every one closed (more is redacted, nothing is missed):
+//   a token's usual length (AKIA… 20, ghp_… 40 …)  none: the whole run of its characters is redacted, however long
+//   spaces around ":" or "=", a URL's parts        none: any number, any length
+//   a JWT's segments, a PEM marker's label          none; a BEGIN with no END: to the end of the text, an END with no
+//                                                   BEGIN: from the start (or the block before)
+//   MAX_TEXT (8 MiB) in one string                  the whole string redacted ([REDACTED:too-long]), never kept
+//   MAX_FINDINGS (1,000) in one string, or twice    the whole string redacted ([REDACTED:too-many]), never kept
+//   as many candidates of one shape
+//   entropy and placeholders (generic shapes only)  a heuristic, not a bound: "${DB_PASSWORD}" or "aaaaaaaa" is no finding
+// And in the import (import-sessions.mjs): a line over 16 MiB, a file beside the transcript that is not UTF-8 text,
+// valid JSON or a known kind, a session over 32 MiB — not copied at all (said).
 export const KINDS = Object.freeze(KINDS_.map((k) => Object.freeze(k)));
 export const LABELS = Object.freeze({
   ...Object.fromEntries(KINDS.map((k) => [k.kind, k.label])),
@@ -132,7 +167,7 @@ export function scan(text) {
 export function masked(v, kind) {
   if (WHOLE.includes(kind)) return `the whole text (${v.length} characters)`;
   if (kind === 'private-key') return `a PEM block of ${v.split('\n').length} lines`;
-  const head = [...v].slice(0, Math.min(4, Math.max(0, v.length - 8))).join('');
+  const head = [...v.slice(0, 8)].slice(0, Math.min(4, Math.max(0, v.length - 8))).join('');
   return `${head}… (${v.length} characters)`;
 }
 // a few words around it on one line, every finding in the string (this one, and any other near it) replaced by •••

@@ -209,3 +209,51 @@ test('the scan takes time in proportion to the text, and fails closed: too long,
     assert.ok(Date.now() - t0 < 1500, `${JSON.stringify(s)}: ${Date.now() - t0} ms`);
   }
 });
+
+test('every bound fails closed — at each one plus one: a longer token, label, gap or value is redacted whole, never missed', () => {
+  const big = (n) => rand(n, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789');
+  const pem = ['PRIVATE', 'KEY'].join(' ');
+  const cases = {
+    // (each shape's old upper bound plus one, and far beyond)
+    'aws-key-id': ['', fake.awsKeyId() + rand(1, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), fake.awsKeyId() + rand(400, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')],
+    'aws-secret': [`AWS_SECRET_ACCESS_KEY${' '.repeat(11)}:${' '.repeat(11)}`, rand(41, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123456789/+'), rand(600, 'abcdefghij0123456789/+')],
+    'github-token': ['', `${['gh', 'p_'].join('')}${big(252)}`, `${['gh', 'p_'].join('')}${big(2000)}`],
+    'gitlab-token': ['', `${['gl', 'pat-'].join('')}${big(201)}`, `${['gl', 'pat-'].join('')}${big(3000)}`],
+    'slack-token': ['', `${['xo', 'xb-'].join('')}${big(201)}`, `${['xo', 'xb-'].join('')}${big(3000)}`],
+    'anthropic-key': ['', `${['sk', '-ant-'].join('')}${big(301)}`, `${['sk', '-ant-'].join('')}${big(3000)}`],
+    'google-api-key': ['', `${['AI', 'za'].join('')}${big(36)}`, `${['AI', 'za'].join('')}${big(900)}`],
+    'npm-token': ['', `${['np', 'm_'].join('')}${big(37)}`, `${['np', 'm_'].join('')}${big(900)}`],
+    'huggingface-token': ['', `${['hf', '_'].join('')}${rand(35, 'abcdefghijklmnopqrstuvwxyz')}`, `${['hf', '_'].join('')}${rand(900, 'abcdefghijklmnopqrstuvwxyz')}`],
+    'jwt': ['', `${['ey', 'J'].join('')}${big(4097)}.${['ey', 'J'].join('')}${big(10000)}.${big(4097)}`, `${['ey', 'J'].join('')}${big(20)}.${['ey', 'J'].join('')}${big(10000)}.${big(30)}`],
+    'authorization': [`Authorization:${' '.repeat(11)}Bearer${' '.repeat(11)}`, big(501), big(4000)],
+    'url-password': [`${'x'.repeat(30)}://${big(300)}:`, `${big(129)}@host`, `${big(2000)}@h`],
+    'assignment': [`client_secret${' '.repeat(11)}=${' '.repeat(11)}`, big(201), big(5000)],
+    'env-line': [`\nX${'_Y'.repeat(40)}=`, `${big(201)}\n`, `${big(5000)}\n`],
+    'private-key': ['', `-----BEGIN ${'ENCRYPTED '.repeat(5)}${pem}-----\n${big(64)}\n-----END ${'ENCRYPTED '.repeat(5)}${pem}-----`, `-----BEGIN RSA ${pem}-----\n${big(64)}`],
+  };
+  for (const [kind, [pre, ...secrets]] of Object.entries(cases)) {
+    for (const secret of secrets) {
+      const text = `${pre}${secret} after`;
+      const found = scan(text);
+      assert.ok(found.length >= 1 && found.every((x) => x.kind === kind), `${kind}: ${JSON.stringify(found.map((x) => x.kind))}`);
+      const out = redactEntries([text]).entries[0];
+      // (nothing of its random part is left: any 16 characters of it)
+      for (let i = Math.min(16, secret.length - 16); i + 16 <= secret.length; i += Math.max(1, Math.floor(secret.length / 7))) {
+        const w = secret.slice(i, i + 16);
+        if (/^[A-Za-z0-9]{16}$/.test(w)) assert.ok(!out.includes(w), `${kind}: ${w} left in ${out.slice(0, 80)}`);
+      }
+    }
+  }
+});
+
+test('the counts and sizes that redact a text whole: at MAX_FINDINGS and MAX_TEXT, and one more', () => {
+  const keys = (n) => Array.from({ length: n }, () => fake.awsKeyId()).join(' ');
+  assert.equal(scan(keys(1000)).length, 1000);
+  assert.deepEqual(scan(keys(1001)).map((x) => x.kind), ['too-many']);
+  const tok = fake.github();
+  const at = `${tok} ${'y'.repeat(MAX_TEXT - tok.length - 1)}`;
+  assert.equal(at.length, MAX_TEXT);
+  assert.deepEqual(scan(at).map((x) => x.kind), ['github-token']);
+  assert.deepEqual(scan(`${at}y`).map((x) => [x.kind, x.start, x.end]), [['too-long', 0, MAX_TEXT + 1]]);
+  assert.equal(redactEntries([`${at}y`], new Set(['1.1'])).entries[0], '[REDACTED:too-long]', 'never kept');
+});

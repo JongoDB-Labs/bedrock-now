@@ -117,10 +117,9 @@ export function parseIndex(text) {
 }
 
 // readPart(part, k) -> a file beside the transcript, read to be scanned and copied like it: a subagent's transcript
-// (lines: as the transcript's), a JSON file, or a tool's large output (text, in pieces of at most 4 MiB, cut at a
-// line's end) — {part, kind, prefix, entries, findings}; or {part, left: why} for one that is none of these, text that
-// is not UTF-8, or JSON that does not parse: it is not copied (the preview says so)
-const TEXT_PIECE = 4 << 20;
+// (lines: as the transcript's), a JSON file, or a tool's large output (text: scanned whole, as one string — one longer
+// than the scan takes is redacted whole) — {part, kind, prefix, entries, findings}; or {part, left: why} for one that is
+// none of these, text that is not UTF-8, or JSON that does not parse: it is not copied (the preview says so)
 export function readPart({ part, data }, k) {
   const prefix = `p${k}:`;
   let kind, entries;
@@ -131,14 +130,7 @@ export function readPart({ part, data }, k) {
   } else if (/^tool-results\//.test(part)) {
     if (!isUtf8(data)) return { part, left: 'not text (not UTF-8)' };
     kind = 'text';
-    const text = data.toString('utf8');
-    entries = [];
-    for (let at = 0; at < text.length;) {
-      let end = Math.min(text.length, at + TEXT_PIECE);
-      if (end < text.length) { const nl = text.lastIndexOf('\n', end); if (nl > at) end = nl + 1; }
-      entries.push(text.slice(at, end));
-      at = end;
-    }
+    entries = [data.toString('utf8')];
   } else return { part, left: 'not a kind of file the copy knows' };
   return { part, kind, prefix, entries, findings: scanEntries(entries, { prefix }).map((f) => ({ ...f, part })) };
 }

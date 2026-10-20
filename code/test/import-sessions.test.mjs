@@ -252,6 +252,25 @@ test('the files beside a transcript go through the same scan: a secret only in a
   assert.ok(!fs.existsSync(path.join(base, 'tool-results', 'toolu_2.bin')) && !fs.existsSync(path.join(base, 'subagents', 'agent-2.meta.json')));
 });
 
+test('a tool\'s large output is scanned whole: a secret across 4 MiB in a line longer than that is found; one over 8 MiB is redacted whole', async () => {
+  const id = uuid();
+  const tok = fake.github(), tok2 = fake.awsKeyId();
+  const line = `${'a'.repeat((4 << 20) - 10)} ${tok} ${'b'.repeat(1 << 20)}\n`;
+  const huge = `${'c'.repeat((8 << 20) + 1)} ${tok2}`;
+  const dir = hostStore(APP, [[id, session({ id, cwd: APP }), { 'tool-results/long.txt': line, 'tool-results/huge.txt': huge }]]);
+  const scan = nonce();
+  imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
+  await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
+  const pv = await preview(imports, 'p_00000001', id);
+  assert.deepEqual(pv.findings.map((x) => [x.part, x.kind, x.keepable]).sort(), [['tool-results/huge.txt', 'too-long', false], ['tool-results/long.txt', 'github-token', true]]);
+  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [pv.findings.find((x) => x.kind === 'too-long').id] }]);
+  assert.equal(r[0].ok, true, JSON.stringify(r));
+  const base = path.join(storeOf(APP), id, 'tool-results');
+  const long = fs.readFileSync(path.join(base, 'long.txt'), 'utf8');
+  assert.ok(!long.includes(tok) && long.includes('[REDACTED:github-token]') && long.length === line.length - tok.length + '[REDACTED:github-token]'.length);
+  assert.equal(fs.readFileSync(path.join(base, 'huge.txt'), 'utf8'), '[REDACTED:too-long]', 'never kept, even when asked');
+});
+
 test('a folder whose path is hidden: the copy\'s working folder and paths rewritten to where the sandbox sees it', async () => {
   const id = uuid();
   const e = session({ id, cwd: NOTES_HOST, prompts: [`look at ${NOTES_HOST}/todo.md and ${NOTES_HOST}-old/x`] });
