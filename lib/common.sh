@@ -319,6 +319,8 @@ dc() {
   # The Code page's container mounts the project folders' public list (compose.code.yaml: the folder, read-only, never
   # created by Docker): there before compose needs it (lib/projects.sh writes its roots.json)
   if flag_on "$(get_env CODE_ENABLED)"; then mkdir -p "$STATE_DIR/projects/public" 2>/dev/null && chmod 700 "$STATE_DIR/projects" 2>/dev/null || true; fi
+  # … and the folder it shares with the update helper for its requests (lib/sessions.sh: yours, mode 700)
+  if flag_on "$(get_env CODE_ENABLED)" && declare -F ensure_code_requests_dir >/dev/null; then ensure_code_requests_dir; fi
   # Bedrock speech-to-text: its container is in the "stt" profile (lib/stt.sh), so down/ps/logs include it too.
   if [ "${_STT_PROFILE:-}" = 1 ] || [ "$(get_env STT_PROVIDER)" = bedrock ]; then f+=(--profile stt); fi
   # The browser terminal too: an exported TERMINAL_WORKSPACE must never decide what the container sees.
@@ -329,7 +331,7 @@ dc() {
       REMOTE_TERMINAL REMOTE_TERMINAL_HOST CODE_ENABLED CODE_HOST CODE_PROXY_SECRET REMOTE_CODE_HOST PREVIEW_DOMAIN PREVIEW_PROXY_SECRET CODE_ALLOW_BYPASS \
       CODE_AUTO_MODE TERMINAL_AUTO_MODE GIT_GITHUB_CLIENT_ID GIT_GITHUB_APP_SLUG GIT_GITLAB_CLIENT_ID
     # which of terminal/managed/*.json the sandbox gets as Claude Code's managed settings (read-only): from .env alone
-    TERMINAL_CLAUDE_POLICY="$(claude_policy)" BN_PROJECTS_PUBLIC="$STATE_DIR/projects/public" \
+    TERMINAL_CLAUDE_POLICY="$(claude_policy)" BN_PROJECTS_PUBLIC="$STATE_DIR/projects/public" BN_HELPER_CODE_REQUESTS="$STATE_DIR/code-requests" \
     BEDROCK_NOW_ENV_DISPLAY="$(env_file_display)" COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
       --env-file "$ENV_FILE" "$@" )
 }

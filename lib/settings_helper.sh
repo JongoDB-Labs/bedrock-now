@@ -17,6 +17,9 @@
 #                                                        made there: origin local), then ./stack project add <chosen>
 #                                        project-remove / project-mode-ro  {…,"when":"now|idle","project":"p_<8 hex>"}
 #                                                        by the project's id in folders.tsv (narrowing: from anywhere)
+#                                        sessions-revoke {…,"project":"p_<8 hex>|all","tool":"claude|claude-bedrock|both|suggest"}
+#                                                        what bedrock-now may read of your sessions here, taken back
+#                                                        (narrowing: from anywhere; lib/sessions.sh)
 # Each kind has its own rate limits (state in .state/helper/), separate from update/rollback/clean.
 
 SETTINGS_REQ_MAX_BYTES=8192
@@ -28,6 +31,7 @@ DIAG_MAX_PER_DAY="${DIAG_MAX_PER_DAY:-60}"
 RECHECK_MIN_INTERVAL_S=3600   # ./stack models --recheck (< $0.01 each): at most once an hour
 # Project folders (lib/projects.sh): the folder chooser on this computer's screen at most once a minute, 10 a day
 PROJECT_ACTIONS="project-pick project-remove project-mode-ro"
+SESSIONS_REVOKE_ACTIONS="sessions-revoke"   # (lib/sessions.sh: the Code page's own requests come another way)
 PICK_MIN_INTERVAL_S="${PICK_MIN_INTERVAL_S:-60}"
 PICK_MAX_PER_DAY="${PICK_MAX_PER_DAY:-10}"
 ACT_MAX_BYTES=768   # (a project action carries a few more fields than a diagnostic)
@@ -238,12 +242,16 @@ act_check_request() {
   elif _sv_re "$body" '^\{"action":"(project-remove|project-mode-ro)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","when":"(now|idle)","project":"(p_[0-9a-f]{8})"\}$'; then
     action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
     when="${BASH_REMATCH[5]}"; project="${BASH_REMATCH[6]}"
+  # (what bedrock-now may read of your sessions here: taken back by the project's id, or all — the tool in mode's place)
+  elif _sv_re "$body" '^\{"action":"(sessions-revoke)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","project":"(p_[0-9a-f]{8}|all)","tool":"(claude|claude-bedrock|both|suggest)"\}$'; then
+    action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
+    project="${BASH_REMATCH[5]}"; mode="${BASH_REMATCH[6]}"
   else
     echo "not a valid request" >&2; return 1
   fi
   [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }
   [ "$n" = "$nonce" ] || { echo "nonce does not match the file name" >&2; return 1; }
-  case " $DIAG_ACTIONS $PROJECT_ACTIONS " in *" $action "*) ;; *) echo "action not allowed" >&2; return 1 ;; esac
+  case " $DIAG_ACTIONS $PROJECT_ACTIONS $SESSIONS_REVOKE_ACTIONS " in *" $action "*) ;; *) echo "action not allowed" >&2; return 1 ;; esac
   now="$(date +%s)"
   [ "$ts" -le $((now + 30)) ] || { echo "dated in the future" >&2; return 1; }
   [ $((now - ts)) -le "$HELPER_MAX_AGE_S" ] || { echo "stale (older than ${HELPER_MAX_AGE_S}s)" >&2; return 1; }
@@ -408,6 +416,8 @@ helper_run_diag() {
       [ "$hide" != true ] || set -- "$@" --hide-path ;;
     project-remove) helper_write_status running "Removing the folder from the sandbox"; set -- project remove "$project" "$flag" ;;
     project-mode-ro) helper_write_status running "Making the folder read-only in the sandbox"; set -- project mode "$project" ro "$flag" ;;
+    sessions-revoke) helper_write_status running "Taking back what bedrock-now may read of your sessions"
+      if [ "$mode" = suggest ]; then set -- sessions consent --suggest --revoke; else set -- sessions consent --revoke --project "$project" --tool "$mode"; fi ;;
   esac
   # in the background, the heartbeat going on (a model check takes about 2 minutes, a backup longer)
   read -r lim idle <<< "$(_job_deadline "$action")"
@@ -447,6 +457,7 @@ helper_run_diag() {
     test) msg="All $(grep -c '^  ok' "$logf" | tr -d ' ') checks passed" ;;
     report) msg="Status report ready" ;;
     restart-*) msg="${action#restart-} restarted" ;;
+    sessions-revoke) msg="Taken back: bedrock-now no longer reads those sessions on this computer (what the Code page's container read is forgotten; sessions already copied into the sandbox stay there)" ;;
     project-*)
       # (said as it is in the sandbox: done only once it restarted with it; else pending — ./stack logs it)
       local applied=0
@@ -620,9 +631,10 @@ settings_helper_tick() {
   fi
   ! backup_nightly_tick || ran=0
   if [ ! -f "$f" ] || [ -n "$(find "$f" -mmin +10 2>/dev/null)" ]; then
-    printf '{"settings": 1, "diagnostics": [%s], "projects": [%s], "screen": %s, "written_at": %s}\n' \
+    printf '{"settings": 1, "diagnostics": [%s], "projects": [%s], "sessions": [%s], "screen": %s, "written_at": %s}\n' \
       "$(for a in $DIAG_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" \
-      "$(for a in $PROJECT_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(helper_screen && echo true || echo false)" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
+      "$(for a in $PROJECT_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" \
+      "$(for a in $SESSIONS_REVOKE_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(helper_screen && echo true || echo false)" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
       chmod 644 "$f.tmp" && mv "$f.tmp" "$f"
   fi
   return "$ran"

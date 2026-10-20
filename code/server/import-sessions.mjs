@@ -15,7 +15,7 @@
 //     suggestions.json          folders of this computer your tools kept sessions for (names only)
 //     requests.json             the last requests to the helper and how they went
 //     imported.json             what was copied: session id -> where from, its SHA-256 then and as written, redactions
-//   /run/bn-imports/<project>/<session>/   (tmpfs) the picked sessions' files, until copied, dropped, or an hour old
+//   /run/bn-import-stage/<project>/<session>/   (tmpfs) the picked sessions' files, until copied, dropped, or an hour old
 import fs from 'node:fs';
 import { isUtf8 } from 'node:buffer';
 import path from 'node:path';
@@ -28,7 +28,7 @@ import { parseLines, toJsonl, stripThinking, thinkingCount, rewritePaths, outsid
 import { Projects } from './projects.mjs';
 
 export const IMPORTS_DIR = process.env.BN_IMPORTS_DIR || path.join(STATE_DIR, 'imports');
-export const STAGE_DIR = process.env.BN_IMPORT_STAGE || '/run/bn-imports';
+export const STAGE_DIR = process.env.BN_IMPORT_STAGE || '/run/bn-import-stage';
 export const REQUESTS_DIR = process.env.BN_CODE_REQUESTS || '/run/bn-code-requests';
 // the sandbox's own store (its home: terminal/Dockerfile; Claude Code's default config folder there)
 export const SANDBOX_STORE = process.env.BN_SANDBOX_STORE || '/home/claude/.claude/projects';
@@ -373,6 +373,14 @@ export class Imports {
     if (v && typeof v === 'object' && !Array.isArray(v)) for (const [k, r] of Object.entries(v).slice(0, LIMITS.imported)) if (UUID.test(k) && r && TOOLS.includes(r.tool)) out[k] = r;
     return out;
   }
+  /** firstOpen(id) -> true the first time a session copied from this computer is opened here (then never again) */
+  firstOpen(id) {
+    const all = this.imported();
+    if (!all[id] || all[id].opened) return false;
+    all[id].opened = this.now();
+    writeJson(this.dir, 'imported.json', all);
+    return true;
+  }
   noteImported(id, rec) {
     const all = this.imported();
     all[id] = rec;
@@ -433,19 +441,38 @@ async function readAll(stream, max) {
   for await (const c of stream) { n += c.length; if (n > max) throw new ImportError(413, 'the input is too long'); chunks.push(c); }
   return Buffer.concat(chunks).toString('utf8');
 }
-export async function cli(argv, { stdin = process.stdin, imports = new Imports({ projects: new Projects() }), out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`), call = null } = {}) {
+export async function cli(argv, { stdin = process.stdin, imports = new Imports({ projects: new Projects() }), out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`), call = null,
+  line = (s) => process.stdout.write(`${s}\n`) } = {}) {
   const [cmd] = argv;
+  // (--tsv: tab-separated lines for lib/sessions.sh — every field a number, a fixed word, or text without tabs or line
+  // breaks; ./stack prints the text as plain ASCII)
+  const tsv = argv.includes('--tsv');
+  const cell = (v) => String(v ?? '').replace(/[\t\r\n]+/g, ' ');
   // (./stack sessions import in a terminal: the list as it was read, then what was found in the picked sessions, then
   // the copy — the same plan and copy as the Import sheet's)
   if (cmd === 'list') {
     const ix = imports.index(opt(argv, '--project'));
     if (!ix) throw new ImportError(404, 'no list of this project\'s sessions yet');
+    if (tsv) {
+      for (const r of ix.rows) line([r.n, r.tool, r.messages ?? '', r.last, r.size, [r.copied && 'copied', r.tooLarge && 'too-large', r.format !== 'tested' && 'format'].filter(Boolean).join(',') || '-', r.title || r.first].map(cell).join('\t'));
+      return undefined;
+    }
     return out({ ok: true, scan: ix.scan, at: ix.at, head: ix.head, rows: ix.rows.map((r) => ({ n: r.n, tool: r.tool, id: r.id, title: r.title || r.first, messages: r.messages,
       last: r.last, size: r.size, tooLarge: r.tooLarge, format: r.format, copied: Boolean(r.copied) })) });
   }
   const ids = () => String(opt(argv, '--ids') ?? '').split(',').filter((x) => UUID.test(x)).slice(0, LIMITS.copy);
   if (cmd === 'findings') {
     const pid = opt(argv, '--project');
+    if (tsv) {
+      for (const id of ids()) {
+        try {
+          const pl = imports.plan(pid, id);
+          const kinds = [...new Set(pl.findings.map((x) => x.kind))].join(',');
+          line([id, pl.findings.length, kinds || '-', pl.thinking.strip ? pl.thinking.blocks : 0, pl.outside.count, pl.left.length, pl.row?.title ?? ''].map(cell).join('\t'));
+        } catch { /* (not waiting: left out) */ }
+      }
+      return undefined;
+    }
     return out({ ok: true, sessions: ids().map((id) => {
       try {
         const pl = imports.plan(pid, id);
@@ -466,7 +493,12 @@ export async function cli(argv, { stdin = process.stdin, imports = new Imports({
     });
     const { copy } = await import('./import-copy.mjs');
     const { sandboxCall } = await import('./spawn-client.mjs');
-    return out({ ok: true, results: await copy(imports, call ?? sandboxCall, pid, items) });
+    const results = await copy(imports, call ?? sandboxCall, pid, items);
+    if (tsv) {
+      for (const r of results) line([r.id, r.ok ? 'ok' : 'no', r.as ?? '-', r.redacted ?? 0, r.kept ?? 0, r.left ?? 0, r.ok ? '' : r.why].map(cell).join('\t'));
+      return undefined;
+    }
+    return out({ ok: true, results });
   }
   if (cmd === 'index') {
     return out({ ok: true, ...imports.saveIndex(opt(argv, '--project'), await readAll(stdin, LIMITS.index),

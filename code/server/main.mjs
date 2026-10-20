@@ -22,6 +22,8 @@ import { NEVER_ASKS, CLAUDE_SAID, sandboxWords } from './said.mjs';
 import { SandboxError } from './spawn-client.mjs';
 import { Projects, ProjectError, projectIdOk, WS, absOf } from './projects.mjs';
 import { makeTrust } from './trust.mjs';
+import { Imports, ImportError } from './import-sessions.mjs';
+import { makeImportsApi } from './imports-api.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // what a failed WebSocket message was (its type): the sentence of ours its failure is told with — the operation, never
@@ -116,11 +118,12 @@ export function ownOrigin(req) {
 // on first use: /var/lib/bn-code), openBroker: sandboxBroker (Claude's own git, while a host allows it). gitConnect:
 // sandboxTunnel (a Git host sign-in's requests to its provider, TLS here: oauth.mjs), gitApps: Settings' application IDs
 // ({github: {clientId, appSlug}, gitlab: {clientId}}; blank: the project's own). projects: the project records
-// (projects.mjs; made on first use: /var/lib/bn-code).
+// (projects.mjs; made on first use: /var/lib/bn-code). imports: sessions of this computer copied into the sandbox
+// (import-sessions.mjs; made on first use).
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
   reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},
   allowBypass = false, allowAuto = false, sandbox = {}, watch = true, gitHosts = null, openBroker = null, gitConnect = null, gitApps = {}, gitOAuthDelay = null,
-  projects = null }) {
+  projects = null, imports = null }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -231,6 +234,13 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     if (!rec) throw new HttpError(404, 'no such project (it was removed?)');
     return rec;
   };
+  // sessions of this computer (the Import sheet, suggestions, Continue in this project): import-sessions.mjs, imports-api.mjs
+  let importStore = imports;
+  const imp = () => (importStore ??= new Imports({ call, projects: { get: (id) => proj().get(id), list: () => proj().list() } }));
+  let importsApi = null;
+  const impApi = () => (importsApi ??= makeImportsApi({ imports: imp(), call, projects: { list: () => proj().list() }, cwdFor: (id) => api.cwdFor(id), rootFor }));
+  // importedOf(id) -> {tool, at, forked} of a session copied from this computer (the page's CC / CB badge), else null
+  const importedOf = (all, id) => (all[id] ? { tool: all[id].tool, at: all[id].at, forked: Boolean(all[id].forkedFrom) } : null);
   // the sessions of /api/state, each with the project it is shown in
   const listed = () => { let place = null; try { place = proj().placer(); } catch { /* none */ } return mgr.list().map((x) => ({ ...x, project: place ? place(x.id, x.cwd) : 'ws' })); };
   // Git hosts and the Git panel's remote operations (gitremote.mjs): every use goes to the pages (Activity)
@@ -275,7 +285,17 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
         remote: req.headers['x-bn-remote'] === '1',
       });
     }
-    if (p === '/api/sessions' && m === 'GET') return send(res, 200, await api.listSessions(q.get('q')));
+    if (p === '/api/sessions' && m === 'GET') {
+      const out = await api.listSessions(q.get('q'));
+      let all = {};
+      try { all = imp().imported(); } catch { all = {}; }
+      return send(res, 200, { ...out, sessions: out.sessions.map((s) => (all[s.id] ? { ...s, imported: importedOf(all, s.id) } : s)) });
+    }
+    // sessions of this computer: the Import sheet, suggestions, Continue in this project (imports-api.mjs)
+    if (p.startsWith('/api/imports') || /^\/api\/sessions\/[^/]+\/continue$/.test(p)) {
+      const r = await impApi().route({ m, p, q, remote: req.headers['x-bn-remote'] === '1', readJson: (max) => readJson(req, max), send: (code, body) => send(res, code, body) });
+      if (r !== false) return r;
+    }
     if (p === '/api/sessions' && m === 'POST') {
       const b = await readJson(req);
       const base = { model: b.model ?? undefined, mode: b.mode ?? undefined, effort: b.effort ?? undefined, taskStop: b.taskStop === true, budget: b.budget ?? undefined };
@@ -291,6 +311,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       if (isUuid(b.resume) && b.fork !== true && !mgr.get(b.resume)?.open) await api.notRunning(b.resume);
       // what of the folder's own Claude Code settings its process gets (trusted, or not applied): decided now, for it
       await mgr.prepare(base.cwd);
+      // a session copied from this computer opens in Manual the first time (its history is what a past session saw)
+      if (isUuid(b.resume) && b.fork !== true) { try { if (imp().firstOpen(b.resume)) base.mode = 'default'; } catch { /* (no record: as asked) */ } }
       if (b.before !== undefined && b.before !== null) {
         // a fork before one of your prompts: up to the message it answered to (its first prompt: a fresh session)
         if (b.fork !== true || !isUuid(b.resume) || !isUuid(b.before) || b.at !== undefined) throw new HttpError(400, 'before needs resume and fork, and no at');
@@ -499,7 +521,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
     try {
       return await route(req, res, url);
     } catch (e) {
-      const [status, msg] = e instanceof HttpError || e instanceof HostError || e instanceof ProjectError ? [e.status, e.message] : sandboxStatus(e);
+      const [status, msg] = e instanceof HttpError || e instanceof HostError || e instanceof ProjectError || e instanceof ImportError ? [e.status, e.message] : sandboxStatus(e);
       if (status >= 500) logger(`${req.method} ${url.pathname}: ${short(e.message, 300)}`);
       if (res.headersSent) return res.destroy();
       // (a failure in the sandbox's own words, on any route — a refusal of bn-coded's not one of its fixed texts, git's

@@ -513,7 +513,12 @@ test_compose_code_is_a_sandboxed_container_on_its_own_network() {
         target: /etc/bn-code/projects
         read_only: true
         bind: { create_host_path: false, selinux: z }'
-  c="$(printf '%s\n' "$c" | grep -vxF '      - type: bind' | grep -vxF '        source: ${BN_PROJECTS_PUBLIC:?run ./stack up}')"
+  # (and the folder it shares with the update helper for its requests: the Import sheet's — lib/sessions.sh)
+  assert_contains "$c" '      - type: bind
+        source: ${BN_HELPER_CODE_REQUESTS:?run ./stack up}
+        target: /run/bn-code-requests
+        bind: { create_host_path: false, selinux: z }'
+  c="$(printf '%s\n' "$c" | grep -vxF '      - type: bind' | grep -vxF '        source: ${BN_PROJECTS_PUBLIC:?run ./stack up}' | grep -vxF '        source: ${BN_HELPER_CODE_REQUESTS:?run ./stack up}')"
   for bad in docker.sock privileged "ports:" "network_mode" "LITELLM" "MASTER_KEY" "AWS_" "PORTAL_PASSWORD" "/workspace" \
              "TERMINAL_WORKSPACE" "type: bind" "cap_add" "default:" "SHARED_MCP_TOKEN" "terminal-link"; do
     assert_not_contains "$c" "$bad"
@@ -547,8 +552,8 @@ assert d["networks"]["code-link"]["internal"] is True
 assert c["user"] == "501:20" and c["read_only"] and c["cap_drop"] == ["ALL"] and "ports" not in c
 assert [(v["source"], v["target"], v.get("read_only")) for v in c["volumes"]][:2] == [("code-socket", "/run/bn-code", True), ("code-state", "/var/lib/bn-code", None)], c["volumes"]
 # (the project folders public list: a folder of the stack, read-only, never created by Docker)
-assert [(v["type"], v["source"].endswith("/.state/projects/public"), v["target"], v.get("read_only"), bool(v["bind"].get("create_host_path"))) for v in c["volumes"][2:]] == [
-  ("bind", True, "/etc/bn-code/projects", True, False)], c["volumes"]
+assert [(v["type"], v["source"].endswith("/.state/projects/public") or v["source"].endswith("/.state/code-requests"), v["target"], v.get("read_only"), bool(v["bind"].get("create_host_path"))) for v in c["volumes"][2:]] == [
+  ("bind", True, "/etc/bn-code/projects", True, False), ("bind", True, "/run/bn-code-requests", None, False)], c["volumes"]
 # (Git hosts: the code container's own volume, never the sandbox's)
 assert not any(v.get("source") == "code-state" for n, x in s.items() if n != "code" for v in x.get("volumes") or [])
 assert sorted(c["environment"]) == ["CODE_ALLOW_BYPASS", "CODE_AUTO_MODE", "CODE_PROXY_SECRET", "CODE_WORKSPACE_LABEL", "GIT_GITHUB_APP_SLUG", "GIT_GITHUB_CLIENT_ID",

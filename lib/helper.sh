@@ -997,6 +997,8 @@ helper_poll_once() {
   # lib/settings_helper.sh: settings and diagnostics, in a subshell (nothing in it can end the helper); after one ran,
   # this loop's heartbeat is out of date
   if ( settings_poll_once ); then AUTO_FRESH=0; fi
+  # lib/sessions.sh: the Code page's requests (a look at, or a read of, your sessions here) — in a subshell too
+  if declare -F sessions_poll_once >/dev/null && ( sessions_poll_once ); then AUTO_FRESH=0; fi
   for f in "$rq"/req-*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     name="${f##*/}"
@@ -1063,6 +1065,7 @@ helper_main() {
     _terminal_job_sweep || true   # lib/lock.sh: a terminal command's record left "running" by a process that is gone
     # lib/settings_helper.sh: the settings snapshot, the helper's password hash, nightly backups (as above)
     if ( settings_helper_tick ); then AUTO_FRESH=0; fi
+    ! declare -F sessions_helper_tick >/dev/null || ( sessions_helper_tick ) || true   # lib/sessions.sh: what it offers the Code page
     if helper_poll_once; then helper_heartbeat || true; return 0; fi
     if helper_auto_tick; then helper_heartbeat || true; return 0; fi
     [ "${1:-}" != --once ] || return 0

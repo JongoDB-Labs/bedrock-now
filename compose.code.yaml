@@ -22,8 +22,10 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp:size=64m,mode=1777"]
-    mem_limit: 768m
+    # /run/bn-import-stage: sessions of yours from this computer waiting to be checked and copied into the sandbox (the Import
+    # sheet; code/server/import-sessions.mjs) — at most 128 MiB, an hour at most, gone with the container
+    tmpfs: ["/tmp:size=64m,mode=1777", "/run/bn-import-stage:size=160m,mode=1777"]
+    mem_limit: 1g
     pids_limit: 128
     init: true
     environment:
@@ -62,6 +64,14 @@ services:
         source: ${BN_PROJECTS_PUBLIC:?run ./stack up}
         target: /etc/bn-code/projects
         read_only: true
+        bind: { create_host_path: false, selinux: z }
+      # Its requests to the update helper (code/server/import-sessions.mjs, lib/sessions.sh): a look at, or a read of,
+      # Claude Code's and claude-bedrock's sessions on this computer, or suggestions — sx-<nonce>.json, every field fixed,
+      # never a path — and the helper's word on what it offers (helper.json). A folder of .state only this container and
+      # the helper share: never the sandbox's or the portal's; never created by Docker (./stack makes it: yours, mode 700).
+      - type: bind
+        source: ${BN_HELPER_CODE_REQUESTS:?run ./stack up}
+        target: /run/bn-code-requests
         bind: { create_host_path: false, selinux: z }
     networks:
       code-link:

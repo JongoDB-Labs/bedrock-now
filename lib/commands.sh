@@ -65,6 +65,9 @@ Usage: ./stack <command> [--yes]
                (each change restarts the sandbox: --now, --when-idle or --later)
   git-host     The Code page's Git hosts from a CLI login on this computer: import gh | import glab
                [--host HOST]   (the token goes to the code container on stdin, never printed; you confirm)
+  sessions     Your Claude Code and claude-bedrock sessions on this computer, copied into a project's sandbox
+               (only after you allow it here; nothing is written back): list | import --project NAME
+               | scan | fetch | consent [--always|--once|--revoke] | suggest   (secrets redacted by default)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
   config       Every setting in .env, secrets masked (the portal's Settings tab shows the same):
@@ -1805,6 +1808,7 @@ cmd_uninstall() {
   code_uninstall_cleanup       # lib/code.sh: its network, socket volume and image (before the terminal's)
   terminal_uninstall_cleanup   # lib/terminal.sh: its volume, networks and image, also while it is off
   projects_uninstall_cleanup   # lib/projects.sh: the generated files (the list stays; the folders are never touched)
+  sessions_uninstall_cleanup   # lib/sessions.sh: the Code page's request folder and the looks (what you allowed stays)
   local_builds_remove          # lib/images.sh: <project>/portal:local, …:previous, by exact name (never a prune)
   ! helper_installed || helper_uninstall
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
@@ -1851,6 +1855,9 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/code.sh"
 # Folders of this computer as Code page projects (./stack project): their mounts into the sandbox.
 . "$STACK_DIR/lib/projects.sh"
+# Your Claude Code and claude-bedrock sessions on this computer, copied into the sandbox (./stack sessions; the helper's
+# Code page requests).
+. "$STACK_DIR/lib/sessions.sh"
 # Its Git hosts from a gh / glab login on this computer (./stack git-host import).
 . "$STACK_DIR/lib/githost.sh"
 # claude-bedrock's own Claude Code config folder (./stack uninstall names it; bin/claude-bedrock uses it).
