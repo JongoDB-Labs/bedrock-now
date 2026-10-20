@@ -10,6 +10,8 @@ Request file REQUEST_DIR/cfg-<nonce>.req (at most 8 KB, ASCII, one item per line
     bedrock-now-settings 1 / nonce HEX32 / requested_at EPOCH / base HEX64 / origin local|remote /
     auth BASE64(password) / set KEY BASE64(value) … / end
 Diagnostics: REQUEST_DIR/act-<nonce>.json = {"action","requested_at","nonce"} (like admin.py's req-*.json).
+Project folders (lib/projects.sh): act-<nonce>.json too, every field fixed and none a path — project-pick (a folder
+chooser on the computer's screen; only from a local session), project-remove and project-mode-ro (by the project's id).
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ GROUPS = ("account", "aws", "budgets", "voice", "openrouter", "files", "updates"
 # the page's sections, in catalog/settings-layout.tsv; a row's place in its section; the page's own rows (no .env key)
 SECTIONS = ("account", "aws", "spending", "chat", "code", "files", "remote", "updates", "diagnostics", "advanced", "about")
 PLACES = ("main", "more", "with")
-OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts")
+OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders")
 DOC = re.compile(r"(README\.md|docs/[a-z0-9-]{1,40}\.md)(#[a-z0-9-]{1,80})?")
 EDITABLE = ("edit", "local", "on-only", "widen-local")
 REGEN = ("RUSTFS_ACCESS_KEY", "SHARED_MCP_TOKEN")   # what "Regenerate" asks for (the RustFS pair is one action)
@@ -53,6 +55,11 @@ REVEAL = ("LITELLM_UI_PASSWORD", "RUSTFS_ACCESS_KEY", "RUSTFS_SECRET_KEY", "LITE
           "LITELLM_KEY_OPENWEBUI", "LITELLM_KEY_SETUP", "SHARED_MCP_TOKEN")
 DIAG_ACTIONS = ("check-aws", "models-recheck", "backup", "test", "report", "restart-litellm", "restart-open-webui",
                 "restart-shared-mcp", "restart-stt", "restart-rustfs", "restart-caddy")
+PROJECT_ACTIONS = ("project-pick", "project-remove", "project-mode-ro")
+PROJECTS = "projects.json"                     # ./stack's list of project folders (lib/projects.sh)
+MAX_PROJECTS_FILE = 64 * 1024
+PROJECT_ID = re.compile(r"p_[0-9a-f]{8}")
+PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 NAME = re.compile(r"[A-Z][A-Z0-9_]{1,40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 # A model id of Settings › Claude Code › Models — the one rule of lib/code_models.sh valid_code_model_id (and code.py):
@@ -173,13 +180,36 @@ def by_key(snap: dict | None) -> dict:
 
 
 def capability(status_dir: Path, now: float | None = None) -> dict:
-    """Whether the running helper takes settings and diagnostics requests (lib/settings_helper.sh writes this)."""
+    """Whether the running helper takes settings and diagnostics requests (lib/settings_helper.sh writes this), which
+    project folder actions, and whether it can show a dialog on the computer's screen (the folder chooser)."""
     now = time.time() if now is None else now
     d = _read_json(status_dir / CAPABILITY, 4096)
     at = d.get("written_at") if isinstance(d.get("written_at"), int) else None
     ok = d.get("settings") == 1 and at is not None and now - at <= CAPABILITY_MAX_AGE_S
     acts = [a for a in d.get("diagnostics") or [] if a in DIAG_ACTIONS] if ok else []
-    return {"settings": ok, "diagnostics": acts}
+    projects = [a for a in d.get("projects") or [] if a in PROJECT_ACTIONS] if ok else []
+    return {"settings": ok, "diagnostics": acts, "projects": projects, "screen": ok and d.get("screen") is True}
+
+
+def project_folders(status_dir: Path) -> dict:
+    """The project folders ./stack lists (lib/projects.sh): every field checked; a row that does not fit is dropped."""
+    d = _read_json(status_dir / PROJECTS, MAX_PROJECTS_FILE)
+    out = []
+    for f in d.get("folders") or []:
+        if not isinstance(f, dict) or not isinstance(f.get("id"), str) or not PROJECT_ID.fullmatch(f["id"]):
+            continue
+        if not isinstance(f.get("name"), str) or not PROJECT_NAME.fullmatch(f["name"]) or f.get("mode") not in ("rw", "ro"):
+            continue
+        host, where = f.get("host"), f.get("path")
+        if not (isinstance(host, str) and isinstance(where, str) and host.startswith("/") and where.startswith("/")
+                and len(host) <= 1024 and len(where) <= 1024 and not re.search(r"[\x00-\x1f\x7f]", host + where)):
+            continue
+        out.append({"id": f["id"], "name": f["name"], "host": host, "path": where, "mode": f["mode"], "hidden": f.get("hidden") is True,
+                    "added": f["added"] if isinstance(f.get("added"), int) else None, "ok": f.get("ok") is not False,
+                    "why": _s(f.get("why"), 300) if f.get("ok") is False else ""})
+        if len(out) >= 16:
+            break
+    return {"written_at": d.get("written_at") if isinstance(d.get("written_at"), int) else None, "max": 16, "folders": out}
 
 
 def backups(status_dir: Path) -> dict:
@@ -563,6 +593,31 @@ def write_request(request_dir: Path, base: str, local: bool, password: str, valu
     nonce = secrets.token_hex(16)
     _write_atomic(request_dir, "cfg", f"cfg-{nonce}.req",
                   build_request(nonce, base, local, password, values, regen=regen, confirm=confirm))
+    return nonce
+
+
+def write_project_action(request_dir: Path, action: str, password: str, when: str, *, project: str | None = None,
+                         mode: str = "rw", hide: bool = False, now: float | None = None) -> str:
+    """REQUEST_DIR/act-<nonce>.json: a project folder action for the helper — the folder chooser on the computer's
+    screen (project-pick: only written for a local session), or a project named by its id. Never a path. -> nonce"""
+    if action not in PROJECT_ACTIONS or when not in ("now", "idle"):
+        raise ValueError("action not allowed")
+    if len(password.encode("utf-8", "surrogatepass")) > MAX_AUTH:
+        raise ValueError("password too long")
+    nonce = secrets.token_hex(16)
+    body = {"action": action, "requested_at": int(time.time() if now is None else now), "nonce": nonce, "auth": _b64(password), "when": when}
+    if action == "project-pick":
+        if mode not in ("rw", "ro") or not isinstance(hide, bool):
+            raise ValueError("bad request")
+        body.update({"mode": mode, "hide": hide, "origin": "local"})
+    else:
+        if not isinstance(project, str) or not PROJECT_ID.fullmatch(project):
+            raise ValueError("bad project id")
+        body["project"] = project
+    raw = json.dumps(body, separators=(",", ":")).encode("ascii")
+    if len(raw) > 768:   # (the helper's limit: lib/settings_helper.sh ACT_MAX_BYTES)
+        raise ValueError("too large")
+    _write_atomic(request_dir, "act", f"act-{nonce}.json", raw)
     return nonce
 
 

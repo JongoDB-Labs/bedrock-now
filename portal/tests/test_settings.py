@@ -230,8 +230,9 @@ def test_get_settings_needs_a_session_and_shows_the_snapshot(make, dirs):
     assert c.get("/api/settings").status_code == 400            # no X-Requested-With
     d = c.get("/api/settings", headers=API).json()
     assert d["available"] and d["snapshot"]["base"] == BASE
-    assert d["helper"] == {"running": False, "heartbeat_at": None, "settings": False, "diagnostics": [],
+    assert d["helper"] == {"running": False, "heartbeat_at": None, "settings": False, "diagnostics": [], "projects": [], "screen": False,
                            "in_progress": False, "job": None}
+    assert d["projects"] == {"written_at": None, "max": 16, "folders": []}
     assert d["here"] == {"remote": False, "allowed": True}
     assert "correct horse" not in json.dumps(d) and PASSWORD_HASH not in json.dumps(d)
     helper_up(sd)
@@ -569,6 +570,82 @@ def test_diagnostics_write_one_strict_request(make, dirs):
     assert len(files(rq)) == 1
 
 
+# --- project folders (lib/projects.sh): the list ./stack writes, and requests that never carry a path ---
+
+def projects_up(sd, screen=True, folders=None):
+    helper_up(sd)
+    cap = json.loads((sd / "helper-settings.json").read_text())
+    cap.update({"projects": list(st.PROJECT_ACTIONS), "screen": screen})
+    (sd / "helper-settings.json").write_text(json.dumps(cap))
+    (sd / "projects.json").write_text(json.dumps({"version": 1, "written_at": int(time.time()), "max": 16, "folders": folders if folders is not None else [
+        {"id": "p_0123abcd", "name": "app", "host": "/Users/me/src/app", "path": "/Users/me/src/app", "mode": "rw", "hidden": False, "added": 1, "ok": True, "why": ""},
+        {"id": "p_89abcdef", "name": "notes", "host": "/Users/me/notes", "path": "/projects/notes", "mode": "ro", "hidden": True, "added": 2, "ok": False,
+         "why": "it is gone (or cannot be opened)"}]}))
+
+
+def project(c, act, headers=H, **body):
+    return c.post("/api/settings/project", content=json.dumps({"action": act, "password": "correct horse", **body}), headers=headers)
+
+
+def test_project_folders_list_is_checked(dirs):
+    sd, _ = dirs
+    projects_up(sd, folders=[
+        {"id": "p_0123abcd", "name": "app", "host": "/Users/me/src/app", "path": "/Users/me/src/app", "mode": "rw", "hidden": False, "added": 1, "ok": True},
+        {"id": "../etc", "name": "x", "host": "/x", "path": "/x", "mode": "rw"},
+        {"id": "p_00000001", "name": "a b", "host": "/x", "path": "/x", "mode": "rw"},
+        {"id": "p_00000002", "name": "y", "host": "x", "path": "/x", "mode": "rw"},
+        {"id": "p_00000003", "name": "z", "host": "/x\n/y", "path": "/x", "mode": "rw"},
+        {"id": "p_00000004", "name": "w", "host": "/x", "path": "/x", "mode": "rwx"}])
+    d = st.project_folders(sd)
+    assert [f["id"] for f in d["folders"]] == ["p_0123abcd"]
+    assert d["folders"][0] == {"id": "p_0123abcd", "name": "app", "host": "/Users/me/src/app", "path": "/Users/me/src/app", "mode": "rw", "hidden": False,
+                               "added": 1, "ok": True, "why": ""}
+    assert st.capability(sd)["projects"] == list(st.PROJECT_ACTIONS) and st.capability(sd)["screen"] is True
+
+
+def test_project_actions_write_fixed_requests_and_never_a_path(make, dirs):
+    sd, rq = dirs
+    c = make()
+    projects_up(sd)
+    assert c.get("/api/settings", headers=API).json()["projects"]["folders"][1]["why"] == "it is gone (or cannot be opened)"
+    r = project(c, "project-pick", when="idle", mode="ro", hide=True)
+    assert r.status_code == 202, r.text
+    body = (rq / f"act-{r.json()['id']}.json").read_text()
+    assert re.fullmatch(r'\{"action":"project-pick","requested_at":[0-9]+,"nonce":"[0-9a-f]{32}","auth":"[A-Za-z0-9+/=]+","when":"idle","mode":"ro","hide":true,"origin":"local"\}', body), body
+    for f in rq.iterdir():
+        f.unlink()
+    c2 = make()
+    r = project(c2, "project-remove", when="now", project="p_89abcdef")
+    assert r.status_code == 202, r.text
+    body = (rq / f"act-{r.json()['id']}.json").read_text()
+    assert re.fullmatch(r'\{"action":"project-remove","requested_at":[0-9]+,"nonce":"[0-9a-f]{32}","auth":"[A-Za-z0-9+/=]+","when":"now","project":"p_89abcdef"\}', body), body
+    c3 = make()
+    # a path, an id not in the list, an unknown action, a bad choice: refused
+    assert project(c3, "project-remove", project="/Users/me").status_code == 400
+    assert project(c3, "project-remove", project="p_ffffffff").status_code == 404
+    assert project(c3, "project-add", project="p_0123abcd").status_code == 400
+    assert project(c3, "project-pick", when="soon").status_code == 400
+    assert project(c3, "project-pick", hide="yes").status_code == 400
+    assert project(c3, "project-pick", path="/etc").status_code == 202   # (a field it does not read: never written)
+    assert all("/etc" not in f.read_text() for f in rq.iterdir())
+
+
+def test_project_pick_only_from_this_computer_and_with_a_screen(make, dirs):
+    sd, rq = dirs
+    projects_up(sd, screen=False)
+    assert project(make(), "project-pick").status_code == 409   # no dialog can be shown there
+    projects_up(sd)
+    rc = remote_client(make, True)
+    r = project(rc, "project-pick", headers=RH)
+    assert r.status_code == 403 and "only from the computer running bedrock-now" in r.json()["error"]
+    # narrowing works from anywhere (with remote admin actions)
+    assert project(rc, "project-mode-ro", headers=RH, project="p_0123abcd").status_code == 202
+    assert project(remote_client(make, False), "project-remove", headers=RH, project="p_0123abcd").status_code == 403
+    # an older helper: said
+    (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": list(st.DIAG_ACTIONS), "written_at": int(time.time())}))
+    assert project(make(), "project-remove", project="p_0123abcd").status_code == 409
+
+
 def test_sign_out_other_devices_keeps_this_one(settings, dirs):
     sd, rq = dirs
     app = create_app(replace(settings, status_dir=sd, request_dir=rq), transport=httpx.MockTransport(offline))
@@ -600,9 +677,12 @@ def test_request_file_is_bounded():
 def test_capability_file_must_be_recent(dirs):
     sd, _ = dirs
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": 1}))
-    assert st.capability(sd) == {"settings": False, "diagnostics": []}
+    assert st.capability(sd) == {"settings": False, "diagnostics": [], "projects": [], "screen": False}
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": int(time.time())}))
-    assert st.capability(sd) == {"settings": True, "diagnostics": ["test"]}
+    assert st.capability(sd) == {"settings": True, "diagnostics": ["test"], "projects": [], "screen": False}
+    (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": [], "projects": ["project-pick", "project-add"], "screen": "yes",
+                                                        "written_at": int(time.time())}))
+    assert st.capability(sd) == {"settings": True, "diagnostics": [], "projects": ["project-pick"], "screen": False}
 
 
 # --- Part 2: regenerate, pins, the backup list, the session length, the alert threshold ---

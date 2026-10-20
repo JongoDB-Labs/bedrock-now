@@ -10,7 +10,13 @@
 #                                      allowlist and each value — then ./stack config apply --stdin gets the values on
 #                                      stdin. The file is deleted right after it is read.
 #   .state/requests/act-<nonce>.json   a diagnostic, {"action","requested_at","nonce"} like req-*.json: check-aws,
-#                                      models-recheck, backup, test, report or restart-<service>
+#                                      models-recheck, backup, test, report or restart-<service>; or a project folder
+#                                      action (lib/projects.sh), each field fixed — never a path:
+#                                        project-pick    {…,"when":"now|idle","mode":"rw|ro","hide":BOOL,"origin":"local"}
+#                                                        a folder chooser on this computer's screen (only for a request
+#                                                        made there: origin local), then ./stack project add <chosen>
+#                                        project-remove / project-mode-ro  {…,"when":"now|idle","project":"p_<8 hex>"}
+#                                                        by the project's id in folders.tsv (narrowing: from anywhere)
 # Each kind has its own rate limits (state in .state/helper/), separate from update/rollback/clean.
 
 SETTINGS_REQ_MAX_BYTES=8192
@@ -20,6 +26,11 @@ DIAG_ACTIONS="check-aws models-recheck backup test report restart-litellm restar
 DIAG_MIN_INTERVAL_S="${DIAG_MIN_INTERVAL_S:-10}"
 DIAG_MAX_PER_DAY="${DIAG_MAX_PER_DAY:-60}"
 RECHECK_MIN_INTERVAL_S=3600   # ./stack models --recheck (< $0.01 each): at most once an hour
+# Project folders (lib/projects.sh): the folder chooser on this computer's screen at most once a minute, 10 a day
+PROJECT_ACTIONS="project-pick project-remove project-mode-ro"
+PICK_MIN_INTERVAL_S="${PICK_MIN_INTERVAL_S:-60}"
+PICK_MAX_PER_DAY="${PICK_MAX_PER_DAY:-10}"
+ACT_MAX_BYTES=768   # (a project action carries a few more fields than a diagnostic)
 settings_capability_file() { printf '%s/helper-settings.json\n' "$(status_dir)"; }
 report_file() { printf '%s/report.txt\n' "$(status_dir)"; }
 
@@ -201,28 +212,75 @@ helper_run_settings() {
   JOB_RESULT="done"; helper_write_status "done" "${msg:-Saved}"
 }
 
-# act_check_request FILE NAME -> prints "ACTION NONCE" for a valid diagnostic request (the reason on stderr otherwise)
+# act_check_request FILE NAME -> prints "ACTION NONCE AUTH WHEN PROJECT MODE HIDE" for a valid diagnostic or project
+# folder request ("-" for a field it has not), the reason on stderr otherwise
 act_check_request() {
-  local f="$1" name="$2" nonce body action ts n now auth
+  local f="$1" name="$2" nonce body action ts n now auth when=- project=- mode=- hide=-
   case "$name" in act-*.json) ;; *) echo "unexpected file name" >&2; return 1 ;; esac
   nonce="${name#act-}"; nonce="${nonce%.json}"
   case "$nonce" in *[!0-9a-f]*) echo "bad nonce in the file name" >&2; return 1 ;; esac
   [ "${#nonce}" = 32 ] || { echo "bad nonce in the file name" >&2; return 1; }
-  body="$(_req_read "$f" "$HELPER_MAX_BYTES")" || return 1
+  body="$(_req_read "$f" "$ACT_MAX_BYTES")" || return 1
   body="${body%$'\n'}"   # one line, matched as a whole (the password again: every diagnostic costs time, disk or money)
-  _sv_re "$body" '^\{"action":"(check-aws|models-recheck|backup|test|report|restart-(litellm|open-webui|shared-mcp|stt|rustfs|caddy))","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})"\}$' ||
-    { echo "not a valid request" >&2; return 1; }
-  action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[3]}"; n="${BASH_REMATCH[4]}"; auth="${BASH_REMATCH[5]}"
+  if _sv_re "$body" '^\{"action":"(check-aws|models-recheck|backup|test|report|restart-(litellm|open-webui|shared-mcp|stt|rustfs|caddy))","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})"\}$'; then
+    action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[3]}"; n="${BASH_REMATCH[4]}"; auth="${BASH_REMATCH[5]}"
+  # (project folders: every field fixed, none a path — the folder is chosen on this computer's screen, or named by its id)
+  elif _sv_re "$body" '^\{"action":"(project-pick)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","when":"(now|idle)","mode":"(rw|ro)","hide":(true|false),"origin":"(local)"\}$'; then
+    action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
+    when="${BASH_REMATCH[5]}"; mode="${BASH_REMATCH[6]}"; hide="${BASH_REMATCH[7]}"
+  elif _sv_re "$body" '^\{"action":"(project-remove|project-mode-ro)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","when":"(now|idle)","project":"(p_[0-9a-f]{8})"\}$'; then
+    action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
+    when="${BASH_REMATCH[5]}"; project="${BASH_REMATCH[6]}"
+  else
+    echo "not a valid request" >&2; return 1
+  fi
   [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }
   [ "$n" = "$nonce" ] || { echo "nonce does not match the file name" >&2; return 1; }
-  case " $DIAG_ACTIONS " in *" $action "*) ;; *) echo "action not allowed" >&2; return 1 ;; esac
+  case " $DIAG_ACTIONS $PROJECT_ACTIONS " in *" $action "*) ;; *) echo "action not allowed" >&2; return 1 ;; esac
   now="$(date +%s)"
   [ "$ts" -le $((now + 30)) ] || { echo "dated in the future" >&2; return 1; }
   [ $((now - ts)) -le "$HELPER_MAX_AGE_S" ] || { echo "stale (older than ${HELPER_MAX_AGE_S}s)" >&2; return 1; }
   ! grep -qx "$nonce" "$(helper_dir)/nonces" 2>/dev/null || { echo "replayed (this request was already used)" >&2; return 1; }
-  printf '%s %s %s\n' "$action" "$nonce" "$auth"
+  printf '%s %s %s %s %s %s %s\n' "$action" "$nonce" "$auth" "$when" "$project" "$mode" "$hide"
 }
 
+# helper_screen -> 0 when the helper can show a dialog on this computer's screen: macOS (a launchd agent of your
+# login session), or Linux with a display and zenity or kdialog; BN_DIALOG_CMD (tests: a stub) counts as one
+helper_screen() {
+  [ -z "${BN_DIALOG_CMD:-}" ] || return 0
+  case "$(_helper_os)" in
+    Darwin) command -v osascript >/dev/null 2>&1 ;;
+    *) [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && { command -v zenity >/dev/null 2>&1 || command -v kdialog >/dev/null 2>&1; } ;;
+  esac
+}
+
+# helper_pick_folder -> the folder chosen in a folder chooser on this computer's screen (its path, one line), nothing
+# when cancelled; 3 when no dialog can be shown here. The text is fixed; nothing of the request reaches it.
+HELPER_PICK_PROMPT="bedrock-now: choose a folder for the Code page. Claude — and anything it runs in the sandbox — will be able to read it, and change it unless you chose read-only."
+helper_pick_folder() {
+  local out
+  helper_screen || return 3
+  if [ -n "${BN_DIALOG_CMD:-}" ]; then out="$("$BN_DIALOG_CMD" "$HELPER_PICK_PROMPT" 2>/dev/null)" || out=''
+  else
+    case "$(_helper_os)" in
+      Darwin) out="$(osascript -e "POSIX path of (choose folder with prompt \"$HELPER_PICK_PROMPT\")" 2>/dev/null)" || out='' ;;
+      *) if command -v zenity >/dev/null 2>&1; then out="$(zenity --file-selection --directory --title "$HELPER_PICK_PROMPT" 2>/dev/null)" || out=''
+         else out="$(kdialog --getexistingdirectory "$HOME" --title "$HELPER_PICK_PROMPT" 2>/dev/null)" || out=''; fi ;;
+    esac
+  fi
+  out="$(printf '%s' "$out" | head -n 1)"
+  [ "$out" = / ] || out="${out%/}"
+  case "$out" in /*) printf '%s\n' "$out" ;; esac
+}
+
+# _act_limits ACTION — a diagnostic's limits, or the folder chooser's (one a minute, PICK_MAX_PER_DAY a day: a request
+# can at most open a dialog the person at this computer cancels)
+_act_limits() {
+  case "$1" in
+    project-pick) _kind_limits pick-jobs "$(_helper_num "$PICK_MIN_INTERVAL_S" 60)" "$(_helper_num "$PICK_MAX_PER_DAY" 10)" ;;
+    *) _diag_limits "$1" ;;
+  esac
+}
 _diag_limits() {
   _kind_limits diag-jobs "$(_helper_num "$DIAG_MIN_INTERVAL_S" 10)" "$(_helper_num "$DIAG_MAX_PER_DAY" 60)" || return 1
   if [ "$1" = models-recheck ] && [ -f "$(helper_dir)/diag-jobs" ]; then
@@ -245,16 +303,32 @@ _wait_beating() {
 }
 
 helper_run_diag() {
-  local action="$1" logf rc=0 holder msg s
+  local action="$1" logf rc=0 holder msg s when="${3:-now}" project="${4:-}" mode="${5:-rw}" hide="${6:-false}" chosen='' flag
   JOB_ID="$2"; JOB_ACTION="$action"; JOB_TRIGGER=''; JOB_STARTED="$(date +%s)"; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''; JOB_RESULT=''
   holder="$(stack_lock_holder)"
   if [ -n "$holder" ]; then
     JOB_FINISHED="$(date +%s)"; JOB_RESULT=refused
     helper_write_status failed "Busy: $(stack_lock_says "$holder"). Try again when it has finished."; return 0
   fi
-  [ "$action" = backup-nightly ] || _kind_count diag-jobs "$action"   # (the helper's own nightly run: not a request)
+  case "$action" in
+    backup-nightly) ;;   # (the helper's own nightly run: not a request)
+    project-pick) _kind_count pick-jobs "$action" ;;
+    *) _kind_count diag-jobs "$action" ;;
+  esac
   logf="$(helper_dir)/last-diag.log"
   : > "$logf"; chmod 600 "$logf"
+  flag=--now; [ "$when" != idle ] || flag=--when-idle
+  # a project folder chosen on this computer's screen (cancelled there: nothing happens; no screen: said)
+  if [ "$action" = project-pick ]; then
+    helper_write_status running "Choose the folder in the dialog on this computer's screen"
+    rc=0; chosen="$(helper_pick_folder)" || rc=$?
+    JOB_FINISHED="$(date +%s)"
+    if [ "$rc" = 3 ]; then
+      JOB_RESULT=failed; helper_write_status failed "No dialog can be shown on this computer (no screen, or no folder chooser): in a terminal there, ./stack project add DIR"; return 0
+    fi
+    if [ -z "$chosen" ]; then JOB_RESULT=cancelled; helper_write_status failed "Cancelled on this computer: no folder was added"; return 0; fi
+    JOB_FINISHED=''
+  fi
   case "$action" in
     check-aws) helper_write_status running "Checking the AWS key with AWS (free)"; set -- config check-aws ;;
     models-recheck) helper_write_status running "Re-checking which models your AWS key can use (about 2 minutes; < \$0.01)"; set -- models --recheck --yes ;;
@@ -263,6 +337,13 @@ helper_run_diag() {
     report) helper_write_status running "Writing the status report"; set -- config report ;;
     backup-nightly) helper_write_status running "Nightly backup"; set -- backup --nightly ;;
     restart-*) s="${action#restart-}"; helper_write_status running "Restarting $s"; set -- restart "$s" ;;
+    project-pick)
+      helper_write_status running "Adding the folder$([ "$when" = idle ] && echo "; the sandbox restarts once no Code session has a turn running")"
+      set -- project add "$chosen" "$flag"
+      [ "$mode" != ro ] || set -- "$@" --read-only
+      [ "$hide" != true ] || set -- "$@" --hide-path ;;
+    project-remove) helper_write_status running "Removing the folder from the sandbox"; set -- project remove "$project" "$flag" ;;
+    project-mode-ro) helper_write_status running "Making the folder read-only in the sandbox"; set -- project mode "$project" ro "$flag" ;;
   esac
   # in the background, the heartbeat going on (a model check takes about 2 minutes, a backup longer)
   if [ "$action" = report ]; then
@@ -291,6 +372,14 @@ helper_run_diag() {
     test) msg="All $(grep -c '^  ok' "$logf" | tr -d ' ') checks passed" ;;
     report) msg="Status report ready" ;;
     restart-*) msg="${action#restart-} restarted" ;;
+    project-*)
+      case "$action" in
+        project-pick) msg="$(sed -n 's/^==> \(.*\) — a project on the Code page$/Added: \1/p' "$logf" | tail -n 1)" ;;
+        project-remove) msg="Removed from the sandbox (the folder on this computer is untouched)" ;;
+        *) msg="Read-only in the sandbox now" ;;
+      esac
+      if grep -q 'the sandbox was not restarted' "$logf"; then msg="$msg — not restarted yet: Code sessions kept their turns running for 30 minutes (Restart the sandbox applies it)"
+      elif grep -q 'restarting the sandbox' "$logf"; then msg="$msg; the sandbox restarted"; fi ;;
   esac
   helper_write_status "done" "$msg"
 }
@@ -298,7 +387,7 @@ helper_run_diag() {
 # settings_poll_once — one settings or diagnostic request per call, if any (moved into the private inbox first, like
 # lib/helper.sh does with req-*.json). 0 when a job ran. Never exits the helper: no code changes here.
 settings_poll_once() {
-  local rq inbox box f name res reason action auth
+  local rq inbox box f name res reason action auth when project mode hide
   rq="$(request_dir)"; inbox="$(helper_dir)/inbox"
   [ -d "$inbox" ] || { mkdir -p "$inbox" && chmod 700 "$(helper_dir)" "$inbox"; } 2>/dev/null || return 1
   for f in "$rq"/cfg-*.req "$rq"/act-*.json; do
@@ -325,9 +414,11 @@ settings_poll_once() {
       act-*)
         if res="$(act_check_request "$box/$name" "$name" 2>"$box/.reason")"; then
           rm -rf "$box"
-          action="${res%% *}"; res="${res#* }"; auth="${res#* }"; res="${res%% *}"   # res: the nonce from here on
+          read -r action res auth when project mode hide <<< "$res"   # res: the nonce from here on
           _remember_nonce "$res"
-          if reason="$(_auth_ok "$auth" 2>&1)" && reason="$(_diag_limits "$action" 2>&1)"; then auth=''; helper_run_diag "$action" "$res"; return 0; fi
+          if reason="$(_auth_ok "$auth" 2>&1)" && reason="$(_act_limits "$action" 2>&1)"; then
+            auth=''; helper_run_diag "$action" "$res" "$when" "$project" "$mode" "$hide"; return 0
+          fi
           auth=''
         else
           reason="$(head -c 300 "$box/.reason" | head -n 1)"; rm -rf "$box"
@@ -441,8 +532,9 @@ settings_helper_tick() {
   fi
   ! backup_nightly_tick || ran=0
   if [ ! -f "$f" ] || [ -n "$(find "$f" -mmin +10 2>/dev/null)" ]; then
-    printf '{"settings": 1, "diagnostics": [%s], "written_at": %s}\n' \
-      "$(for a in $DIAG_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
+    printf '{"settings": 1, "diagnostics": [%s], "projects": [%s], "screen": %s, "written_at": %s}\n' \
+      "$(for a in $DIAG_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" \
+      "$(for a in $PROJECT_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(helper_screen && echo true || echo false)" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
       chmod 644 "$f.tmp" && mv "$f.tmp" "$f"
   fi
   return "$ran"

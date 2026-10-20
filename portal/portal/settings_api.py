@@ -138,7 +138,10 @@ def routes(ctx: Ctx) -> list[Route]:
         return _no_store(JSONResponse({
             "available": snap is not None, "snapshot": snap, "layout": st.layout(s.catalog_dir),
             "helper": {"running": state["running"], "heartbeat_at": state["heartbeat_at"], "settings": cap["settings"],
-                       "diagnostics": cap["diagnostics"], "in_progress": admin.job_in_progress(state), "job": state["job"]},
+                       "diagnostics": cap["diagnostics"], "projects": cap["projects"], "screen": cap["screen"],
+                       "in_progress": admin.job_in_progress(state), "job": state["job"]},
+            # the folders of this computer the Code page's sandbox sees (./stack project; lib/projects.sh)
+            "projects": st.project_folders(s.status_dir),
             "here": {"remote": rem, "allowed": allowed(request)},
             "apps": s.app_urls(ctx.remote(request)), "user": s.user_email, "backups": st.backups(s.status_dir),
             "remote": {"on": s.remote_on(), "mode": s.remote_mode if s.remote_on() else "off",
@@ -303,6 +306,49 @@ def routes(ctx: Ctx) -> list[Route]:
         log.warning("diagnostic requested: %s%s", act, " (remote)" if is_remote(request) else "")
         return _no_store(JSONResponse({"id": nonce, "action": act}, status_code=202))
 
+    async def project_action(request: Request) -> Response:
+        """A project folder action for the helper: the folder chooser on this computer's screen (local sessions only:
+        a request never names a path), or a folder removed / made read-only by its id (narrowing: from anywhere)."""
+        st.sweep_requests(s.request_dir)
+        got = await front_door(request)
+        if isinstance(got, Response):
+            return got
+        data, password = got
+        act, when = data.get("action"), data.get("when", "now")
+        if act not in st.PROJECT_ACTIONS or when not in ("now", "idle"):
+            return err(400, "unknown action")
+        if act == "project-pick" and is_remote(request):
+            return err(403, "A folder is added only from the computer running bedrock-now: its folder chooser opens on that screen.")
+        project = data.get("project")
+        if act != "project-pick":
+            if not isinstance(project, str) or not st.PROJECT_ID.fullmatch(project):
+                return err(400, "bad project id")
+            if not any(f["id"] == project for f in st.project_folders(s.status_dir)["folders"]):
+                return err(404, "No such project folder (removed already?).")
+        mode, hide = data.get("mode", "rw"), data.get("hide", False)
+        if act == "project-pick" and (mode not in ("rw", "ro") or not isinstance(hide, bool)):
+            return err(400, "bad request")
+        if (busy := helper_ready()) is not None:
+            return busy
+        cap = st.capability(s.status_dir)
+        if act not in cap["projects"]:
+            return err(409, "This update helper does not offer project folders yet: ./stack helper install refreshes it.")
+        if act == "project-pick" and not cap["screen"]:
+            return err(409, "The update helper cannot show a dialog on this computer's screen: in a terminal there, ./stack project add DIR.")
+        if wait := action_rate.retry_after():
+            return err(429, f"Please wait {wait} s before the next action.", wait)
+        try:
+            nonce = st.write_project_action(s.request_dir, act, password, when, project=project if act != "project-pick" else None,
+                                            mode=mode, hide=hide)
+        except ValueError:
+            return err(413, f"The portal password is longer than {st.MAX_AUTH} bytes: set a shorter one with ./stack config set PORTAL_PASSWORD.")
+        except OSError as e:
+            log.warning("cannot write the %s request to %s (%s)", act, s.request_dir, e)
+            return err(500, "Could not hand the request to the helper (see ./stack logs portal).")
+        action_rate.hit()
+        log.warning("project folder action requested: %s%s", act, " (remote)" if is_remote(request) else "")
+        return _no_store(JSONResponse({"id": nonce, "action": act}, status_code=202))
+
     async def signout_others(request: Request) -> Response:
         """Every other browser and device signs in again; this one stays (its new session starts just after)."""
         got = await front_door(request)
@@ -330,6 +376,7 @@ def routes(ctx: Ctx) -> list[Route]:
         Route("/api/settings/apply", apply, methods=["POST"]),
         Route("/api/settings/reveal", reveal, methods=["POST"]),
         Route("/api/settings/action", action, methods=["POST"]),
+        Route("/api/settings/project", project_action, methods=["POST"]),
         Route("/api/settings/signout-others", signout_others, methods=["POST"]),
         Route("/api/settings/report", get_report, methods=["GET"]),
     ]

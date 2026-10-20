@@ -208,6 +208,9 @@
     openClone: () => openGit("clone"),
     // how many Git hosts the Code page last said are connected, or null (it has not said: not loaded in this browser)
     gitHosts: () => (reported && Number.isInteger(reported.hosts) ? reported.hosts : null),
+    // how many of its sessions have a turn running now (Settings › Claude Code › Project folders: what a restart ends),
+    // or null (not known: the Code page has not reported in this browser)
+    working: () => (reported ? reported.sessions.filter((x) => x.state === "working").length : null),
     openFile: (path) => {
       const f = document.querySelector('#frames iframe[data-app="code"]');
       let origin = "";

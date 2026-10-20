@@ -96,7 +96,7 @@
   function fallbackLayout() {
     const rows = Object.keys(keys).map((k) => (FALLBACK_WITH[k] && keys[FALLBACK_WITH[k]]
       ? { key: k, section: "all", place: "with", parent: FALLBACK_WITH[k], summary: "" } : { key: k, section: "all", place: "main", parent: "", summary: "" }));
-    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
+    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
     return { sections: [{ id: "all", title: "All settings", lede: "The page's layout (catalog/settings-layout.tsv) could not be read: every setting in one list.", doc: "" }], rows };
   }
 
@@ -417,7 +417,7 @@
   // rowFor LAYOUT-ROW -> the row of one setting (or of one of the page's own rows), or null
   function rowFor(r) {
     const own = { "+devices": sessionsRow, "+models": modelsRow, "+backups": backupRow, "+test": actionRow, "+check-aws": actionRow,
-      "+report": actionRow, "+restart": restartRow, "+git-hosts": gitHostsRow };
+      "+report": actionRow, "+restart": restartRow, "+git-hosts": gitHostsRow, "+project-folders": projectFoldersRow };
     if (r.key.startsWith("+")) return own[r.key] ? own[r.key](r) : null;
     const k = keys[r.key];
     if (!k) return null;
@@ -1118,6 +1118,71 @@
     return rw;
   }
 
+  // Project folders: folders of this computer the Code page's sandbox sees as projects (./stack project; lib/projects.sh
+  // keeps the list on this computer). Added only on this computer — Choose on this computer… asks the update helper
+  // to open a folder chooser on its screen (the request names no folder), or ./stack project add in a terminal there;
+  // removed or made read-only from anywhere, by the folder's id. Each change restarts the sandbox: now, or once no
+  // Code session has a turn running.
+  const RESTART_ENDS = "Restarting the sandbox (10–20 s) ends the terminal's shells, every Code session's Claude Code (each resumes with its next prompt), dev servers and Run & test runs; the workspace, every folder and Claude Code's history stay.";
+  function projectFoldersRow(r) {
+    const rw = ownFrame(r, "Project folders");
+    const pf = data.projects || { folders: [], max: 16 };
+    const helperDoes = (a) => canChange() && (data.helper.projects || []).includes(a);
+    const when = el("select", { id: "set-projects-when", "aria-label": "When the sandbox restarts" },
+      el("option", { value: "idle", text: "Restart when no Code session has a turn running" }), el("option", { value: "now", text: "Restart now" }));
+    const working = window.bnCode && window.bnCode.working ? window.bnCode.working() : null;
+    if (working === 0) when.value = "now";
+    const list = el("ul", { class: "set-projects", id: "set-projects" });
+    for (const f of pf.folders) {
+      const li = el("li", { class: `set-project${f.ok ? "" : " left-out"}`, "data-project": f.id },
+        el("span", { class: "set-project-name", text: f.name }), " ",
+        el("span", { class: "note", text: f.hidden ? `${f.host} → ${f.path} (path hidden from Claude)` : f.host }), " ",
+        el("span", { class: `badge${f.mode === "ro" ? "" : " badge-local"}`, text: f.mode === "ro" ? "read-only" : "read-write" }));
+      if (!f.ok) li.append(el("p", { class: "error", text: `Left out of the sandbox: ${f.why}` }));
+      const acts = el("span", { class: "set-project-actions" });
+      if (f.mode === "rw") {
+        const ro = el("button", { type: "button", class: "action", text: "Make read-only", "data-act": "project-mode-ro" });
+        ro.disabled = !helperDoes("project-mode-ro");
+        ro.addEventListener("click", () => askPassword({ kind: "project", action: "project-mode-ro", project: f.id, when: when.value },
+          `Make ${f.name} read-only?`, `Claude may then read ${f.name} but never change it. ${RESTART_ENDS}`, "Make read-only"));
+        acts.append(ro);
+      }
+      const rm = el("button", { type: "button", class: "action", text: "Remove", "data-act": "project-remove" });
+      rm.disabled = !helperDoes("project-remove");
+      rm.addEventListener("click", () => askPassword({ kind: "project", action: "project-remove", project: f.id, when: when.value },
+        `Remove ${f.name} from the sandbox?`, `The folder on this computer is untouched; its sessions stay on the Code page (Folders no longer added). ${RESTART_ENDS}`, "Remove"));
+      acts.append(rm);
+      li.append(acts);
+      list.append(li);
+    }
+    if (!pf.folders.length) list.append(el("li", { class: "note", text: "None yet: the sandbox sees only the workspace." }));
+    rw._main.append(list);
+    // adding: on this computer only
+    const add = el("div", { class: "set-projects-add" });
+    const ro = el("input", { type: "checkbox", id: "set-projects-ro" });
+    const hide = el("input", { type: "checkbox", id: "set-projects-hide" });
+    const pick = el("button", { type: "button", class: "action", id: "set-projects-pick", text: "Choose on this computer…" });
+    const local = !data.here.remote;
+    pick.disabled = !local || !helperDoes("project-pick") || !data.helper.screen || pf.folders.length >= (pf.max || 16);
+    pick.addEventListener("click", () => askPassword({ kind: "project", action: "project-pick", when: when.value, mode: ro.checked ? "ro" : "rw", hide: hide.checked },
+      "Choose a folder on this computer's screen?",
+      `A folder chooser opens on the screen of the computer running bedrock-now; nothing is added unless you pick a folder there. ${ro.checked ? "Claude may read it, never change it." : "Read-write: Claude — and anything it runs, or text it reads and follows — can change its files, and what it writes can run on this computer when your own tools open the folder (git hooks, .envrc, VS Code tasks, package.json scripts)."} Every project shares one sandbox: a session in one can read and change the others. ${RESTART_ENDS}`,
+      "Open the folder chooser"));
+    add.append(el("label", { class: "set-inline" }, ro, " Read-only for Claude"), " ",
+      el("label", { class: "set-inline" }, hide, " Hide its path from Claude (/projects/<name> in the sandbox)"), " ", pick);
+    rw._main.append(add);
+    const why = !local ? "Adding a folder works only on the computer running bedrock-now (its folder chooser opens on that screen)."
+      : !data.helper.running ? "Choose on this computer… needs the update helper (./stack helper install)."
+        : !(data.helper.projects || []).includes("project-pick") ? "This update helper does not offer project folders yet: ./stack helper install refreshes it."
+          : !data.helper.screen ? "The update helper cannot show a dialog on this computer's screen: add a folder in a terminal there." : "";
+    if (why) rw._main.append(el("p", { class: "note set-extra", text: why }));
+    rw._main.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: "In a terminal on this computer: " }), el("code", { text: "./stack project add ~/path/to/folder" }), " ",
+      copyButton("./stack project add ~/path/to/folder")));
+    rw._main.append(el("p", { class: "note set-extra", text: `${working ? `${working} Code session${working === 1 ? " has a turn" : "s have turns"} running now. ` : ""}${RESTART_ENDS}` }));
+    rw._actions.append(when);
+    return rw;
+  }
+
   function sessionDays() { const k = keys.PORTAL_SESSION_DAYS; return k && /^\d+$/.test(k.value || "") ? Number(k.value) : 30; }
 
   function sessionsRow(r) {
@@ -1299,6 +1364,10 @@
       if (what.kind === "apply") [r, d] = await post("/api/settings/apply", { password: pw, base: data.snapshot.base, set: what.values, regen: what.regen || [], confirm: what.confirm || [] });
       else if (what.kind === "reveal") [r, d] = await post("/api/settings/reveal", { password: pw, key: what.key });
       else if (what.kind === "action") [r, d] = await post("/api/settings/action", { password: pw, action: what.action });
+      else if (what.kind === "project") {
+        [r, d] = await post("/api/settings/project", { password: pw, action: what.action, when: what.when,
+          ...(what.project ? { project: what.project } : { mode: what.mode, hide: what.hide }) });
+      }
       else [r, d] = await post("/api/settings/signout-others", { password: pw });
       if (r.status === 400 && d.fields && what.form) {
         closeDialog();
@@ -1314,7 +1383,7 @@
       if (what.kind === "reveal") { showRevealed(what.key, d.value, what.show); return; }
       if (what.kind === "signout") { toast("Every other device is signed out"); return; }
       if (what.form) what.form.remove();
-      const label = what.kind === "action" ? what.action : "settings";
+      const label = what.kind === "action" || what.kind === "project" ? what.action : "settings";
       watch({ id: d.id, kind: label, keys: d.keys, password: Boolean(what.values && "PORTAL_PASSWORD" in what.values), at: Date.now() });
       toast("Sent to the update helper");
     } catch (e) {
@@ -1392,7 +1461,8 @@
     const job = w.job || { phase: "queued", message: "Waiting for the update helper…" };
     const settingsJob = w.kind === "settings";
     $("#set-job-title").textContent = settingsJob ? `Settings change${job.phase === "failed" ? " failed" : job.phase === "done" ? " saved" : ""}`
-      : { "check-aws": "AWS key check", "models-recheck": "Model check", backup: "Backup", test: "Smoke test", report: "Status report" }[w.kind] || `Restart of ${String(w.kind).slice(8)}`;
+      : { "check-aws": "AWS key check", "models-recheck": "Model check", backup: "Backup", test: "Smoke test", report: "Status report",
+        "project-pick": "Project folder", "project-remove": "Project folder removed", "project-mode-ro": "Project folder read-only" }[w.kind] || `Restart of ${String(w.kind).slice(8)}`;
     const steps = $("#set-job-steps"); steps.replaceChildren();
     steps.hidden = !settingsJob;
     if (settingsJob) {

@@ -98,7 +98,7 @@ test_the_layout_places_every_key_once() {
       if ($3 !~ /^(main|more|with)$/) print $1 " place " $3
       if ($3 == "with" && $4 == "-") print $1 " with no row"
       if ($3 != "with" && ($5 == "" || $5 == "-")) print $1 " no summary"
-      if ($1 ~ /^\+/ && $1 !~ /^\+(devices|models|backups|test|check-aws|report|restart|git-hosts)$/) print $1 " unknown own row"
+      if ($1 ~ /^\+/ && $1 !~ /^\+(devices|models|backups|test|check-aws|report|restart|git-hosts|project-folders)$/) print $1 " unknown own row"
       s[$1] = $2; p[$1] = $4; pl[$1] = $3; o[++n] = $1 }
     END { for (i = 1; i <= n; i++) { k = o[i]; if (p[k] == "-") continue
             if (!(p[k] in s)) print k " parent " p[k] " unknown"; else if (s[p[k]] != s[k]) print k " parent in another section"
@@ -864,6 +864,8 @@ case "$1" in
           echo "==> saved: BUDGET_SETUP" ;;
   backup) echo "==> backup written to backups/20261014-120000 (724K) — databases" ;;
   test) printf '  ok    litellm alive\n  ok    portal login\n'; [ -z "${FAKE_FAIL:-}" ] || { printf '  FAIL  anthropic /v1/messages (got 400, want 200)\n'; exit 1; } ;;
+  project) [ "$2" != add ] || echo "==> ${3##*/}: $3 → $3 in the sandbox (read-write) — a project on the Code page"
+           echo "==> restarting the sandbox: …" ;;
 esac
 exit 0
 EOS
@@ -1030,6 +1032,101 @@ test_helper_diagnostics_need_the_password() {
   [ ! -e "$CALLS" ]
   _act backup 0 44444444444444444444444444444444; settings_poll_once 2>/dev/null
   assert_eq "$(cat "$CALLS")" "backup --portal"
+}
+
+# --- the helper: project folders (lib/projects.sh) — a folder chooser on this computer's screen, never a path ---
+
+_pact() {   # _pact JSON-TAIL [NONCE] [PASSWORD] — a project folder request as the portal writes it
+  printf '{"action":%s,"requested_at":%s,"nonce":"%s","auth":"%s",%s}' "$1" "$(date +%s)" "${3:-$NONCE}" \
+    "$(printf '%s' "${4-correct horse battery}" | openssl base64 -A)" "$2" > "$(request_dir)/act-${3:-$NONCE}.json"
+}
+_dialog() {   # a stub folder chooser (BN_DIALOG_CMD): says what it was asked, answers $DIALOG_ANSWER
+  cat > "$TMP/dialog" <<'EOS'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TMP/dialog.log"
+[ -z "${DIALOG_ANSWER:-}" ] || printf '%s/\n' "$DIALOG_ANSWER"
+EOS
+  chmod +x "$TMP/dialog"; export BN_DIALOG_CMD="$TMP/dialog"
+}
+
+test_helper_project_pick_opens_a_chooser_and_adds_what_was_chosen() {
+  _checkout; _dialog
+  export DIALOG_ANSWER="$TMP/my app"
+  _pact '"project-pick"' '"when":"idle","mode":"ro","hide":true,"origin":"local"'
+  settings_poll_once 2>/dev/null
+  assert_eq "$(cat "$CALLS")" "project add $TMP/my app --when-idle --read-only --hide-path"
+  assert_contains "$(cat "$TMP/dialog.log")" "bedrock-now: choose a folder for the Code page. Claude — and anything it runs in the sandbox — will be able to read it"
+  assert_contains "$(cat "$(helper_status_file)")" "\"action\": \"project-pick\", \"phase\": \"done\", \"message\": \"Added: my app: $TMP/my app → $TMP/my app in the sandbox (read-write); the sandbox restarted"
+  # cancelled at the computer: nothing runs
+  DIALOG_ANSWER='' PICK_MIN_INTERVAL_S=0
+  : > "$CALLS"
+  _pact '"project-pick"' '"when":"now","mode":"rw","hide":false,"origin":"local"' 11111111111111111111111111111111
+  settings_poll_once 2>/dev/null || true
+  assert_eq "$(cat "$CALLS")" ""
+  assert_contains "$(cat "$(helper_status_file)")" '"message": "Cancelled on this computer: no folder was added"'
+}
+
+test_helper_project_requests_never_carry_a_path() {
+  _checkout; _dialog
+  export DIALOG_ANSWER="$TMP/x"
+  for tail in '"when":"now","mode":"rw","hide":false,"origin":"local","path":"/etc"' '"when":"now","mode":"rw","hide":false,"origin":"remote"' \
+              '"when":"now","mode":"rw","hide":false,"origin":"local","dir":"/"' '"when":"soon","mode":"rw","hide":false,"origin":"local"' \
+              '"when":"now","mode":"rw","hide":"yes","origin":"local"' '"when":"now","mode":"rw","hide":false'; do
+    _pact '"project-pick"' "$tail" 22222222222222222222222222222222
+    if settings_poll_once 2>/dev/null; then echo "took $tail" >&2; return 1; fi
+    assert_contains "$(cat "$(helper_status_file)")" "not a valid request"
+  done
+  for tail in '"when":"now","project":"/Users/me/src"' '"when":"now","project":"p_1234"' '"when":"now","project":"p_12345678","path":"/x"' \
+              '"when":"now","project":"../p_12345678"'; do
+    _pact '"project-remove"' "$tail" 33333333333333333333333333333333
+    if settings_poll_once 2>/dev/null; then echo "took $tail" >&2; return 1; fi
+  done
+  _pact '"project-add"' '"when":"now","project":"p_12345678"' 44444444444444444444444444444444
+  if settings_poll_once 2>/dev/null; then return 1; fi
+  [ ! -e "$CALLS" ] && [ ! -e "$TMP/dialog.log" ]
+}
+
+test_helper_project_remove_and_read_only_by_id() {
+  _checkout
+  DIAG_MIN_INTERVAL_S=0
+  _pact '"project-remove"' '"when":"idle","project":"p_0123abcd"'
+  settings_poll_once 2>/dev/null
+  _pact '"project-mode-ro"' '"when":"now","project":"p_0123abcd"' 11111111111111111111111111111111
+  settings_poll_once 2>/dev/null
+  assert_eq "$(tr '\n' ';' < "$CALLS")" "project remove p_0123abcd --when-idle;project mode p_0123abcd ro --now;"
+  assert_contains "$(cat "$(helper_status_file)")" '"message": "Read-only in the sandbox now; the sandbox restarted"'
+  # the password, as for every diagnostic
+  _pact '"project-remove"' '"when":"now","project":"p_0123abcd"' 22222222222222222222222222222222 'wrong'
+  if settings_poll_once 2>/dev/null; then return 1; fi
+  assert_contains "$(cat "$(helper_status_file)")" "wrong portal password"
+}
+
+test_helper_folder_chooser_at_most_once_a_minute_and_ten_a_day() {
+  _checkout; _dialog
+  export DIALOG_ANSWER=''
+  _pact '"project-pick"' '"when":"now","mode":"rw","hide":false,"origin":"local"'
+  settings_poll_once 2>/dev/null || true
+  _pact '"project-pick"' '"when":"now","mode":"rw","hide":false,"origin":"local"' 11111111111111111111111111111111
+  if settings_poll_once 2>/dev/null; then return 1; fi
+  assert_contains "$(cat "$(helper_status_file)")" "too soon after the last one (the helper allows one every 60s)"
+  PICK_MIN_INTERVAL_S=0
+  for i in 1 2 3 4 5 6 7 8 9; do printf '%s project-pick\n' "$(date +%s)" >> "$(helper_dir)/pick-jobs"; done
+  _pact '"project-pick"' '"when":"now","mode":"rw","hide":false,"origin":"local"' 22222222222222222222222222222222
+  if settings_poll_once 2>/dev/null; then return 1; fi
+  assert_contains "$(cat "$(helper_status_file)")" "limit of 10 a day"
+  assert_eq "$(grep -c . "$TMP/dialog.log")" 1
+}
+
+test_helper_without_a_screen_says_so_and_tells_the_portal() {
+  _checkout
+  unset BN_DIALOG_CMD DISPLAY WAYLAND_DISPLAY
+  export HELPER_OS=Linux
+  _pact '"project-pick"' '"when":"now","mode":"rw","hide":false,"origin":"local"'
+  settings_poll_once 2>/dev/null || true
+  assert_contains "$(cat "$(helper_status_file)")" "No dialog can be shown on this computer (no screen, or no folder chooser): in a terminal there, ./stack project add DIR"
+  [ ! -e "$CALLS" ]
+  rm -f "$(settings_capability_file)"; settings_helper_tick || true
+  assert_contains "$(cat "$(settings_capability_file)")" '"projects": ["project-pick","project-remove","project-mode-ro"], "screen": false'
 }
 
 test_helper_rechecks_models_at_most_hourly() {
