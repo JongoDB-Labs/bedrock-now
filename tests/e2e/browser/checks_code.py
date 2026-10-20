@@ -3238,7 +3238,9 @@ def host_folders_a(ctx):
     expect(r["status"] == 200, f"a write in the read-write folder: {r['status']} {r['text'][:200]}")
     HOST_SID.write_text(sid, encoding="ascii")
     shot(page, "h2-code-host-folders-session")
-    csp_clean(page, rec)
+    # (expected: the write the API sent into the read-only folder, refused)
+    csp_clean(page, rec, allow=[r"^400 PUT " + re.escape(CODE) + r"/api/fs/file\?path=/projects/e2e-host-notes/written\.txt$",
+                                r"console.error Failed to load resource: the server responded with a status of 400"])
     # Settings › Claude Code › Project folders lists both (added only with the update helper, on this computer's screen)
     sp, srec = ctx.page("code-host-folders-settings")
     login(sp)

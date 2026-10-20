@@ -798,7 +798,8 @@ elif [ "$HOST_FOLDERS" = 1 ]; then
   cli project-remove-app 0 'no longer in the sandbox' project remove e2e-host-app --now
   cli project-remove-notes 0 'no longer in the sandbox' project remove e2e-host-notes --now
   t0="$(now)"
-  if st project list 2>&1 | grep -qE 'e2e-host-(app|notes)' || [ -e "$STACK/.state/projects/compose.yaml" ] ||
+  listed="$(st project list 2>&1)"
+  if case "$listed" in *e2e-host-app* | *e2e-host-notes*) true ;; *) false ;; esac || [ -e "$STACK/.state/projects/compose.yaml" ] ||
      [ "$(cat "$HF/notes/notes.md" 2>/dev/null | head -n 1)" != '# Notes' ] || [ -e "$HF/notes/.e2e-w" ]; then
     record projects host-folders-cleaned FAIL 0 "after removing both: still listed, the generated compose file left, or a folder changed"
   else record projects host-folders-cleaned PASS "$(( $(now) - t0 ))" "both removed: none listed, no generated compose file; the folders on this computer as they were"; fi
