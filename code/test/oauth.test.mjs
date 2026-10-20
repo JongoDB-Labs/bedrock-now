@@ -618,18 +618,3 @@ test('Sign in again: a provider that hands back the same access token — the se
   }
 });
 
-test('bedrock-now\'s own GitHub App is the default: Sign in with GitHub needs no setup; gitlab.com still needs an ID', () => {
-  assert.deepEqual(DEFAULT_APPS.github, { clientId: 'Iv23li9eDUUgicar7aTx', appSlug: 'bedrock-now' });
-  assert.equal(DEFAULT_APPS.gitlab.clientId, '', 'never a GitLab ID in the repository');
-  assert.ok(Object.isFrozen(DEFAULT_APPS.github) && Object.isFrozen(DEFAULT_APPS.gitlab));
-  const o = makeOAuth({ store: new GitHosts({ dir: tmp('bndefault') }), connect: async () => { throw new Error('no network here'); } });
-  assert.deepEqual(o.config(), { github: { host: 'github.com', clientId: 'Iv23li9eDUUgicar7aTx', appSlug: 'bedrock-now', configured: true },
-    gitlab: { host: 'gitlab.com', clientId: null, configured: false } });
-  // Settings' values replace it (your own app), and blank ones fall back to it
-  const own = makeOAuth({ store: new GitHosts({ dir: tmp('bnown') }), connect: async () => { throw new Error('x'); },
-    apps: { github: { clientId: 'Iv23own000000000000x', appSlug: 'mine' }, gitlab: { clientId: 'a'.repeat(64) } } });
-  assert.deepEqual([own.config().github.clientId, own.config().github.appSlug, own.config().gitlab.configured], ['Iv23own000000000000x', 'mine', true]);
-  const blank = makeOAuth({ store: new GitHosts({ dir: tmp('bnblank') }), connect: async () => { throw new Error('x'); }, apps: { github: { clientId: ' ', appSlug: '' } } });
-  assert.equal(blank.config().github.clientId, 'Iv23li9eDUUgicar7aTx');
-  o.close(); own.close(); blank.close();
-});

@@ -6,14 +6,6 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- **Sign in with GitHub works with no setup**: bedrock-now's own GitHub App (`bedrock-now`, client ID
-  `Iv23li9eDUUgicar7aTx` — public values, no secret) is the default, so *Connect a git host…* › Sign in with GitHub
-  asks for nothing first; the dialog says where to install the app on the repositories it may reach (*Choose
-  repositories*). Settings › Claude Code › More still takes an app of your own (an organization's, for example).
-  GitLab: gitlab.com still needs an application ID (Settings); a GitLab of your own, the instance's own (the dialog).
-
 ### Changed
 
 - **The sandbox's own words stay apart on every page and route**, not only in the Git panel: when opening, saving,
@@ -29,10 +21,16 @@ All notable changes to bedrock-now are documented here. The format follows
   reason is labelled as Claude Code's (or its classifier's), a turn that ended otherwise than the SDK says reads
   "Ended with an error", and a terminal window is named only by bn-coded's own name for it. bn-coded's own fixed
   texts still read plainly: the lists of them are checked equal to what it writes.
-- **Sign-in while no app is set up (gitlab.com) says so plainly**: "Sign-in needs an app registered with GitLab once
-  (2 minutes; only a public ID, no secret): Set up sign-in" opens the exact steps in the dialog; the field is
-  **GitHub app client ID (Iv…)** / **GitLab application ID**; the waiting Sign in button says "Paste an app ID first";
-  and "Already use gh on this computer? `./stack git-host import gh` Copy" is right there.
+- **Sign-in while no app is set up (gitlab.com, GitHub Enterprise) says so plainly**: "Sign-in needs an app
+  registered with GitLab once (2 minutes; only a public ID, no secret): Set up sign-in" opens the exact steps in the
+  dialog (GitLab's form requires a redirect URI: `http://localhost/`; a GitHub App for an organization's repositories
+  under the organization or *Any account*, installed from its page; GitHub's required private key deleted once made);
+  the field is **GitHub app client ID (Iv…)** / **GitLab application ID**; the waiting Sign in button says "Paste an
+  app ID first"; and "Already use gh on this computer? `./stack git-host import gh` Copy" is right there. With
+  bedrock-now's own GitHub App, the dialog only says where to install it (*Choose repositories*).
+- **Activity names a gh command or a repository path only in their own shapes**: the command gh says it runs as
+  bn-gh makes it (its first two words, or gh api's method and endpoint), the path git asks a login for as a URL path —
+  anything else the sandbox says there is left out, never shown as a line of Activity.
 
 ### Fixed
 

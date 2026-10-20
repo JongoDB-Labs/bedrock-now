@@ -1081,7 +1081,8 @@ bedrock-now's. Its ID is public (no client secret, no private key: the device fl
   ticked, *Webhook › Active* unticked, *Repository permissions › Contents: Read and write* (GitHub adds *Metadata:
   Read-only*; add *Workflows: Read and write* only to push changes to `.github/workflows`). For an organization's
   repositories, create it under the organization, or choose *Any account* (GitHub's default is *Only on this
-  account*). Do not generate a client secret or a private key. Copy its **Client ID** (`Iv…`) into Settings › Claude
+  account*). Do not generate a client secret. GitHub asks for a private key before the app can be installed: generate
+  one, then delete it (bedrock-now never uses one). Copy its **Client ID** (`Iv…`) into Settings › Claude
   Code › More › **GitHub app client ID** (`GIT_GITHUB_CLIENT_ID`) and its name as its address has it
   (`github.com/apps/NAME`) into **GitHub app name** (`GIT_GITHUB_APP_SLUG`), then install it on the accounts and
   repositories it may reach: from the app's page (*Developer settings › GitHub Apps › your app › Install App*), or Git

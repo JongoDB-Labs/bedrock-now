@@ -113,8 +113,12 @@ export function remoteStateOf(r) {
 
 const PLAN_MS = 10 * 60000;
 const CLAUDE_PER_MINUTE = 30;
-// the command gh says it runs, for Activity (bn-gh's describe: words, gh api's method and endpoint)
-const GH_COMMAND = /^[A-Za-z0-9 ._/{}:@-]{1,160}$/;
+// the command gh says it runs, for Activity — exactly the shapes bn-gh's describe makes (its first two words, or gh
+// api's method and endpoint), never a sentence: what the sandbox says goes into Activity only in a shape of ours
+const GH_COMMAND = /^(?:[a-z][a-z0-9-]{0,30}(?: [a-z][a-z0-9-]{0,30})?|api(?: [A-Z]{3,7})?(?: \/?[A-Za-z0-9._{}:@-]+(?:\/[A-Za-z0-9._{}:@-]*)*)?)$/;
+// the path git says it asks for (git's credential protocol: the repository's path), for Activity — a URL path's
+// characters only, no spaces: anything else is not said
+const CRED_PATH = /^[A-Za-z0-9._~@%+=,/-]{1,200}$/;
 const err = (status, m) => new HostError(status, m);
 // What git in the sandbox says in a failure is the sandbox's text: said.mjs (SandboxSaid, sandboxFailure) keeps it
 // apart; re-exported here for the routes and the tests
@@ -437,7 +441,7 @@ export function makeGitRemote({ call: sandboxCall, openBroker = null, store = ne
       if (gh) {
         const cmd = typeof q.path === 'string' && GH_COMMAND.test(q.path) ? q.path : '';
         event({ who: 'claude', action, host: h.label, target: `${q.host}${cmd ? `: gh ${cmd}` : ''}`, text: 'gh in the sandbox got the token' });
-      } else event({ who: 'claude', action, host: h.label, target: `${q.host}/${short(q.path || '', 200)}`, text: 'git in the sandbox got the token' });
+      } else event({ who: 'claude', action, host: h.label, target: typeof q.path === 'string' && CRED_PATH.test(q.path) ? `${q.host}/${q.path}` : q.host, text: 'git in the sandbox got the token' });
       return { username: h.username, password };
     }
     if (q.kind === 'agent') {

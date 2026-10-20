@@ -877,7 +877,8 @@ function SignInSetup({ kind }: { kind: 'github' | 'gitlab' }) {
             <li>Tick <strong>Enable Device Flow</strong>; leave <em>Expire user authorization tokens</em> ticked; untick <em>Webhook › Active</em>.</li>
             <li>
               Under <em>Repository permissions</em>, set <strong>Contents: Read and write</strong> (and <em>Workflows: Read and write</em> only to push
-              changes to <code>.github/workflows</code>). Create it — no client secret, no private key.
+              changes to <code>.github/workflows</code>). Create it — no client secret. GitHub asks for a private key before it can be installed:
+              generate one, then delete it (bedrock-now never uses one).
             </li>
             <li>
               For an organization's repositories, create the app under the organization, or choose <em>Any account</em> (GitHub's default is <em>Only on
