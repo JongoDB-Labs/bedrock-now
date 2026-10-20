@@ -138,10 +138,12 @@ def routes(ctx: Ctx) -> list[Route]:
         return _no_store(JSONResponse({
             "available": snap is not None, "snapshot": snap, "layout": st.layout(s.catalog_dir),
             "helper": {"running": state["running"], "heartbeat_at": state["heartbeat_at"], "settings": cap["settings"],
-                       "diagnostics": cap["diagnostics"], "projects": cap["projects"], "screen": cap["screen"],
+                       "diagnostics": cap["diagnostics"], "projects": cap["projects"], "sessions": cap["sessions"], "screen": cap["screen"],
                        "in_progress": admin.job_in_progress(state), "job": state["job"]},
             # the folders of this computer the Code page's sandbox sees (./stack project; lib/projects.sh)
             "projects": st.project_folders(s.status_dir),
+            # what bedrock-now may read of your Claude Code and claude-bedrock sessions here (lib/sessions.sh)
+            "sessions": st.sessions_consent(s.status_dir),
             "here": {"remote": rem, "allowed": allowed(request)},
             "apps": s.app_urls(ctx.remote(request)), "user": s.user_email, "backups": st.backups(s.status_dir),
             "remote": {"on": s.remote_on(), "mode": s.remote_mode if s.remote_on() else "off",
@@ -351,6 +353,36 @@ def routes(ctx: Ctx) -> list[Route]:
         log.warning("project folder action requested: %s%s", act, " (remote)" if is_remote(request) else "")
         return _no_store(JSONResponse({"id": nonce, "action": act}, status_code=202))
 
+    async def sessions_action(request: Request) -> Response:
+        """What bedrock-now may read of your sessions on this computer, taken back (narrowing: from anywhere; given only
+        on the computer itself): by a project's id, or all, and a tool — never a path."""
+        st.sweep_requests(s.request_dir)
+        got = await front_door(request)
+        if isinstance(got, Response):
+            return got
+        data, password = got
+        act, project, tool = data.get("action"), data.get("project"), data.get("tool")
+        if act not in st.SESSIONS_ACTIONS:
+            return err(400, "unknown action")
+        if not (project == "all" or (isinstance(project, str) and st.PROJECT_ID.fullmatch(project))) or tool not in ("claude", "claude-bedrock", "both", "suggest"):
+            return err(400, "bad request")
+        if (busy := helper_ready()) is not None:
+            return busy
+        if act not in st.capability(s.status_dir)["sessions"]:
+            return err(409, "This update helper does not take that back yet: ./stack helper install refreshes it, or ./stack sessions consent --revoke in a terminal.")
+        if wait := action_rate.retry_after():
+            return err(429, f"Please wait {wait} s before the next action.", wait)
+        try:
+            nonce = st.write_sessions_action(s.request_dir, password, project, tool)
+        except ValueError:
+            return err(413, f"The portal password is longer than {st.MAX_AUTH} bytes: set a shorter one with ./stack config set PORTAL_PASSWORD.")
+        except OSError as e:
+            log.warning("cannot write the %s request to %s (%s)", act, s.request_dir, e)
+            return err(500, "Could not hand the request to the helper (see ./stack logs portal).")
+        action_rate.hit()
+        log.warning("sessions consent taken back: %s %s%s", project, tool, " (remote)" if is_remote(request) else "")
+        return _no_store(JSONResponse({"id": nonce, "action": act}, status_code=202))
+
     async def signout_others(request: Request) -> Response:
         """Every other browser and device signs in again; this one stays (its new session starts just after)."""
         got = await front_door(request)
@@ -379,6 +411,7 @@ def routes(ctx: Ctx) -> list[Route]:
         Route("/api/settings/reveal", reveal, methods=["POST"]),
         Route("/api/settings/action", action, methods=["POST"]),
         Route("/api/settings/project", project_action, methods=["POST"]),
+        Route("/api/settings/sessions", sessions_action, methods=["POST"]),
         Route("/api/settings/signout-others", signout_others, methods=["POST"]),
         Route("/api/settings/report", get_report, methods=["GET"]),
     ]

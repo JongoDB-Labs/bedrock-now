@@ -98,7 +98,7 @@
   function fallbackLayout() {
     const rows = Object.keys(keys).map((k) => (FALLBACK_WITH[k] && keys[FALLBACK_WITH[k]]
       ? { key: k, section: "all", place: "with", parent: FALLBACK_WITH[k], summary: "" } : { key: k, section: "all", place: "main", parent: "", summary: "" }));
-    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
+    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
     return { sections: [{ id: "all", title: "All settings", lede: "The page's layout (catalog/settings-layout.tsv) could not be read: every setting in one list.", doc: "" }], rows };
   }
 
@@ -419,7 +419,8 @@
   // rowFor LAYOUT-ROW -> the row of one setting (or of one of the page's own rows), or null
   function rowFor(r) {
     const own = { "+devices": sessionsRow, "+models": modelsRow, "+backups": backupRow, "+test": actionRow, "+check-aws": actionRow,
-      "+report": actionRow, "+restart": restartRow, "+git-hosts": gitHostsRow, "+project-folders": projectFoldersRow };
+      "+report": actionRow, "+restart": restartRow, "+git-hosts": gitHostsRow, "+project-folders": projectFoldersRow,
+      "+sessions-consent": sessionsConsentRow };
     if (r.key.startsWith("+")) return own[r.key] ? own[r.key](r) : null;
     const k = keys[r.key];
     if (!k) return null;
@@ -1207,6 +1208,54 @@
     return rw;
   }
 
+  // What bedrock-now may read on this computer: your Claude Code and claude-bedrock sessions of a project folder (the
+  // Code page's Import sheet; ./stack sessions, lib/sessions.sh). Allowed only on this computer — in a dialog on its
+  // screen when the Code page asks, or ./stack sessions in a terminal there; taken back from anywhere (narrowing), by the
+  // project's id, through the update helper. Names and folders are yours (folders.tsv); nothing of a session is here.
+  function sessionsConsentRow(r) {
+    const rw = ownFrame(r, "What bedrock-now may read on this computer");
+    const sc = data.sessions || { folders: [], suggest: [] };
+    const can = canChange() && (data.helper.sessions || []).includes("sessions-revoke");
+    const TOOL = { claude: "Claude Code (~/.claude)", "claude-bedrock": "claude-bedrock (~/.claude-bedrock)" };
+    const take = (project, tool, what) => askPassword({ kind: "sessions", action: "sessions-revoke", project, tool },
+      `Take back what bedrock-now may read: ${what}?`,
+      "bedrock-now then reads none of it on this computer until you allow it again there; what the Code page's container read of it (the lists, sessions waiting to be copied) is forgotten. Sessions already copied into the sandbox stay there.",
+      "Take back");
+    const list = el("ul", { class: "set-projects", id: "set-sessions-consent" });
+    for (const f of sc.folders) {
+      const b = el("button", { type: "button", class: "action", text: "Take back", "data-act": "sessions-revoke" });
+      b.disabled = !can;
+      b.addEventListener("click", () => take(f.project, f.tool, `${TOOL[f.tool]} for ${f.name}`));
+      list.append(el("li", { class: "set-project", "data-project": f.project, "data-tool": f.tool },
+        el("span", { class: "set-project-name", text: TOOL[f.tool] }), " ", el("span", { class: "note", text: `${f.name}: ${f.host}` }), " ",
+        el("span", { class: "badge", text: f.scope === "always" ? "always for this folder" : "once (within the hour)" }), " ",
+        el("span", { class: "set-project-actions" }, b)));
+    }
+    for (const x of sc.suggest) {
+      const b = el("button", { type: "button", class: "action", text: "Take back", "data-act": "sessions-revoke" });
+      b.disabled = !can;
+      b.addEventListener("click", () => take("all", "suggest", "the names of the folders your tools keep sessions for"));
+      list.append(el("li", { class: "set-project", "data-tool": x.tool },
+        el("span", { class: "set-project-name", text: TOOL[x.tool] }), " ", el("span", { class: "note", text: "the names of the folders it keeps sessions for (Suggested projects)" }), " ",
+        el("span", { class: "badge", text: x.scope === "always" ? "always" : "once" }), " ", el("span", { class: "set-project-actions" }, b)));
+    }
+    if (!sc.folders.length && !sc.suggest.length) list.append(el("li", { class: "note", text: "Nothing: the Code page asks first, in a dialog on this computer's screen (or ./stack sessions import in a terminal there)." }));
+    rw._main.append(list);
+    if (sc.folders.length || sc.suggest.length) {
+      const all = el("button", { type: "button", class: "action", text: "Take back all", id: "set-sessions-revoke-all" });
+      all.disabled = !can;
+      all.addEventListener("click", () => take("all", "both", "everything, for every folder"));
+      rw._actions.append(all);
+    }
+    rw._main.append(el("p", { class: "note set-extra", text: "Only on the computer running bedrock-now is anything allowed: the Code page asks in a dialog on its screen (Allow once, or Always for this folder). Nothing is ever written back to ~/.claude or ~/.claude-bedrock; logins, settings and plugins there are never read." }));
+    if (!can && (sc.folders.length || sc.suggest.length)) {
+      rw._main.append(el("p", { class: "note set-extra", text: !data.helper.running ? "Taking back from here needs the update helper (./stack helper install)." : "Taking back from here needs a newer update helper: ./stack helper install refreshes it." }));
+    }
+    rw._main.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: "In a terminal on this computer: " }), el("code", { text: "./stack sessions consent --revoke-all" }), " ",
+      copyButton("./stack sessions consent --revoke-all")));
+    return rw;
+  }
+
   function sessionDays() { const k = keys.PORTAL_SESSION_DAYS; return k && /^\d+$/.test(k.value || "") ? Number(k.value) : 30; }
 
   function sessionsRow(r) {
@@ -1388,6 +1437,7 @@
       if (what.kind === "apply") [r, d] = await post("/api/settings/apply", { password: pw, base: data.snapshot.base, set: what.values, regen: what.regen || [], confirm: what.confirm || [] });
       else if (what.kind === "reveal") [r, d] = await post("/api/settings/reveal", { password: pw, key: what.key });
       else if (what.kind === "action") [r, d] = await post("/api/settings/action", { password: pw, action: what.action });
+      else if (what.kind === "sessions") [r, d] = await post("/api/settings/sessions", { password: pw, action: what.action, project: what.project, tool: what.tool });
       else if (what.kind === "project") {
         [r, d] = await post("/api/settings/project", { password: pw, action: what.action, when: what.when,
           ...(what.project ? { project: what.project } : { mode: what.mode, hide: what.hide }) });
@@ -1407,7 +1457,7 @@
       if (what.kind === "reveal") { showRevealed(what.key, d.value, what.show); return; }
       if (what.kind === "signout") { toast("Every other device is signed out"); return; }
       if (what.form) what.form.remove();
-      const label = what.kind === "action" || what.kind === "project" ? what.action : "settings";
+      const label = what.kind === "action" || what.kind === "project" || what.kind === "sessions" ? what.action : "settings";
       watch({ id: d.id, kind: label, keys: d.keys, password: Boolean(what.values && "PORTAL_PASSWORD" in what.values), at: Date.now() });
       toast("Sent to the update helper");
     } catch (e) {

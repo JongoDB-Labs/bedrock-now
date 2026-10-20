@@ -12,6 +12,8 @@ Request file REQUEST_DIR/cfg-<nonce>.req (at most 8 KB, ASCII, one item per line
 Diagnostics: REQUEST_DIR/act-<nonce>.json = {"action","requested_at","nonce"} (like admin.py's req-*.json).
 Project folders (lib/projects.sh): act-<nonce>.json too, every field fixed and none a path — project-pick (a folder
 chooser on the computer's screen; only from a local session), project-remove and project-mode-ro (by the project's id).
+What bedrock-now may read of your sessions on this computer (lib/sessions.sh): sessions-revoke, by a project's id (or
+all) and a tool — narrowing, from anywhere; consent itself is given only on the computer (its screen, or its terminal).
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ GROUPS = ("account", "aws", "budgets", "voice", "openrouter", "files", "updates"
 # the page's sections, in catalog/settings-layout.tsv; a row's place in its section; the page's own rows (no .env key)
 SECTIONS = ("account", "aws", "spending", "chat", "code", "files", "remote", "updates", "diagnostics", "advanced", "about")
 PLACES = ("main", "more", "with")
-OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders")
+OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent")
 DOC = re.compile(r"(README\.md|docs/[a-z0-9-]{1,40}\.md)(#[a-z0-9-]{1,80})?")
 EDITABLE = ("edit", "local", "on-only", "widen-local")
 REGEN = ("RUSTFS_ACCESS_KEY", "SHARED_MCP_TOKEN")   # what "Regenerate" asks for (the RustFS pair is one action)
@@ -62,6 +64,9 @@ DIAG_ACTIONS = ("check-aws", "models-recheck", "backup", "test", "report", "rest
                 "restart-shared-mcp", "restart-stt", "restart-rustfs", "restart-caddy")
 PROJECT_ACTIONS = ("project-pick", "project-remove", "project-mode-ro")
 PROJECTS = "projects.json"                     # ./stack's list of project folders (lib/projects.sh)
+SESSIONS_ACTIONS = ("sessions-revoke",)
+SESSIONS = "sessions.json"                     # what bedrock-now may read of your sessions here (lib/sessions.sh)
+SESSIONS_TOOLS = ("claude", "claude-bedrock")
 MAX_PROJECTS_FILE = 64 * 1024
 PROJECT_ID = re.compile(r"p_[0-9a-f]{8}")
 PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -195,7 +200,31 @@ def capability(status_dir: Path, now: float | None = None) -> dict:
     ok = d.get("settings") == 1 and at is not None and now - at <= CAPABILITY_MAX_AGE_S
     acts = [a for a in d.get("diagnostics") or [] if a in DIAG_ACTIONS] if ok else []
     projects = [a for a in d.get("projects") or [] if a in PROJECT_ACTIONS] if ok else []
-    return {"settings": ok, "diagnostics": acts, "projects": projects, "screen": ok and d.get("screen") is True}
+    sessions = [a for a in d.get("sessions") or [] if a in SESSIONS_ACTIONS] if ok else []
+    return {"settings": ok, "diagnostics": acts, "projects": projects, "sessions": sessions, "screen": ok and d.get("screen") is True}
+
+
+def sessions_consent(status_dir: Path) -> dict:
+    """What bedrock-now may read of your Claude Code and claude-bedrock sessions here (lib/sessions.sh): per project
+    folder and tool, always (or once, within the hour), and the folder names for suggestions — every field checked."""
+    d = _read_json(status_dir / SESSIONS, 64 * 1024)
+    folders, suggest = [], []
+    for f in d.get("folders") or []:
+        if not isinstance(f, dict) or f.get("tool") not in SESSIONS_TOOLS or f.get("scope") not in ("always", "once"):
+            continue
+        if not isinstance(f.get("project"), str) or not PROJECT_ID.fullmatch(f["project"]) or not isinstance(f.get("name"), str) or not PROJECT_NAME.fullmatch(f["name"]):
+            continue
+        host = f.get("host")
+        if not (isinstance(host, str) and host.startswith("/") and len(host) <= 1024 and not re.search(r"[\x00-\x1f\x7f]", host)):
+            continue
+        folders.append({"tool": f["tool"], "project": f["project"], "name": f["name"], "host": host, "scope": f["scope"],
+                        "at": f["at"] if isinstance(f.get("at"), int) else None})
+        if len(folders) >= 64:
+            break
+    for x in d.get("suggest") or []:
+        if isinstance(x, dict) and x.get("tool") in SESSIONS_TOOLS and x.get("scope") in ("always", "once") and len(suggest) < 2:
+            suggest.append({"tool": x["tool"], "scope": x["scope"], "at": x["at"] if isinstance(x.get("at"), int) else None})
+    return {"written_at": d.get("written_at") if isinstance(d.get("written_at"), int) else None, "folders": folders, "suggest": suggest}
 
 
 def project_folders(status_dir: Path) -> dict:
@@ -635,6 +664,22 @@ def write_project_action(request_dir: Path, action: str, password: str, when: st
             raise ValueError("bad project id")
         body["project"] = project
     raw = json.dumps(body, separators=(",", ":")).encode("ascii")
+    if len(raw) > 768:   # (the helper's limit: lib/settings_helper.sh ACT_MAX_BYTES)
+        raise ValueError("too large")
+    _write_atomic(request_dir, "act", f"act-{nonce}.json", raw)
+    return nonce
+
+
+def write_sessions_action(request_dir: Path, password: str, project: str, tool: str, now: float | None = None) -> str:
+    """REQUEST_DIR/act-<nonce>.json: what bedrock-now may read of your sessions here, taken back — by a project's id (or
+    all) and a tool (claude, claude-bedrock, both, or suggest: the folder names). Never a path. -> nonce"""
+    if not (project == "all" or (isinstance(project, str) and PROJECT_ID.fullmatch(project))) or tool not in ("claude", "claude-bedrock", "both", "suggest"):
+        raise ValueError("bad request")
+    if len(password.encode("utf-8", "surrogatepass")) > MAX_AUTH:
+        raise ValueError("password too long")
+    nonce = secrets.token_hex(16)
+    raw = json.dumps({"action": "sessions-revoke", "requested_at": int(time.time() if now is None else now), "nonce": nonce, "auth": _b64(password),
+                      "project": project, "tool": tool}, separators=(",", ":")).encode("ascii")
     if len(raw) > 768:   # (the helper's limit: lib/settings_helper.sh ACT_MAX_BYTES)
         raise ValueError("too large")
     _write_atomic(request_dir, "act", f"act-{nonce}.json", raw)

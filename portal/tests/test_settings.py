@@ -230,7 +230,7 @@ def test_get_settings_needs_a_session_and_shows_the_snapshot(make, dirs):
     assert c.get("/api/settings").status_code == 400            # no X-Requested-With
     d = c.get("/api/settings", headers=API).json()
     assert d["available"] and d["snapshot"]["base"] == BASE
-    assert d["helper"] == {"running": False, "heartbeat_at": None, "settings": False, "diagnostics": [], "projects": [], "screen": False,
+    assert d["helper"] == {"running": False, "heartbeat_at": None, "settings": False, "diagnostics": [], "projects": [], "sessions": [], "screen": False,
                            "in_progress": False, "job": None}
     assert d["projects"] == {"written_at": None, "max": 16, "folders": [], "leaving": [], "running": False}
     assert d["here"] == {"remote": False, "allowed": True}
@@ -695,6 +695,58 @@ def test_project_pick_only_from_this_computer_and_with_a_screen(make, dirs):
     assert project(make(), "project-remove", project="p_0123abcd").status_code == 409
 
 
+# --- what bedrock-now may read of your sessions on this computer (lib/sessions.sh): the list, and taking it back ---
+
+def sessions_up(sd, folders=None):
+    helper_up(sd)
+    cap = json.loads((sd / "helper-settings.json").read_text())
+    cap.update({"sessions": list(st.SESSIONS_ACTIONS)})
+    (sd / "helper-settings.json").write_text(json.dumps(cap))
+    (sd / "sessions.json").write_text(json.dumps({"version": 1, "written_at": int(time.time()), "folders": folders if folders is not None else [
+        {"tool": "claude", "project": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "scope": "always", "at": 1}],
+        "suggest": [{"tool": "claude", "scope": "always", "at": 2}]}))
+
+
+def sessions(c, headers=H, **body):
+    return c.post("/api/settings/sessions", content=json.dumps({"action": "sessions-revoke", "password": "correct horse", **body}), headers=headers)
+
+
+def test_sessions_consent_list_is_checked(dirs):
+    sd, _ = dirs
+    sessions_up(sd, folders=[
+        {"tool": "claude", "project": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "scope": "always", "at": 1, "title": "never shown"},
+        {"tool": "codex", "project": "p_0123abcd", "name": "app", "host": "/x", "scope": "always"},
+        {"tool": "claude", "project": "../x", "name": "app", "host": "/x", "scope": "always"},
+        {"tool": "claude", "project": "p_00000001", "name": "a b", "host": "/x", "scope": "always"},
+        {"tool": "claude", "project": "p_00000002", "name": "y", "host": "/x\n/y", "scope": "always"},
+        {"tool": "claude", "project": "p_00000003", "name": "z", "host": "/x", "scope": "forever"}])
+    d = st.sessions_consent(sd)
+    assert d["folders"] == [{"tool": "claude", "project": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "scope": "always", "at": 1}]
+    assert d["suggest"] == [{"tool": "claude", "scope": "always", "at": 2}]
+    assert st.capability(sd)["sessions"] == ["sessions-revoke"]
+
+
+def test_sessions_taken_back_from_anywhere_by_id_never_a_path(make, dirs):
+    sd, rq = dirs
+    sessions_up(sd)
+    c = make()
+    assert c.get("/api/settings", headers=API).json()["sessions"]["folders"][0]["name"] == "app"
+    r = sessions(c, project="p_0123abcd", tool="claude")
+    assert r.status_code == 202, r.text
+    body = (rq / f"act-{r.json()['id']}.json").read_text()
+    assert re.fullmatch(r'\{"action":"sessions-revoke","requested_at":[0-9]+,"nonce":"[0-9a-f]{32}","auth":"[A-Za-z0-9+/=]+","project":"p_0123abcd","tool":"claude"\}', body), body
+    for bad in ({"project": "/Volumes/me/src/app", "tool": "claude"}, {"project": "p_0123abcd", "tool": "codex"}, {"project": "p_1", "tool": "both"},
+                {"action": "sessions-scan", "project": "p_0123abcd", "tool": "both"}):
+        assert sessions(make(), **bad).status_code == 400, bad
+    # narrowing: from a remote device too (with remote admin actions)
+    rc = remote_client(make, True)
+    assert sessions(rc, headers=RH, project="all", tool="both").status_code == 202
+    assert sessions(make(), project="all", tool="suggest").status_code == 202
+    # an older helper: said
+    (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": list(st.DIAG_ACTIONS), "written_at": int(time.time())}))
+    assert sessions(make(), project="all", tool="both").status_code == 409
+
+
 def test_sign_out_other_devices_keeps_this_one(settings, dirs):
     sd, rq = dirs
     app = create_app(replace(settings, status_dir=sd, request_dir=rq), transport=httpx.MockTransport(offline))
@@ -726,12 +778,12 @@ def test_request_file_is_bounded():
 def test_capability_file_must_be_recent(dirs):
     sd, _ = dirs
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": 1}))
-    assert st.capability(sd) == {"settings": False, "diagnostics": [], "projects": [], "screen": False}
+    assert st.capability(sd) == {"settings": False, "diagnostics": [], "projects": [], "sessions": [], "screen": False}
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": int(time.time())}))
-    assert st.capability(sd) == {"settings": True, "diagnostics": ["test"], "projects": [], "screen": False}
+    assert st.capability(sd) == {"settings": True, "diagnostics": ["test"], "projects": [], "sessions": [], "screen": False}
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": [], "projects": ["project-pick", "project-add"], "screen": "yes",
-                                                        "written_at": int(time.time())}))
-    assert st.capability(sd) == {"settings": True, "diagnostics": [], "projects": ["project-pick"], "screen": False}
+                                                        "sessions": ["sessions-revoke", "sessions-scan"], "written_at": int(time.time())}))
+    assert st.capability(sd) == {"settings": True, "diagnostics": [], "projects": ["project-pick"], "sessions": ["sessions-revoke"], "screen": False}
 
 
 # --- Part 2: regenerate, pins, the backup list, the session length, the alert threshold ---
