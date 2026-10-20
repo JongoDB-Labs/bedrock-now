@@ -93,6 +93,44 @@ die()  { _BN_DIE_MSG="$*"; printf '%sxx%s  %s\n' "$C_RED" "$C_OFF" "$*" >&2; exi
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1${2:+ — $2}"; }
 
+# _with_deadline SECS CMD… -> CMD's status, or 124 when it had not ended SECS seconds later: then it is ended — TERM to
+# its process group, KILL 2 s later — and so is anything it started. A watchdog on this computer, for a probe into the
+# sandbox: a timeout inside the container binds nothing there (a sandbox process can stop it, SIGSTOP), this does.
+# CMD (a command or a function) gets /dev/null as stdin; its stdout and stderr are the caller's. Works under
+# set -euo pipefail and bash 3.2 (macOS has no timeout(1)); kills by PID — its own process group's — only.
+_with_deadline() {
+  local secs="$1" rc=0 flag
+  shift
+  # (the watcher says it fired by making this file: a status alone could not tell a deadline from the command's own)
+  flag="$(mktemp "${TMPDIR:-/tmp}/bn-deadline.XXXXXX")" || { warn "cannot make a temporary file for a deadline"; return 125; }
+  rm -f "$flag"
+  { (
+    set +e +u +o pipefail
+    set -m                                  # (CMD, then the watcher: each in a process group of its own)
+    "$@" </dev/null 2>&3 3>&- &
+    pid=$!
+    ( sleep "$secs"; : > "$flag"; kill -TERM -- "-$pid"; sleep 2; kill -KILL -- "-$pid" ) </dev/null >/dev/null 2>&1 3>&- &
+    w=$!
+    set +m
+    wait "$pid"; r=$?
+    kill -KILL -- "-$pid" 2>/dev/null       # (whatever of its group outlived it)
+    kill -KILL -- "-$w" 2>/dev/null; wait "$w" 2>/dev/null   # (the watcher and its sleep, at once)
+    exit "$r"
+  ) 2>/dev/null; } 3>&2 || rc=$?
+  if [ -e "$flag" ]; then rm -f "$flag"; return 124; fi
+  return "$rc"
+}
+# PROBE_DEADLINE_S: how long ./stack waits on one probe into the sandbox (_probe) before it says it could not check
+PROBE_DEADLINE_S="${PROBE_DEADLINE_S:-30}"
+# _probe CMD… -> CMD's output, under _with_deadline PROBE_DEADLINE_S; after the deadline its output is "couldn't check
+# (timed out after N s)" — never what a check passes on. Always 0.
+_probe() {
+  local rc=0 out
+  out="$(_with_deadline "$PROBE_DEADLINE_S" "$@")" || rc=$?
+  if [ "$rc" = 124 ]; then printf "couldn't check (timed out after %s s)" "$PROBE_DEADLINE_S"; else printf '%s' "$out"; fi
+  return 0
+}
+
 # --- .env access. Never `source` the file: values can contain $, quotes, etc. ---
 
 # get_env KEY -> value (empty if unset). Last occurrence wins, like docker compose.

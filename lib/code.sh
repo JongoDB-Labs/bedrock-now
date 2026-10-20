@@ -105,7 +105,7 @@ _code_up() { _code_front && dc up -d --wait terminal-gateway && dc up -d --wait 
 _code_front() { dc up -d --wait portal && recreate_caddy; }
 # code_spawn_ready — bn-coded listens in the running terminal (a terminal container started by a version without it
 # has to be recreated once)
-code_spawn_ready() { dc exec -T terminal timeout 10 test -S /run/bn-code/coded.sock >/dev/null 2>&1; }
+code_spawn_ready() { _with_deadline 15 dc exec -T terminal timeout 10 test -S /run/bn-code/coded.sock >/dev/null 2>&1; }
 _code_terminal_again() { terminal_build && dc up -d --wait terminal; }
 
 code_enable() {
@@ -518,7 +518,7 @@ code_test_checks() {
   _check "the code container reaches bn-coded in the sandbox (a sessions.list round trip on its socket)" "$out" ok
   # shellcheck disable=SC2016  # expanded in the container
   # (directly: through its egress proxy, TERMINAL_EGRESS=internet, a container's name is refused anyway)
-  out="$(dc exec -T terminal timeout 20 sh -c 'curl --noproxy "*" -s -m 3 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>/dev/null || true)"
+  out="$(_probe dc exec -T terminal timeout 20 sh -c 'curl --noproxy "*" -s -m 3 -o /dev/null -w "%{http_code}" http://code-upstream:8095/ || true; printf " %s" "$(stat -c %a /run/bn-code)"; test -S /run/bn-code/coded.sock && printf " socket"' 2>/dev/null || true)"
   _check "the sandbox cannot reach the code container; bn-coded listens in its own folder (mode 700)" "$out" "000 700 socket"
   code_preview_checks
 }
@@ -531,7 +531,7 @@ code_preview_checks() {
   local d p out url host fake
   d="$(get_env PREVIEW_DOMAIN)"; p="$(portal_port)"
   # shellcheck disable=SC2016  # expanded in the container
-  out="$(dc exec -T terminal timeout 20 sh -c 'printf "%s" "$(stat -c %a /run/bn-preview)"; test -S /run/bn-preview/preview.sock && printf " socket"' 2>/dev/null || true)"
+  out="$(_probe dc exec -T terminal timeout 20 sh -c 'printf "%s" "$(stat -c %a /run/bn-preview)"; test -S /run/bn-preview/preview.sock && printf " socket"' 2>/dev/null || true)"
   _check "bn-preview listens in its own folder in the sandbox (mode 700)" "$out" "700 socket"
   out="$(dc exec -T caddy wget -S -O /dev/null -T 10 http://terminal-upstream:7682/ 2>&1 || true)"
   _check "the terminal's gateway refuses preview requests without the secret header" "$(printf '%s\n' "$out" | awk '!f && /^  HTTP\// { print $2; f = 1 }')" 407

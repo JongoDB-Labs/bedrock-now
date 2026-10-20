@@ -565,7 +565,7 @@ terminal_test_checks() {
   # Claude Code's managed settings (they outrank every other settings tier: permission rules, hooks, the mode): the
   # file chosen here from Settings (terminal/managed/<policy>.json), and nothing the sandbox's own user could change —
   # not the file, not its folder, no managed-settings.d beside it, a read-only mount. Asked without writing anything.
-  out="$(dc exec -T terminal timeout 20 sh -c 'f=/etc/claude-code/managed-settings.json; w=""; [ -w "$f" ] && w="$w file"; [ -w /etc/claude-code ] && w="$w folder"; (exec 3>>"$f") 2>/dev/null && w="$w open"; mkdir /etc/claude-code/managed-settings.d 2>/dev/null && { rmdir /etc/claude-code/managed-settings.d; w="$w drop-in"; }; ro=$(awk "\$5 == \"$f\" { print \$6 }" /proc/self/mountinfo | cut -d, -f1); echo "${w:-none} ${ro:-unmounted} $(tr -d "\n" < "$f")"' 2>/dev/null || true)"
+  out="$(_probe dc exec -T terminal timeout 20 sh -c 'f=/etc/claude-code/managed-settings.json; w=""; [ -w "$f" ] && w="$w file"; [ -w /etc/claude-code ] && w="$w folder"; (exec 3>>"$f") 2>/dev/null && w="$w open"; mkdir /etc/claude-code/managed-settings.d 2>/dev/null && { rmdir /etc/claude-code/managed-settings.d; w="$w drop-in"; }; ro=$(awk "\$5 == \"$f\" { print \$6 }" /proc/self/mountinfo | cut -d, -f1); echo "${w:-none} ${ro:-unmounted} $(tr -d "\n" < "$f")"' 2>/dev/null || true)"
   _check "Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox" \
     "$out" "none ro $(tr -d '\n' < "$STACK_DIR/terminal/managed/$(claude_policy).json")"
   # shellcheck disable=SC2034  # read by portal_curl
@@ -587,7 +587,7 @@ terminal_test_checks() {
   out="$(dc exec -T caddy wget -S -O /dev/null -T 10 --header 'X-Portal-User: admin@example.com' http://terminal-upstream:7681/ 2>&1 || true)"
   _check "the terminal's gateway refuses ttyd requests without the secret header" "$(printf '%s\n' "$out" | awk '!f && /^  HTTP\// { print $2; f = 1 }')" 407
   # From inside the sandbox: the gateway's paths, 404 for the rest of LiteLLM (also behind a ../), nothing else
-  out="$(dc exec -T terminal timeout 20 sh -c 'g=http://gateway:8091; for r in "GET /health/liveliness" "GET /ui/" "POST /key/generate" "POST /bedrock/model/x/converse" "GET /spend/logs" "POST /bedrock/model/x/converse/../../../../v1/messages"; do curl -s -m 10 --path-as-is -o /dev/null -w "%{http_code} " -X "${r% *}" "$g${r#* }" || true; done' 2>/dev/null || true)"
+  out="$(_probe dc exec -T terminal timeout 20 sh -c 'g=http://gateway:8091; for r in "GET /health/liveliness" "GET /ui/" "POST /key/generate" "POST /bedrock/model/x/converse" "GET /spend/logs" "POST /bedrock/model/x/converse/../../../../v1/messages"; do curl -s -m 10 --path-as-is -o /dev/null -w "%{http_code} " -X "${r% *}" "$g${r#* }" || true; done' 2>/dev/null || true)"
   _check "terminal gateway: LiteLLM's liveness, 404 for its admin UI, /key/generate, /bedrock/…, /spend/logs, a ../ path" \
     "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "200 404 404 404 404 404"
   # Its key, where the sandbox could also reach LiteLLM (your Mac's loopback, on Docker Desktop with TERMINAL_EGRESS=host):
@@ -595,17 +595,17 @@ terminal_test_checks() {
   # run anyway)
   out="$(litellm_call "$(get_env LITELLM_KEY_TERMINAL)" POST /bedrock/model/x/converse '{}') $(litellm_call "$(get_env LITELLM_KEY_TERMINAL)" POST /v1/chat/completions '{}')"
   _check "the terminal's key is refused on LiteLLM's /bedrock/… and /v1/chat/completions" "$out" "403 403"
-  out="$(dc exec -T terminal timeout 20 sh -c 'curl -s -m 20 -H "Authorization: Bearer $SHARED_MCP_TOKEN" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}" http://gateway:8091/mcp' 2>/dev/null || true)"
+  out="$(_probe dc exec -T terminal timeout 20 sh -c 'curl -s -m 20 -H "Authorization: Bearer $SHARED_MCP_TOKEN" -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}" http://gateway:8091/mcp' 2>/dev/null || true)"
   case "$out" in *search_knowledge*) got=yes ;; *) got=no ;; esac
   _check "terminal gateway: the shared MCP server's tools" "$got" yes
-  out="$(dc exec -T terminal timeout 20 sh -c 'for u in http://portal:8000/healthz http://open-webui:8080/health http://litellm:4000/health/liveliness http://shared-mcp:8000/healthz http://rustfs:9000/ http://caddy:8080/ http://gateway:8080/ http://gateway:8090/healthz http://gateway:7681/ http://gateway:7682/; do curl --noproxy "*" -s -m 3 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
+  out="$(_probe dc exec -T terminal timeout 20 sh -c 'for u in http://portal:8000/healthz http://open-webui:8080/health http://litellm:4000/health/liveliness http://shared-mcp:8000/healthz http://rustfs:9000/ http://caddy:8080/ http://gateway:8080/ http://gateway:8090/healthz http://gateway:7681/ http://gateway:7682/; do curl --noproxy "*" -s -m 3 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
   _check "terminal cannot reach the portal, Open WebUI, LiteLLM/shared-mcp directly, RustFS, the main Caddy or the gateway's other ports" \
     "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "000 000 000 000 000 000 000 000 000 000"
   # No DNS way out (internet and off: internal networks only): Docker's embedded DNS answers no outside names there —
   # since Engine 26.0 (25.0.4, 23.0.11: CVE-2024-29018); an older engine forwards them, a few bytes' way out for what is
   # in the sandbox, said here without failing (nothing else goes out that way)
   if [ "$(terminal_egress_mode)" != host ]; then
-    out="$(dc exec -T terminal timeout 20 sh -c 'getent hosts example.com >/dev/null 2>&1 && echo resolved || echo none' 2>/dev/null || true)"
+    out="$(_probe dc exec -T terminal timeout 20 sh -c 'getent hosts example.com >/dev/null 2>&1 && echo resolved || echo none' 2>/dev/null || true)"
     got="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
     case "${got%%.*}" in '' | *[!0-9]*) got='' ;; esac
     if [ "$out" = resolved ] && [ -n "$got" ] && [ "${got%%.*}" -lt 26 ]; then

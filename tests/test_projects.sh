@@ -30,6 +30,7 @@ _stubs() {
       "inspect -f {{range .Config.Env}}"*) [ -z "${SANDBOX_ROOTS:-}" ] || printf 'PATH=/usr/bin\nBN_CODE_ROOTS=%s\n' "$SANDBOX_ROOTS" ;;
       "inspect -f {{range .Mounts}}{{if eq .Type"*) [ -z "${SANDBOX_MOUNTS:-}" ] || printf '%s\n' "$SANDBOX_MOUNTS" | awk -F'\t' 'NF > 2 { print $3 }' ;;
       "inspect -f {{range .Mounts}}"*) [ -z "${SANDBOX_MOUNTS:-}" ] || printf '%s\n' "$SANDBOX_MOUNTS" ;;
+      info) [ -z "${DOCKER_DOWN:-}" ] || return 1 ;;
     esac
     return 0
   }
@@ -633,16 +634,24 @@ test_a_folder_the_sandbox_still_has_mounted_is_not_added_again_until_applied() {
   SANDBOX_MOUNTS="$a	true	/host_mnt$a"
   out="$(project_add "$a" --later 2>&1)" && return 1
   assert_contains "$out" "the running sandbox still has it mounted"
-  # any bind of the running sandbox counts — a workspace changed in .env but not applied yet, say
+  # any bind of the running sandbox counts — a workspace changed in .env but not applied yet, say — as Docker names it
+  # and as it resolves (a link spelling of the same folder)
   local old; old="$(_dir old-ws)"
   SANDBOX_ROOTS=''; SANDBOX_MOUNTS="/workspace	true	$old"
+  out="$(project_add "$old" --later 2>&1)" && return 1
+  assert_contains "$out" "the running sandbox still has it mounted"
+  ln -s "$old" "$TMP/f/old-ws-link"
+  SANDBOX_MOUNTS="/workspace	true	$TMP/f/old-ws-link"
   out="$(project_add "$old" --later 2>&1)" && return 1
   assert_contains "$out" "the running sandbox still has it mounted"
   # Docker cannot be asked while the terminal is on: refused, nothing read (fail closed)
   SANDBOX_MOUNTS=''; DC_PS_FAIL=1
   out="$(project_add "$a" --later 2>&1)" && return 1
   assert_contains "$out" "couldn't ask Docker what the sandbox sees — try again"
-  DC_PS_FAIL=''
+  # Docker not running at all: nothing can be mounted — added (the next ./stack up starts the sandbox with it)
+  local other; other="$(_dir other)"
+  DOCKER_DOWN=1; project_add "$other" --later 2>/dev/null || { echo "refused with Docker down" >&2; return 1; }
+  DOCKER_DOWN=''; DC_PS_FAIL=''
   # applied: added
   project_add "$a" --later 2>/dev/null || return 1
 }
@@ -722,4 +731,20 @@ test_a_socket_of_a_program_in_the_workspace_leaves_the_terminal_out() {
   assert_contains "$out" "its workspace folder $(get_env TERMINAL_WORKSPACE) holds a socket of a program of this computer ($(get_env TERMINAL_WORKSPACE)/.X11-unix/X0)"
   rm -f "$WS/.X11-unix/X0"; _sock "$WS/dev.sock"
   assert_eq "$(terminal_why_out)" ""   # (any other socket: only said by terminal_up_hook)
+}
+
+test_a_probe_into_the_sandbox_that_never_answers_is_not_a_pass() {
+  DC_RUNNING=1; _stubs
+  terminal_ready() { return 0; }
+  local a pa out t0 fails=0; a="$(_dir app)"; pa="$(project_sandbox_path "$a" app no)"
+  project_add "$a" --later 2>/dev/null || return 1
+  SANDBOX_ROOTS="[\"$pa\"]"; SANDBOX_MOUNTS="$pa	true	$a"   # (the sandbox has it: nothing pending)
+  # docker exec into the sandbox that never returns (a process there stopped the probe): ended by the watchdog here
+  dc() { case "$*" in "exec "*) sleep 30 ;; "ps -q --status running "*) echo abc123 ;; *) return 0 ;; esac; }
+  PROBE_DEADLINE_S=1; t0="$(date +%s)"
+  out="$(projects_test_checks 2>&1)"
+  [ "$(( $(date +%s) - t0 ))" -le 12 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
+  assert_contains "$out" "FAIL  project folder app in the sandbox at"
+  assert_contains "$out" "(got couldn't check (timed out after 1 s), want there writable)"
+  assert_contains "$out" "FAIL  the sandbox's project folders are the ones listed (BN_CODE_ROOTS) (got couldn't check (timed out after 1 s)"
 }

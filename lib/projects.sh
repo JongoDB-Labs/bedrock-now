@@ -221,16 +221,23 @@ _project_secrets() {
 }
 # _pj_mounted_sources -> every folder (or file) of this computer the running sandbox has bind-mounted, by Docker's word
 # (its container's mounts): the project folders — removed ones still there until it restarts — and the workspace it
-# started with, whatever .env says now. Nothing (0) when it does not run; 2 when Docker could not be asked.
+# started with, whatever .env says now; each as Docker names it and as it resolves (a hand-written /tmp/ws is
+# /private/tmp/ws on a Mac). Nothing (0) when it does not run — or Docker itself does not (then nothing is mounted);
+# 2 when Docker runs but could not be asked.
 _pj_mounted_sources() {
-  local c mounts src
-  c="$(dc ps -q --status running terminal 2>/dev/null)" || return 2
+  local c mounts src r
+  if ! c="$(_with_deadline 30 dc ps -q --status running terminal 2>/dev/null)"; then
+    _with_deadline 20 docker info >/dev/null 2>&1 || return 0
+    return 2
+  fi
   c="${c%%$'\n'*}"
   [ -n "$c" ] || return 0
-  mounts="$(docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\n"}}{{end}}{{end}}' "$c" 2>/dev/null)" || return 2
+  mounts="$(_with_deadline 30 docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\n"}}{{end}}{{end}}' "$c" 2>/dev/null)" || return 2
   while IFS= read -r src; do
     # (Docker Desktop names a Mac's folder /host_mnt/…)
-    src="${src#/host_mnt}"; [ -z "$src" ] || printf '%s\n' "$src"
+    src="${src#/host_mnt}"; [ -n "$src" ] || continue
+    printf '%s\n' "$src"
+    if [ -d "$src" ]; then r="$(_phys "$src")"; [ -z "$r" ] || [ "$r" = "$src" ] || printf '%s\n' "$r"; fi
   done <<< "$mounts"
 }
 
@@ -301,7 +308,8 @@ project_check() {
     case "$h/" in "$r/"*) echo "it contains the project folder $name ($host)"; return 1 ;; esac
   done < <(projects_records 2>/dev/null)
   if [ -z "${_PC_RECHECK:-}" ]; then
-    # (fail closed: with the terminal on, a Docker that cannot be asked means not knowing what the sandbox sees)
+    # (fail closed: with the terminal on, a Docker that runs but cannot be asked means not knowing what the sandbox
+    # sees; one that does not run has nothing mounted — the next ./stack up starts the sandbox with the checked list)
     if ! mounted="$(_pj_mounted_sources)" && terminal_on; then
       echo "couldn't ask Docker what the sandbox sees — try again"; return 1
     fi
@@ -495,7 +503,7 @@ _projects_restart_choice() {
 # its own secret, from inside it); 0 when it does not run; nothing when it cannot tell
 projects_busy() {
   code_on && [ -n "$(dc ps -q --status running code 2>/dev/null)" ] || { echo 0; return 0; }
-  dc exec -T code node -e 'fetch("http://127.0.0.1:" + (process.env.CODE_PORT || 8095) + "/api/state", { headers: { "x-bn-code-proxy": process.env.CODE_PROXY_SECRET || "" } })
+  _with_deadline 20 dc exec -T code node -e 'fetch("http://127.0.0.1:" + (process.env.CODE_PORT || 8095) + "/api/state", { headers: { "x-bn-code-proxy": process.env.CODE_PROXY_SECRET || "" } })
     .then((r) => r.json()).then((j) => console.log((Array.isArray(j.sessions) ? j.sessions : []).filter((s) => s && (s.state === "busy" || s.state === "starting")).length))
     .catch(() => {})' 2>/dev/null | tr -cd '0-9' || true
 }
@@ -775,12 +783,13 @@ projects_status_lines() {
 }
 
 # projects_test_checks — ./stack test while the terminal is on: the sandbox sees each folder at its path (read-only
-# where chosen: a write refused), and bn-coded is told the same list. Inside the sandbox each probe has a time limit
-# (timeout 10: a sandbox process could make a probe wait forever, and the update helper runs ./stack test) and the
-# write probe makes a new file with a random name (mktemp: created exclusively — it never opens an entry already there,
-# a FIFO or a link planted for it); a probe that timed out is said, never passed.
+# where chosen: a write refused), and bn-coded is told the same list. Each probe into the sandbox has a deadline on this
+# computer (_probe: a sandbox process can stop a timeout inside the container, never this one; the update helper runs
+# ./stack test) — the timeout inside is kept — and the write probe makes a new file with a random name (mktemp:
+# created exclusively — it never opens an entry already there, a FIFO or a link planted for it); a probe that ran out
+# is said as not checked, never passed.
 projects_test_checks() {
-  local id name mode sbx added keys host git out want pend rc
+  local id name mode sbx added keys host git out want pend
   terminal_ready || return 0
   [ -f "$(projects_compose_file)" ] || [ -n "$(_pj_leaving_lines)" ] || return 0
   projects_sync >/dev/null 2>&1 || true   # (what the running sandbox has now)
@@ -790,17 +799,16 @@ projects_test_checks() {
   if [ -n "$(_pj_leaving_lines)" ] || case "$(cat "$(projects_status_file)" 2>/dev/null || true)" in *'"pending":"'*) true ;; *) false ;; esac; then
     _skip "the sandbox's project folders are the ones listed" "pending: it has not restarted with the list yet — ./stack project apply"
   else
-    out="$(dc exec -T terminal timeout 10 sh -c 'printf %s "$BN_CODE_ROOTS"' </dev/null 2>/dev/null || true)"
+    out="$(_probe dc exec -T terminal timeout 10 sh -c 'printf %s "$BN_CODE_ROOTS"' 2>/dev/null)"
     _check "the sandbox's project folders are the ones listed (BN_CODE_ROOTS)" "${out:-[]}" "$want"
   fi
   while IFS=$'\t' read -r id name mode sbx added keys host git; do
     [ -z "$(_projects_left_out "$id")" ] || continue
     pend="$(_pj_pending_of "$id")"
     if [ -n "$pend" ]; then _skip "project folder $name in the sandbox at $sbx" "pending: $(_pj_pending_text "$pend")"; continue; fi
-    rc=0
-    out="$(dc exec -T -e P="$sbx" terminal timeout 10 sh -c 'test -d "$P" && echo there || echo missing
-      if f="$(mktemp "$P/.bn-probe-XXXXXX" 2>/dev/null)"; then rm -f -- "$f"; echo writable; else echo read-only; fi' </dev/null 2>/dev/null)" || rc=$?
-    if [ "$rc" = 124 ]; then out="couldn't check (timed out after 10 s)"; else out="$(printf '%s' "$out" | tr '\n' ' ')"; out="${out% }"; fi
+    out="$(_probe dc exec -T -e P="$sbx" terminal timeout 10 sh -c 'test -d "$P" && echo there || echo missing
+      if f="$(mktemp "$P/.bn-probe-XXXXXX" 2>/dev/null)"; then rm -f -- "$f"; echo writable; else echo read-only; fi' 2>/dev/null)"
+    out="$(printf '%s' "$out" | tr '\n' ' ')"; out="${out% }"
     _check "project folder $name in the sandbox at $sbx" "$out" "there $([ "$mode" = ro ] && echo read-only || echo writable)"
   done < <(projects_records 2>/dev/null)
 }

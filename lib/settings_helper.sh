@@ -187,17 +187,24 @@ _settings_phase() {
 # helper_run_settings ID — ./stack config apply --stdin with the request's values on stdin (a pipe from this shell:
 # never a command line, an environment variable or a file), progress into the status file
 helper_run_settings() {
-  local logf pid rc=0 ph msg
+  local logf pid rc=0 ph msg lim t0
   JOB_ID="$1"; JOB_ACTION=settings; JOB_TRIGGER=''; JOB_STARTED="$(date +%s)"; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''; JOB_RESULT=''
   helper_write_status checking "Checking the new settings"
   _kind_count settings-jobs settings
   logf="$(helper_dir)/last-settings.log"
   : > "$logf"; chmod 600 "$logf"
+  set -m   # (its own process group: _end_job ends all of it)
   printf '%s' "$SREQ_LINES" | ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" config apply --stdin \
     --base "$SREQ_BASE" --origin "$SREQ_ORIGIN" --via portal ${SREQ_CONFIRM:+--confirm "$SREQ_CONFIRM"} --yes ) > "$logf" 2>&1 &
   pid=$!
+  set +m
   SREQ_LINES=''; SREQ_AUTH=''
+  lim="$(_job_deadline settings)"; t0="$(date +%s)"
   while kill -0 "$pid" 2>/dev/null; do
+    if [ "$lim" -gt 0 ] && [ "$(( $(date +%s) - t0 ))" -ge "$lim" ]; then
+      _end_job "$pid"; wait "$pid" 2>/dev/null || true
+      JOB_FINISHED="$(date +%s)"; JOB_RESULT=failed; helper_write_status failed "$(_stopped_text settings "$lim" last-settings.log)"; return 0
+    fi
     if ph="$(_settings_phase "$logf")"; then helper_write_status "${ph%%	*}" "${ph#*	}"; fi
     helper_heartbeat
     sleep "${HELPER_JOB_POLL_S:-2}"
@@ -293,17 +300,58 @@ _diag_limits() {
 
 # helper_run_diag ACTION ID — one diagnostic: ./stack config check-aws | models --recheck | backup | test |
 # config report | restart SERVICE, with a short result message for Settings (never a raw log line with an id)
-# _wait_beating PID -> its exit code, once it ended; the heartbeat goes on meanwhile (the portal shows a helper whose
-# heartbeat is older than 30 s as not running)
+# _job_deadline KIND -> how long a helper job of that kind may run, in seconds (0: no cap). Generous: a smoke test 10
+# minutes; a project folder change 45 (it may wait 30 for no turn to run, then restart the sandbox); a settings change
+# 60 (a restart, an image to pull). A backup takes as long as the data does and updates have their own handling (lib/
+# helper.sh): not capped here. A job that runs past its deadline is ended (_end_job) and said as failed: a sandbox
+# process could otherwise keep ./stack test, and with it the helper and every update queued behind it, waiting.
+_job_deadline() {
+  case "$1" in
+    test | check-aws | report) echo "${HELPER_TEST_MAX_S:-600}" ;;
+    models-recheck) echo 1200 ;;
+    restart-*) echo 900 ;;
+    project-*) echo "${HELPER_PROJECT_MAX_S:-2700}" ;;
+    settings) echo "${HELPER_SETTINGS_MAX_S:-3600}" ;;
+    *) echo 0 ;;
+  esac
+}
+# _end_job PID — the job ended: TERM to its process group (each job is started in one of its own, set -m), KILL 10 s
+# later; only that PID when it has no group of its own (never the helper's)
+_end_job() {
+  local pg own
+  pg="$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' ' || true)"; own="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)"
+  [ -n "$pg" ] && [ "$pg" != "$own" ] || pg=''
+  if [ -n "$pg" ]; then kill -TERM -- "-$pg" 2>/dev/null || true; else kill -TERM "$1" 2>/dev/null || true; fi
+  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$1" 2>/dev/null || break; sleep 1; done
+  if [ -n "$pg" ]; then kill -KILL -- "-$pg" 2>/dev/null || true; else kill -KILL "$1" 2>/dev/null || true; fi
+  return 0
+}
+# _wait_beating PID [DEADLINE_S] -> its exit code, once it ended; the heartbeat goes on meanwhile (the portal shows a
+# helper whose heartbeat is older than 30 s as not running). Past DEADLINE_S (0: none) it is ended: 124.
 _wait_beating() {
-  local rc=0
-  while kill -0 "$1" 2>/dev/null; do helper_heartbeat || true; sleep "${HELPER_JOB_POLL_S:-2}"; done
+  local rc=0 lim="${2:-0}" t0
+  t0="$(date +%s)"
+  while kill -0 "$1" 2>/dev/null; do
+    if [ "$lim" -gt 0 ] && [ "$(( $(date +%s) - t0 ))" -ge "$lim" ]; then
+      _end_job "$1"; wait "$1" 2>/dev/null || true; return 124
+    fi
+    helper_heartbeat || true; sleep "${HELPER_JOB_POLL_S:-2}"
+  done
   wait "$1" || rc=$?
   return "$rc"
 }
+# _stopped_text KIND SECONDS LOG -> what is said of a job ended at its deadline
+_stopped_text() {
+  local m
+  m="$(( $2 / 60 )) minutes"; [ "$2" -ge 120 ] || m="$2 s"
+  case "$1" in
+    settings) echo "Stopped after $m: the change did not finish (log: .state/helper/$3); ./stack up puts the stack in line with .env" ;;
+    *) echo "Stopped after $m: it did not finish — something it waits on in the stack did not answer (log: .state/helper/$3)" ;;
+  esac
+}
 
 helper_run_diag() {
-  local action="$1" logf rc=0 holder msg s when="${3:-now}" project="${4:-}" mode="${5:-rw}" hide="${6:-false}" chosen='' flag
+  local action="$1" logf rc=0 holder msg s when="${3:-now}" project="${4:-}" mode="${5:-rw}" hide="${6:-false}" chosen='' flag pid lim
   JOB_ID="$2"; JOB_ACTION="$action"; JOB_TRIGGER=''; JOB_STARTED="$(date +%s)"; JOB_FINISHED=''; JOB_FREED=''; JOB_VERSION=''; JOB_RESULT=''
   holder="$(stack_lock_holder)"
   if [ -n "$holder" ]; then
@@ -346,16 +394,24 @@ helper_run_diag() {
     project-mode-ro) helper_write_status running "Making the folder read-only in the sandbox"; set -- project mode "$project" ro "$flag" ;;
   esac
   # in the background, the heartbeat going on (a model check takes about 2 minutes, a backup longer)
+  lim="$(_job_deadline "$action")"
   if [ "$action" = report ]; then
+    set -m   # (each job in a process group of its own: _end_job ends all of it)
     ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf.out" 2> "$logf" &
-    _wait_beating $! || rc=$?
+    pid=$!; set +m
+    _wait_beating "$pid" "$lim" || rc=$?
     if [ "$rc" = 0 ]; then head -c 262144 "$logf.out" > "$(report_file).tmp" && chmod 640 "$(report_file).tmp" && mv "$(report_file).tmp" "$(report_file)"; fi
     rm -f "$logf.out"
   else
+    set -m
     ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf" 2>&1 &
-    _wait_beating $! || rc=$?
+    pid=$!; set +m
+    _wait_beating "$pid" "$lim" || rc=$?
   fi
   JOB_FINISHED="$(date +%s)"
+  if [ "$rc" = 124 ]; then
+    JOB_RESULT=failed; helper_write_status failed "$(_stopped_text "$action" "$lim" last-diag.log)"; return 0
+  fi
   if [ "$rc" -ne 0 ]; then
     JOB_RESULT=failed
     case "$action" in

@@ -6,6 +6,23 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **A probe into the sandbox can no longer hold `./stack test` — or the update helper running it — for ever.** A
+  `timeout` inside the sandbox binds nothing there (a process in it can stop it), so every probe `./stack test` and
+  `./stack project` make into the sandbox now also has a watchdog on this computer: after its deadline the probe and
+  all it started are ended, and the check says it could not check (timed out), never that it passed. The update
+  helper's short jobs have deadlines too — a smoke test 10 minutes, a project folder change 45, a settings change
+  60 — after which the job is ended, said as failed, and the helper goes on (backups and updates keep their own
+  handling).
+
+### Fixed
+
+- **`./stack project add` with Docker not running at all** no longer refuses ("couldn't ask Docker…"): nothing can be
+  mounted then, and the next `./stack up` starts the sandbox with the checked list. It still refuses when Docker runs
+  but cannot be asked. The folders the running sandbox has mounted are compared as Docker names them and as they
+  resolve (`/tmp/ws` is `/private/tmp/ws` on a Mac).
+
 ## [0.20.0] - 2026-10-20
 
 ### Added

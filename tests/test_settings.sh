@@ -864,6 +864,7 @@ case "$1" in
           echo "==> saved: BUDGET_SETUP" ;;
   backup) echo "==> backup written to backups/20261014-120000 (724K) — databases" ;;
   test) printf '  ok    litellm alive\n  ok    portal login\n'; [ -z "${FAKE_FAIL:-}" ] || { printf '  FAIL  anthropic /v1/messages (got 400, want 200)\n'; exit 1; } ;;
+  hang) echo $$ > "$TMP/hung"; sleep 30 & echo $! > "$TMP/hung-child"; wait ;;
   project) [ "$2" != add ] || echo "==> ${3##*/}: $3 → $3 in the sandbox (read-write) — a project on the Code page"
            [ -z "${FAKE_LINKED:-}" ] || echo "!!  ${3##*/}: This is a linked git worktree: git won't work on it inside the sandbox (its history lives in /x/main/.git, which isn't shared). To use git there, add the main repository instead."
            [ -z "${FAKE_FORCED:-}" ] || echo "!!  Code sessions still have turns running after 30 minutes: restarting anyway (a folder removed or made read-only never waits longer)"
@@ -1788,4 +1789,23 @@ test_code_models_must_be_served_and_apply_re_renders_litellm() {
   assert_contains "$(cat "$TMP/calls")" "render"
   _lines CODE_MODELS=anthropic | _apply 2>/dev/null
   assert_eq "$(get_env CODE_MODELS)" anthropic
+}
+
+test_helper_ends_a_job_that_runs_past_its_deadline() {
+  # (a smoke test a sandbox process keeps waiting: ended, said, and the helper goes on — nothing of it left running)
+  _checkout
+  local t0 p c
+  DIAG_MIN_INTERVAL_S=0
+  # the stub ./stack hangs for its test run
+  sed -i.bak 's/^  test) printf/  test) exec "$0" hang ;;\n  testx) printf/' "$STACK_DIR/stack" && rm -f "$STACK_DIR/stack.bak"
+  export HELPER_TEST_MAX_S=1
+  _act test 0 77777777777777777777777777777777
+  t0="$(date +%s)"
+  settings_poll_once 2>/dev/null
+  [ "$(( $(date +%s) - t0 ))" -le 20 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
+  assert_contains "$(cat "$(helper_status_file)")" '"phase": "failed", "message": "Stopped after 1 s: it did not finish'
+  p="$(cat "$TMP/hung")"; c="$(cat "$TMP/hung-child")"
+  sleep 0.3
+  if kill -0 "$p" 2>/dev/null || kill -0 "$c" 2>/dev/null; then echo "left running: $p $c" >&2; return 1; fi
+  unset HELPER_TEST_MAX_S
 }

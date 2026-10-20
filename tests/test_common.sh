@@ -107,3 +107,41 @@ test_every_test_runs_with_a_home_of_its_own() {
   case "$HOME" in "$TMP"/*) ;; *) echo "HOME is $HOME, not under $TMP" >&2; return 1 ;; esac
   [ -d "$HOME" ] || return 1
 }
+
+# _with_deadline: a watchdog on this computer (a timeout inside the sandbox binds nothing there)
+test_with_deadline_passes_a_quick_command_through() {
+  local rc=0 out
+  out="$(_with_deadline 5 sh -c 'echo out; echo err >&2; exit 3' 2>"$TMP/err")" || rc=$?
+  assert_eq "$rc" 3
+  assert_eq "$out" out
+  assert_eq "$(cat "$TMP/err")" err
+  out="$(_with_deadline 5 sh -c 'cat; echo done')"   # (stdin: /dev/null — never the caller's)
+  assert_eq "$out" done
+}
+
+test_with_deadline_ends_a_command_that_ignores_term_and_all_it_started() {
+  local rc=0 t0 out p c
+  t0="$(date +%s)"
+  out="$(_with_deadline 1 sh -c 'echo $$ > "$1/leader"; sleep 30 & echo $! > "$1/child"; trap "" TERM; echo started; wait' sh "$TMP")" || rc=$?
+  assert_eq "$rc" 124
+  assert_eq "$out" started
+  [ "$(( $(date +%s) - t0 ))" -le 8 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
+  p="$(cat "$TMP/leader")"; c="$(cat "$TMP/child")"
+  sleep 0.3
+  if kill -0 "$p" 2>/dev/null || kill -0 "$c" 2>/dev/null; then echo "left running: $p $c" >&2; return 1; fi
+}
+
+test_with_deadline_ends_a_stopped_function_too() {
+  # (a sandbox process can SIGSTOP a probe: the watchdog here is not inside it)
+  local rc=0 t0
+  hang() { sh -c 'echo $$ > "$1/stopped"; kill -STOP $$' sh "$TMP"; }
+  t0="$(date +%s)"
+  _with_deadline 1 hang || rc=$?
+  assert_eq "$rc" 124
+  [ "$(( $(date +%s) - t0 ))" -le 8 ] || return 1
+  sleep 0.3
+  ! kill -0 "$(cat "$TMP/stopped")" 2>/dev/null || { echo "a stopped process left" >&2; return 1; }
+  assert_eq "$(_probe sh -c 'echo fine')" fine
+  PROBE_DEADLINE_S=1
+  assert_eq "$(_probe hang)" "couldn't check (timed out after 1 s)"
+}

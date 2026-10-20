@@ -2567,14 +2567,19 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
   folder (its `.git`, an `.npmrc`) are read only when it is added — when the sandbox cannot see it: a folder the
   running sandbox still has bind-mounted (any of its mounts, by Docker's word: a removed folder not applied yet, a
   workspace changed in `.env` but not restarted), or one around or inside such a folder, is refused until `./stack
-  project apply` (or `./stack up`); and with the terminal on, a Docker that cannot be asked refuses the add too (fail
-  closed). What is needed is kept in `folders.tsv`. `./stack up`, `list`, `status`, `test` and `apply` open nothing
+  project apply` (or `./stack up`); and with the terminal on, a Docker that runs but cannot be asked refuses the add
+  too (fail closed) — one that does not run at all has nothing mounted. Mount sources are compared as Docker names
+  them and as they resolve. What is needed is kept in `folders.tsv`. `./stack up`, `list`, `status`, `test` and `apply` open nothing
   in a folder from this computer: only its path's rules and `find -P` with a depth limit, which looks at names and
   types without following a link (sockets, folders of sockets, the names of key files). `./stack test` alone, from
   inside the sandbox, makes one new file with a random name in each read-write folder — created exclusively
-  (`mktemp`), so it never opens an entry already there, a FIFO or a link planted for it — and removes it; its
-  probes in the sandbox have a time limit (10–20 s), and one that ran out is said as not checked, never as
-  passed. Every name said from
+  (`mktemp`), so it never opens an entry already there, a FIFO or a link planted for it — and removes it. Each probe
+  into the sandbox has a time limit inside it (10–20 s) and a watchdog on this computer (`_with_deadline`: a process
+  in the sandbox can stop a `timeout` there, never this one): past its deadline the probe and all it started are
+  ended (TERM, then KILL, by its own process group), and the check says it could not check — never that it passed.
+  The update helper's short jobs have deadlines too (a smoke test 10 minutes, a project folder change 45, a settings
+  change 60; backups and updates keep their own handling): past one, the job is ended the same way, said as failed,
+  and the helper goes on to the next. Every name said from
   inside a folder (a socket's, a subfolder's) is printed as printable ASCII only — any other byte a `?`, so no escape
   sequence (C0, or C1: `\x9b` and its UTF-8 form `\xc2\x9b` are a terminal's CSI too) reaches your terminal (its
   title, the clipboard, the cursor); your own paths and names keep their letters (ü stays ü) without control
