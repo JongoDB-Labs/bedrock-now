@@ -3868,8 +3868,6 @@ def git_signin(browser):
     expect(page.get_by_test_id("git-host-error")).to_have_text("the sign-in was declined", timeout=10_000)
     page.get_by_test_id("git-host-form").get_by_role("button", name="Cancel").click()
     # GitHub: bedrock-now's own app is set — no setup note, only where to install it (Choose repositories)
-    dlg.get_by_role("button", name="Close").click()
-    page.get_by_test_id("git-hosts-open").first.click()
     page.get_by_test_id("git-host-add").click()
     expect(page.get_by_test_id("git-host-auth-oauth")).to_be_checked()
     expect(page.get_by_test_id("git-host-no-app")).to_have_count(0)
