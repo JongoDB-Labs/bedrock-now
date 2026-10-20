@@ -56,6 +56,8 @@
 #                    (added again: the session resumes, Haiku); in between, made read-only with --now (the sandbox
 #                    refuses writes at once), read-write again with --later (said as pending until ./stack project
 #                    apply), and a folder in /tmp refused; both removed at the end, their files untouched.
+#                    E2E_HOST_FOLDERS_DIR=/abs/new-folder: their parent instead of OUT (for a checkout whose path
+#                    ./stack project refuses, e.g. one in a .claude folder; it must not exist yet and is removed after)
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -761,7 +763,15 @@ if [ "$HOST_FOLDERS" = 1 ] && { [ "$CODE" = 0 ] || ! part_on browser; }; then
   record projects host-folders SKIP 0 "--host-folders needs the Code page and the browser part"
 elif [ "$HOST_FOLDERS" = 1 ]; then
   say "folders of this computer: ./stack project add, the sandbox's view, a session across restarts"
-  HF="$OUT/host-folders"; rm -rf "$HF"; mkdir -p "$HF/app" "$HF/notes"; HF="$(cd "$HF" && pwd -P)"
+  # (their parent: OUT/host-folders, or E2E_HOST_FOLDERS_DIR when ./stack project refuses OUT's path — a checkout in a
+  # .claude folder, a Claude Code worktree say: then a folder that must not exist yet, made here and removed at the end)
+  HF_OWN="${E2E_HOST_FOLDERS_DIR:-}"
+  if [ -n "$HF_OWN" ]; then
+    case "$HF_OWN" in /*) ;; *) die "E2E_HOST_FOLDERS_DIR must be an absolute path" ;; esac
+    [ ! -e "$HF_OWN" ] || die "E2E_HOST_FOLDERS_DIR ($HF_OWN) must not exist yet: the suite makes it, and removes it at the end"
+    HF="$HF_OWN"
+  else HF="$OUT/host-folders"; rm -rf "$HF"; fi
+  mkdir -p "$HF/app" "$HF/notes"; HF="$(cd "$HF" && pwd -P)"
   printf 'hello from this computer\n' > "$HF/app/hello.txt"; printf '# Notes\n\nRead only for Claude.\n' > "$HF/notes/notes.md"
   chmod 755 "$HF" "$HF/app" "$HF/notes"; chmod 644 "$HF/app/hello.txt" "$HF/notes/notes.md"
   rm -f "$OUT/browser/host-folders-session.txt"
@@ -832,6 +842,7 @@ elif [ "$HOST_FOLDERS" = 1 ]; then
      [ "$(cat "$HF/notes/notes.md" 2>/dev/null | head -n 1)" != '# Notes' ] || [ -e "$HF/notes/.e2e-w" ]; then
     record projects host-folders-cleaned FAIL 0 "after removing both: still listed, the generated compose file left, or a folder changed"
   else record projects host-folders-cleaned PASS "$(( $(now) - t0 ))" "both removed: none listed, no generated compose file; the folders on this computer as they were"; fi
+  [ -z "$HF_OWN" ] || rm -rf "$HF"   # (the suite's own folder, made above)
 fi
 
 # --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---
