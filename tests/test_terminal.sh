@@ -818,12 +818,12 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
     case "$*" in
       *"ps --format"*) echo healthy ;;
       *"exec -T caddy wget"*) printf '  HTTP/1.1 407 Proxy Authentication Required\n' ;;
-      *"exec -T terminal sh -c g="*) printf '200 404 404 404 404 404 ' ;;
-      *"exec -T terminal sh -c curl"*) printf '{"result":{"tools":[{"name":"search_knowledge"}]}}' ;;
-      *"exec -T terminal sh -c f=/etc/claude-code"*) printf 'none ro {"disableAutoMode":"disable"}\n' ;;
+      *"exec -T terminal timeout 20 sh -c g="*) printf '200 404 404 404 404 404 ' ;;
+      *"exec -T terminal timeout 20 sh -c curl"*) printf '{"result":{"tools":[{"name":"search_knowledge"}]}}' ;;
+      *"exec -T terminal timeout 20 sh -c f=/etc/claude-code"*) printf 'none ro {"disableAutoMode":"disable"}\n' ;;
       *"exec -T -e LP=9 terminal sh -c curl --noproxy"*) printf '000 403 403 403 403 403 403 403 ' ;;
-      *"exec -T terminal sh -c getent hosts example.com"*) printf '%s\n' "${DNS:-none}" ;;
-      *"exec -T terminal sh"*) printf '000 000 000 000 000 000 000 000 000 000 ' ;;
+      *"exec -T terminal timeout 20 sh -c getent hosts example.com"*) printf '%s\n' "${DNS:-none}" ;;
+      *"exec -T terminal timeout 20 sh"*) printf '000 000 000 000 000 000 000 000 000 000 ' ;;
     esac
   }
   dc() { ok_dc "$@"; }
@@ -867,7 +867,7 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
   assert_contains "$out" "ok    the terminal's key is refused on LiteLLM's /bedrock/… and /v1/chat/completions"
   assert_eq "$(cat "$TMP/llm")" "POST /bedrock/model/x/converse
 POST /v1/chat/completions"
-  dc() { case "$*" in *"exec -T terminal sh -c g="*) printf '200 200 404 404 404 200 ' ;; *"exec -T caddy wget"*) printf '  HTTP/1.1 200 OK\n' ;; *) ok_dc "$@" ;; esac; }
+  dc() { case "$*" in *"exec -T terminal timeout 20 sh -c g="*) printf '200 200 404 404 404 200 ' ;; *"exec -T caddy wget"*) printf '  HTTP/1.1 200 OK\n' ;; *) ok_dc "$@" ;; esac; }
   litellm_call() { echo 400; }   # a key without its routes: LiteLLM reads the (empty) request
   out="$(terminal_test_checks)"
   assert_contains "$out" "FAIL  terminal gateway"
@@ -875,7 +875,7 @@ POST /v1/chat/completions"
   assert_contains "$out" "FAIL  the terminal's gateway refuses ttyd requests without the secret header (got 200"
   assert_contains "$out" "FAIL  the terminal's key is refused on LiteLLM's /bedrock/… and /v1/chat/completions (got 400 400"
   # a managed-settings file the sandbox could change (a writable mount), or another one than Settings chose: FAIL
-  dc() { case "$*" in *"exec -T terminal sh -c f=/etc/claude-code"*) printf ' file open rw {"disableAutoMode":"disable"}\n' ;; *) ok_dc "$@" ;; esac; }
+  dc() { case "$*" in *"exec -T terminal timeout 20 sh -c f=/etc/claude-code"*) printf ' file open rw {"disableAutoMode":"disable"}\n' ;; *) ok_dc "$@" ;; esac; }
   assert_contains "$(terminal_test_checks)" "FAIL  Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox (got  file open rw"
   set_env CODE_AUTO_MODE true
   dc() { ok_dc "$@"; }

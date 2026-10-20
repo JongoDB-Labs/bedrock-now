@@ -18,7 +18,7 @@ _stubs() {
   dc() {
     echo "dc $*" >> "$TMP/dc"
     case "$*" in
-      "ps -q --status running "*) [ -z "$DC_RUNNING" ] || echo abc123 ;;
+      "ps -q --status running "*) [ -z "${DC_PS_FAIL:-}" ] || return 1; [ -z "$DC_RUNNING" ] || echo abc123 ;;
       "up -d --no-deps --wait terminal") [ -z "$DC_FAIL_UP" ] || { echo "Error: mounts denied: $DC_FAIL_UP" ; return 1; } ;;
     esac
     return 0
@@ -28,6 +28,7 @@ _stubs() {
     echo "docker $*" >> "$TMP/docker"
     case "$*" in
       "inspect -f {{range .Config.Env}}"*) [ -z "${SANDBOX_ROOTS:-}" ] || printf 'PATH=/usr/bin\nBN_CODE_ROOTS=%s\n' "$SANDBOX_ROOTS" ;;
+      "inspect -f {{range .Mounts}}{{if eq .Type"*) [ -z "${SANDBOX_MOUNTS:-}" ] || printf '%s\n' "$SANDBOX_MOUNTS" | awk -F'\t' 'NF > 2 { print $3 }' ;;
       "inspect -f {{range .Mounts}}"*) [ -z "${SANDBOX_MOUNTS:-}" ] || printf '%s\n' "$SANDBOX_MOUNTS" ;;
     esac
     return 0
@@ -325,6 +326,7 @@ test_compose_renders_the_folders_into_the_sandbox_only() {
   _stubs
   . "$STACK_DIR/lib/common.sh"   # (the real dc; docker only for compose config)
   docker() { case "$*" in *" config --format json") "$BN_REAL_DOCKER" "$@" ;; *) echo "unexpected docker $*" >&2; return 97 ;; esac; }
+  _pj_mounted_sources() { :; }   # (no sandbox runs here: nothing mounted — not this test's point)
   local a b pa; a="$(_dir 'my app')"; b="$(_dir notes)"
   project_add "$a" --later 2>/dev/null && project_add "$b" --read-only --hide-path --later 2>/dev/null || return 1
   pa="$(project_sandbox_path "$a" my-app no)"
@@ -621,18 +623,27 @@ test_a_folder_the_sandbox_still_has_mounted_is_not_added_again_until_applied() {
   # removed, not applied yet: the running sandbox still has it (Docker's word: its BN_CODE_ROOTS and the mount's source)
   SANDBOX_ROOTS="[\"$a\"]"; SANDBOX_MOUNTS="$a	true	$a"
   out="$(project_add "$a" --later 2>&1)" && return 1
-  assert_contains "$out" "its removal from the sandbox has not applied yet"
-  assert_contains "$out" "run ./stack project apply first"
+  assert_contains "$out" "the running sandbox still has it mounted"
+  assert_contains "$out" "run ./stack project apply (or ./stack up) first"
   out="$(project_add "$a/sub" --later 2>&1)" && return 1
-  assert_contains "$out" "its removal from the sandbox has not applied yet"
+  assert_contains "$out" "the running sandbox still has it mounted"
   out="$(project_add "$(dirname "$a")" --later 2>&1)" && return 1
-  assert_contains "$out" "the sandbox still has a folder in it mounted"
+  assert_contains "$out" "the running sandbox still has a folder in it mounted"
   # (Docker Desktop names a Mac's folder /host_mnt/…)
   SANDBOX_MOUNTS="$a	true	/host_mnt$a"
   out="$(project_add "$a" --later 2>&1)" && return 1
-  assert_contains "$out" "its removal from the sandbox has not applied yet"
+  assert_contains "$out" "the running sandbox still has it mounted"
+  # any bind of the running sandbox counts — a workspace changed in .env but not applied yet, say
+  local old; old="$(_dir old-ws)"
+  SANDBOX_ROOTS=''; SANDBOX_MOUNTS="/workspace	true	$old"
+  out="$(project_add "$old" --later 2>&1)" && return 1
+  assert_contains "$out" "the running sandbox still has it mounted"
+  # Docker cannot be asked while the terminal is on: refused, nothing read (fail closed)
+  SANDBOX_MOUNTS=''; DC_PS_FAIL=1
+  out="$(project_add "$a" --later 2>&1)" && return 1
+  assert_contains "$out" "couldn't ask Docker what the sandbox sees — try again"
+  DC_PS_FAIL=''
   # applied: added
-  SANDBOX_ROOTS=''; SANDBOX_MOUNTS=''
   project_add "$a" --later 2>/dev/null || return 1
 }
 
@@ -647,6 +658,14 @@ test_an_owners_path_keeps_its_letters_and_loses_its_controls() {
     why="$(project_check "$TMP/f/$bad")" && { echo "accepted a C1 control in a path" >&2; return 1; }
   done
   assert_eq "$(owner_text "/a/jürgen$(printf '\033')[1m$(printf '\302\233')")" "/a/jürgen[1m"
+  # well-formed UTF-8 only: overlong forms, surrogates, above U+10FFFF and bytes that never lead are dropped
+  assert_eq "$(owner_text "a$(printf '\300\257')b")" "ab"                    # overlong /
+  assert_eq "$(owner_text "a$(printf '\340\200\257')b")" "ab"               # overlong, 3 bytes
+  assert_eq "$(owner_text "a$(printf '\355\240\200')b")" "ab"               # a surrogate (U+D800)
+  assert_eq "$(owner_text "a$(printf '\360\200\200\257')b")" "ab"          # overlong, 4 bytes
+  assert_eq "$(owner_text "a$(printf '\364\220\200\200')b")" "ab"          # above U+10FFFF
+  assert_eq "$(owner_text "a$(printf '\365\200\200\200')b")" "ab"          # F5: never a lead
+  assert_eq "$(owner_text "€ $(printf '\360\237\230\200') 한")" "€ $(printf '\360\237\230\200') 한"   # kept as they are
   assert_eq "$(plain_text "a$(printf '\033')b$(printf '\233')c$(printf '\302\233')dü")" "a?b?c??d??"
 }
 

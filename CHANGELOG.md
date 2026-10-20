@@ -32,7 +32,8 @@ All notable changes to bedrock-now are documented here. The format follows
   submodule's checkout is added with a plain note: git won't work on it inside the sandbox, since the main
   repository's `.git` (its hooks and configuration) is never shared — add the main repository to use git there.
   Nothing in a folder is opened after it is added (its `.git` and the like are read once then), names from inside it
-  are printed as printable ASCII only, and a folder the sandbox still has mounted is not added again until applied. A
+  are printed as printable ASCII only, and a folder the sandbox still has mounted is not added again until applied.
+  `./stack test`'s probes in the sandbox have a time limit, and its write probe never opens a file already there. A
   removed folder's sessions are listed under *Folders no longer added*, read only. The project's trust step, the Git
   panel, Git hosts, Review and the watchlist work in them as in a folder of the workspace. New project has a fourth
   option, *A folder of this computer*, that says where one is added.

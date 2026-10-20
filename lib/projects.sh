@@ -219,20 +219,19 @@ _project_secrets() {
   done <<< "$hit"
   return 1
 }
-# _pj_mounted_sources -> the folders of this computer the running sandbox has mounted as project folders, by Docker's
-# word (the sources of the mounts at its BN_CODE_ROOTS: listed ones, and removed ones still there until it restarts)
+# _pj_mounted_sources -> every folder (or file) of this computer the running sandbox has bind-mounted, by Docker's word
+# (its container's mounts): the project folders — removed ones still there until it restarts — and the workspace it
+# started with, whatever .env says now. Nothing (0) when it does not run; 2 when Docker could not be asked.
 _pj_mounted_sources() {
-  local c roots mounts p src
-  c="$(dc ps -q --status running terminal 2>/dev/null || true)"; c="${c%%$'\n'*}"
+  local c mounts src
+  c="$(dc ps -q --status running terminal 2>/dev/null)" || return 2
+  c="${c%%$'\n'*}"
   [ -n "$c" ] || return 0
-  roots="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" 2>/dev/null | sed -n 's/^BN_CODE_ROOTS=//p' || true)"
-  mounts="$(docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\t"}}{{.RW}}{{"\t"}}{{.Source}}{{"\n"}}{{end}}' "$c" 2>/dev/null || true)"
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    src="$(printf '%s\n' "$mounts" | awk -F'\t' -v p="$p" '$1 == p && !f { print $3; f = 1 }')"
+  mounts="$(docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\n"}}{{end}}{{end}}' "$c" 2>/dev/null)" || return 2
+  while IFS= read -r src; do
     # (Docker Desktop names a Mac's folder /host_mnt/…)
     src="${src#/host_mnt}"; [ -z "$src" ] || printf '%s\n' "$src"
-  done < <(printf '%s\n' "$roots" | tr -d '[]"' | tr ',' '\n')
+  done <<< "$mounts"
 }
 
 # _project_path_rules REAL -> fails, printing why, for a path a project folder never has (beyond the workspace's
@@ -277,7 +276,7 @@ _project_path_rules() {
 # project_check DIR [--keys-ok] -> the folder's physical path; fails, printing why, for a folder the sandbox must not
 # get (the rules at the top). _PC_SELF: a project's own id (its own entry is not "another project", when checked again)
 project_check() {
-  local dir="$1" keys="${2:-}" real r ws w id name mode sbx added k host _git h why sock hs m
+  local dir="$1" keys="${2:-}" real r ws w id name mode sbx added k host _git h why sock hs m mounted
   case "$dir" in
     *[\"\'\$\`\\]*) echo "its path contains a quote, \$, a backtick or a backslash"; return 1 ;;
   esac
@@ -294,14 +293,6 @@ project_check() {
   fi
   # (when it is added: never one the running sandbox still has mounted — removed, not applied yet — or one around or in
   # such a folder: the sandbox could change what is read below while it is read)
-  if [ -z "${_PC_RECHECK:-}" ]; then
-    while IFS= read -r m; do
-      [ -n "$m" ] || continue
-      m="$(_fold "$m")"
-      case "$r/" in "$m/"*) echo "its removal from the sandbox has not applied yet (it still has $(owner_text "$m") mounted) — run ./stack project apply first"; return 1 ;; esac
-      case "$m/" in "$r/"*) echo "the sandbox still has a folder in it mounted ($(owner_text "$m"): its removal has not applied yet) — run ./stack project apply first"; return 1 ;; esac
-    done < <(_pj_mounted_sources)
-  fi
   while IFS=$'\t' read -r id name mode sbx added k host _git; do
     [ "$id" != "${_PC_SELF:-}" ] || continue
     h="$(_fold "$host")"
@@ -309,6 +300,18 @@ project_check() {
     case "$r/" in "$h/"*) echo "it is inside the project folder $name ($host)"; return 1 ;; esac
     case "$h/" in "$r/"*) echo "it contains the project folder $name ($host)"; return 1 ;; esac
   done < <(projects_records 2>/dev/null)
+  if [ -z "${_PC_RECHECK:-}" ]; then
+    # (fail closed: with the terminal on, a Docker that cannot be asked means not knowing what the sandbox sees)
+    if ! mounted="$(_pj_mounted_sources)" && terminal_on; then
+      echo "couldn't ask Docker what the sandbox sees — try again"; return 1
+    fi
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      m="$(_fold "$m")"
+      case "$r/" in "$m/"*) echo "the running sandbox still has it mounted ($(owner_text "$m"): a removal, or a change of the workspace, not applied yet) — run ./stack project apply (or ./stack up) first"; return 1 ;; esac
+      case "$m/" in "$r/"*) echo "the running sandbox still has a folder in it mounted ($(owner_text "$m"): a removal, or a change of the workspace, not applied yet) — run ./stack project apply (or ./stack up) first"; return 1 ;; esac
+    done <<< "$mounted"
+  fi
   if [ "$keys" != --keys-ok ] && why="$(_project_secrets "$real")"; then
     echo "it holds keys or logins: $why — in a terminal, add --yes-it-holds-keys if the sandbox may really see them"
     return 1
@@ -772,9 +775,12 @@ projects_status_lines() {
 }
 
 # projects_test_checks — ./stack test while the terminal is on: the sandbox sees each folder at its path (read-only
-# where chosen: a write refused), and bn-coded is told the same list
+# where chosen: a write refused), and bn-coded is told the same list. Inside the sandbox each probe has a time limit
+# (timeout 10: a sandbox process could make a probe wait forever, and the update helper runs ./stack test) and the
+# write probe makes a new file with a random name (mktemp: created exclusively — it never opens an entry already there,
+# a FIFO or a link planted for it); a probe that timed out is said, never passed.
 projects_test_checks() {
-  local id name mode sbx added keys host git out want pend
+  local id name mode sbx added keys host git out want pend rc
   terminal_ready || return 0
   [ -f "$(projects_compose_file)" ] || [ -n "$(_pj_leaving_lines)" ] || return 0
   projects_sync >/dev/null 2>&1 || true   # (what the running sandbox has now)
@@ -784,15 +790,18 @@ projects_test_checks() {
   if [ -n "$(_pj_leaving_lines)" ] || case "$(cat "$(projects_status_file)" 2>/dev/null || true)" in *'"pending":"'*) true ;; *) false ;; esac; then
     _skip "the sandbox's project folders are the ones listed" "pending: it has not restarted with the list yet — ./stack project apply"
   else
-    out="$(dc exec -T terminal sh -c 'printf %s "$BN_CODE_ROOTS"' 2>/dev/null || true)"
+    out="$(dc exec -T terminal timeout 10 sh -c 'printf %s "$BN_CODE_ROOTS"' </dev/null 2>/dev/null || true)"
     _check "the sandbox's project folders are the ones listed (BN_CODE_ROOTS)" "${out:-[]}" "$want"
   fi
   while IFS=$'\t' read -r id name mode sbx added keys host git; do
     [ -z "$(_projects_left_out "$id")" ] || continue
     pend="$(_pj_pending_of "$id")"
     if [ -n "$pend" ]; then _skip "project folder $name in the sandbox at $sbx" "pending: $(_pj_pending_text "$pend")"; continue; fi
-    out="$(dc exec -T -e P="$sbx" terminal sh -c 'test -d "$P" && echo there || echo missing; f="$P/.bn-probe-$$"; if (: > "$f") 2>/dev/null; then rm -f "$f"; echo writable; else echo read-only; fi' 2>/dev/null | tr '\n' ' ' || true)"
-    _check "project folder $name in the sandbox at $sbx" "${out% }" "there $([ "$mode" = ro ] && echo read-only || echo writable)"
+    rc=0
+    out="$(dc exec -T -e P="$sbx" terminal timeout 10 sh -c 'test -d "$P" && echo there || echo missing
+      if f="$(mktemp "$P/.bn-probe-XXXXXX" 2>/dev/null)"; then rm -f -- "$f"; echo writable; else echo read-only; fi' </dev/null 2>/dev/null)" || rc=$?
+    if [ "$rc" = 124 ]; then out="couldn't check (timed out after 10 s)"; else out="$(printf '%s' "$out" | tr '\n' ' ')"; out="${out% }"; fi
+    _check "project folder $name in the sandbox at $sbx" "$out" "there $([ "$mode" = ro ] && echo read-only || echo writable)"
   done < <(projects_records 2>/dev/null)
 }
 

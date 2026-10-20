@@ -330,7 +330,7 @@ test_enable_turns_the_terminal_on_first_then_builds_and_starts_the_code_page() {
   assert_not_contains "$(cat "$TMP/out")" "restarts once"
   assert_not_contains "$(cat "$TMP/out")" "turning the terminal on first"
   assert_eq "$(grep -E '^dc (build|up|rm|stop|restart).*terminal( |$)' "$TMP/dc")" ""   # (only asked whether bn-coded listens)
-  assert_contains "$(cat "$TMP/dc")" "dc exec -T terminal test -S /run/bn-code/coded.sock"
+  assert_contains "$(cat "$TMP/dc")" "dc exec -T terminal timeout 10 test -S /run/bn-code/coded.sock"
   # (the gateway: recreated by compose only because the previews' secret is new)
   assert_eq "$(grep '^dc up' "$TMP/dc" | tr '\n' '|')" "dc up -d --wait portal|dc up -d --wait --force-recreate caddy|dc up -d --wait terminal-gateway|dc up -d --wait code|"
   # a terminal started by a version without the spawn server: recreated once (and says so)
@@ -724,8 +724,8 @@ test_test_checks_report_health_unlock_secret_and_isolation() {
       *"exec -T caddy wget"*) printf '  HTTP/1.1 407 Proxy Authentication Required\n' ;;
       *"exec -T code node"*"sessions.list"*) printf 'ok\n' ;;
       *"exec -T code node"*) printf 'closed closed closed closed closed closed\n' ;;
-      *"exec -T terminal sh"*"bn-preview"*) printf '700 socket\n' ;;
-      *"exec -T terminal sh"*) printf '000 700 socket\n' ;;
+      *"exec -T terminal timeout 20 sh"*"bn-preview"*) printf '700 socket\n' ;;
+      *"exec -T terminal timeout 20 sh"*) printf '000 700 socket\n' ;;
     esac
   }
   dc() { ok_dc "$@"; }
@@ -752,7 +752,7 @@ test_test_checks_report_health_unlock_secret_and_isolation() {
   assert_contains "$out" "ok    a preview link goes through Caddy, the portal's check and the gateway to bn-preview"
   assert_contains "$out" "ok    a forged preview link is refused"
   assert_contains "$out" "ok    the code container reaches bn-coded in the sandbox (a sessions.list round trip on its socket)"
-  dc() { case "$*" in *"sessions.list"*) printf 'error ENOENT\n' ;; *"exec -T code node"*) printf 'open closed closed closed closed closed\n' ;; *"exec -T terminal sh"*) printf '200 755 socket\n' ;; *) ok_dc "$@" ;; esac; }
+  dc() { case "$*" in *"sessions.list"*) printf 'error ENOENT\n' ;; *"exec -T code node"*) printf 'open closed closed closed closed closed\n' ;; *"exec -T terminal timeout 20 sh"*) printf '200 755 socket\n' ;; *) ok_dc "$@" ;; esac; }
   out="$(code_test_checks)"
   assert_contains "$out" "FAIL  the code container reaches nothing but Caddy"
   assert_contains "$out" "FAIL  the code container reaches bn-coded"

@@ -2565,10 +2565,16 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
   can swap any entry for a link (to a FIFO, which hangs a read; to `/net/…` or `/Network/…`, which mounts a share)
   between a check and a read, and no shell can open a file without following a link. So a file's *contents* inside a
   folder (its `.git`, an `.npmrc`) are read only when it is added — when the sandbox cannot see it: a folder the
-  running sandbox still has mounted (removed, not applied yet), or one around or inside such a folder, is refused
-  until `./stack project apply` — and what is needed is kept in `folders.tsv`. `./stack up`, `list`, `status`,
-  `test` and `apply` open nothing in a folder: only its path's rules and `find -P` with a depth limit, which looks at
-  names and types without following a link (sockets, folders of sockets, the names of key files). Every name said from
+  running sandbox still has bind-mounted (any of its mounts, by Docker's word: a removed folder not applied yet, a
+  workspace changed in `.env` but not restarted), or one around or inside such a folder, is refused until `./stack
+  project apply` (or `./stack up`); and with the terminal on, a Docker that cannot be asked refuses the add too (fail
+  closed). What is needed is kept in `folders.tsv`. `./stack up`, `list`, `status`, `test` and `apply` open nothing
+  in a folder from this computer: only its path's rules and `find -P` with a depth limit, which looks at names and
+  types without following a link (sockets, folders of sockets, the names of key files). `./stack test` alone, from
+  inside the sandbox, makes one new file with a random name in each read-write folder — created exclusively
+  (`mktemp`), so it never opens an entry already there, a FIFO or a link planted for it — and removes it; its
+  probes in the sandbox have a time limit (10–20 s), and one that ran out is said as not checked, never as
+  passed. Every name said from
   inside a folder (a socket's, a subfolder's) is printed as printable ASCII only — any other byte a `?`, so no escape
   sequence (C0, or C1: `\x9b` and its UTF-8 form `\xc2\x9b` are a terminal's CSI too) reaches your terminal (its
   title, the clipboard, the cursor); your own paths and names keep their letters (ü stays ü) without control
