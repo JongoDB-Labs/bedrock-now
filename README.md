@@ -504,8 +504,10 @@ It is a sandbox, not a shell on your computer:
   without root, capabilities or the Docker socket, on a read-only system. Of your files it sees **only the
   workspace folder** (at `/workspace`); `enable` — and every later `./stack up` — refuses your home folder
   itself and the folders above it, hidden folders like `~/.ssh`, `~/Library`, system folders, `/Volumes`, `/mnt`
-  and `/media` themselves, and any folder inside or around the bedrock-now folder (its `.env` holds every secret),
-  in any spelling. Claude Code's settings and history live in the `terminal-home` volume. The container may use up
+  and `/media` themselves, a temporary folder itself (`/tmp`, a Mac's `/private/var/folders/…/T` — a folder of yours
+  inside one is fine) or a path through a folder of sockets (`tmux-<uid>`, `.X11-unix` …), and any folder inside or
+  around the bedrock-now folder (its `.env` holds every secret), in any spelling; a socket in the workspace is said at
+  `./stack up`. Claude Code's settings and history live in the `terminal-home` volume. The container may use up
   to 4 GB of memory (`TERMINAL_MEM_LIMIT` in `.env`).
 - Inside the stack its only neighbour is its own gateway (a second, minimal Caddy), which passes just what Claude
   Code needs — LiteLLM's Anthropic API, model list and key info, and the shared MCP server's `/mcp` — and answers
@@ -778,8 +780,10 @@ sandbox, so the Code page's sessions (and the terminal) work in it directly, wit
   [update helper](#updating) installed and a screen to show it on; from a phone or another computer it is not
   offered). At most 16.
 - **Where the sandbox sees it**: at the same path as on this computer, so absolute paths keep working — or, with
-  *Hide its path* (`--hide-path`), at `/projects/<name>`. A path the sandbox uses itself (`/home/claude`, `/tmp`,
-  `/usr` …) always becomes `/projects/<name>`.
+  *Hide its path* (`--hide-path`), at `/projects/<name>`: your path (and so your user name) then stays out of what
+  Claude Code sends the model and off the Code page; programs in the sandbox can still find it
+  (`/proc/self/mountinfo`). A path the sandbox uses itself (`/home/claude`, `/usr` …) always becomes
+  `/projects/<name>`.
 - **Read-write or read-only.** Read-write by default: Claude, and anything it runs, can change the folder — and what
   it writes there can run on this computer when your own tools open the folder (git hooks, `.envrc`, VS Code tasks,
   `package.json` scripts; read the watchlist's cards). *Read-only for Claude* (`--read-only`, or **Make read-only** in
@@ -788,16 +792,30 @@ sandbox, so the Code page's sessions (and the terminal) work in it directly, wit
   `./stack project mode NAME rw`.
 - **The sandbox restarts** when a folder is added, removed or changed (~15 s; the gateway, the code container and the
   rest keep running): open Code page sessions resume with your next prompt; the terminal's windows, dev servers and
-  runs end. With a turn running, `./stack project` asks: now, when no turn runs (it waits up to 30 minutes), or later
-  (`./stack project apply` or the next `./stack up`); Settings offers *When idle* or *Now*. Until then the project
-  says "the sandbox sees it once it restarts".
+  runs end. Settings restarts it *now* unless you choose *when no turn runs*; in a terminal `./stack project` asks:
+  now, when no turn runs, or later (`./stack project apply` or the next `./stack up`). Waiting for no turn lasts at
+  most 30 minutes: then a folder **removed or made read-only** restarts the sandbox anyway (a busy session never keeps
+  the wider access), while a folder added (or read-write again) waits for later. A change applies only once the sandbox
+  restarted with it — until then Settings, the Code page, `./stack project list` and `./stack code status` say so per
+  folder ("applies when the sandbox restarts": not in the sandbox yet, still read-write there, still mounted though
+  removed). If the sandbox does not start after a folder was removed or made read-only, the list stays narrowed: the
+  sandbox stays down until it starts with it (`./stack logs terminal` says why), never back to the wider access; a
+  folder added that keeps it from starting is taken off the list again.
 - **What is refused**: your home folder and any folder around it, its hidden folders (`~/.ssh`, `~/.aws`, `~/.config`
-  …) and `~/Library`; `/`, system folders and the folder that holds every disk; this bedrock-now folder and the
-  workspace, or a folder inside or around them; another project's folder, or one inside or around it; a folder with
-  keys (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker` or a keychain, in it or one level down; in a terminal,
-  `--yes-it-holds-keys` adds it anyway); a path with `:` or `,`. The folder is resolved first (a link counts as the
-  folder it leads to; on a Mac `/tmp` is `/private/tmp`, and names differing only in case are one folder). Every
-  `./stack up` checks the list again: a folder that is gone, or is now a link, is left out and said.
+  …) and `~/Library`; `/`, system folders and the folder that holds every disk; temporary and runtime folders and
+  anything in them (`/tmp`, `/var/tmp`, a Mac's `/private/var/folders`, `/dev/shm`, `/run/user`): programs of this
+  computer keep their sockets there (tmux, ssh-agent, X11 …), and a socket is a way to run commands on it; a path
+  through such a folder of sockets (`tmux-<uid>`, `ssh-…` of ssh-agent, `.X11-unix` …), a `.claude` folder or a Time
+  Machine backup; a folder holding a socket (down to 3 levels: git's fsmonitor daemon leaves one in `.git` — stop it
+  first); this bedrock-now folder and the workspace, or a folder inside or around them; another project's folder, or
+  one inside or around it; a folder with keys or logins in it or one level down (`.ssh`, `.aws`, `.gnupg`, `.kube`,
+  `.docker`, `.azure`, the gh, glab and gcloud logins under `.config`, a keychain, `.netrc`, `.git-credentials`), an
+  `.npmrc` or `.pypirc` at its top with a token or password, another bedrock-now folder or a Time Machine backup down
+  to 3 levels (a heuristic; in a terminal, `--yes-it-holds-keys` adds such a folder anyway); a path with `:` or `,`.
+  The folder is resolved first (a link counts as the folder it leads to; on a Mac `/tmp` is `/private/tmp`, and names
+  differing only in case are one folder). Every `./stack up` checks the list again: a folder that is gone, is now a
+  link or now breaks a rule is left out and said (a socket found then is only said: one the sandbox made in its own
+  folder is harmless).
 - **Removing** (`./stack project remove NAME`; **Remove** in Settings, from any device; the project's ⋯ › *Remove
   folder from Code…* says where): the folder leaves the sandbox, nothing in it is touched. Its sessions are listed
   under **Folders no longer added**, read only; add the folder again to go on with them (*Forget this folder…* takes
@@ -809,7 +827,8 @@ sandbox, so the Code page's sessions (and the terminal) work in it directly, wit
   a folder of yours.
 - **Docker Desktop** shares `/Users`, `/Volumes`, `/private` and `/tmp` by default: for a folder elsewhere, the restart
   fails and `./stack` says to add it under Docker Desktop › *Settings › Resources › File sharing* (the list is put back
-  as it was).
+  as it was). A folder Docker Desktop stops sharing later keeps the sandbox from starting at `./stack up`: `./stack`
+  names the folder and says the same (or `./stack project remove NAME`).
 
 Every project is in the one sandbox, a folder of this computer too: a session in one can read and change the others.
 Details: [docs/security.md](docs/security.md#folders-of-this-computer).
