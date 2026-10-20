@@ -87,26 +87,48 @@ export function isId(s: unknown): s is string {
   return typeof s === 'string' && ID.test(s);
 }
 
-/** A workspace-relative path we are willing to request or show: no NUL, no `..` segment, bounded; an absolute path
- *  only inside /workspace. A backslash is an ordinary character of a name (the sandbox is Linux: `a\b` is one file,
- *  never a/b). */
+// The folders of this computer the sandbox sees beside the workspace (./stack project; the projects list the backend
+// gives — from ./stack's own list, never the sandbox's word): a path in one of them is the page's as its absolute path
+// (a workspace path is relative to /workspace). Set by app.ts when the projects are loaded.
+let HOST_TOPS: readonly string[] = [];
+export function setHostTops(tops: readonly string[]): void { HOST_TOPS = Object.freeze([...tops]); }
+export const hostTops = (): readonly string[] => HOST_TOPS;
+/** hostTopOf(p) -> the folder of this computer an absolute path is in (or is), else null */
+export function hostTopOf(p: string): string | null {
+  return HOST_TOPS.find((t) => p === t || p.startsWith(`${t}/`)) ?? null;
+}
+
+/** A path of the page we are willing to request or show: relative to the workspace, or absolute in a folder of this
+ *  computer (hostTopOf) — no NUL, no `..` segment, bounded; any other absolute path only inside /workspace (then made
+ *  relative). A backslash is an ordinary character of a name (the sandbox is Linux: `a\b` is one file, never a/b). */
 export function cleanPath(p: unknown): string | null {
   if (typeof p !== 'string' || p.length > 4096 || p.includes('\0')) return null;
   let s = p;
+  let top = '';
   if (s.startsWith('/workspace/')) s = s.slice('/workspace/'.length);
   else if (s === '/workspace') s = '';
-  else if (s.startsWith('/')) return null;
+  else if (s.startsWith('/')) {
+    const t = hostTopOf(s.replace(/\/+/g, '/').replace(/\/$/, ''));
+    if (!t) return null;
+    top = t; s = s.replace(/\/+/g, '/').slice(t.length);
+  }
   s = s.replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/$/, '');
   const parts = s === '' ? [] : s.split('/');
   if (parts.some((x) => x === '..' || x === '.')) return null;
-  return parts.join('/');
+  return top ? (parts.length ? `${top}/${parts.join('/')}` : top) : parts.join('/');
 }
 
 /** A path the backend names (git, search hits, Claude's edits): taken exactly as it is — relative to /workspace (a
- *  /workspace/ prefix dropped), no empty, "." or ".." part, no NUL — or null. Nothing is rewritten: a path that names
- *  another file once normalised is refused, not redirected. */
+ *  /workspace/ prefix dropped), or absolute in a folder of this computer; no empty, "." or ".." part, no NUL — or
+ *  null. Nothing is rewritten: a path that names another file once normalised is refused, not redirected. */
 export function exactPath(p: unknown): string | null {
   if (typeof p !== 'string' || p.length === 0 || p.length > 4096 || p.includes('\0')) return null;
+  if (p.startsWith('/') && !p.startsWith('/workspace/')) {
+    const t = hostTopOf(p);
+    if (!t) return null;
+    const rest = p.slice(t.length + 1);
+    return p === t || !rest.split('/').some((x) => x === '' || x === '.' || x === '..') ? p : null;
+  }
   const s = p.startsWith('/workspace/') ? p.slice('/workspace/'.length) : p;
   if (s.startsWith('/') || s.split('/').some((x) => x === '' || x === '.' || x === '..')) return null;
   return s;

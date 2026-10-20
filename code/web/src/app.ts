@@ -14,7 +14,7 @@ import { approveRun, approvedRun, askDraft, outcome, outcomeText, plainCommand }
 import { approveLaunch, approvedLaunch, switchedAway, type Viewport } from './devpreview';
 import { loadPrefs, savePrefs, type Layout, type Prefs } from './prefs';
 import { applyHunks } from './diff';
-import { basename, cleanPath, dirname, isUuid, joinPath, label, money } from './text';
+import { basename, cleanPath, dirname, isUuid, joinPath, label, money, setHostTops } from './text';
 import { sniff, viewFor, type FileView, type Sniffed } from './preview/sniff';
 import type { GitCommit, GitEntry, GitEvent, GitFile, GitNetAction, GitPlan, GitRemoteState, GitReview, GitScope, GitStatus, GrepResult, SandboxWords } from './types';
 import { proposedMessage } from './git';
@@ -24,7 +24,7 @@ import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from '
 import { pageTitle, waitingSessions } from './groups';
 import { parseDeepLink, withoutDeepLink } from './deeplink';
 import { sessionCost } from './spend';
-import { WORKSPACE, WORKSPACE_ID, inProject, mentionPath, projectFor, projectIdOk, projectOfCwd, settingsApplied, type Project, type SettingsState, type Where } from './projects';
+import { WORKSPACE, WORKSPACE_ID, inProject, liveHostTops, mentionPath, projectFor, projectIdOk, projectOfCwd, settingsApplied, type Project, type SettingsState, type Where } from './projects';
 
 export interface Toast {
   id: number;
@@ -1805,6 +1805,8 @@ function noteWhere(rows: { id: string; cwd: string; project: string }[]): void {
 export async function refreshProjects(): Promise<void> {
   try {
     const projects = await api.getProjects();
+    // (the folders of this computer the sandbox sees: their paths are the page's own — text.ts cleanPath)
+    setHostTops(liveHostTops(projects));
     set((s) => ({ ...s, projects, projectsError: null, projectsSaid: null }));
   } catch (e) {
     // (an older backend has no projects: the Workspace alone, as before)

@@ -3361,7 +3361,7 @@ export async function runStart(source, name, digest, { tmux = tmuxBin(), procDir
   // (the last 20 runs are kept: the oldest go, with their files)
   for (const old of runIds().slice(RUNS_KEEP - 1)) for (const f of runFiles(old)) { try { fs.unlinkSync(path.join(RUN_DIR, f)); } catch { /* gone */ } }
   const id = crypto.randomBytes(8).toString('hex');
-  const rec = { id, source, name, command: t.command, startedAt: Date.now(), window: null, root: root.rel };
+  const rec = { id, source, name, command: t.command, startedAt: Date.now(), window: null, root: pageRoot(root) };
   writeRunFile(RUN_DIR, `${id}.json`, rec);
   const window = `run-${name}`.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 40);
   // the runner and the wrapper as their own arguments (no shell parses them), in the environment made here (taskEnv;

@@ -17,7 +17,7 @@ import { repoOk } from './gitremote.mjs';
 import { SandboxSaid, refused } from './said.mjs';
 import { reasonOf, answerOf, GIT_LOG_FAILED } from './gitreasons.mjs';
 import { watched } from './watch.mjs';
-import { WS, WORKSPACE_ID, PROJECTS_MAX, absOf, cwdOk, nameOk, rootOk } from './projects.mjs';
+import { WS, WORKSPACE_ID, PROJECTS_MAX, absOf, cwdOk, hostRoots, nameOk, rootOk } from './projects.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
 export class HttpError extends Error {
@@ -1241,7 +1241,7 @@ export function runResultRow(x, max = RUN_TAIL) {
   const row = { id: x.id, source: x.source, name: short(x.name, 100), command: str(typeof x.command === 'string' ? x.command : '', 4000),
     window: RUN_WINDOW.test(x.window ?? '') ? x.window : null, startedAt: num(x.startedAt, 0, 1e14), state: x.state,
     // (the folder it ran in: a project's, '' the workspace's — what bn-coded recorded, shown only)
-    root: typeof x.root === 'string' && (x.root === '' || rootOk(x.root)) ? x.root : '' };
+    root: typeof x.root === 'string' && (x.root === '' || rootOk(x.root) || hostRoots().some((h) => h.path === x.root)) ? x.root : '' };
   if (x.state !== 'done') return row;
   const tail = typeof x.tail === 'string' ? x.tail : '';
   return { ...row, exitCode: int(x.exitCode, 0, 255), signal: /^SIG[A-Z0-9]{1,12}$/.test(x.signal ?? '') ? x.signal : null,

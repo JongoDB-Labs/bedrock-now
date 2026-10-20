@@ -1,10 +1,12 @@
 // Projects (the Projects tab, the top bar's project chip): a project is a folder the sandbox sees — the workspace itself
-// (the Workspace, always there) or a folder of it — with the Code page's record of it, which the code container keeps.
+// (the Workspace, always there), a folder of it, or a folder of this computer mounted beside it (./stack project: its
+// root is its path in the sandbox, absolute; read-only or not) — with the Code page's record of it, which the code
+// container keeps.
 // The page names a project by its id only, never by a folder; what comes from the backend is checked here (a folder of
 // the workspace by the same rules as the backend's, a name of one line), and a session is shown in the project the
 // backend says only when that is a project of the list — else in the Workspace: nothing a list says makes a project.
 // Kept free of DOM and network (test/projects.test.ts).
-import { label } from './text';
+import { label, hostTopOf } from './text';
 import type { SandboxWords, SessionInfo } from './types';
 
 export const WORKSPACE_ID = 'ws';
@@ -16,7 +18,7 @@ const ID = /^p_[0-9a-f]{8}$/;
 // eslint-disable-next-line no-control-regex
 const ODD = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 
-export type FolderState = 'dir' | 'missing' | 'link' | 'other';
+export type FolderState = 'dir' | 'missing' | 'link' | 'other' | 'unmounted';
 /** A project's own Claude Code settings (.claude/settings*.json, .mcp.json): the Workspace's always apply; a project's
  *  only once trusted as they are (none: nothing to trust; changed: trusted once, different now; unverifiable: a file
  *  there cannot be checked — never trusted; unchecked: the sandbox did not say — not applied). */
@@ -50,6 +52,14 @@ export interface Project {
   git: boolean | null;
   /** its own Claude Code settings (null: not said) */
   settings: SettingsState | null;
+  /** a folder of this computer (./stack project): root and path are its path in the sandbox */
+  host?: boolean;
+  /** read-only in the sandbox (a folder of this computer) */
+  readOnly?: boolean;
+  /** its path on this computer hidden from Claude (at /projects/<name>) */
+  hidden?: boolean;
+  /** no longer added (./stack removed it): its sessions listed, read only */
+  gone?: boolean;
 }
 /** Where a session runs and which project it is shown in. */
 export interface Where {
@@ -68,20 +78,29 @@ export function rootOk(v: unknown): v is string {
   return segs.length <= 4 && segs.every((s) => s.length >= 1 && s.length <= 100 && !s.startsWith('.') && s.trim() === s);
 }
 export const nameOk = (v: unknown): v is string => typeof v === 'string' && v.trim() === v && v.length >= 1 && v.length <= 80 && !ODD.test(v);
-/** A session's working folder as the page takes it: /workspace or a folder of it, absolute, normalized, one line. */
+/** A folder of this computer's path in the sandbox as the backend may name it: absolute, plain (no empty, "." or ".."
+ *  part), one line, no odd character, not /workspace, around or inside it. */
+export function hostPathOk(v: unknown): v is string {
+  if (typeof v !== 'string' || !v.startsWith('/') || v === '/' || v.length > 1024 || ODD.test(v) || v.endsWith('/')) return false;
+  if (v === WORKSPACE_PATH || v.startsWith(`${WORKSPACE_PATH}/`) || WORKSPACE_PATH.startsWith(`${v}/`)) return false;
+  return v.slice(1).split('/').every((x) => x !== '' && x !== '.' && x !== '..');
+}
+/** A session's working folder as the page takes it: /workspace or a folder of it, or a folder of this computer (or one
+ *  in it); absolute, normalized, one line. */
 export function cwdOk(v: unknown): v is string {
   if (typeof v !== 'string' || v.length > 1024 || /[\x00-\x1f\x7f]/.test(v)) return false;
   if (v === WORKSPACE_PATH) return true;
-  if (!v.startsWith(`${WORKSPACE_PATH}/`)) return false;
-  return v.slice(WORKSPACE_PATH.length + 1).split('/').every((s) => s !== '' && s !== '.' && s !== '..');
+  const top = v.startsWith(`${WORKSPACE_PATH}/`) ? WORKSPACE_PATH : hostTopOf(v);
+  if (!top) return false;
+  return v === top || v.slice(top.length + 1).split('/').every((s) => s !== '' && s !== '.' && s !== '..');
 }
-export const pathOf = (root: string): string => (root ? `${WORKSPACE_PATH}/${root}` : WORKSPACE_PATH);
+export const pathOf = (root: string): string => (root.startsWith('/') ? root : root ? `${WORKSPACE_PATH}/${root}` : WORKSPACE_PATH);
 export const WORKSPACE: Project = Object.freeze({ id: WORKSPACE_ID, name: 'Workspace', root: '', path: WORKSPACE_PATH, created: null, workspace: true, folder: null, git: null,
   settings: null });
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : null);
-const FOLDERS: FolderState[] = ['dir', 'missing', 'link', 'other'];
+const FOLDERS: FolderState[] = ['dir', 'missing', 'link', 'other', 'unmounted'];
 
 /** One project of GET /api/projects, checked; null when it does not fit (a folder outside the workspace, a bad id). */
 export function normProject(v: unknown): Project | null {
@@ -91,6 +110,13 @@ export function normProject(v: unknown): Project | null {
   const git = typeof o.git === 'boolean' ? o.git : null;
   const settings = settingsState(o.settings);
   if (o.id === WORKSPACE_ID) return { ...WORKSPACE, folder, git, settings: settings === null ? null : 'workspace' };
+  // a folder of this computer: its path in the sandbox (the backend's list is ./stack's, checked there too)
+  if (o.host === true) {
+    if (!hostPathOk(o.root)) return null;
+    const name = nameOk(o.name) ? o.name : label(o.root.split('/').pop(), 80);
+    return { id: o.id, name, root: o.root, path: o.root, created: null, workspace: false, folder, git, settings: settings === 'workspace' ? null : settings,
+      host: true, readOnly: o.mode === 'ro', hidden: o.hidden === true, gone: o.gone === true };
+  }
   if (!rootOk(o.root)) return null;
   const created = typeof o.created === 'number' && Number.isFinite(o.created) && o.created > 0 ? o.created : null;
   const name = nameOk(o.name) ? o.name : label(o.root.split('/').pop(), 80);
@@ -110,8 +136,16 @@ export function normProjects(list: unknown): Project[] {
     out.push(p);
   }
   const ws = out.find((p) => p.workspace) ?? { ...WORKSPACE };
-  return [ws, ...out.filter((p) => !p.workspace)];
+  // (no two folders of this computer around each other: the second goes)
+  const kept: Project[] = [];
+  for (const p of out.filter((x) => !x.workspace)) {
+    if (p.host && kept.some((k) => k.host && (k.root === p.root || k.root.startsWith(`${p.root}/`) || p.root.startsWith(`${k.root}/`)))) continue;
+    kept.push(p);
+  }
+  return [ws, ...kept];
 }
+/** The folders of this computer the sandbox sees now (not those no longer added): their paths, for text.ts setHostTops. */
+export const liveHostTops = (projects: Project[]): string[] => projects.filter((p) => p.host && !p.gone).map((p) => p.root);
 
 /** The project a session is shown in: the one the backend says when it is in the list, else the Workspace. */
 export function projectFor(id: string, where: Record<string, Where>, projects: Project[]): string {
@@ -144,17 +178,26 @@ export function sessionsByProject(projects: Project[], open: string[], listed: S
 /** A path of the workspace as an @-mention for a session that runs in `cwd`: relative to that folder when it is in it
  *  (as Claude Code resolves a mention), else its absolute path in the sandbox. */
 export function mentionPath(wsPath: string, cwd: string): string {
-  const base = cwd === WORKSPACE_PATH ? '' : cwd.slice(WORKSPACE_PATH.length + 1);
-  if (!base) return wsPath;
-  const dir = wsPath.endsWith('/') ? wsPath.slice(0, -1) : wsPath;
-  if (dir === base) return wsPath.endsWith('/') ? './' : '.';
-  return wsPath.startsWith(`${base}/`) ? wsPath.slice(base.length + 1) : `${WORKSPACE_PATH}/${wsPath}`;
+  // (a page path: relative to the workspace, or absolute in a folder of this computer)
+  const abs = wsPath.startsWith('/') ? wsPath : wsPath ? `${WORKSPACE_PATH}/${wsPath}` : WORKSPACE_PATH;
+  if (cwd === WORKSPACE_PATH && !wsPath.startsWith('/')) return wsPath;
+  const slash = abs.endsWith('/');
+  const dir = slash ? abs.slice(0, -1) : abs;
+  if (dir === cwd) return slash ? './' : '.';
+  return abs.startsWith(`${cwd}/`) ? abs.slice(cwd.length + 1) : abs;
 }
 /** A path typed after @ (relative to the session's folder, or absolute in /workspace) as a path of the workspace — null
  *  for one outside it (or with a "." or ".." part). */
 export function workspacePath(p: string, cwd: string): string | null {
   if (typeof p !== 'string' || !p || p.length > 4096 || p.includes('\0')) return null;
   const abs = p.startsWith('/') ? p : `${cwd}/${p}`;
+  // (in a folder of this computer: the page's path is the absolute one)
+  const top = hostTopOf(abs);
+  if (top) {
+    const tail = abs.slice(top.length).replace(/^\//, '');
+    const segs = (tail.endsWith('/') ? tail.slice(0, -1) : tail).split('/');
+    return tail && segs.some((x) => x === '' || x === '.' || x === '..') ? null : abs.endsWith('/') ? abs.slice(0, -1) : abs;
+  }
   if (abs !== WORKSPACE_PATH && !abs.startsWith(`${WORKSPACE_PATH}/`)) return null;
   const rest = abs === WORKSPACE_PATH ? '' : abs.slice(WORKSPACE_PATH.length + 1);
   const parts = (rest.endsWith('/') ? rest.slice(0, -1) : rest).split('/');

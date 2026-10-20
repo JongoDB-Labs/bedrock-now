@@ -11,6 +11,7 @@ import {
   cleanName,
   exactPath,
   isId,
+  hostTopOf,
   isUuid,
   label,
   LIMITS,
@@ -1222,7 +1223,12 @@ export async function gitDiscard(path: string, ifMtimeMs: number | null, repo = 
 export function repoPath(v: unknown): string | null {
   if (v === '') return '';
   const p = exactPath(v);
-  return p && p.split('/').length <= 8 && !p.split('/').some((x) => x.toLowerCase() === '.git') ? p : null;
+  if (!p) return null;
+  // (in a folder of this computer: counted from its path)
+  const top = p.startsWith('/') ? hostTopOf(p) : null;
+  const rest = top ? p.slice(top.length + 1) : p;
+  const segs = rest ? rest.split('/') : [];
+  return segs.length <= 8 && !segs.some((x) => x.toLowerCase() === '.git') ? p : null;
 }
 const REMOTE_NAME = /^(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const BRANCH_NAME = /^(?!.*(?:\.\.|@\{|\/\/|\/\.|\.lock\/|\.lock$))(?!.*[./]$)[A-Za-z0-9_][A-Za-z0-9._/+-]{0,199}$/;
@@ -1819,7 +1825,8 @@ export function normRunResult(v: unknown): RunResult | null {
     startedAt: n(o.startedAt), state: o.state as RunResult['state'], exitCode: o.state === 'done' ? code : null,
     signal: typeof o.signal === 'string' && /^SIG[A-Z0-9]{1,12}$/.test(o.signal) ? o.signal : null, error: typeof o.error === 'string' && o.error ? label(o.error, 300) : null, ...saidIn(o),
     endedAt: n(o.endedAt), tail: typeof o.tail === 'string' ? o.tail.slice(-70_000) : '', cut: o.cut === true,
-    root: typeof o.root === 'string' && /^[^\x00-\x1f\x7f]{0,160}$/.test(o.root) && !o.root.split('/').some((x) => x === '..' || x === '.') && !o.root.startsWith('/') ? o.root : '' };
+    root: typeof o.root === 'string' && (o.root.startsWith('/') ? hostTopOf(o.root) === o.root
+      : /^[^\x00-\x1f\x7f]{0,160}$/.test(o.root) && !o.root.split('/').some((x) => x === '..' || x === '.')) ? o.root : '' };
 }
 /** The workspace's tasks (package.json's scripts, the Makefile's targets, pyproject.toml's entry points). */
 export async function getRunTasks(): Promise<RunList> {
