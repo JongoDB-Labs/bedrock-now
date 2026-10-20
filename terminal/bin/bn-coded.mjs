@@ -330,10 +330,8 @@ const inRoot = (abs, root) => abs === root.abs || abs.startsWith(root.abs + '/')
 // them are the workspace's); never out of the workspace. mustExist false: the last part may be missing (a file to
 // create); its folder must exist and be inside.
 export function confine(p, { mustExist = true, root = WS_ROOT } = {}) {
-  if (typeof p !== 'string' || p.length > 4096 || p.includes('\0')) return null;
-  const named = p === WORKSPACE || p.startsWith(WORKSPACE + '/');
-  const abs = named ? path.resolve(p) : path.resolve(root.abs, p.replace(/^\/+/, ''));
-  if (!named && !inRoot(abs, root)) return null;
+  const abs = asked(p, root);
+  if (!abs) return null;
   let real;
   try { real = fs.realpathSync(abs); } catch {
     if (mustExist) return null;
@@ -343,15 +341,38 @@ export function confine(p, { mustExist = true, root = WS_ROOT } = {}) {
   }
   return inside(real) ? real : null;
 }
+// asked(p, root) -> the absolute path a path names, as confine reads it (before any link is resolved), or null when it
+// is not one or leaves the root by its ".."
+function asked(p, root = WS_ROOT) {
+  if (typeof p !== 'string' || p.length > 4096 || p.includes('\0')) return null;
+  const named = p === WORKSPACE || p.startsWith(WORKSPACE + '/');
+  const abs = named ? path.resolve(p) : path.resolve(root.abs, p.replace(/^\/+/, ''));
+  return named || inRoot(abs, root) ? abs : null;
+}
+// missingInside(p, root) -> whether a path that is not there (nor, perhaps, its folders) would be in the workspace: the
+// nearest folder above it that is there, its links resolved, and the rest of the path
+function missingInside(p, root = WS_ROOT) {
+  const abs = asked(p, root);
+  if (!abs) return false;
+  let rest = path.basename(abs);
+  for (let up = path.dirname(abs); up !== path.dirname(up); up = path.dirname(up)) {
+    let real = null;
+    try { real = fs.realpathSync(up); } catch { /* not there either: the folder above it */ }
+    if (real !== null) return inside(path.join(real, rest));
+    rest = path.join(path.basename(up), rest);
+  }
+  return false;
+}
 // rel(real, root) -> what an answer names: relative to the root; a path in another project (through a link): its
 // absolute path in the workspace
 const rel = (real, root = WS_ROOT) => (inRoot(real, root) ? path.relative(root.abs, real) || '.' : real);
 // existing(p) -> the real path of something that exists in the workspace; ENOENT when it would be inside but is not
-// there, "not in the workspace" when it is outside (or not a path)
+// there (a file in a folder not made yet too: Claude Code's file the page waits for), "not in the workspace" when it
+// is outside (or not a path)
 function existing(p, root = WS_ROOT) {
   const real = confine(p, { root });
   if (real) return real;
-  if (confine(p, { mustExist: false, root })) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  if (missingInside(p, root)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
   throw new Error('not in the workspace');
 }
 // trashFor(real, root) -> the trash a deleted entry goes to: its root's (<root>/.bedrock-now-trash) when it is in the

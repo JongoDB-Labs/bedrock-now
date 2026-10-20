@@ -219,6 +219,15 @@ test('fs ops over the socket: list, read, write (precondition, unique names), mk
   assert.equal(result(await talk(SOCK, [open({ op: 'fs.read', path: 'f/nope.txt' })])).error, 'ENOENT');
   assert.equal(result(await talk(SOCK, [open({ op: 'fs.list', path: 'nodir' })])).error, 'ENOENT');
   assert.equal(result(await talk(SOCK, [open({ op: 'fs.read', path: '../outside/nope' })])).error, 'not in the workspace');
+  // a file in a folder not made yet (Claude Code's, the page waits for it): ENOENT too, however deep ("/etc/…" is the
+  // workspace's etc); through a link out of the workspace, or by "..": refused
+  for (const p of ['nodir/x.txt', 'nodir/sub/x.txt', 'f/hello.txt/x', `${WS}/nodir/x.txt`, '/etc/nodir/x']) {
+    assert.equal(result(await talk(SOCK, [open({ op: 'fs.read', path: p })])).error, 'ENOENT', p);
+  }
+  assert.equal(result(await talk(SOCK, [open({ op: 'fs.list', path: 'nodir/sub' })])).error, 'ENOENT');
+  for (const p of ['out/nodir/x.txt', '../outside/nodir/x.txt', 'nodir/../../outside/x']) {
+    assert.equal(result(await talk(SOCK, [open({ op: 'fs.read', path: p })])).error, 'not in the workspace', p);
+  }
 });
 
 test('fs.read: a FIFO cannot hang it, a device is not a file, a big file is cut', async (t) => {

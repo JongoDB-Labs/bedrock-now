@@ -39,6 +39,10 @@ All notable changes to bedrock-now are documented here. The format follows
 - **The Git panel's "not a remote URL (https://…, ssh://… or user@host:path)" refusal** read as bn-coded's own again:
   its "…" became "?" on the way, so it never matched the list and showed in the box; it says "..." now, and a test
   checks every fixed text still matches as it arrives.
+- **A file in a folder that is not there yet is "not there" (404), no longer "not in the workspace" (400)**: the
+  sandbox looked only one folder up, so a file Claude Code was about to write in a new folder (the page polls for it)
+  read as outside the workspace; it now resolves the nearest folder that is there. A path that leaves the workspace —
+  by "..", or through a link — is still refused.
 
 ## [0.18.0] - 2026-10-19
 

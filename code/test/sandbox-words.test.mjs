@@ -74,6 +74,23 @@ test('bn-coded\'s own fixed refusals read plainly; ENOENT and failures of ours s
   }
 });
 
+test('the files: not there (yet) is 404 on every route, outside the workspace 400 — bn-coded\'s words plainly, as before', async () => {
+  const routes = [['GET', '/api/fs/file?path=e2e-ui/planned.txt'], ['GET', '/api/fs?path=e2e-ui'], ['GET', '/api/fs/download?path=e2e-ui/a.txt'],
+    ['GET', '/api/fs/file?path=e2e-ui/a.txt&download=1'], ['PUT', '/api/fs/file?path=e2e-ui/a.txt', { text: 'x' }], ['DELETE', '/api/fs?path=e2e-ui/a.txt'],
+    ['POST', '/api/fs/rename', { from: 'e2e-ui/a.txt', to: 'e2e-ui/b.txt' }], ['POST', '/api/fs/mkdir', { path: 'e2e-ui/sub' }]];
+  try {
+    for (const [refusal, status, error] of [['ENOENT', 404, 'no such file or folder'], ['not in the workspace', 400, 'not in the workspace']]) {
+      answer = () => new SandboxError(refusal, 'refused');
+      for (const [method, p, body] of routes) {
+        const r = await req(method, p, body);
+        assert.deepEqual([r.status, r.json], [status, { error }], `${refusal}: ${method} ${p}`);
+      }
+    }
+  } finally {
+    answer = () => new SandboxError(HOSTILE, 'refused');
+  }
+});
+
 test('a session that cannot start: "could not start Claude Code", Claude Code\'s own words apart', async () => {
   const r = await req('POST', '/api/sessions', {});
   assert.deepEqual([r.status, r.json], [502, words(HOSTILE, 'claude', 'could not start Claude Code')]);
