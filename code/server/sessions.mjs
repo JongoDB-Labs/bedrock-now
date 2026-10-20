@@ -954,7 +954,7 @@ export class SessionManager {
   /** POST /api/sessions -> {id, existing}. cwd: the folder a new (or forked) session runs in — its project's; a resumed
    *  one, its own (the caller reads it from the transcript's list) */
   open({ model, mode, effort, resume, fork, at, taskStop, budget, cwd } = {}) {
-    if (cwd !== undefined && cwd !== null && !cwdOk(cwd)) throw new SessionError('bad folder: /workspace or a folder of it');
+    if (cwd !== undefined && cwd !== null && !cwdOk(cwd)) throw new SessionError('bad folder: /workspace or a folder of it, or a folder of this computer the sandbox sees (one no longer added is read only)');
     if (model !== undefined && model !== null && !isModel(model)) throw new SessionError('bad model');
     if (model !== undefined && model !== null && !isFullModel(model)) throw new SessionError(ALIAS_REFUSED);
     // auto: a session in Auto starts in Manual and is switched before its first prompt — while Settings allow it; else

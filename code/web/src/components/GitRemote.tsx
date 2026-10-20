@@ -52,7 +52,7 @@ export function RepoPicker() {
     <label class="gitr-repo small" title="The project whose repository the Git panel shows (the top bar's project chip: its folder)">
       <Icon name="folder" size={13} />
       <select value={repo} onChange={(e) => void selectGitRepo((e.currentTarget as HTMLSelectElement).value)} aria-label="Project" data-testid="git-repo">
-        {projects.map((p) => (
+        {projects.filter((p) => !p.gone).map((p) => (
           <option key={p.id} value={p.root}>
             {p.workspace ? 'Workspace (the workspace folder)' : `${p.name} (${label(p.root, 120)})`}
           </option>

@@ -120,8 +120,9 @@ function actions(s: AppState): Item[] {
     a('shortcuts', 'Keyboard shortcuts', () => setDialog('shortcuts'), 'keyboard', '', keysFor('shortcuts')),
   ];
   if (v && v.state !== 'closed') list.push(a('restart', 'Restart this session (load new MCP servers)', () => void restartSession(), 'refresh'));
-  // every project: a new session in it, and switching to it (ids: what you ran last stays one project's)
-  for (const p of s.projects) {
+  // every project: a new session in it, and switching to it (ids: what you ran last stays one project's) — not a folder
+  // of this computer no longer added (the sandbox does not see it)
+  for (const p of s.projects.filter((x) => !x.gone)) {
     list.push(a(`newin:${p.id}`, `New session in ${label(p.name, 80)}`, () => void newSession({ project: p.id }), 'plus', label(p.path, 120)));
     if (p.id !== s.project) list.push(a(`switch:${p.id}`, `Switch project: ${label(p.name, 80)}`, () => setProject(p.id), 'folder', label(p.path, 120)));
   }
