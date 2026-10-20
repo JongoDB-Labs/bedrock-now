@@ -30,7 +30,9 @@ All notable changes to bedrock-now are documented here. The format follows
   and `test` show them; backups keep the list. The workspace may no longer be a temporary folder itself or lie
   behind a folder of sockets (a folder of yours inside a temporary folder still is fine). A linked git worktree or a
   submodule's checkout is added with a plain note: git won't work on it inside the sandbox, since the main
-  repository's `.git` (its hooks and configuration) is never shared — add the main repository to use git there. A
+  repository's `.git` (its hooks and configuration) is never shared — add the main repository to use git there.
+  Nothing in a folder is opened after it is added (its `.git` and the like are read once then), names from inside it
+  are printed as printable ASCII only, and a folder the sandbox still has mounted is not added again until applied. A
   removed folder's sessions are listed under *Folders no longer added*, read only. The project's trust step, the Git
   panel, Git hosts, Review and the watchlist work in them as in a folder of the workspace. New project has a fourth
   option, *A folder of this computer*, that says where one is added.

@@ -2559,13 +2559,20 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
   to the main repository's `.git`; mounting that too would let the sandbox write its hooks and configuration, which
   git runs on this computer when you use it there. So the folder is added alone, and `./stack`, Settings and
   `./stack project list` say plainly that git won't work on it inside the sandbox (add the main repository instead).
-  In a read-write folder the sandbox can rewrite that `.git` file, so only its first 4 KiB are read, as text: the
-  path it names is never followed, looked at or printed (one under `/net/…` would mount a share), only its kind said.
-- [x] **Nothing the sandbox wrote in a folder is followed or printed raw.** The checks run again at every `./stack
-  up` and `list` look into folders the sandbox may have written: no link there is followed (a link to `/net/…` or
-  `/Network/…` would mount a share; one to a FIFO would hang), files are read bounded and as text, and every name
-  said from inside a folder (a socket's, a subfolder's) has its control characters removed, so no escape sequence
-  reaches your terminal (its title, the clipboard, the cursor).
+  That `.git` file is read once, when the folder is added, its first 4 KiB as text: the path it names is never
+  followed, looked at or printed (one under `/net/…` would mount a share); only its kind is kept, in `folders.tsv`.
+- [x] **Nothing the sandbox wrote in a folder is opened, followed or printed raw.** In a read-write folder the sandbox
+  can swap any entry for a link (to a FIFO, which hangs a read; to `/net/…` or `/Network/…`, which mounts a share)
+  between a check and a read, and no shell can open a file without following a link. So a file's *contents* inside a
+  folder (its `.git`, an `.npmrc`) are read only when it is added — when the sandbox cannot see it: a folder the
+  running sandbox still has mounted (removed, not applied yet), or one around or inside such a folder, is refused
+  until `./stack project apply` — and what is needed is kept in `folders.tsv`. `./stack up`, `list`, `status`,
+  `test` and `apply` open nothing in a folder: only its path's rules and `find -P` with a depth limit, which looks at
+  names and types without following a link (sockets, folders of sockets, the names of key files). Every name said from
+  inside a folder (a socket's, a subfolder's) is printed as printable ASCII only — any other byte a `?`, so no escape
+  sequence (C0, or C1: `\x9b` and its UTF-8 form `\xc2\x9b` are a terminal's CSI too) reaches your terminal (its
+  title, the clipboard, the cursor); your own paths and names keep their letters (ü stays ü) without control
+  characters, and a path with one (C0, DEL, C1, or a byte that is not UTF-8) is refused when added.
 - [x] **The list is ./stack's, not the sandbox's.** It lives in `.state/projects/folders.tsv` (mode 600 in a folder of
   mode 700), which no container mounts. From it ./stack writes `.state/projects/compose.yaml`: for each folder a bind
   mount into the terminal container (`create_host_path: false`: Docker never creates a folder; `read_only` for a

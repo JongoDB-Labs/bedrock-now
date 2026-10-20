@@ -569,39 +569,85 @@ test_a_linked_worktree_or_submodule_is_added_and_said() {
 
 test_nothing_the_sandbox_wrote_in_a_folder_is_followed_or_printed_raw() {
   _stubs
-  local a out esc calls
+  local a out esc self
   esc="$(printf '\033]52;c;aGk=\007\033[2J')"
   a="$(_dir app)"
-  project_add "$a" --later 2>/dev/null || return 1
-  # a .git file the sandbox rewrote: escape sequences and a path that would mount a share (/net/…) — read as text,
-  # never followed, never printed
+  # a .git file naming a path that would mount a share (/net/…), with escape sequences: read once, when the folder is
+  # added — as text: never followed, never printed; its kind kept in the list
   printf 'gitdir: /net/attacker/share/.git/worktrees/x%s\n' "$esc" > "$a/.git"
-  calls="$TMP/followed"; : > "$calls"
+  : > "$TMP/followed"
   _phys() { case "$1" in /net/*) echo "$1" >> "$TMP/followed" ;; esac; (cd "$1" 2>/dev/null && /bin/pwd -P) || true; }
-  out="$(projects_list 2>&1; projects_sync 2>&1; projects_status_lines 2>&1; cat "$(projects_status_file)")"
+  out="$(project_add "$a" --later 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "app: This is a linked git worktree"
+  assert_eq "$(_rec app | cut -f8)" worktree
+  out="$out$(projects_list 2>&1; projects_sync 2>&1; projects_status_lines 2>&1; cat "$(projects_status_file)")"
   assert_contains "$out" "git: This is a linked git worktree"
   assert_not_contains "$out" "$(printf '\033')"
   assert_not_contains "$out" "/net/attacker"
-  assert_eq "$(cat "$calls")" ""
-  # a socket named with escape sequences: said as plain text
-  _sock "$a/s$(printf '\033')]0;x$(printf '\007').sock" || return 77
+  assert_eq "$(cat "$TMP/followed")" ""
+  # once added, nothing in it is opened again — ./stack up, list, status, test use what was kept: the sandbox may swap
+  # any entry for a link (a FIFO hangs a read, /net/… mounts a share) between a check and a read
+  printf '//r.example.invalid/:_authToken=%s\n' "$(printf 'z%.0s' 1 2 3 4 5 6 7 8)" > "$a/.npmrc"
+  printf 'gitdir: ../elsewhere\n' > "$a/.git"
+  : > "$TMP/reads"
+  for c in head cat grep sed awk tr; do
+    eval "$c() { case \" \$* \" in *\"$a/\"*) echo \"$c \$*\" >> \"$TMP/reads\" ;; esac; command $c \"\$@\"; }"
+  done
+  local fails=0   # (projects_test_checks counts in ./stack test's)
+  projects_sync >/dev/null 2>&1; projects_list >/dev/null 2>&1; projects_status_lines >/dev/null 2>&1; projects_test_checks >/dev/null 2>&1
+  unset -f head cat grep sed awk tr
+  assert_eq "$(cat "$TMP/reads")" ""
+  assert_eq "$(_rec app | cut -f8)" worktree   # (as it was when added)
+  # a socket named with escape sequences (and C1 controls): said as printable ASCII only — the folder's own path as it is
+  _sock "$a/s$(printf '\033')]0;x$(printf '\302\233').sock" || return 77
   out="$(projects_sync 2>&1)"
-  assert_contains "$out" "holds a socket"
-  assert_not_contains "$out" "$(printf '\033')"
-  assert_not_contains "$out" "$(printf '\007')"
+  assert_contains "$out" "holds a socket ($a/s?]0;x??.sock)"
   rm -f "$a"/s*.sock
-  # links in it are never followed by the keys check (one to /net/… would mount a share): a link to a folder with
-  # keys is not that folder
+  # the keys check goes by names, through no link (one to a folder with keys is not that folder)
   local elsewhere; elsewhere="$TMP/elsewhere"; mkdir -p "$elsewhere/.ssh" "$elsewhere/gh"
-  ln -s "$elsewhere" "$a/linked-home"; mkdir -p "$a/.config"; ln -s "$elsewhere/gh" "$a/.config/gh"
-  ln -s "$elsewhere/.ssh" "$a/.ssh"
-  local self; self="$(_rec app | cut -f1)"
-  out="$(_PC_SELF="$self" project_check "$a" 2>&1)" || { echo "refused through a link: $out" >&2; return 1; }
-  # and a folder named with escape sequences holding keys: said as plain text
-  mkdir -p "$a/x$(printf '\033')[31m/.aws"
-  out="$(_PC_SELF="$self" project_check "$a" 2>&1)" && return 1
-  assert_contains "$out" "it holds keys or logins: x[31m/.aws"
-  assert_not_contains "$out" "$(printf '\033')"
+  ln -s "$elsewhere" "$a/linked-home"; mkdir -p "$a/.config"; ln -s "$elsewhere/gh" "$a/.config/gh"; ln -s "$elsewhere/.ssh" "$a/.ssh"
+  self="$(_rec app | cut -f1)"
+  out="$(_PC_RECHECK=1 _PC_SELF="$self" project_check "$a" 2>&1)" || { echo "refused through a link: $out" >&2; return 1; }
+  # a folder named with escape sequences and C1 controls, holding keys: said as printable ASCII only
+  mkdir -p "$a/x$(printf '\033')[31m$(printf '\302\233')/.aws"   # (UTF-8's C1: a Mac's disk takes no lone \233)
+  out="$(_PC_RECHECK=1 _PC_SELF="$self" project_check "$a" 2>&1)" && return 1
+  assert_contains "$out" "it holds keys or logins: x?[31m??/.aws"
+}
+
+test_a_folder_the_sandbox_still_has_mounted_is_not_added_again_until_applied() {
+  DC_RUNNING=1; _stubs
+  terminal_ready() { return 0; }
+  local a out; a="$(_dir app)"; mkdir -p "$a/sub"
+  # removed, not applied yet: the running sandbox still has it (Docker's word: its BN_CODE_ROOTS and the mount's source)
+  SANDBOX_ROOTS="[\"$a\"]"; SANDBOX_MOUNTS="$a	true	$a"
+  out="$(project_add "$a" --later 2>&1)" && return 1
+  assert_contains "$out" "its removal from the sandbox has not applied yet"
+  assert_contains "$out" "run ./stack project apply first"
+  out="$(project_add "$a/sub" --later 2>&1)" && return 1
+  assert_contains "$out" "its removal from the sandbox has not applied yet"
+  out="$(project_add "$(dirname "$a")" --later 2>&1)" && return 1
+  assert_contains "$out" "the sandbox still has a folder in it mounted"
+  # (Docker Desktop names a Mac's folder /host_mnt/…)
+  SANDBOX_MOUNTS="$a	true	/host_mnt$a"
+  out="$(project_add "$a" --later 2>&1)" && return 1
+  assert_contains "$out" "its removal from the sandbox has not applied yet"
+  # applied: added
+  SANDBOX_ROOTS=''; SANDBOX_MOUNTS=''
+  project_add "$a" --later 2>/dev/null || return 1
+}
+
+test_an_owners_path_keeps_its_letters_and_loses_its_controls() {
+  _stubs
+  local d why
+  d="$TMP/f/jürgen/app"; mkdir -p "$d"
+  project_add "$d" --later 2>/dev/null || { echo "refused a path with ü" >&2; return 1; }
+  assert_contains "$(projects_list)" "$d"
+  for bad in "x$(printf '\302\233')y" "x$(printf '\233')y"; do
+    mkdir -p "$TMP/f/$bad" 2>/dev/null || continue   # (a Mac's disk takes no byte that is not UTF-8)
+    why="$(project_check "$TMP/f/$bad")" && { echo "accepted a C1 control in a path" >&2; return 1; }
+  done
+  assert_eq "$(owner_text "/a/jürgen$(printf '\033')[1m$(printf '\302\233')")" "/a/jürgen[1m"
+  assert_eq "$(plain_text "a$(printf '\033')b$(printf '\233')c$(printf '\302\233')dü")" "a?b?c??d??"
 }
 
 test_a_socket_found_again_the_sandbox_could_not_have_made_drops_the_folder() {

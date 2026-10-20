@@ -825,7 +825,8 @@ sandbox, so the Code page's sessions (and the terminal) work in it directly, wit
 - **Removing** (`./stack project remove NAME`; **Remove** in Settings, from any device; the project's ⋯ › *Remove
   folder from Code…* says where): the folder leaves the sandbox, nothing in it is touched. Its sessions are listed
   under **Folders no longer added**, read only; add the folder again to go on with them (*Forget this folder…* takes
-  them off the list).
+  them off the list) — once the removal has applied (`./stack project apply`, if you chose later): a folder the
+  sandbox still has is not added again, since what is checked in it when added must not change meanwhile.
 - **The rest works as in any project**: its own Claude Code configuration applies only once trusted; the Git panel,
   Git hosts, Review and the watchlist work in it. `./stack project list` lists the folders (so do `./stack code status`
   and `./stack terminal status`), and `./stack test` checks that the sandbox sees each one. A backup keeps the list

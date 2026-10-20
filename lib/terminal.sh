@@ -113,9 +113,34 @@ first_socket() {
   [ -n "$s" ] || return 1
   printf '%s\n' "$s"
 }
-# plain_text TEXT -> TEXT without control characters: a name inside a folder the sandbox writes is its to choose, and
-# escape sequences must never reach your terminal (titles, the clipboard, the cursor)
-plain_text() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
+# plain_text TEXT -> TEXT as printable ASCII, every other byte a ? — for what comes from the sandbox or from inside a
+# folder it writes (a socket's or a subfolder's name: its to choose): no escape sequence, C0 or C1 (\x9b, or \xc2\x9b
+# in UTF-8, is a terminal's CSI too), ever reaches your terminal
+plain_text() { printf '%s' "$1" | LC_ALL=C tr -c '\040-\176' '?'; }
+# owner_text TEXT -> TEXT with its control characters dropped — C0, DEL and both forms of C1 (a lone byte 0x80–0x9f, or
+# U+0080–U+009F in UTF-8) — and any byte that is not part of valid UTF-8; other non-ASCII kept (ü stays ü). For what you
+# typed or chose yourself: a folder's path, its name.
+owner_text() {
+  printf '%s' "$1" | LC_ALL=C awk 'BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
+    { n = length($0); i = 1; out = ""
+      while (i <= n) {
+        c = ord[substr($0, i, 1)]
+        if (c < 32 || c == 127) { i++; continue }
+        if (c < 128) { out = out substr($0, i, 1); i++; continue }
+        need = (c >= 194 && c <= 223) ? 1 : (c >= 224 && c <= 239) ? 2 : (c >= 240 && c <= 244) ? 3 : -1
+        if (need < 0) { i++; continue }
+        ok = 1
+        for (k = 1; k <= need; k++) { d = ord[substr($0, i + k, 1)]; if (d < 128 || d > 191) ok = 0 }
+        if (!ok) { i++; continue }
+        if (c == 194 && ord[substr($0, i + 1, 1)] < 160) { i += 2; continue }
+        out = out substr($0, i, need + 1); i += need + 1
+      }
+      printf "%s", out }'
+}
+# inside_text ROOT PATH -> PATH said as ROOT (yours: owner_text) and the rest below it (the sandbox's: plain_text)
+inside_text() {
+  case "$2" in "$1"/*) printf '%s/%s' "$(owner_text "$1")" "$(plain_text "${2#"$1"/}")" ;; *) plain_text "$2" ;; esac
+}
 # sockets_in DIR -> every socket in DIR or its folders down to 3 levels, one a line (links never followed)
 sockets_in() { find "$1" -maxdepth 3 -type s -print 2>/dev/null || true; }
 # host_socket_in DIR -> a socket in DIR (down to 3 levels) whose path inside DIR goes through a folder of sockets
@@ -408,7 +433,7 @@ terminal_why_out() {
   elif ! why="$(terminal_workspace_check "$ws")"; then echo "its workspace folder $ws is refused now: $why"
   # (a socket in a folder of sockets there — tmux-<uid>, .X11-unix … — is a program of this computer's, not one the
   # sandbox made: the workspace is left out until it is gone; any other socket is only said, terminal_up_hook)
-  elif sock="$(host_socket_in "$ws")"; then echo "its workspace folder $ws holds a socket of a program of this computer ($(plain_text "$sock")): the sandbox could take commands from it — remove it"
+  elif sock="$(host_socket_in "$ws")"; then echo "its workspace folder $ws holds a socket of a program of this computer ($(inside_text "$ws" "$sock")): the sandbox could take commands from it — remove it"
   fi
 }
 
@@ -427,7 +452,7 @@ terminal_up_hook() {
     # (any other socket in the workspace: said, never a reason to leave it out — a sandbox process may have made it)
     local ws sock; ws="$(get_env TERMINAL_WORKSPACE)"
     if [ -n "$ws" ] && sock="$(first_socket "$ws")"; then
-      warn "the workspace holds a socket ($(plain_text "$sock")): a program of this computer listening there could take commands from the sandbox — remove it if it is not one the sandbox made"
+      warn "the workspace holds a socket ($(inside_text "$ws" "$sock")): a program of this computer listening there could take commands from the sandbox — remove it if it is not one the sandbox made"
     fi
     return 0
   fi
