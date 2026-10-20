@@ -53,7 +53,9 @@
 #                    browser passes between ./stack project commands: browser/code-host-folders-a (both in the
 #                    Projects tab and Settings, the read-only one refusing writes, a Haiku session in the read-write
 #                    one at its path), -b (removed: its session under "Folders no longer added", read only) and -c
-#                    (added again: the session resumes, Haiku); both removed at the end, their files untouched.
+#                    (added again: the session resumes, Haiku); in between, made read-only with --now (the sandbox
+#                    refuses writes at once), read-write again with --later (said as pending until ./stack project
+#                    apply), and a folder in /tmp refused; both removed at the end, their files untouched.
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -787,6 +789,33 @@ elif [ "$HOST_FOLDERS" = 1 ]; then
   if [ "$(cat "$HF/app/from-the-page.txt" 2>/dev/null)" = 'written in the sandbox' ]; then
     record projects host-folders-write-lands PASS 0 "a file the page wrote in the sandbox is in the folder on this computer"
   else record projects host-folders-write-lands FAIL 0 "no $HF/app/from-the-page.txt with the page's text"; fi
+  # narrowing, now: the mount is read-only at once; widening, later: listed, said as pending, the sandbox unchanged until
+  # ./stack project apply — then read-write again
+  app_writes() { docker exec "$(svc_id terminal)" sh -c 'if touch "$1/.e2e-w" 2>/dev/null; then rm -f "$1/.e2e-w"; echo yes; else echo no; fi' sh "$HF/app" 2>/dev/null; }
+  pj_status() { cat "$STACK/.state/status/projects.json" 2>/dev/null || true; }
+  # (no grep -q on a pipe here: under pipefail an early exit could read as a failure)
+  pj_pending() { case "$(pj_status)" in *'"pending":"'*) return 0 ;; esac; return 1; }
+  pj_app_row() { pj_status | tr '{' '\n' | grep '"name":"e2e-host-app"' || true; }
+  cli project-mode-ro-now 0 'e2e-host-app is read-only in the sandbox' project mode e2e-host-app ro --now
+  t0="$(now)"
+  if [ "$(app_writes)" = no ] && ! pj_pending; then
+    record projects host-folders-narrowing-applies PASS "$(( $(now) - t0 ))" "made read-only with Restart now: the sandbox refuses a write there at once; nothing pending"
+  else record projects host-folders-narrowing-applies FAIL "$(( $(now) - t0 ))" "after mode ro --now: the sandbox writes there: $(app_writes); $(pj_status | head -c 300)"; fi
+  cli project-mode-rw-later 0 'the sandbox applies it when it restarts' project mode e2e-host-app rw --later
+  t0="$(now)"; listed="$(st project list 2>&1)"
+  if [ "$(app_writes)" = no ] && case "$(pj_app_row)" in *'"pending":"rw"'*) true ;; *) false ;; esac &&
+     case "$listed" in *"pending: read-write once the sandbox restarts"*) true ;; *) false ;; esac; then
+    record projects host-folders-pending-said PASS "$(( $(now) - t0 ))" "read-write again, later: listed, the sandbox still read-only there, said as pending (projects.json, ./stack project list)"
+  else record projects host-folders-pending-said FAIL "$(( $(now) - t0 ))" "after mode rw --later: writes: $(app_writes); list: ${listed:0:300}"; fi
+  cli project-apply 0 'the sandbox sees' project apply
+  t0="$(now)"
+  if [ "$(app_writes)" = yes ] && ! pj_pending; then
+    record projects host-folders-pending-applied PASS "$(( $(now) - t0 ))" "./stack project apply: read-write in the sandbox, nothing pending"
+  else record projects host-folders-pending-applied FAIL "$(( $(now) - t0 ))" "after apply: writes: $(app_writes); $(pj_status | head -c 300)"; fi
+  # a temporary folder is never one (programs of this computer keep their sockets there)
+  tmpf="$(mktemp -d /tmp/bne2e-p2-folder.XXXXXX)"
+  cli project-add-tmp-refused 1 'it is in a temporary or runtime folder' project add "$tmpf" --now
+  rm -rf "$tmpf"
   cli project-remove 0 'e2e-host-app is no longer in the sandbox' project remove e2e-host-app --now
   t0="$(now)"; tc="$(svc_id terminal)"
   if docker exec "$tc" test -e "$HF/app" 2>/dev/null; then record projects host-folders-removed FAIL 0 "the sandbox still sees $HF/app"
