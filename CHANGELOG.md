@@ -21,8 +21,8 @@ All notable changes to bedrock-now are documented here. The format follows
 - **`./stack project add` with Docker not running at all** no longer refuses ("couldn't ask Docker…"): nothing can be
   mounted then, and the next `./stack up` starts the sandbox with the checked list — only when `docker info` says at
   once that it cannot connect to the daemon. It still refuses when Docker hangs or fails any other way (its
-  containers may still run). The folders the running sandbox has mounted are compared as Docker names them and as they
-  resolve (`/tmp/ws` is `/private/tmp/ws` on a Mac).
+  containers may still run). The folders the running sandbox has mounted are compared as Docker names them and as
+  they resolve (`/tmp/ws` is `/private/tmp/ws` on a Mac).
 
 ## [0.20.0] - 2026-10-20
 
