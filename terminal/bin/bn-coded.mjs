@@ -49,6 +49,11 @@
 //                   -workspace*/*.jsonl, each placed by the working folder it records — the folder names are lossy),
 //                   and whether a process other than this one's children runs a session now (the terminal, after Open
 //                   in the terminal: the page then does not resume it a second time)
+//   sessions.import / sessions.export
+//                   a transcript the code container copies into the store (one of yours from the computer, checked on
+//                   the Code page; or a fork for Continue in this project): into the store folder of a working folder
+//                   the sandbox has, a checked id, at most 32 MiB, never over another nor an id another folder has; and
+//                   one read whole (at most 32 MiB) for such a fork
 //   ports.list / ports.stop
 //                   the servers listening on the sandbox's loopback or all addresses (/proc/net/tcp, tcp6) with their
 //                   process, for the page's previews (bn-preview); stop: SIGTERM/SIGKILL to such a server's process only
@@ -452,7 +457,15 @@ function newTrashDir(trash) {
 // --- Claude Code's transcripts: ~/.claude/projects/<folder>/<id>.jsonl, the folder named after the session's working
 // --- folder with every non-alphanumeric a "-" (the SDK's naming) — lossy: /workspace/a-b and /workspace/a/b share
 // --- -workspace-a-b, so a transcript is placed by the working folder it records, never by its folder's name ---
-const encodeCwd = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, '-');
+// (past 200 characters: the first 200, "-" and a hash of the path — Java's String.hashCode, absolute, base 36 — as
+// Claude Code names a long folder's; code/server/harness/claude.mjs has the same, tested against the same vectors)
+export const encodeCwd = (cwd) => {
+  const n = cwd.replace(/[^A-Za-z0-9]/g, '-');
+  if (n.length <= 200) return n;
+  let h = 0;
+  for (let i = 0; i < cwd.length; i++) h = ((h << 5) - h + cwd.charCodeAt(i)) | 0;
+  return `${n.slice(0, 200)}-${Math.abs(h).toString(36)}`;
+};
 const PROJECTS = () => path.join(CONFIG_DIR, 'projects');
 // cwdOk(v): a working folder a session may have — in the workspace or a folder of this computer; absolute,
 // normalized, one line (it need not exist)
@@ -586,6 +599,159 @@ export function sessionsTitle(id, title, cwd) {
     fs.writeSync(fd, lastByte === 10 ? line : `\n${line}`);
   } finally { fs.closeSync(fd); }
   return { ok: true };
+}
+
+// --- sessions.import / sessions.export: a transcript copied into this sandbox's store by the code container (a session
+// --- of Claude Code or claude-bedrock on the computer, which you picked and checked on the Code page; or Continue in
+// --- this project: a fork written into another project's folder), and one read whole for that fork. The code container
+// --- decides what the copy says; here only where it goes: the store folder of a working folder the sandbox has (a top
+// --- or a folder in one), never through a link, a checked id, at most 32 MiB in all, a temporary file renamed (linked,
+// --- for a new one: never over another), and never an id another folder of the store has (Claude Code's --resume
+// --- searches every folder and finds none when two hold it) ---
+export const IMPORT_MAX = 32 << 20, IMPORT_PARTS = 512;
+const IMPORT_PART = /^(subagents|tool-results)\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+// realDir(p): p is a folder itself (lstat: never a link to one); made (mode 700) when missing and make is set
+function realDir(p, make = false) {
+  try {
+    const st = fs.lstatSync(p);
+    if (!st.isDirectory()) throw new Error('a folder on its way is a link');
+    return;
+  } catch (e) {
+    if (e.code !== 'ENOENT' || !make) throw e.code === 'ENOENT' ? new Error('ENOENT') : e;
+  }
+  fs.mkdirSync(p, { mode: 0o700 });
+  if (!fs.lstatSync(p).isDirectory()) throw new Error('a folder on its way is a link');
+}
+// fileSha256(p) -> the SHA-256 of a regular file (never through a link), or null when it is not there
+function fileSha256(p) {
+  let fd;
+  try { fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    throw new Error('not a transcript');
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > 2 * IMPORT_MAX) throw new Error('not a transcript');
+    const h = crypto.createHash('sha256');
+    for (let pos = 0; pos < st.size;) {
+      const b = readSlice(fd, pos, Math.min(1 << 20, st.size - pos));
+      if (!b.length) break;
+      h.update(b); pos += b.length;
+    }
+    return h.digest('hex');
+  } finally { fs.closeSync(fd); }
+}
+// elsewhere(id, here) -> another store folder that holds <id>.jsonl
+function elsewhere(id, here) {
+  let names = [];
+  try { names = fs.readdirSync(PROJECTS(), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return null; }
+  return names.find((n) => n !== here && (() => { try { fs.lstatSync(path.join(PROJECTS(), n, `${id}.jsonl`)); return true; } catch { return false; } })()) ?? null;
+}
+/** sessions.import: OPEN {id, cwd, parts: [{part: 'main' | 'subagents/<name>' | 'tool-results/<name>', size}],
+ *  replace: the SHA-256 the transcript there must have to be replaced (re-importing a copy not continued here) | null},
+ *  then STDIN frames with the parts' bytes in that order, then STDIN_END. -> a writer ({chunk, end, abort}) */
+export function sessionsImportBegin(req) {
+  if (!UUID.test(String(req.id))) throw new Error('bad session id');
+  if (!cwdOk(req.cwd)) throw new Error('bad session folder');
+  if (!isDirHere(req.cwd)) throw new Error("the session's folder is not in the workspace any more");
+  const list = Array.isArray(req.parts) ? req.parts : [];
+  if (!list.length || list.length > IMPORT_PARTS + 1 || list[0]?.part !== 'main') throw new Error('bad data');
+  let total = 0;
+  const seen = new Set();
+  for (const p of list) {
+    if (!p || typeof p !== 'object' || !Number.isInteger(p.size) || p.size < 0) throw new Error('bad size');
+    if (p !== list[0] && (!IMPORT_PART.test(String(p.part)) || seen.has(p.part))) throw new Error('bad data');
+    seen.add(p.part);
+    total += p.size;
+  }
+  if (total > IMPORT_MAX) throw new Error('that session is too large to copy (more than 32 MiB)');
+  const replace = req.replace === null || req.replace === undefined ? null : String(req.replace);
+  if (replace !== null && !SHA256.test(replace)) throw new Error('bad data');
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  realDir(CONFIG_DIR);
+  realDir(PROJECTS(), true);
+  const name = encodeCwd(req.cwd), dir = path.join(PROJECTS(), name);
+  realDir(dir, true);
+  if (elsewhere(req.id, name)) throw new Error('that session id is in another folder of the sandbox already');
+  const final = path.join(dir, `${req.id}.jsonl`);
+  const now = fileSha256(final);
+  if (now !== null && replace === null) throw new Error('that session is in the sandbox already');
+  if (now !== null && now !== replace) throw new Error('that session changed in the sandbox since it was copied');
+  if (now === null && replace !== null) throw new Error('that session is not in the sandbox (any more)');
+  const tmp = path.join(dir, `.bn-import-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+  fs.mkdirSync(tmp, { mode: 0o700 });
+  let i = 0, got = 0, fd = null;
+  const files = list.map((p, k) => ({ ...p, tmp: path.join(tmp, `p${k}`) }));
+  const openNext = () => {
+    while (i < files.length) {
+      if (fd === null) fd = fs.openSync(files[i].tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+      if (got < files[i].size) return;
+      fs.closeSync(fd); fd = null; got = 0; i++;
+    }
+  };
+  const abort = () => {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* closed */ } fd = null; }
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* gone */ }
+  };
+  openNext();
+  return {
+    abort,
+    chunk(b) {
+      let at = 0;
+      while (at < b.length) {
+        if (i >= files.length) throw new Error('more bytes than announced');
+        const n = Math.min(b.length - at, files[i].size - got);
+        fs.writeSync(fd, b, at, n); got += n; at += n;
+        openNext();
+      }
+    },
+    end() {
+      try {
+        openNext();
+        if (i < files.length) throw new Error('fewer bytes than announced');
+        // the files beside it first (<id>/subagents/…, <id>/tool-results/…), then the transcript itself
+        for (const f of files.slice(1)) {
+          const [sub, base] = f.part.split('/');
+          realDir(path.join(dir, req.id), true);
+          realDir(path.join(dir, req.id, sub), true);
+          const dest = path.join(dir, req.id, sub, base);
+          try { if (!fs.lstatSync(dest).isFile()) throw new Error('a folder is there now'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+          fs.renameSync(f.tmp, dest);
+        }
+        if (replace === null) fs.linkSync(files[0].tmp, final);   // (never over one that came meanwhile)
+        else {
+          if (fileSha256(final) !== replace) throw new Error('that session changed in the sandbox since it was copied');
+          fs.renameSync(files[0].tmp, final);
+        }
+        return { ok: true, size: files[0].size, parts: files.length - 1, replaced: replace !== null };
+      } catch (e) {
+        if (e.code === 'EEXIST') throw new Error('that session is in the sandbox already');
+        throw e;
+      } finally { abort(); }
+    },
+  };
+}
+/** sessions.export: a session's whole transcript (never through a link, at most 32 MiB) as STDOUT frames, then RESULT
+ *  {size, sha256} — read for Continue in this project (the code container forks it into another project's folder) */
+export function sessionsExport(send, id, cwd) {
+  const file = transcriptFile(id, cwd, { any: true });
+  if (!file) throw new Error('no such session');
+  let fd;
+  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch { throw new Error('no such session'); }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new Error('not a transcript');
+    if (st.size > IMPORT_MAX) throw new Error('that session is too large to copy (more than 32 MiB)');
+    const h = crypto.createHash('sha256');
+    let pos = 0;
+    while (pos < st.size) {
+      const b = readSlice(fd, pos, Math.min(1 << 20, st.size - pos));
+      if (!b.length) break;
+      h.update(b); send(T.STDOUT, b); pos += b.length;
+    }
+    return { size: pos, sha256: h.digest('hex') };
+  } finally { fs.closeSync(fd); }
 }
 
 // --- files under /workspace ---
@@ -4034,6 +4200,9 @@ export function serve(sock) {
         case 'sessions.list': return finish(T.RESULT, { sessions: sessionsList() });
         case 'sessions.load': return finish(T.RESULT, sessionsLoad(req.id, req.cwd));
         case 'sessions.title': return finish(T.RESULT, sessionsTitle(req.id, req.title, req.cwd));
+        // (a copy into the store — its data follows as STDIN frames; and one read whole, for a fork into another folder)
+        case 'sessions.import': writer = sessionsImportBegin(req); return undefined;
+        case 'sessions.export': return finish(T.RESULT, sessionsExport(send, req.id, req.cwd));
         case 'fs.list': return finish(T.RESULT, fsList(req.path, root()));
         case 'fs.mkdir': return finish(T.RESULT, fsMkdir(req.path, root()));
         case 'fs.rename': return finish(T.RESULT, fsRename(req.from, req.to, root()));
@@ -4201,10 +4370,11 @@ export function serve(sock) {
       return undefined;
     }
     if (writer) {
+      // (fs.write and memory.write: one file; sessions.import: a writer of its own — chunk, end, abort)
       try {
-        if (type === T.STDIN) return fsWriteChunk(writer, payload);
-        if (type === T.STDIN_END) { const w = writer; writer = null; return finish(T.RESULT, fsWriteEnd(w)); }
-      } catch (e) { const w = writer; writer = null; fsWriteAbort(w); return fail(e.code || e.message); }
+        if (type === T.STDIN) return writer.chunk ? writer.chunk(payload) : fsWriteChunk(writer, payload);
+        if (type === T.STDIN_END) { const w = writer; writer = null; return finish(T.RESULT, w.end ? w.end() : fsWriteEnd(w)); }
+      } catch (e) { const w = writer; writer = null; if (w?.abort) w.abort(); else fsWriteAbort(w); return fail(e.code || e.message); }
       return undefined;
     }
     if (!child) return undefined;
@@ -4230,7 +4400,8 @@ export function serve(sock) {
     asks.clear();
     if (brokerSock === sock) { brokerSock = null; brokerStop(); }
     if (tunnel) { tunnel.destroy(); tunnel = null; }
-    fsWriteAbort(writer); writer = null;
+    if (writer?.abort) writer.abort(); else fsWriteAbort(writer);
+    writer = null;
     const c = child;
     if (!c) return;
     try { c.stdin.end(); } catch { /* gone */ }

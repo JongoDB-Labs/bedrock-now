@@ -183,6 +183,12 @@ export const SANDBOX_REFUSALS = Object.freeze([
   'the project folder is not there',
   '--project-config-root: exactly once, as the folder Claude Code runs in',
   '--project-config-root must be the folder Claude Code runs in',
+  // (a session copied into the store: an import from this computer, or Continue in this project)
+  'that session is too large to copy (more than 32 MiB)',
+  'that session id is in another folder of the sandbox already',
+  'that session is in the sandbox already',
+  'that session changed in the sandbox since it was copied',
+  'that session is not in the sandbox (any more)',
 ]);
 // bn-coded's own fixed texts in an answer's error field (the launch configurations, Run's sources and tasks, the
 // permission rules' files, a search): the literal values of its error:, bad(…) and taskError(…) and NO_PROGRAM's —
