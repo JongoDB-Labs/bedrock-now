@@ -2547,11 +2547,19 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
     (`node_modules`, `.git` and `vendor` not entered). A heuristic for an old home folder's copy, a backup or another
     install, not a scan for secrets: only `--yes-it-holds-keys`, typed in a terminal, adds such a folder anyway.
 
-  Every `./stack up` (and `setup`, `update`, `restore`) checks the list again: a folder that is gone, is now a link
-  or now breaks a rule is left out of the sandbox and said; a socket found then is only said (one a sandbox process
-  made in its own folder is harmless and must not drop the project). Tests: `tests/test_projects.sh` (the rules with
-  macOS spellings, nesting both ways, the 17th, a link made after adding, temporary folders, sockets, `.claude`,
-  keys and logins).
+  Temporary folders are compared both as spelled and as they resolve (a Linux `/tmp` may be a link elsewhere), and
+  `$XDG_RUNTIME_DIR` whole. Every `./stack up` (and `setup`, `update`, `restore`) checks the list again: a folder that
+  is gone, is now a link or now breaks a rule is left out of the sandbox and said. A socket found then leaves it out
+  too when the sandbox cannot have made it — the folder is read-only, or the socket lies in a folder of sockets
+  (`tmux-<uid>`, `.X11-unix` …) — and is only said otherwise (one a sandbox process made in its own read-write folder
+  is harmless and must not drop the project). The workspace likewise: a socket in a folder of sockets there leaves
+  the terminal out of the run, any other is said. Tests: `tests/test_projects.sh` (the rules with macOS spellings,
+  nesting both ways, the 17th, a link made after adding, temporary folders, sockets, `.claude`, keys and logins).
+- [x] **A linked worktree's or a submodule's repository is never shared.** Such a folder's `.git` is a file leading
+  to the main repository's `.git`; mounting that too would let the sandbox write its hooks and configuration, which
+  git runs on this computer when you use it there. So the folder is added alone, and `./stack`, Settings and
+  `./stack project list` say plainly that git won't work on it inside the sandbox (add the main repository instead);
+  the repository's path is said there only, never in what the code container or the sandbox gets.
 - [x] **The list is ./stack's, not the sandbox's.** It lives in `.state/projects/folders.tsv` (mode 600 in a folder of
   mode 700), which no container mounts. From it ./stack writes `.state/projects/compose.yaml`: for each folder a bind
   mount into the terminal container (`create_host_path: false`: Docker never creates a folder; `read_only` for a
@@ -2603,7 +2611,8 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
   read-only — restarts the sandbox anyway: a session kept busy (a loop, or text it read telling it to keep working)
   must not keep the wider access. A widening change (a folder added, or read-write again) is left for later then,
   said as pending. `--later` (in a terminal only) leaves either for `./stack project apply` or the next `./stack up`,
-  said as pending until then. A **narrowing** restart that fails keeps the narrowed list: the sandbox stays down until
+  said as pending until then (a restart forced after the wait ends the turns still running, and Settings says so).
+  A **narrowing** restart that fails keeps the narrowed list: the sandbox stays down until
   it starts with it (`./stack logs terminal`; `./stack up` tries again), never back to the wider access. A widening
   restart that fails puts the list back as it was (on a Mac, a folder Docker Desktop does not share is said:
   *Settings › Resources › File sharing*); a folder Docker Desktop stops sharing later, failing `./stack up`, is named

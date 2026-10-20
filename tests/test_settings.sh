@@ -865,6 +865,8 @@ case "$1" in
   backup) echo "==> backup written to backups/20261014-120000 (724K) — databases" ;;
   test) printf '  ok    litellm alive\n  ok    portal login\n'; [ -z "${FAKE_FAIL:-}" ] || { printf '  FAIL  anthropic /v1/messages (got 400, want 200)\n'; exit 1; } ;;
   project) [ "$2" != add ] || echo "==> ${3##*/}: $3 → $3 in the sandbox (read-write) — a project on the Code page"
+           [ -z "${FAKE_LINKED:-}" ] || echo "!!  ${3##*/}: This is a linked git worktree: git won't work on it inside the sandbox (its history lives in /x/main/.git, which isn't shared). To use git there, add the main repository instead."
+           [ -z "${FAKE_FORCED:-}" ] || echo "!!  Code sessions still have turns running after 30 minutes: restarting anyway (a folder removed or made read-only never waits longer)"
            if [ -n "${FAKE_NOT_RUNNING:-}" ]; then echo "==> the sandbox is not running: it sees the folders when it starts (./stack up)"
            else echo "==> restarting the sandbox: …"; fi ;;
 esac
@@ -1058,6 +1060,12 @@ test_helper_project_pick_opens_a_chooser_and_adds_what_was_chosen() {
   assert_eq "$(cat "$CALLS")" "project add $TMP/my app --when-idle --read-only --hide-path"
   assert_contains "$(cat "$TMP/dialog.log")" "bedrock-now: choose a folder for the Code page. Claude — and anything it runs in the sandbox — will be able to read it"
   assert_contains "$(cat "$(helper_status_file)")" "\"action\": \"project-pick\", \"phase\": \"done\", \"message\": \"Added: my app: $TMP/my app → $TMP/my app in the sandbox (read-write); the sandbox restarted"
+  # a linked worktree: added, and said that git won't work on it there
+  export FAKE_LINKED=1 DIALOG_ANSWER="$TMP/wt"; mkdir -p "$TMP/wt"
+  _pact '"project-pick"' '"when":"now","mode":"rw","hide":false,"origin":"local"' 66666666666666666666666666666666
+  PICK_MIN_INTERVAL_S=0 settings_poll_once 2>/dev/null
+  assert_contains "$(cat "$(helper_status_file)")" "in the sandbox (read-write) — git won't work on it inside the sandbox: its repository isn't shared (add the main repository instead)"
+  unset FAKE_LINKED; export DIALOG_ANSWER="$TMP/my app"
   # cancelled at the computer: nothing runs
   DIALOG_ANSWER='' PICK_MIN_INTERVAL_S=0
   : > "$CALLS"
@@ -1105,6 +1113,12 @@ test_helper_project_remove_and_read_only_by_id() {
   settings_poll_once 2>/dev/null
   assert_contains "$(cat "$(helper_status_file)")" '"message": "Removed from the list; the sandbox is not running — it applies when the sandbox starts'
   unset FAKE_NOT_RUNNING
+  # the 30-minute wait ended with turns still running: the change restarted anyway — said, a turn was ended
+  export FAKE_FORCED=1
+  _pact '"project-remove"' '"when":"idle","project":"p_0123abcd"' 55555555555555555555555555555555
+  settings_poll_once 2>/dev/null
+  assert_contains "$(cat "$(helper_status_file)")" '"message": "Removed from the sandbox; it restarted (the folder on this computer is untouched) — Code sessions still had turns running after 30 minutes: those turns were ended (each session resumes with its next prompt)"'
+  unset FAKE_FORCED
   # the password, as for every diagnostic
   _pact '"project-remove"' '"when":"now","project":"p_0123abcd"' 22222222222222222222222222222222 'wrong'
   if settings_poll_once 2>/dev/null; then return 1; fi

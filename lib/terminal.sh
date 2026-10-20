@@ -108,10 +108,22 @@ socket_dir_component() {
 # first_socket DIR -> the first socket in DIR or its folders down to 3 levels (printed), else 1 — a program's way in
 first_socket() {
   local s
-  s="$(find "$1" -maxdepth 3 -type s -print 2>/dev/null || true)"
+  s="$(sockets_in "$1")"
   s="${s%%$'\n'*}"
   [ -n "$s" ] || return 1
   printf '%s\n' "$s"
+}
+# sockets_in DIR -> every socket in DIR or its folders down to 3 levels, one a line
+sockets_in() { find "$1" -maxdepth 3 -type s -print 2>/dev/null || true; }
+# host_socket_in DIR -> a socket in DIR (down to 3 levels) whose path inside DIR goes through a folder of sockets
+# (socket_dir_component): one a program of this computer made — printed; 1 when there is none
+host_socket_in() {
+  local s
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    if socket_dir_component "${s#"$1"/}" >/dev/null; then printf '%s\n' "$s"; return 0; fi
+  done < <(sockets_in "$1")
+  return 1
 }
 
 # terminal_workspace_check DIR -> the folder's physical path; fails, printing why, for a folder the terminal must
@@ -124,7 +136,7 @@ first_socket() {
 # path through a folder of sockets (socket_dir_component). A folder of your own inside a temporary folder is fine. On
 # macOS every comparison ignores case, as the disk does.
 terminal_workspace_check() {
-  local real r h s p
+  local real r h s p t
   case "$1" in *:* | *,*) echo "its path contains ':' or ',' (Docker cannot mount that)"; return 1 ;; esac
   real="$(_phys "$1")"
   [ -n "$real" ] || { echo "cannot open it"; return 1; }
@@ -147,6 +159,10 @@ terminal_workspace_check() {
     /tmp | /var/tmp | /private/tmp | /private/var/tmp | /dev/shm | /private/var/folders) p=x ;;
     /private/var/folders/*) [ "${#p}" -ge 4 ] || p=x ;;
   esac
+  # (and each as it resolves: a Linux /tmp may be a link to a folder elsewhere)
+  for t in /tmp /var/tmp /dev/shm ${XDG_RUNTIME_DIR:+"$XDG_RUNTIME_DIR"}; do
+    t="$(_phys "$t")"; [ -z "$t" ] || [ "$r" != "$(_fold "$t")" ] || p=x
+  done
   if [ "$p" = x ]; then
     echo "it is a temporary folder itself: programs of this computer keep their sockets there — pick a folder of your own in it, or elsewhere"; return 1
   fi
@@ -383,10 +399,13 @@ terminal_remote_app() { [ -z "$(get_env REMOTE_TERMINAL_HOST)" ] || echo termina
 
 # terminal_why_out -> why the terminal is left out although it is on (empty when it is ready)
 terminal_why_out() {
-  local ws why; ws="$(get_env TERMINAL_WORKSPACE)"
+  local ws why sock; ws="$(get_env TERMINAL_WORKSPACE)"
   if [ -z "$ws" ]; then echo "TERMINAL_WORKSPACE is empty in .env"
   elif [ ! -d "$ws" ]; then echo "its workspace folder $ws is gone"
   elif ! why="$(terminal_workspace_check "$ws")"; then echo "its workspace folder $ws is refused now: $why"
+  # (a socket in a folder of sockets there — tmux-<uid>, .X11-unix … — is a program of this computer's, not one the
+  # sandbox made: the workspace is left out until it is gone; any other socket is only said, terminal_up_hook)
+  elif sock="$(host_socket_in "$ws")"; then echo "its workspace folder $ws holds a socket of a program of this computer ($sock): the sandbox could take commands from it — remove it"
   fi
 }
 
@@ -402,7 +421,7 @@ terminal_up_hook() {
   [ "$(terminal_egress_mode)" = internet ] || terminal_proxy_rm
   why="$(terminal_why_out)"
   if [ -z "$why" ]; then
-    # (a socket in the workspace: said, never a reason to leave it out — a sandbox process may have made it there)
+    # (any other socket in the workspace: said, never a reason to leave it out — a sandbox process may have made it)
     local ws sock; ws="$(get_env TERMINAL_WORKSPACE)"
     if [ -n "$ws" ] && sock="$(first_socket "$ws")"; then
       warn "the workspace holds a socket ($sock): a program of this computer listening there could take commands from the sandbox — remove it if it is not one the sandbox made"

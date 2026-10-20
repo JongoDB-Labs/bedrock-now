@@ -202,9 +202,16 @@ _project_path_rules() {
   local r t c i n IFS
   local -a parts
   r="$(_fold "$1")"
-  for t in $PROJECTS_TEMP_ROOTS ${XDG_RUNTIME_DIR:-}; do
-    t="$(_fold "$t")"
-    case "$r" in "$t" | "$t"/*) echo "it is in a temporary or runtime folder ($t): programs of this computer keep their sockets there — a project is a folder of yours elsewhere"; return 1 ;; esac
+  # (each as spelled and as it resolves — a Linux /tmp may be a link to a folder elsewhere; $XDG_RUNTIME_DIR whole)
+  local -a temps
+  read -r -a temps <<< "$PROJECTS_TEMP_ROOTS"
+  [ -z "${XDG_RUNTIME_DIR:-}" ] || temps+=("$XDG_RUNTIME_DIR")
+  for t in "${temps[@]}"; do
+    for c in "$t" "$(_phys "$t")"; do
+      [ -n "$c" ] || continue
+      c="$(_fold "$c")"
+      case "$r" in "$c" | "$c"/*) echo "it is in a temporary or runtime folder ($t): programs of this computer keep their sockets there — a project is a folder of yours elsewhere"; return 1 ;; esac
+    done
   done
   if c="$(socket_dir_component "$1")"; then
     echo "its path goes through $c, a folder where programs of this computer keep their sockets (a way to run commands on it)"; return 1
@@ -228,7 +235,7 @@ _project_path_rules() {
 # project_check DIR [--keys-ok] -> the folder's physical path; fails, printing why, for a folder the sandbox must not
 # get (the rules at the top). _PC_SELF: a project's own id (its own entry is not "another project", when checked again)
 project_check() {
-  local dir="$1" keys="${2:-}" real r ws w id name mode sbx added k host h why sock
+  local dir="$1" keys="${2:-}" real r ws w id name mode sbx added k host h why sock hs
   case "$dir" in
     *[\"\'\$\`\\]*) echo "its path contains a quote, \$, a backtick or a backslash"; return 1 ;;
   esac
@@ -255,13 +262,48 @@ project_check() {
     return 1
   fi
   # a socket in it: a program of this computer listening there would take commands from the sandbox. Refused when it is
-  # added; checked again (_PC_RECHECK: ./stack up), only said — a sandbox process may have made one in its own folder
+  # added. Checked again (_PC_RECHECK: ./stack up): refused when the folder is read-only (the sandbox cannot have made
+  # one there; _PC_MODE) or the socket is in a folder of sockets (tmux-<uid>, .X11-unix …: a program of this computer
+  # made it); any other one is only said — a sandbox process may have made it in its own folder
   if sock="$(first_socket "$real")"; then
     case "$sock" in */.git/fsmonitor--daemon.ipc) why=" (git's fsmonitor daemon: git fsmonitor--daemon stop in that repository, or core.fsmonitor false)" ;; *) why='' ;; esac
     if [ -z "${_PC_RECHECK:-}" ]; then echo "it holds a socket, $sock$why: a program of this computer listening there would take commands from the sandbox"; return 1; fi
+    if [ "${_PC_MODE:-}" = ro ]; then
+      echo "it holds a socket, $sock$why, though the sandbox cannot write in it (read-only): a program of this computer made it, and the sandbox could take commands from it"; return 1
+    fi
+    if hs="$(host_socket_in "$real")"; then
+      echo "it holds a socket of a program of this computer, $hs (in a folder where programs keep their sockets): the sandbox could take commands from it"; return 1
+    fi
     warn "project folder $real holds a socket ($sock$why): if a program of this computer listens there, the sandbox can talk to it"
   fi
   printf '%s\n' "$real"
+}
+
+# _project_linked_git DIR -> "KIND<TAB>MAIN" when DIR's .git is a file whose gitdir lies outside DIR — a linked worktree
+# (KIND worktree, MAIN the repository it belongs to), a submodule's checkout (submodule, MAIN the repository around it)
+# or a separate git folder (other, MAIN that folder) — else 1. Git there needs that other folder, which is never shared
+# with the sandbox: its hooks and configuration would let the sandbox run code on this computer when you use git there.
+_project_linked_git() {
+  local f="$1/.git" g r
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  g="$(sed -n '1s/^gitdir:[[:space:]]*//p' "$f" 2>/dev/null || true)"
+  [ -n "$g" ] || return 1
+  case "$g" in /*) ;; *) g="$1/$g" ;; esac
+  r="$(_phys "$g")"; [ -z "$r" ] || g="$r"
+  case "$(_fold "$g")/" in "$(_fold "$1")/"*) return 1 ;; esac
+  case "$g" in
+    */.git/worktrees/*) printf 'worktree\t%s\n' "${g%%/.git/worktrees/*}" ;;
+    */.git/modules/*) printf 'submodule\t%s\n' "${g%%/.git/modules/*}" ;;
+    *) printf 'other\t%s\n' "$g" ;;
+  esac
+}
+# _pj_linked_text KIND MAIN -> what is said of such a folder (to you only: ./stack, Settings — never the sandbox)
+_pj_linked_text() {
+  case "$1" in
+    worktree) echo "This is a linked git worktree: git won't work on it inside the sandbox (its history lives in $2/.git, which isn't shared). To use git there, add the main repository instead." ;;
+    submodule) echo "This is a git submodule's checkout: git won't work on it inside the sandbox (its history lives in $2/.git, which isn't shared). To use git there, add the main repository instead." ;;
+    *) echo "Its .git leads to a git folder elsewhere ($2): git won't work on it inside the sandbox, which doesn't share that folder. To use git there, add the repository that holds it instead." ;;
+  esac
 }
 
 # project_sandbox_path HOSTPATH NAME HIDE -> where the sandbox sees it: the same path, or /projects/NAME when hidden
@@ -293,7 +335,7 @@ _pj_json() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\
 # mounted — "pending" until the sandbox restarts). Prints nothing but the warnings.
 projects_sync() {
   local d pub id name mode sbx added keys host real why roots='' rows='' vols='' paths='' kopt n=0 hidden bad applied running=false
-  local pend leaving='' wanted='' p m
+  local pend leaving='' wanted='' p m linked gitmain lk
   d="$(projects_dir)"; pub="$(projects_public_dir)"
   # (public/ is mounted read-only into the code container, which runs as the terminal's user — yours, or 10104 when
   # ./stack runs as root: readable by it; roots.json holds no secret, paths in the sandbox only)
@@ -305,16 +347,20 @@ projects_sync() {
     kopt=''; [ "$keys" != yes ] || kopt=--keys-ok
     if [ -z "$real" ]; then why="it is gone (or cannot be opened)"
     elif [ "$real" != "$host" ]; then why="it now leads to $real (a link?) — add that folder itself if you mean it"
-    elif ! why="$(_PC_RECHECK=1 _PC_SELF="$id" project_check "$host" $kopt)"; then :
+    elif ! why="$(_PC_RECHECK=1 _PC_MODE="$mode" _PC_SELF="$id" project_check "$host" $kopt)"; then :
     else why=''; fi
     hidden=false; [ "$sbx" = "$host" ] || hidden=true
+    # (a linked worktree or submodule checkout: said in Settings — the path of its repository too, which the portal
+    # alone reads; roots.json, the code container's, gets neither)
+    linked=null; gitmain=null
+    if [ -n "$real" ] && lk="$(_project_linked_git "$real")"; then linked="\"${lk%%$'\t'*}\""; gitmain="$(_pj_json "${lk#*$'\t'}")"; fi
     # what the running sandbox has of it (nothing said while it does not run: it sees the list when it starts)
     pend=null
     if [ -z "$why" ] && [ "$running" = true ]; then
       m="$(printf '%s\n' "$applied" | awk -F'\t' -v p="$sbx" '$1 == p && !f { print $2; f = 1 }')"
       if [ -z "$m" ]; then pend='"add"'; elif [ "$m" != "$mode" ]; then pend="\"$mode\""; fi
     fi
-    rows="$rows${rows:+,}{\"id\":$(_pj_json "$id"),\"name\":$(_pj_json "$name"),\"host\":$(_pj_json "$host"),\"path\":$(_pj_json "$sbx"),\"mode\":\"$mode\",\"hidden\":$hidden,\"added\":$added,\"ok\":$([ -z "$why" ] && echo true || echo false),\"why\":$(_pj_json "$why"),\"pending\":$pend}"
+    rows="$rows${rows:+,}{\"id\":$(_pj_json "$id"),\"name\":$(_pj_json "$name"),\"host\":$(_pj_json "$host"),\"path\":$(_pj_json "$sbx"),\"mode\":\"$mode\",\"hidden\":$hidden,\"added\":$added,\"ok\":$([ -z "$why" ] && echo true || echo false),\"why\":$(_pj_json "$why"),\"pending\":$pend,\"linked\":$linked,\"gitmain\":$gitmain}"
     if [ -n "$why" ]; then warn "project folder $name ($host) is left out of the sandbox: $why"; continue; fi
     n=$((n + 1))
     wanted="$wanted$sbx"$'\n'
@@ -483,7 +529,7 @@ _projects_change() {
 }
 
 project_add() {
-  local dir='' name='' ro=0 hide=no keys=no real why id sbx old line n args=("$@")
+  local dir='' name='' ro=0 hide=no keys=no real why id sbx old line n lk args=("$@")
   while [ $# -gt 0 ]; do
     case "$1" in
       --name) [ -n "${2:-}" ] || die "usage: ./stack project add DIR --name NAME"; name="$2"; shift 2 ;;
@@ -526,6 +572,7 @@ project_add() {
   _projects_change "$name" "${old:+$old$'\n'}$line" "$old" 0 ${args[@]+"${args[@]}"}
   projects_pending_on "$name" && log "$name: the sandbox sees it once it restarts (./stack project apply, or the next ./stack up)"
   log "$name: $real → $sbx in the sandbox ($([ "$ro" = 1 ] && echo read-only || echo read-write)) — a project on the Code page"
+  if lk="$(_project_linked_git "$real")"; then warn "$name: $(_pj_linked_text "${lk%%$'\t'*}" "${lk#*$'\t'}")"; fi
 }
 
 project_remove() {
@@ -565,13 +612,14 @@ project_mode() {
 }
 
 projects_list() {
-  local id name mode sbx added keys host why found=0 pend p m
+  local id name mode sbx added keys host why found=0 pend p m lk
   printf 'Workspace     %s → /workspace (read-write)\n' "$(get_env TERMINAL_WORKSPACE)"
   while IFS=$'\t' read -r id name mode sbx added keys host; do
     found=1
     why="$(_projects_left_out "$id")"; pend="$(_pj_pending_of "$id")"
     printf '%-13s %s → %s (%s)%s\n' "$name" "$host" "$sbx" "$([ "$mode" = ro ] && echo read-only || echo read-write)" "${why:+  !! left out: $why}"
     [ -z "$pend" ] || [ -n "$why" ] || printf '              pending: %s\n' "$(_pj_pending_text "$pend")"
+    if lk="$(_project_linked_git "$host")"; then printf '              git: %s\n' "$(_pj_linked_text "${lk%%$'\t'*}" "${lk#*$'\t'}")"; fi
   done < <(projects_records)
   while IFS=$'\t' read -r p m; do
     [ -n "$p" ] || continue

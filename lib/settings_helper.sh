@@ -378,6 +378,8 @@ helper_run_diag() {
       grep -q 'restarting the sandbox' "$logf" && ! grep -qE 'applies when the sandbox restarts|sees it once it restarts|keeps it until it restarts|was not restarted' "$logf" && applied=1
       case "$action" in
         project-pick) msg="$(sed -n 's/^==> \(.*\) — a project on the Code page$/Added: \1/p' "$logf" | tail -n 1)"
+          # (a linked worktree or a submodule's checkout: git won't work on it there — Settings says why on its row)
+          ! grep -q "git won't work on it inside the sandbox" "$logf" || msg="$msg — git won't work on it inside the sandbox: its repository isn't shared (add the main repository instead)"
           if [ "$applied" = 1 ]; then msg="$msg; the sandbox restarted"
           elif grep -q 'the sandbox was not restarted' "$logf"; then msg="$msg — not in the sandbox yet: Code sessions kept their turns running for 30 minutes (./stack project apply restarts it)"
           else msg="$msg — not in the sandbox yet: it sees it once it restarts"; fi ;;
@@ -387,7 +389,10 @@ helper_run_diag() {
         *)
           if [ "$applied" = 1 ]; then msg="Read-only in the sandbox now; it restarted"
           else msg="Marked read-only; the sandbox is not running — it applies when the sandbox starts"; fi ;;
-      esac ;;
+      esac
+      # (the wait for no turn ended after 30 minutes and a narrowing change restarted anyway: a turn was ended)
+      local waited; waited="$(sed -n 's/.*turns running after \([0-9]*\) minutes: restarting anyway.*/\1/p' "$logf" | tail -n 1)"
+      [ -z "$waited" ] || msg="$msg — Code sessions still had turns running after $waited minutes: those turns were ended (each session resumes with its next prompt)" ;;
   esac
   helper_write_status "done" "$msg"
 }

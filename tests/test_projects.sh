@@ -544,3 +544,79 @@ test_a_folder_docker_cannot_mount_is_named() {
   printf 'some other failure\n' > "$log"
   assert_eq "$(projects_mount_hint "$log" 2>&1)" ""
 }
+
+test_a_linked_worktree_or_submodule_is_added_and_said() {
+  _stubs
+  local main wt sub ok out
+  main="$(_dir main)"; mkdir -p "$main/.git/worktrees/feature" "$main/.git/modules/lib"
+  wt="$(_dir feature)"; printf 'gitdir: %s/.git/worktrees/feature\n' "$main" > "$wt/.git"
+  out="$(project_add "$wt" --later 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "feature: This is a linked git worktree: git won't work on it inside the sandbox (its history lives in $main/.git, which isn't shared). To use git there, add the main repository instead."
+  assert_contains "$(projects_list)" "git: This is a linked git worktree"
+  assert_contains "$(tr '{' '\n' < "$(projects_status_file)" | grep '"name":"feature"')" "\"linked\":\"worktree\",\"gitmain\":\"$main\""
+  assert_not_contains "$(cat "$(projects_roots_file)")" "$main"   # (the code container's list: never the repository's path)
+  # a submodule's checkout, its gitdir relative
+  sub="$(_dir lib)"; printf 'gitdir: ../main/.git/modules/lib\n' > "$sub/.git"
+  out="$(project_add "$sub" --later 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "lib: This is a git submodule's checkout: git won't work on it inside the sandbox (its history lives in $main/.git"
+  # a .git file leading inside the folder, or a .git folder: nothing to say
+  ok="$(_dir plain)"; mkdir -p "$ok/.git-real"; printf 'gitdir: .git-real\n' > "$ok/.git"
+  out="$(project_add "$ok" --later 2>&1)" || return 1
+  assert_not_contains "$out" "git won't work"
+  assert_contains "$(tr '{' '\n' < "$(projects_status_file)" | grep '"name":"plain"')" '"linked":null,"gitmain":null'
+}
+
+test_a_socket_found_again_the_sandbox_could_not_have_made_drops_the_folder() {
+  _stubs
+  local ro rw w out
+  ro="$(_dir notes)"; rw="$(_dir app)"; w="$(_dir work)"
+  project_add "$ro" --read-only --later 2>/dev/null || return 1
+  project_add "$rw" --later 2>/dev/null || return 1
+  project_add "$w" --later 2>/dev/null || return 1
+  # in a read-only folder: the sandbox cannot have made it — left out
+  _sock "$ro/agent.sock" || return 77
+  # in a folder of sockets inside a read-write one: a program of this computer's — left out
+  mkdir -p "$rw/tmux-1000"; _sock "$rw/tmux-1000/default"
+  # any other socket in a read-write folder: said only (a sandbox process may have made it)
+  _sock "$w/dev.sock"
+  out="$(projects_sync 2>&1)"
+  assert_contains "$out" "project folder notes ($ro) is left out of the sandbox: it holds a socket, $ro/agent.sock, though the sandbox cannot write in it (read-only)"
+  assert_contains "$out" "project folder app ($rw) is left out of the sandbox: it holds a socket of a program of this computer, $rw/tmux-1000/default"
+  assert_contains "$out" "project folder $w holds a socket ($w/dev.sock)"
+  assert_not_contains "$(cat "$(projects_roots_file)")" '"name":"notes"'
+  assert_not_contains "$(cat "$(projects_roots_file)")" '"name":"app"'
+  assert_contains "$(cat "$(projects_roots_file)")" '"name":"work"'
+}
+
+test_temporary_folders_as_they_resolve_and_a_runtime_folder_with_a_space() {
+  _stubs
+  local why real
+  mkdir -p "$TMP/f/realtmp/x" "$TMP/f/run dir/x" "$TMP/f/run/x"
+  ln -s "$TMP/f/realtmp" "$TMP/f/tmplink"
+  # a temporary folder that is a link elsewhere: refused as it resolves
+  PROJECTS_TEMP_ROOTS="$TMP/f/tmplink"
+  why="$(project_check "$TMP/f/realtmp/x")" && { echo "accepted a folder in the linked temporary folder" >&2; return 1; }
+  assert_contains "$why" "it is in a temporary or runtime folder"
+  # $XDG_RUNTIME_DIR whole, a space in it too (never split into two folders)
+  PROJECTS_TEMP_ROOTS=/nonexistent-temp-root
+  XDG_RUNTIME_DIR="$TMP/f/run dir"
+  why="$(project_check "$TMP/f/run dir/x")" && return 1
+  assert_contains "$why" "it is in a temporary or runtime folder"
+  project_check "$TMP/f/run/x" >/dev/null || { echo "refused a folder the runtime folder's name only begins like" >&2; return 1; }
+  unset XDG_RUNTIME_DIR
+  # the workspace: a temporary folder that is a link elsewhere is refused as it resolves too
+  if [ -L /tmp ] || [ "$(uname -s)" = Darwin ]; then
+    why="$(terminal_workspace_check "$(_phys /tmp)")" && return 1
+    assert_contains "$why" "it is a temporary folder itself"
+  fi
+}
+
+test_a_socket_of_a_program_in_the_workspace_leaves_the_terminal_out() {
+  _stubs
+  local out
+  mkdir -p "$WS/.X11-unix"; _sock "$WS/.X11-unix/X0" || return 77
+  out="$(terminal_why_out)"
+  assert_contains "$out" "its workspace folder $(get_env TERMINAL_WORKSPACE) holds a socket of a program of this computer ($(get_env TERMINAL_WORKSPACE)/.X11-unix/X0)"
+  rm -f "$WS/.X11-unix/X0"; _sock "$WS/dev.sock"
+  assert_eq "$(terminal_why_out)" ""   # (any other socket: only said by terminal_up_hook)
+}

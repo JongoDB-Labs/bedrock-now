@@ -815,8 +815,13 @@ sandbox, so the Code page's sessions (and the terminal) work in it directly, wit
   to 3 levels (a heuristic; in a terminal, `--yes-it-holds-keys` adds such a folder anyway); a path with `:` or `,`.
   The folder is resolved first (a link counts as the folder it leads to; on a Mac `/tmp` is `/private/tmp`, and names
   differing only in case are one folder). Every `./stack up` checks the list again: a folder that is gone, is now a
-  link or now breaks a rule is left out and said (a socket found then is only said: one the sandbox made in its own
-  folder is harmless).
+  link or now breaks a rule is left out and said. A socket found then leaves the folder out too when the sandbox
+  cannot have made it (the folder is read-only, or the socket is in a folder of sockets like `tmux-<uid>`); any other
+  is only said (one the sandbox made in its own folder is harmless).
+- **A linked git worktree or a submodule's checkout** (its `.git` is a file leading elsewhere) is added, with a plain
+  note in `./stack`, Settings and `./stack project list`: git won't work on it inside the sandbox, because its history
+  lives in the main repository's `.git`, which is never shared — its hooks and configuration would let the sandbox run
+  code on this computer when you use git there. To use git in the sandbox, add the main repository instead.
 - **Removing** (`./stack project remove NAME`; **Remove** in Settings, from any device; the project's ⋯ › *Remove
   folder from Code…* says where): the folder leaves the sandbox, nothing in it is touched. Its sessions are listed
   under **Folders no longer added**, read only; add the folder again to go on with them (*Forget this folder…* takes

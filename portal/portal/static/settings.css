@@ -78,6 +78,7 @@
 .set-project { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; border-top: 1px solid var(--line); }
 .set-project-name { font-weight: 600; }
 .set-project .set-project-pending { flex-basis: 100%; color: var(--warn); }
+.set-project .set-project-git { flex-basis: 100%; }
 .set-project .note { overflow-wrap: anywhere; margin: 0; }
 .set-project-actions { margin-left: auto; display: flex; gap: 6px; }
 .set-project.left-out .set-project-name { color: var(--warn); }

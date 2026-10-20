@@ -1144,6 +1144,15 @@
         el("span", { class: `badge${f.mode === "ro" ? "" : " badge-local"}`, text: f.mode === "ro" ? "read-only" : "read-write" }));
       if (!f.ok) li.append(el("p", { class: "error", text: `Left out of the sandbox: ${f.why}` }));
       else if (PENDING[f.pending]) li.append(el("p", { class: "note set-project-pending", text: `Applies when the sandbox restarts — ${PENDING[f.pending]} (./stack project apply, or the next ./stack up)` }));
+      // (a linked worktree or a submodule's checkout: its repository is never shared — its hooks and configuration
+      // would let the sandbox run code here when you use git there)
+      const LINKED = { worktree: "This is a linked git worktree", submodule: "This is a git submodule's checkout" };
+      if (f.linked) {
+        const where = f.gitmain ? `${f.gitmain}${f.linked === "other" ? "" : "/.git"}` : "another folder";
+        li.append(el("p", { class: "note set-project-git", "data-linked": f.linked,
+          text: f.linked === "other" ? `Its .git leads to a git folder elsewhere (${where}): git won't work on it inside the sandbox, which doesn't share that folder. To use git there, add the repository that holds it instead.`
+            : `${LINKED[f.linked]}: git won't work on it inside the sandbox (its history lives in ${where}, which isn't shared). To use git there, add the main repository instead.` }));
+      }
       const acts = el("span", { class: "set-project-actions" });
       if (f.mode === "rw") {
         const ro = el("button", { type: "button", class: "action", text: "Make read-only", "data-act": "project-mode-ro" });
