@@ -3902,6 +3902,8 @@ def git_signin(browser):
     dlg.get_by_role("button", name="Close").click()
     page.get_by_test_id("git-hosts-open").first.click()
     page.get_by_test_id("git-host-add").click()
+    # (the hosts' view with no app arrives: the form's default follows it — a token — before Sign in is chosen)
+    expect(page.get_by_test_id("git-host-auth-token")).to_be_checked()
     page.get_by_test_id("git-host-auth-oauth").check()
     page.get_by_test_id("git-host-no-app").get_by_text("Set up sign-in").click()
     steps = page.get_by_test_id("git-host-setup")
