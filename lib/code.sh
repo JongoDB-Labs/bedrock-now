@@ -507,7 +507,7 @@ code_test_checks() {
       s.on("connect", () => done("open")); s.on("timeout", () => done("closed")); s.on("error", () => done("closed")); }' 2>/dev/null || true)"
   _check "the code container reaches nothing but Caddy (no LiteLLM, portal, sandbox, gateway, shared-mcp, internet)" "$out" "closed closed closed closed closed closed"
   # one op over the spawn socket: OPEN {op: sessions.list} -> a RESULT frame (0x15) with a sessions list
-  out="$(dc exec -T code node -e 'const s = require("net").connect("/run/bn-code/coded.sock"); const p = Buffer.from(JSON.stringify({ op: "sessions.list" }));
+  out="$(_probe dc exec -T code node -e 'const s = require("net").connect("/run/bn-code/coded.sock"); const p = Buffer.from(JSON.stringify({ op: "sessions.list" }));
     const h = Buffer.alloc(5); h[0] = 1; h.writeUInt32BE(p.length, 1); let b = Buffer.alloc(0);
     const t = setTimeout(() => { console.log("timeout"); process.exit(0); }, 10000);
     s.on("connect", () => s.write(Buffer.concat([h, p])));

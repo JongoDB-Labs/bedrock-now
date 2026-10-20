@@ -821,7 +821,7 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
       *"exec -T terminal timeout 20 sh -c g="*) printf '200 404 404 404 404 404 ' ;;
       *"exec -T terminal timeout 20 sh -c curl"*) printf '{"result":{"tools":[{"name":"search_knowledge"}]}}' ;;
       *"exec -T terminal timeout 20 sh -c f=/etc/claude-code"*) printf 'none ro {"disableAutoMode":"disable"}\n' ;;
-      *"exec -T -e LP=9 terminal sh -c curl --noproxy"*) printf '000 403 403 403 403 403 403 403 ' ;;
+      *"exec -T -e LP=9 terminal timeout 80 sh -c curl --noproxy"*) printf '000 403 403 403 403 403 403 403 ' ;;
       *"exec -T terminal timeout 20 sh -c getent hosts example.com"*) printf '%s\n' "${DNS:-none}" ;;
       *"exec -T terminal timeout 20 sh"*) printf '000 000 000 000 000 000 000 000 000 000 ' ;;
     esac
@@ -850,7 +850,7 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
   assert_contains "$out" "ok    the sandbox's egress proxy healthy"
   assert_contains "$out" "ok    the sandbox: no route around its egress proxy; through it no host.docker.internal, LiteLLM's port, metadata, private or ::1 address, no container"
   # a way around the proxy, or something it let through: FAIL
-  dc() { case "$*" in *"exec -T -e LP=9 terminal sh -c curl --noproxy"*) printf '200 403 403 200 403 403 403 403 ' ;; *) ok_dc "$@" ;; esac; }
+  dc() { case "$*" in *"exec -T -e LP=9 terminal timeout 80 sh -c curl --noproxy"*) printf '200 403 403 200 403 403 403 403 ' ;; *) ok_dc "$@" ;; esac; }
   assert_contains "$(terminal_test_checks)" "FAIL  the sandbox: no route around its egress proxy"
   # host or off: no proxy to check
   dc() { ok_dc "$@"; }

@@ -145,3 +145,17 @@ test_with_deadline_ends_a_stopped_function_too() {
   PROBE_DEADLINE_S=1
   assert_eq "$(_probe hang)" "couldn't check (timed out after 1 s)"
 }
+
+test_with_deadline_writes_only_in_a_folder_of_its_own() {
+  # (its marker lives in a fresh mktemp -d folder, mode 700: a link planted in a shared temporary folder is never
+  # followed; nothing is left behind)
+  local t="$TMP/tmpdir" mode rc=0
+  mkdir -p "$t"; printf 'precious\n' > "$TMP/target"
+  for n in bn-deadline.fired bn-deadline.XXXXXX fired; do ln -s "$TMP/target" "$t/$n"; done
+  mode="$(TMPDIR="$t" _with_deadline 5 sh -c 'for d in "$TMPDIR"/bn-deadline.*/; do stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d"; done')"
+  assert_eq "$mode" 700
+  TMPDIR="$t" _with_deadline 1 sleep 10 || rc=$?
+  assert_eq "$rc" 124
+  assert_eq "$(cat "$TMP/target")" precious
+  assert_eq "$(find "$t" -name 'bn-deadline.*' -type d | grep -c . || true)" 0
+}

@@ -1803,9 +1803,40 @@ test_helper_ends_a_job_that_runs_past_its_deadline() {
   t0="$(date +%s)"
   settings_poll_once 2>/dev/null
   [ "$(( $(date +%s) - t0 ))" -le 20 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
-  assert_contains "$(cat "$(helper_status_file)")" '"phase": "failed", "message": "Stopped after 1 s: it did not finish'
+  assert_contains "$(cat "$(helper_status_file)")" '"phase": "failed", "message": "Stopped — after 1 s: it did not finish'
   p="$(cat "$TMP/hung")"; c="$(cat "$TMP/hung-child")"
   sleep 0.3
   if kill -0 "$p" 2>/dev/null || kill -0 "$c" 2>/dev/null; then echo "left running: $p $c" >&2; return 1; fi
   unset HELPER_TEST_MAX_S
+}
+
+test_helper_a_long_job_runs_while_it_says_something_and_ends_when_it_goes_silent() {
+  # (settings changes and restarts may build images for a long time: ended only after IDLE_S without a new log line,
+  # or MAX_S in all)
+  _checkout
+  local log="$TMP/job.log" pid rc t0
+  helper_heartbeat() { :; }
+  HELPER_JOB_POLL_S=0.2
+  # one that keeps writing for 4 s, past an idle limit of 2 s (the clock's seconds: a line every 0.5 s is plenty): not
+  # stopped
+  set -m; ( for _ in 1 2 3 4 5 6 7 8; do echo step; sleep 0.5; done ) > "$log" 2>&1 & pid=$!; set +m
+  rc=0; _wait_beating "$pid" 60 "$log" 2 || rc=$?
+  assert_eq "$rc" 0
+  # one that goes silent: ended after 2 s without a new line, and nothing of it left
+  : > "$log"
+  set -m; ( echo started; sleep 30 ) > "$log" 2>&1 & pid=$!; set +m
+  t0="$(date +%s)"; rc=0; _wait_beating "$pid" 60 "$log" 2 || rc=$?
+  assert_eq "$rc" 125
+  [ "$(( $(date +%s) - t0 ))" -le 15 ] || return 1
+  ! kill -0 "$pid" 2>/dev/null || { echo "left running" >&2; return 1; }
+  # the ceiling in all, whatever it says
+  set -m; ( while :; do echo tick; sleep 0.2; done ) > "$log" 2>&1 & pid=$!; set +m
+  rc=0; _wait_beating "$pid" 3 "$log" 2 || rc=$?
+  assert_eq "$rc" 124
+  ! kill -0 "$pid" 2>/dev/null || return 1
+  # and what is said
+  assert_eq "$(_stopped_text settings 1200 last-settings.log idle)" "Stopped — no progress for 20 minutes: the change did not finish (log: .state/helper/last-settings.log); ./stack up puts the stack in line with .env"
+  assert_eq "$(_stopped_text restart-litellm 14400 last-diag.log)" "Stopped — after 4 h: it did not finish — something it waits on in the stack did not answer (log: .state/helper/last-diag.log)"
+  assert_eq "$(_job_deadline settings)" "14400 1200"
+  assert_eq "$(_job_deadline test)" "600 0"
 }

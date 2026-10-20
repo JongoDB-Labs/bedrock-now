@@ -621,7 +621,7 @@ terminal_test_checks() {
   # proxy named, NO_PROXY set aside: 127.0.0.1 and ::1 would otherwise stay inside the sandbox)
   code="$(dc ps --format '{{.Health}}' terminal-egress 2>/dev/null | head -n 1 || true)"
   _check "the sandbox's egress proxy healthy" "$code" healthy
-  out="$(dc exec -T -e LP="$(get_env LITELLM_PORT)" terminal sh -c 'curl --noproxy "*" -s -m 4 -o /dev/null -w "%{http_code} " http://1.1.1.1/ || true; for u in "http://host.docker.internal:$LP/" "http://127.0.0.1:$LP/v1/models" http://169.254.169.254/latest/meta-data/ http://10.0.0.1/ "http://[::1]/" http://portal:8000/healthz http://litellm:4000/health/liveliness; do env -u NO_PROXY -u no_proxy curl -g -x http://egress:3128 -s -m 10 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
+  out="$(PROBE_DEADLINE_S=90 _probe dc exec -T -e LP="$(get_env LITELLM_PORT)" terminal timeout 80 sh -c 'curl --noproxy "*" -s -m 4 -o /dev/null -w "%{http_code} " http://1.1.1.1/ || true; for u in "http://host.docker.internal:$LP/" "http://127.0.0.1:$LP/v1/models" http://169.254.169.254/latest/meta-data/ http://10.0.0.1/ "http://[::1]/" http://portal:8000/healthz http://litellm:4000/health/liveliness; do env -u NO_PROXY -u no_proxy curl -g -x http://egress:3128 -s -m 10 -o /dev/null -w "%{http_code} " "$u" || true; done' 2>/dev/null || true)"
   _check "the sandbox: no route around its egress proxy; through it no host.docker.internal, LiteLLM's port, metadata, private or ::1 address, no container" \
     "$(printf '%s' "$out" | tr -s ' ' | sed 's/ $//')" "000 403 403 403 403 403 403 403"
 }

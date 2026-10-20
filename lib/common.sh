@@ -99,11 +99,13 @@ require_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing required command
 # CMD (a command or a function) gets /dev/null as stdin; its stdout and stderr are the caller's. Works under
 # set -euo pipefail and bash 3.2 (macOS has no timeout(1)); kills by PID — its own process group's — only.
 _with_deadline() {
-  local secs="$1" rc=0 flag
+  local secs="$1" rc=0 dir flag
   shift
-  # (the watcher says it fired by making this file: a status alone could not tell a deadline from the command's own)
-  flag="$(mktemp "${TMPDIR:-/tmp}/bn-deadline.XXXXXX")" || { warn "cannot make a temporary file for a deadline"; return 125; }
-  rm -f "$flag"
+  # (the watcher says it fired by making a file — a status alone could not tell a deadline from the command's own —
+  # in a folder of this run's own: mktemp -d, mode 700, so nobody else can plant a link where it writes; removed on
+  # every way out)
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/bn-deadline.XXXXXX")" || { warn "cannot make a temporary folder for a deadline"; return 125; }
+  flag="$dir/fired"
   { (
     set +e +u +o pipefail
     set -m                                  # (CMD, then the watcher: each in a process group of its own)
@@ -117,7 +119,8 @@ _with_deadline() {
     kill -KILL -- "-$w" 2>/dev/null; wait "$w" 2>/dev/null   # (the watcher and its sleep, at once)
     exit "$r"
   ) 2>/dev/null; } 3>&2 || rc=$?
-  if [ -e "$flag" ]; then rm -f "$flag"; return 124; fi
+  if [ -e "$flag" ]; then rc=124; fi
+  rm -rf -- "$dir"
   return "$rc"
 }
 # PROBE_DEADLINE_S: how long ./stack waits on one probe into the sandbox (_probe) before it says it could not check
