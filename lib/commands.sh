@@ -187,7 +187,9 @@ run_phase() {
   fi
   warn "$label failed after $(fmt_elapsed $(($(_now) - start)))"
   if [ -n "${out:-}" ]; then
-    printf '  --- last 30 lines of output ---\n' >&2; tail -n 30 "$out" | sed 's/^/    /' >&2; rm -f "$out"
+    printf '  --- last 30 lines of output ---\n' >&2; tail -n 30 "$out" | sed 's/^/    /' >&2
+    ! declare -F projects_mount_hint >/dev/null || projects_mount_hint "$out"   # lib/projects.sh: a project folder Docker could not mount
+    rm -f "$out"
   fi
   # shellcheck disable=SC2086  # word-split the service list on purpose
   failed="$(_failed_services $svcs)"

@@ -36,6 +36,11 @@ PROJECTS_IDLE_POLL_S="${PROJECTS_IDLE_POLL_S:-10}"
 # The sandbox's own top folders: a folder of yours whose path is one of these (or inside one) is mounted at
 # /projects/<name> instead (Linux: /home/<you>/… collides only for a user named claude; /tmp is the sandbox's own)
 PROJECTS_SANDBOX_OWN="/home/claude /workspace /projects /tmp /run /etc /usr /opt /proc /sys /dev /var /srv /root /bin /sbin /lib /lib32 /lib64 /libx32 /boot"
+# Temporary and runtime folders: never a project folder, nor one in them (programs of this computer keep their sockets
+# there — tmux, ssh-agent, X11, a desktop's — and a socket is a way to run commands on this computer; a project is a
+# folder of yours elsewhere). $XDG_RUNTIME_DIR too, when set. (BN_PROJECTS_TEMP_ROOTS: the tests' own list — their
+# folders are temporary ones; only this computer's environment sets it, never a request.)
+PROJECTS_TEMP_ROOTS="${BN_PROJECTS_TEMP_ROOTS:-/tmp /var/tmp /private/tmp /private/var/tmp /private/var/folders /var/folders /dev/shm /run/user}"
 PROJECT_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 PROJECT_ID_RE='^p_[0-9a-f]{8}$'
 
@@ -56,7 +61,8 @@ Usage: ./stack project <command>
                               this computer when your own tools open the folder)
       --name N                its name on the Code page (default: the folder's)
       --read-only             Claude may read it, never change it
-      --hide-path             at /projects/<name> in the sandbox instead of this computer's path
+      --hide-path             at /projects/<name> in the sandbox instead of this computer's path: kept out of
+                              what Claude Code sends the model (programs in the sandbox can still find it)
       --yes-it-holds-keys     a folder with .ssh, .aws, .gnupg, .kube, .docker or a keychain in it (refused
                               otherwise: an old home folder's copy, say)
   remove NAME|ID              Unmount it (the folder on this computer is untouched; its sessions are kept)
@@ -153,26 +159,73 @@ project_find() {
 
 # --- the rules ---
 
-# _project_holds_keys DIR -> 0 when DIR, or a folder right in it, holds keys: .ssh, .aws, .gnupg, .kube, .docker or
-# Library/Keychains (an old home folder's copy, say)
-_project_holds_keys() {
-  local d k
+# _project_secrets DIR -> what of a home folder's secrets DIR holds (printed, relative to DIR; 0), else 1 — a heuristic
+# for an old home folder's copy, a backup, another install: keys and logins in DIR or a folder right in it (.ssh, .aws,
+# .gnupg, .kube, .docker, .azure, the gh, glab and gcloud logins under .config, Library/Keychains, .netrc,
+# .git-credentials), an .npmrc or .pypirc at its top with a token or password in it, and down to 3 levels another
+# bedrock-now folder (stack, .env and compose.yaml side by side: its .env holds this computer's keys) or a Time Machine
+# backup. Bounded: 3 levels, node_modules, .git and vendor not entered.
+_project_secrets() {
+  local d k f hit
   for d in "$1" "$1"/*/ "$1"/.[!.]*/; do
     [ -d "$d" ] || continue
-    for k in .ssh .aws .gnupg .kube .docker Library/Keychains; do [ ! -d "${d%/}/$k" ] || return 0; done
+    d="${d%/}"
+    for k in .ssh .aws .gnupg .kube .docker .azure .config/gh .config/glab-cli .config/gcloud Library/Keychains; do
+      [ ! -d "$d/$k" ] || { printf '%s\n' "${d#"$1"}/$k" | sed 's#^/##'; return 0; }
+    done
+    for k in .netrc .git-credentials; do
+      [ ! -f "$d/$k" ] || { printf '%s\n' "${d#"$1"}/$k" | sed 's#^/##'; return 0; }
+    done
   done
+  for k in .npmrc .pypirc; do
+    if [ -f "$1/$k" ] && grep -qE '_authToken|_auth[[:space:]]*=|password' "$1/$k" 2>/dev/null; then echo "$k (a token or password in it)"; return 0; fi
+  done
+  hit="$(find "$1" -maxdepth 3 \( -name node_modules -o -name .git -o -name vendor \) -prune -o \
+    \( \( -type f -name stack \) -o -name Backups.backupdb -o -name '*.backupbundle' -o -name .timemachine \) -print 2>/dev/null || true)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      */stack) if [ -f "${f%/stack}/.env" ] && { [ -f "${f%/stack}/compose.yaml" ] || [ -f "${f%/stack}/compose.yml" ]; }; then
+                 k="${f%/stack}"; k="${k#"$1"}"; echo "another bedrock-now folder (${k#/}${k:+/}.env holds that install's keys)"; return 0; fi ;;
+      *) k="${f#"$1"/}"; echo "a Time Machine backup ($k)"; return 0 ;;
+    esac
+  done <<< "$hit"
   return 1
+}
+
+# _project_path_rules REAL -> fails, printing why, for a path a project folder never has (beyond the workspace's
+# rules): in a temporary or runtime folder, through a folder of sockets, a .claude folder or one in it (Claude Code
+# would read it as configuration above another project's folder), or in a Time Machine backup
+_project_path_rules() {
+  local r t c IFS
+  r="$(_fold "$1")"
+  for t in $PROJECTS_TEMP_ROOTS ${XDG_RUNTIME_DIR:-}; do
+    t="$(_fold "$t")"
+    case "$r" in "$t" | "$t"/*) echo "it is in a temporary or runtime folder ($t): programs of this computer keep their sockets there — a project is a folder of yours elsewhere"; return 1 ;; esac
+  done
+  if c="$(socket_dir_component "$1")"; then
+    echo "its path goes through $c, a folder where programs of this computer keep their sockets (a way to run commands on it)"; return 1
+  fi
+  IFS=/
+  for c in $1; do
+    case "$(printf '%s' "$c" | tr '[:upper:]' '[:lower:]')" in
+      .claude) echo "its path goes through a .claude folder (Claude Code reads that as configuration of the folders below it)"; return 1 ;;
+      backups.backupdb | *.backupbundle | .timemachine) echo "it is in a Time Machine backup ($c)"; return 1 ;;
+    esac
+  done
+  return 0
 }
 
 # project_check DIR [--keys-ok] -> the folder's physical path; fails, printing why, for a folder the sandbox must not
 # get (the rules at the top). _PC_SELF: a project's own id (its own entry is not "another project", when checked again)
 project_check() {
-  local dir="$1" keys="${2:-}" real r ws w id name mode sbx added k host h
+  local dir="$1" keys="${2:-}" real r ws w id name mode sbx added k host h why sock
   case "$dir" in
     *[\"\'\$\`\\]*) echo "its path contains a quote, \$, a backtick or a backslash"; return 1 ;;
   esac
   ! printf '%s' "$dir" | LC_ALL=C grep -q '[[:cntrl:]]' || { echo "its path contains a control character"; return 1; }
   real="$(terminal_workspace_check "$dir")" || { echo "$real"; return 1; }
+  why="$(_project_path_rules "$real")" || { echo "$why"; return 1; }
   _pj_path_ok "$real" || { echo "its path cannot be written into the sandbox's settings as it is"; return 1; }
   r="$(_fold "$real")"
   ws="$(get_env TERMINAL_WORKSPACE)"
@@ -188,9 +241,16 @@ project_check() {
     case "$r/" in "$h/"*) echo "it is inside the project folder $name ($host)"; return 1 ;; esac
     case "$h/" in "$r/"*) echo "it contains the project folder $name ($host)"; return 1 ;; esac
   done < <(projects_records 2>/dev/null)
-  if [ "$keys" != --keys-ok ] && _project_holds_keys "$real"; then
-    echo "it holds keys or a keychain (.ssh, .aws, .gnupg, .kube, .docker or Library/Keychains, in it or one level down) — in a terminal, add --yes-it-holds-keys if the sandbox may really see them"
+  if [ "$keys" != --keys-ok ] && why="$(_project_secrets "$real")"; then
+    echo "it holds keys or logins: $why — in a terminal, add --yes-it-holds-keys if the sandbox may really see them"
     return 1
+  fi
+  # a socket in it: a program of this computer listening there would take commands from the sandbox. Refused when it is
+  # added; checked again (_PC_RECHECK: ./stack up), only said — a sandbox process may have made one in its own folder
+  if sock="$(first_socket "$real")"; then
+    case "$sock" in */.git/fsmonitor--daemon.ipc) why=" (git's fsmonitor daemon: git fsmonitor--daemon stop in that repository, or core.fsmonitor false)" ;; *) why='' ;; esac
+    if [ -z "${_PC_RECHECK:-}" ]; then echo "it holds a socket, $sock$why: a program of this computer listening there would take commands from the sandbox"; return 1; fi
+    warn "project folder $real holds a socket ($sock$why): if a program of this computer listens there, the sandbox can talk to it"
   fi
   printf '%s\n' "$real"
 }
@@ -219,25 +279,38 @@ _project_name_from() {
 _pj_json() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | LC_ALL=C tr -d '\000-\037')"; }
 
 # projects_sync — the generated files from folders.tsv, each folder checked again (left out, with the reason, when it
-# is gone, now leads elsewhere, or a rule refuses it now). Prints nothing but the warnings.
+# is gone, now leads elsewhere, or a rule refuses it now), and what of it the running sandbox has mounted (_pj_applied:
+# a folder not there yet, read-write there while listed read-only or the other way round, one removed but still
+# mounted — "pending" until the sandbox restarts). Prints nothing but the warnings.
 projects_sync() {
-  local d pub id name mode sbx added keys host real why roots='' rows='' vols='' paths='' kopt n=0 hidden bad
+  local d pub id name mode sbx added keys host real why roots='' rows='' vols='' paths='' kopt n=0 hidden bad applied running=false
+  local pend leaving='' wanted='' p m
   d="$(projects_dir)"; pub="$(projects_public_dir)"
-  mkdir -p "$pub" && chmod 700 "$d" "$pub" 2>/dev/null || { warn "cannot create $pub"; return 1; }
+  # (public/ is mounted read-only into the code container, which runs as the terminal's user — yours, or 10104 when
+  # ./stack runs as root: readable by it; roots.json holds no secret, paths in the sandbox only)
+  mkdir -p "$pub" && chmod 700 "$d" 2>/dev/null && chmod 755 "$pub" 2>/dev/null || { warn "cannot create $pub"; return 1; }
+  if applied="$(_pj_applied)"; then running=true; else applied=''; fi
   while IFS=$'\t' read -r id name mode sbx added keys host; do
     why=''
     real="$(_phys "$host")"
     kopt=''; [ "$keys" != yes ] || kopt=--keys-ok
     if [ -z "$real" ]; then why="it is gone (or cannot be opened)"
     elif [ "$real" != "$host" ]; then why="it now leads to $real (a link?) — add that folder itself if you mean it"
-    elif ! why="$(_PC_SELF="$id" project_check "$host" $kopt)"; then :
+    elif ! why="$(_PC_RECHECK=1 _PC_SELF="$id" project_check "$host" $kopt)"; then :
     else why=''; fi
     hidden=false; [ "$sbx" = "$host" ] || hidden=true
-    rows="$rows${rows:+,}{\"id\":$(_pj_json "$id"),\"name\":$(_pj_json "$name"),\"host\":$(_pj_json "$host"),\"path\":$(_pj_json "$sbx"),\"mode\":\"$mode\",\"hidden\":$hidden,\"added\":$added,\"ok\":$([ -z "$why" ] && echo true || echo false),\"why\":$(_pj_json "$why")}"
+    # what the running sandbox has of it (nothing said while it does not run: it sees the list when it starts)
+    pend=null
+    if [ -z "$why" ] && [ "$running" = true ]; then
+      m="$(printf '%s\n' "$applied" | awk -F'\t' -v p="$sbx" '$1 == p && !f { print $2; f = 1 }')"
+      if [ -z "$m" ]; then pend='"add"'; elif [ "$m" != "$mode" ]; then pend="\"$mode\""; fi
+    fi
+    rows="$rows${rows:+,}{\"id\":$(_pj_json "$id"),\"name\":$(_pj_json "$name"),\"host\":$(_pj_json "$host"),\"path\":$(_pj_json "$sbx"),\"mode\":\"$mode\",\"hidden\":$hidden,\"added\":$added,\"ok\":$([ -z "$why" ] && echo true || echo false),\"why\":$(_pj_json "$why"),\"pending\":$pend}"
     if [ -n "$why" ]; then warn "project folder $name ($host) is left out of the sandbox: $why"; continue; fi
     n=$((n + 1))
+    wanted="$wanted$sbx"$'\n'
     paths="$paths${paths:+,}$(_pj_json "$sbx")"
-    roots="$roots${roots:+,}{\"id\":$(_pj_json "$id"),\"name\":$(_pj_json "$name"),\"path\":$(_pj_json "$sbx"),\"mode\":\"$mode\",\"hidden\":$hidden}"
+    roots="$roots${roots:+,}{\"id\":$(_pj_json "$id"),\"name\":$(_pj_json "$name"),\"path\":$(_pj_json "$sbx"),\"mode\":\"$mode\",\"hidden\":$hidden,\"pending\":$pend}"
     vols="$vols      - type: bind
         source: $(_pj_json "$host")
         target: $(_pj_json "$sbx")
@@ -245,11 +318,18 @@ projects_sync() {
         bind: { create_host_path: false, selinux: z }
 "
   done < <(projects_records)
+  # mounted still, no longer listed (removed, or left out now): the sandbox keeps it until it restarts
+  while IFS=$'\t' read -r p m; do
+    [ -n "$p" ] || continue
+    case $'\n'"$wanted" in *$'\n'"$p"$'\n'*) continue ;; esac
+    leaving="$leaving${leaving:+,}{\"path\":$(_pj_json "$p"),\"mode\":\"$m\"}"
+  done <<< "$applied"
   bad="$(_pj_bad_lines)"
   [ "$bad" = 0 ] || warn "$(projects_file): $bad line(s) not understood — left out (./stack project list)"
-  _pj_write_file "$(projects_roots_file)" "{\"version\":1,\"roots\":[$roots]}"
+  _pj_write_file "$(projects_roots_file)" "{\"version\":1,\"running\":$running,\"roots\":[$roots],\"leaving\":[$leaving]}" 644
   mkdir -p "$(status_dir)" 2>/dev/null || true
-  _pj_write_file "$(projects_status_file)" "{\"version\":1,\"written_at\":$(date +%s),\"max\":$PROJECTS_MAX,\"folders\":[$rows]}"
+  # (read by the portal: written like the other status files — 644 in the status folder, which is the portal's group's)
+  _pj_write_file "$(projects_status_file)" "{\"version\":1,\"written_at\":$(date +%s),\"max\":$PROJECTS_MAX,\"running\":$running,\"folders\":[$rows],\"leaving\":[$leaving]}" 644
   if [ "$n" = 0 ]; then rm -f "$(projects_compose_file)"; return 0; fi
   _pj_write_file "$(projects_compose_file)" "# Generated by ./stack from $(projects_file) (lib/projects.sh): do not edit — ./stack project
 # The folders of this computer the Code page's projects are: each mounted into the sandbox (never created by Docker),
@@ -261,21 +341,39 @@ services:
     volumes:
 $vols"
 }
-# _pj_write_file FILE TEXT — written to a temporary file next to it, then renamed (readers never see half a file)
+# _pj_write_file FILE TEXT [MODE] — written to a temporary file next to it, then renamed (readers never see half a
+# file); mode 600 unless said
 _pj_write_file() {
   local tmp; tmp="$(mktemp "$(dirname "$1")/.pj.XXXXXX")" || return 1
-  printf '%s\n' "$2" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
+  printf '%s\n' "$2" > "$tmp" && chmod "${3:-600}" "$tmp" && mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
+}
+
+# _pj_applied -> what the running sandbox has mounted of the project folders, by Docker's word (its container's
+# configuration: BN_CODE_ROOTS, and its mounts — never the sandbox's): "PATH<TAB>rw|ro" lines; 1 when it does not run
+_pj_applied() {
+  local c roots mounts p rw
+  c="$(dc ps -q --status running terminal 2>/dev/null || true)"; c="${c%%$'\n'*}"
+  [ -n "$c" ] || return 1
+  roots="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" 2>/dev/null | sed -n 's/^BN_CODE_ROOTS=//p' || true)"
+  mounts="$(docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\t"}}{{.RW}}{{"\n"}}{{end}}' "$c" 2>/dev/null || true)"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    rw="$(printf '%s\n' "$mounts" | awk -F'\t' -v p="$p" '$1 == p && !f { print $2; f = 1 }')"
+    printf '%s\t%s\n' "$p" "$([ "$rw" = false ] && echo ro || echo rw)"
+  done < <(printf '%s\n' "$roots" | tr -d '[]"' | tr ',' '\n')
+  return 0
 }
 
 # --- adding, removing, changing; the restart ---
 
-# _projects_restart_choice ARGS... -> now | idle | later (from --now / --when-idle / --later; else asked in a terminal,
-# --yes: now, otherwise idle)
+# _projects_restart_choice NARROW ARGS... -> now | idle | later (from --now / --when-idle / --later; else asked in a
+# terminal, --yes: now, otherwise idle — now for a narrowing change: removing a folder or making it read-only)
 _projects_restart_choice() {
-  local a c=''
+  local a c='' narrow="$1"
+  shift
   for a in "$@"; do case "$a" in --now) c=now ;; --when-idle) c=idle ;; --later) c=later ;; esac; done
   [ -z "$c" ] || { printf '%s\n' "$c"; return 0; }
-  if [ "${ASSUME_YES:-0}" = 1 ]; then echo now; return 0; fi
+  if [ "${ASSUME_YES:-0}" = 1 ] || { [ "$narrow" = 1 ] && ! _have_tty; }; then echo now; return 0; fi
   _have_tty || { echo idle; return 0; }
   case "$(ask "Restart the sandbox now (n: when no Code session has a turn running; l: later)? [Y/n/l]" y)" in
     [Nn]*) echo idle ;; [Ll]*) echo later ;; *) echo now ;;
@@ -291,10 +389,12 @@ projects_busy() {
     .catch(() => {})' 2>/dev/null | tr -cd '0-9' || true
 }
 
-# projects_restart now|idle|later — the sandbox recreated so it sees the folders as listed (the generated compose file
-# changed), now or once no turn runs (at most PROJECTS_IDLE_MAX_S); later: not now. 2: still busy, not restarted.
+# projects_restart now|idle|later [NARROW] — the sandbox recreated so it sees the folders as listed (the generated compose
+# file changed), now or once no turn runs (at most PROJECTS_IDLE_MAX_S); later: not now. 2: still busy, not restarted —
+# never for a narrowing change (NARROW 1: a folder removed or made read-only), which restarts once the wait is over
+# whatever runs: a session kept busy must not keep the sandbox's wider access.
 projects_restart() {
-  local how="$1" waited=0 n own=0
+  local how="$1" narrow="${2:-0}" waited=0 n own=0
   if ! terminal_ready || [ -z "$(dc ps -q --status running terminal 2>/dev/null)" ]; then
     log "the sandbox is not running: it sees the folders when it starts (./stack up)"; return 0
   fi
@@ -304,6 +404,10 @@ projects_restart() {
     ! stack_lock_ours || { own=1; stack_unlock; }
     while n="$(projects_busy)"; [ -n "$n" ] && [ "$n" -gt 0 ]; do
       if [ "$waited" -ge "$PROJECTS_IDLE_MAX_S" ]; then
+        if [ "$narrow" = 1 ]; then
+          warn "Code sessions still have turns running after $((PROJECTS_IDLE_MAX_S / 60)) minutes: restarting anyway (a folder removed or made read-only never waits longer)"
+          break
+        fi
         warn "Code sessions still have turns running after $((PROJECTS_IDLE_MAX_S / 60)) minutes: the sandbox was not restarted — ./stack project apply restarts it"
         return 2
       fi
@@ -323,6 +427,7 @@ projects_apply() {
   projects_sync || die "could not write the sandbox's folder list ($(projects_dir))"
   terminal_ready || { log "the terminal is off: nothing to restart"; return 0; }
   projects_restart now || die "the sandbox did not come back up — $(projects_dir)/last-restart.log, ./stack logs terminal"
+  projects_sync >/dev/null 2>&1 || true   # (what it has mounted now: nothing pending)
   log "the sandbox sees: $(projects_where)"
 }
 
@@ -333,27 +438,39 @@ projects_where() {
   printf '%s\n' "$out"
 }
 
-# _projects_change "WHAT" LINES OLDLINES ARGS... — folders.tsv replaced, the files regenerated, the sandbox restarted as
-# chosen (ARGS: --now / --when-idle / --later, else asked: _projects_restart_choice); a restart that fails puts the old
-# list back (and restarts again) before it says why
+# _projects_change "WHAT" LINES OLDLINES NARROW ARGS... — folders.tsv replaced, the files regenerated, the sandbox
+# restarted as chosen (ARGS: --now / --when-idle / --later, else asked: _projects_restart_choice). NARROW 1 (a folder
+# removed or made read-only): never left waiting (projects_restart), and a restart that fails keeps the narrowed list —
+# the sandbox stays down until it starts with it, never back to the wider access. A widening change (a folder added, or
+# read-write again) that fails to start puts the old list back (and restarts again) before it says why.
 _projects_change() {
-  local what="$1" new="$2" old="$3" how=later rc=0
-  shift 3
+  local what="$1" new="$2" old="$3" narrow="$4" how=later rc=0
+  shift 4
   projects_write "$new"
   projects_sync >/dev/null 2>&1 || true
-  if terminal_ready && [ -n "$(dc ps -q --status running terminal 2>/dev/null)" ]; then how="$(_projects_restart_choice "$@")"; fi
-  projects_restart "$how" || rc=$?
+  if terminal_ready && [ -n "$(dc ps -q --status running terminal 2>/dev/null)" ]; then how="$(_projects_restart_choice "$narrow" "$@")"; fi
+  [ "$how" != later ] || [ "$narrow" != 1 ] || warn "$what applies when the sandbox restarts (./stack project apply, or the next ./stack up): until then it still sees the folder as before"
+  projects_restart "$how" "$narrow" || rc=$?
   [ "$rc" != 2 ] || return 0
+  if [ "$rc" != 0 ] && [ "$narrow" = 1 ]; then
+    warn "the sandbox did not start with $what; its last messages:"
+    tail -n 12 "$(projects_dir)/last-restart.log" 2>/dev/null | sed 's/^/    /' >&2 || true
+    projects_sync >/dev/null 2>&1 || true
+    die "the list keeps $what (never back to wider access): the sandbox stays down until it starts with it — ./stack logs terminal says why; ./stack up (or ./stack project apply) tries again"
+  fi
   if [ "$rc" != 0 ]; then
     warn "the sandbox did not start with $what — the list is as it was before; its last messages:"
     tail -n 12 "$(projects_dir)/last-restart.log" 2>/dev/null | sed 's/^/    /' >&2 || true
     projects_write "$old"; projects_sync >/dev/null 2>&1 || true
     dc up -d --no-deps --wait terminal >/dev/null 2>&1 || warn "the sandbox did not come back either — ./stack up"
+    projects_sync >/dev/null 2>&1 || true
     case "$(uname -s)" in
       Darwin) die "Docker Desktop shares only some folders of this Mac with containers (/Users, /Volumes, /private, /tmp by default): for a folder elsewhere, add it under Docker Desktop › Settings › Resources › File sharing, then try again" ;;
       *) die "./stack logs terminal says more" ;;
     esac
   fi
+  # (restarted, or not running: the files say what the sandbox has now)
+  projects_sync >/dev/null 2>&1 || true
 }
 
 project_add() {
@@ -397,21 +514,23 @@ project_add() {
   else
     warn "adding $real as $name, read-write: Claude — and anything it runs, or text it reads and follows — can change its files, and what it writes can run on this computer when your own tools open the folder (git hooks, .envrc, VS Code tasks, package.json scripts). Every project shares the one sandbox: a session in one can read and change the others. Read-only instead: ./stack project mode $name ro"
   fi
-  _projects_change "$name" "${old:+$old$'\n'}$line" "$old" ${args[@]+"${args[@]}"}
+  _projects_change "$name" "${old:+$old$'\n'}$line" "$old" 0 ${args[@]+"${args[@]}"}
+  projects_pending_on "$name" && log "$name: the sandbox sees it once it restarts (./stack project apply, or the next ./stack up)"
   log "$name: $real → $sbx in the sandbox ($([ "$ro" = 1 ] && echo read-only || echo read-write)) — a project on the Code page"
 }
 
 project_remove() {
-  local want='' rec id name a old new args=("$@")
+  local want='' rec id name sbx a old new args=("$@")
   for a in "$@"; do case "$a" in --now | --when-idle | --later) ;; -*) die "unknown option: $a" ;; *) [ -z "$want" ] || die "usage: ./stack project remove NAME|ID"; want="$a" ;; esac; done
   [ -n "$want" ] || die "usage: ./stack project remove NAME|ID (./stack project list)"
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   rec="$(project_find "$want")"; [ -n "$rec" ] || die "no project folder $want (./stack project list)"
-  id="$(printf '%s' "$rec" | cut -f1)"; name="$(printf '%s' "$rec" | cut -f2)"
+  id="$(printf '%s' "$rec" | cut -f1)"; name="$(printf '%s' "$rec" | cut -f2)"; sbx="$(printf '%s' "$rec" | cut -f4)"
   stack_lock project
   old="$(projects_records)"; new="$(printf '%s\n' "$old" | awk -F'\t' -v id="$id" '$1 != id')"
-  _projects_change "the list without $name" "$new" "$old" ${args[@]+"${args[@]}"}
-  log "$name is no longer in the sandbox (the folder on this computer is untouched; its sessions stay, under Folders no longer added)"
+  _projects_change "the list without $name" "$new" "$old" 1 ${args[@]+"${args[@]}"}
+  if projects_still_mounted "$sbx"; then log "$name is removed from the list; the sandbox keeps it until it restarts (the folder on this computer is untouched; its sessions stay, under Folders no longer added)"
+  else log "$name is no longer in the sandbox (the folder on this computer is untouched; its sessions stay, under Folders no longer added)"; fi
 }
 
 project_mode() {
@@ -431,18 +550,24 @@ project_mode() {
   [ "$(printf '%s' "$rec" | cut -f3)" != "$m" ] || { log "$name is $([ "$m" = ro ] && echo read-only || echo read-write) already"; return 0; }
   stack_lock project
   old="$(projects_records)"; new="$(printf '%s\n' "$old" | awk -F'\t' -v OFS='\t' -v id="$id" -v m="$m" '$1 == id { $3 = m } { print }')"
-  _projects_change "$name $m" "$new" "$old" ${args[@]+"${args[@]}"}
-  log "$name is $([ "$m" = ro ] && echo "read-only in the sandbox" || echo "read-write in the sandbox again")"
+  _projects_change "$name $m" "$new" "$old" "$([ "$m" = ro ] && echo 1 || echo 0)" ${args[@]+"${args[@]}"}
+  if projects_pending_on "$name"; then log "$name is $([ "$m" = ro ] && echo read-only || echo read-write) in the list; the sandbox applies it when it restarts"
+  else log "$name is $([ "$m" = ro ] && echo "read-only in the sandbox" || echo "read-write in the sandbox again")"; fi
 }
 
 projects_list() {
-  local id name mode sbx added keys host why found=0
+  local id name mode sbx added keys host why found=0 pend p m
   printf 'Workspace     %s → /workspace (read-write)\n' "$(get_env TERMINAL_WORKSPACE)"
   while IFS=$'\t' read -r id name mode sbx added keys host; do
     found=1
-    why="$(_projects_left_out "$id")"
+    why="$(_projects_left_out "$id")"; pend="$(_pj_pending_of "$id")"
     printf '%-13s %s → %s (%s)%s\n' "$name" "$host" "$sbx" "$([ "$mode" = ro ] && echo read-only || echo read-write)" "${why:+  !! left out: $why}"
+    [ -z "$pend" ] || [ -n "$why" ] || printf '              pending: %s\n' "$(_pj_pending_text "$pend")"
   done < <(projects_records)
+  while IFS=$'\t' read -r p m; do
+    [ -n "$p" ] || continue
+    printf 'removed       %s — still in the sandbox (%s) until it restarts\n' "$p" "$([ "$m" = ro ] && echo read-only || echo read-write)"
+  done < <(_pj_leaving_lines)
   [ "$found" = 1 ] || printf '\nNo folder of this computer yet: ./stack project add DIR (or Settings › Claude Code › Project folders)\n'
 }
 # _projects_left_out ID -> why the last sync left that folder out (from the status file), else nothing
@@ -451,6 +576,54 @@ _projects_left_out() {
   [ -f "$f" ] || return 0
   # (|| true: a folder that was not left out matches nothing — not a failure under pipefail)
   { tr '{' '\n' < "$f" | grep "\"id\":\"$1\"" | grep '"ok":false' | sed -n 's/.*"why":"\([^"]*\)".*/\1/p' | head -n 1; } || true
+}
+
+# projects_pending_on NAME -> 0 when the running sandbox does not have that folder as listed yet (projects.json's
+# pending: not mounted yet, or mounted read-write while listed read-only, or the other way round)
+projects_pending_on() {
+  local f; f="$(projects_status_file)"
+  [ -f "$f" ] || return 1
+  [ -n "$({ tr '{' '\n' < "$f" | grep -F "\"name\":$(_pj_json "$1")," | grep -E '"pending":"(add|ro|rw)"'; } || true)" ]
+}
+# projects_still_mounted PATH -> 0 when the running sandbox still has a folder at PATH that is no longer listed
+projects_still_mounted() {
+  local f; f="$(projects_status_file)"
+  [ -f "$f" ] || return 1
+  [ -n "$({ sed -n 's/.*"leaving":\[\(.*\)\].*/\1/p' "$f" | tr '{' '\n' | grep -F "\"path\":$(_pj_json "$1")"; } || true)" ]
+}
+# _pj_pending_text PENDING -> how a folder's pending state is said
+_pj_pending_text() {
+  case "$1" in
+    add) echo "not in the sandbox yet: it sees it once it restarts" ;;
+    ro) echo "read-only once the sandbox restarts — until then Claude can still change it" ;;
+    rw) echo "read-write once the sandbox restarts (read-only until then)" ;;
+  esac
+}
+# _pj_pending_of ID -> the folder's pending state from projects.json (add, ro, rw), else nothing
+_pj_pending_of() {
+  local f; f="$(projects_status_file)"
+  [ -f "$f" ] || return 0
+  { tr '{' '\n' < "$f" | grep -F "\"id\":\"$1\"" | sed -n 's/.*"pending":"\([a-z]*\)".*/\1/p'; } || true
+}
+# _pj_leaving_lines -> "PATH<TAB>MODE" of the folders the running sandbox still has though no longer listed
+_pj_leaving_lines() {
+  local f; f="$(projects_status_file)"
+  [ -f "$f" ] || return 0
+  { sed -n 's/.*"leaving":\[\(.*\)\].*/\1/p' "$f" | tr '{' '\n' | sed -n 's/^"path":"\([^"]*\)","mode":"\(r[ow]\)".*/\1	\2/p'; } || true
+}
+
+# projects_mount_hint LOG — a start that failed on a project folder's mount (Docker Desktop no longer sharing it, or
+# the folder gone): which folder, and what to do. Nothing for any other failure.
+projects_mount_hint() {
+  local f="$1" id name mode sbx added keys host
+  [ -f "$f" ] && grep -qiE 'mounts denied|not shared from the host|bind source path does not exist|invalid mount config' "$f" 2>/dev/null || return 0
+  while IFS=$'\t' read -r id name mode sbx added keys host; do
+    grep -qF -- "$host" "$f" 2>/dev/null || continue
+    case "$(uname -s)" in
+      Darwin) warn "project folder $name ($host) could not be mounted: Docker Desktop does not share it with containers (any more) — add it under Docker Desktop › Settings › Resources › File sharing, or ./stack project remove $name" ;;
+      *) warn "project folder $name ($host) could not be mounted (is it still there?) — ./stack project remove $name, or put the folder back" ;;
+    esac
+  done < <(projects_records 2>/dev/null)
 }
 
 # --- hooks for the rest of ./stack ---
@@ -462,15 +635,27 @@ projects_up_hook() {
   projects_sync || warn "could not write the sandbox's folder list ($(projects_dir))"
 }
 
+# projects_after_up — once ./stack up (or terminal/code enable) started the sandbox: the files say what it has mounted
+# now (nothing pending)
+projects_after_up() {
+  [ -f "$(projects_file)" ] || [ -f "$(projects_compose_file)" ] || return 0
+  projects_sync >/dev/null 2>&1 || true
+}
+
 # projects_status_lines — ./stack terminal status and code status
 projects_status_lines() {
-  local id name mode sbx added keys host why n=0
+  local id name mode sbx added keys host why n=0 pend p m
   while IFS=$'\t' read -r id name mode sbx added keys host; do
     n=$((n + 1))
-    why="$(_projects_left_out "$id")"
+    why="$(_projects_left_out "$id")"; pend="$(_pj_pending_of "$id")"
     printf '  Project    %s → %s (%s%s)\n' "$host" "$sbx" "$name" "$([ "$mode" = ro ] && echo ', read-only')"
     [ -z "$why" ] || printf '             !! left out: %s\n' "$why"
+    [ -z "$pend" ] || [ -n "$why" ] || printf '             pending: %s\n' "$(_pj_pending_text "$pend")"
   done < <(projects_records 2>/dev/null)
+  while IFS=$'\t' read -r p m; do
+    [ -n "$p" ] || continue
+    printf '  Removed    %s — still in the sandbox (%s) until it restarts\n' "$p" "$([ "$m" = ro ] && echo read-only || echo read-write)"
+  done < <(_pj_leaving_lines)
   [ "$n" -gt 0 ] || printf '  Projects   none of this computer'"'"'s folders but the workspace (./stack project add DIR)\n'
 }
 

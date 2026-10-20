@@ -23,7 +23,17 @@ _stubs() {
     esac
     return 0
   }
-  docker() { echo "docker $*" >> "$TMP/docker"; return 0; }
+  # (docker inspect of the running sandbox: SANDBOX_ROOTS — its BN_CODE_ROOTS — and SANDBOX_MOUNTS, "DEST<TAB>RW" lines)
+  docker() {
+    echo "docker $*" >> "$TMP/docker"
+    case "$*" in
+      "inspect -f {{range .Config.Env}}"*) [ -z "${SANDBOX_ROOTS:-}" ] || printf 'PATH=/usr/bin\nBN_CODE_ROOTS=%s\n' "$SANDBOX_ROOTS" ;;
+      "inspect -f {{range .Mounts}}"*) [ -z "${SANDBOX_MOUNTS:-}" ] || printf '%s\n' "$SANDBOX_MOUNTS" ;;
+    esac
+    return 0
+  }
+  # (the tests' folders are temporary ones: the rule against temporary folders is pointed elsewhere for them)
+  PROJECTS_TEMP_ROOTS=/nonexistent-temp-root; export BN_PROJECTS_TEMP_ROOTS=/nonexistent-temp-root
   WS="$TMP/w/ws"; mkdir -p "$WS"
   printf 'PORTAL_SECRET=x\nTERMINAL_ENABLED=true\nTERMINAL_WORKSPACE=%s\nCODE_ENABLED=true\n' "$(_phys "$WS")" > "$ENV_FILE"
 }
@@ -65,7 +75,7 @@ services:
         read_only: true
         bind: { create_host_path: false, selinux: z }"
   # the code container's list: ids, names, paths in the sandbox, modes — never this computer's path of a hidden one
-  assert_eq "$(cat "$(projects_roots_file)")" "{\"version\":1,\"roots\":[{\"id\":\"$ida\",\"name\":\"app\",\"path\":\"$pa\",\"mode\":\"rw\",\"hidden\":$([ "$pa" = "$a" ] && echo false || echo true)},{\"id\":\"$idb\",\"name\":\"docs\",\"path\":\"/projects/docs\",\"mode\":\"ro\",\"hidden\":true}]}"
+  assert_eq "$(cat "$(projects_roots_file)")" "{\"version\":1,\"running\":false,\"roots\":[{\"id\":\"$ida\",\"name\":\"app\",\"path\":\"$pa\",\"mode\":\"rw\",\"hidden\":$([ "$pa" = "$a" ] && echo false || echo true),\"pending\":null},{\"id\":\"$idb\",\"name\":\"docs\",\"path\":\"/projects/docs\",\"mode\":\"ro\",\"hidden\":true,\"pending\":null}],\"leaving\":[]}"
   assert_not_contains "$(cat "$(projects_roots_file)")" "$b"
   # the portal's list (Settings): this computer's paths too
   assert_contains "$(cat "$(projects_status_file)")" "\"id\":\"$idb\",\"name\":\"docs\",\"host\":\"$b\",\"path\":\"/projects/docs\",\"mode\":\"ro\",\"hidden\":true,"
@@ -148,7 +158,7 @@ test_a_home_like_folder_needs_its_flag() {
   mkdir -p "$h1/.ssh" "$h2/me/.aws" "$h3/Library/Keychains"
   for d in "$h1" "$h2" "$h3"; do
     why="$(project_check "$d")" && { echo "accepted $d" >&2; return 1; }
-    assert_contains "$why" "it holds keys or a keychain"
+    assert_contains "$why" "it holds keys or logins:"
     project_check "$d" --keys-ok >/dev/null || return 1
   done
   if (project_add "$h1" --later) >/dev/null 2>&1; then return 1; fi
@@ -158,7 +168,7 @@ test_a_home_like_folder_needs_its_flag() {
   projects_sync 2>/dev/null; assert_contains "$(cat "$(projects_roots_file)")" '"name":"oldhome"'
   local x; x="$(_dir plain)"; project_add "$x" --later 2>/dev/null || return 1
   mkdir -p "$x/.gnupg"
-  assert_contains "$(projects_sync 2>&1)" "project folder plain ($x) is left out of the sandbox: it holds keys or a keychain"
+  assert_contains "$(projects_sync 2>&1)" "project folder plain ($x) is left out of the sandbox: it holds keys or logins: .gnupg"
   assert_not_contains "$(cat "$(projects_roots_file)")" '"name":"plain"'
 }
 
@@ -210,7 +220,7 @@ test_checked_again_at_up_gone_or_now_a_link() {
   out="$(projects_up_hook 2>&1)"
   assert_contains "$out" "project folder lib ($b) is left out of the sandbox: it is gone"
   [ ! -e "$(projects_compose_file)" ] || return 1
-  assert_eq "$(cat "$(projects_roots_file)")" '{"version":1,"roots":[]}'
+  assert_eq "$(cat "$(projects_roots_file)")" '{"version":1,"running":false,"roots":[],"leaving":[]}'
   # a line of folders.tsv that does not fit: skipped, said
   printf 'p_zz\tbad\n' >> "$(projects_file)"
   assert_contains "$(projects_sync 2>&1)" "1 line(s) not understood"
@@ -333,4 +343,192 @@ for n, x in s.items():
     assert os.environ["A"] not in json.dumps(x) and os.environ["B"] not in json.dumps(x), n
     assert "BN_CODE_ROOTS" not in json.dumps(x.get("environment") or {}), n
 ' || return 1
+}
+
+# a unix socket at PATH, left behind (bound with a relative name: macOS caps a socket's path at 104 bytes)
+_sock() { (cd "$(dirname "$1")" && python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$(basename "$1")"); }
+
+test_temporary_folders_sockets_and_claude_folders_are_never_project_folders() {
+  _stubs
+  local why d
+  # (the real list of temporary folders: the tests' own folders are in one)
+  PROJECTS_TEMP_ROOTS="/tmp /var/tmp /private/tmp /private/var/tmp /private/var/folders /var/folders /dev/shm /run/user"
+  d="$(_dir app)"
+  why="$(project_check "$d")" && { echo "accepted a folder in $TMP" >&2; return 1; }
+  assert_contains "$why" "it is in a temporary or runtime folder"
+  mkdir -p "/tmp/bn-pj-$$"
+  why="$(project_check "/tmp/bn-pj-$$")" || true; rmdir "/tmp/bn-pj-$$"
+  assert_contains "$why" "it is in a temporary or runtime folder"
+  PROJECTS_TEMP_ROOTS=/nonexistent-temp-root
+  # a path through a folder of sockets (tmux-<uid>, ssh-<random>, .X11-unix …) — a repository named ssh-tools is fine
+  for n in tmux-501/x ssh-AbCdEf1234/x .X11-unix/x emacs501/x; do
+    mkdir -p "$TMP/f/$n"
+    why="$(project_check "$TMP/f/$n")" && { echo "accepted $n" >&2; return 1; }
+    assert_contains "$why" "a folder where programs of this computer keep their sockets"
+  done
+  mkdir -p "$TMP/f/ssh-tools"; project_check "$TMP/f/ssh-tools" >/dev/null || return 1
+  # a .claude folder (any case) or one in it: Claude Code reads it as the configuration of the folders below it
+  for n in src/.claude src/.Claude/commands; do
+    mkdir -p "$TMP/f/$n"
+    why="$(project_check "$TMP/f/$n")" && { echo "accepted $n" >&2; return 1; }
+    assert_contains "$why" "its path goes through a .claude folder"
+  done
+  # a Time Machine backup, or a folder in one
+  mkdir -p "$TMP/f/Backups.backupdb/mac/x"
+  why="$(project_check "$TMP/f/Backups.backupdb/mac/x")" && return 1
+  assert_contains "$why" "it is in a Time Machine backup"
+  # a socket in it, down to 3 levels: refused when added; at ./stack up only said (a sandbox process may make one)
+  local s; s="$(_dir sockets)"; mkdir -p "$s/a/b"
+  _sock "$s/a/b/agent.sock" || return 77
+  why="$(project_check "$s")" && { echo "accepted a folder with a socket" >&2; return 1; }
+  assert_contains "$why" "it holds a socket, $s/a/b/agent.sock"
+  rm -f "$s/a/b/agent.sock"
+  project_add "$s" --later 2>/dev/null || return 1
+  _sock "$s/a/made-in-the-sandbox.sock"
+  local out; out="$(projects_sync 2>&1)"
+  assert_contains "$out" "project folder $s holds a socket ($s/a/made-in-the-sandbox.sock)"
+  assert_contains "$(cat "$(projects_roots_file)")" '"name":"sockets"'
+}
+
+test_the_workspace_rules_for_temporary_folders_and_sockets() {
+  _stubs
+  local why
+  for p in /tmp /var/tmp; do
+    [ -d "$p" ] || continue
+    why="$(terminal_workspace_check "$p")" && { echo "accepted $p" >&2; return 1; }
+    assert_contains "$why" "it is a temporary folder itself"
+  done
+  # a folder of your own in a temporary folder is fine (the tests' workspaces are); a path through a socket folder is not
+  terminal_workspace_check "$WS" >/dev/null || return 1
+  mkdir -p "$TMP/f/tmux-1000/ws"
+  why="$(terminal_workspace_check "$TMP/f/tmux-1000/ws")" && return 1
+  assert_contains "$why" "a folder where programs of this computer keep their sockets"
+}
+
+test_more_secrets_mean_its_flag_too() {
+  _stubs
+  local why d
+  for k in .config/gh .config/glab-cli .config/gcloud .azure; do
+    d="$TMP/f/k-${k//\//-}"; mkdir -p "$d/me/$k"
+    why="$(project_check "$d")" && { echo "accepted $k" >&2; return 1; }
+    assert_contains "$why" "it holds keys or logins: me/$k"
+    project_check "$d" --keys-ok >/dev/null || return 1
+  done
+  for k in .netrc .git-credentials; do
+    d="$TMP/f/f-$k"; mkdir -p "$d"; : > "$d/$k"
+    why="$(project_check "$d")" && { echo "accepted $k" >&2; return 1; }
+    assert_contains "$why" "it holds keys or logins: $k"
+  done
+  # a repository's own .npmrc / .pypirc is fine — one with a token or password in it is not
+  d="$TMP/f/repo"; mkdir -p "$d"; printf 'registry=https://registry.example.invalid/\n' > "$d/.npmrc"
+  project_check "$d" >/dev/null || return 1
+  printf '//registry.example.invalid/:_authToken=%s\n' "$(printf 'x%.0s' 1 2 3 4 5 6 7 8)" >> "$d/.npmrc"
+  why="$(project_check "$d")" && return 1; assert_contains "$why" ".npmrc (a token or password in it)"
+  d="$TMP/f/py"; mkdir -p "$d"; printf '[pypi]\nusername = me\npassword = %s\n' "$(printf 'y%.0s' 1 2 3 4 5 6)" > "$d/.pypirc"
+  why="$(project_check "$d")" && return 1; assert_contains "$why" ".pypirc (a token or password in it)"
+  # another bedrock-now folder down to 3 levels (its .env holds that install's keys); not inside node_modules
+  d="$TMP/f/src"; mkdir -p "$d/old/bedrock-now"; : > "$d/old/bedrock-now/stack"; : > "$d/old/bedrock-now/.env"; : > "$d/old/bedrock-now/compose.yaml"
+  why="$(project_check "$d")" && return 1; assert_contains "$why" "another bedrock-now folder (old/bedrock-now/.env holds that install's keys)"
+  d="$TMP/f/js"; mkdir -p "$d/node_modules/x"; : > "$d/node_modules/x/stack"; : > "$d/node_modules/x/.env"; : > "$d/node_modules/x/compose.yml"
+  project_check "$d" >/dev/null || return 1
+  # a Time Machine store in it
+  d="$TMP/f/disk"; mkdir -p "$d/Backups.backupdb"
+  why="$(project_check "$d")" && return 1; assert_contains "$why" "a Time Machine backup (Backups.backupdb)"
+}
+
+test_the_portal_and_the_code_container_can_read_their_files() {
+  _stubs
+  project_add "$(_dir app)" --later 2>/dev/null || return 1
+  local m
+  for f in "$(projects_status_file)" "$(projects_roots_file)"; do
+    m="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")"; assert_eq "$m" 644
+  done
+  m="$(stat -c %a "$(projects_public_dir)" 2>/dev/null || stat -f %Lp "$(projects_public_dir)")"; assert_eq "$m" 755
+  for f in "$(projects_file)" "$(projects_compose_file)"; do
+    m="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")"; assert_eq "$m" 600
+  done
+  m="$(stat -c %a "$(projects_dir)" 2>/dev/null || stat -f %Lp "$(projects_dir)")"; assert_eq "$m" 700
+}
+
+test_pending_until_the_sandbox_has_it() {
+  DC_RUNNING=1; _stubs
+  terminal_ready() { return 0; }
+  local a b pa pb out; a="$(_dir app)"; b="$(_dir docs)"
+  pa="$(project_sandbox_path "$a" app no)"; pb="$(project_sandbox_path "$b" docs no)"
+  # the running sandbox has app read-write and docs read-only (Docker's word: its BN_CODE_ROOTS and mounts)
+  project_add "$a" --later 2>/dev/null || return 1
+  project_add "$b" --read-only --later 2>/dev/null || return 1
+  SANDBOX_ROOTS="[\"$pa\",\"$pb\"]"; SANDBOX_MOUNTS="$pa	true"$'\n'"$pb	false"$'\n'"/workspace	true"
+  projects_sync 2>/dev/null
+  assert_contains "$(cat "$(projects_status_file)")" '"name":"app",'
+  assert_not_contains "$(cat "$(projects_status_file)")" '"pending":"'
+  # app made read-only, later: listed read-only, the sandbox still has it read-write — said everywhere until it restarts
+  out="$(project_mode app ro --later 2>&1)" || return 1
+  assert_contains "$out" "app ro applies when the sandbox restarts"
+  assert_contains "$out" "app is read-only in the list; the sandbox applies it when it restarts"
+  assert_contains "$(cat "$(projects_status_file)")" '"mode":"ro","hidden":false,'
+  assert_contains "$(tr '{' '\n' < "$(projects_status_file)" | grep '"name":"app"')" '"pending":"ro"'
+  assert_contains "$(tr '{' '\n' < "$(projects_roots_file)" | grep '"name":"app"')" '"pending":"ro"'
+  assert_contains "$(projects_list)" "pending: read-only once the sandbox restarts — until then Claude can still change it"
+  assert_contains "$(projects_status_lines)" "pending: read-only once the sandbox restarts"
+  # docs removed, later: still mounted until the sandbox restarts
+  out="$(project_remove docs --later 2>&1)" || return 1
+  assert_contains "$out" "docs is removed from the list; the sandbox keeps it until it restarts"
+  assert_contains "$(cat "$(projects_status_file)")" "\"leaving\":[{\"path\":\"$pb\",\"mode\":\"ro\"}]"
+  assert_contains "$(projects_list)" "removed       $pb — still in the sandbox (read-only) until it restarts"
+  # a folder added while the sandbox runs without it: pending add
+  local c; c="$(_dir code)"; project_add "$c" --later 2>/dev/null || return 1
+  assert_contains "$(tr '{' '\n' < "$(projects_status_file)" | grep '"name":"code"')" '"pending":"add"'
+  # the sandbox restarted with the list: nothing pending, nothing leaving
+  SANDBOX_ROOTS="[\"$pa\",\"$(project_sandbox_path "$c" code no)\"]"; SANDBOX_MOUNTS="$pa	false"$'\n'"$(project_sandbox_path "$c" code no)	true"
+  projects_after_up
+  assert_not_contains "$(cat "$(projects_status_file)")" '"pending":"'
+  assert_contains "$(cat "$(projects_status_file)")" '"leaving":[]'
+  # not running: nothing claimed
+  DC_RUNNING=''; projects_sync 2>/dev/null
+  assert_contains "$(cat "$(projects_status_file)")" '"running":false'
+}
+
+test_a_narrowing_change_never_waits_forever_nor_rolls_back() {
+  DC_RUNNING=1; _stubs
+  terminal_ready() { return 0; }
+  local a b out; a="$(_dir app)"; b="$(_dir other)"
+  project_add "$a" --now 2>/dev/null || return 1
+  project_add "$b" --now 2>/dev/null || return 1
+  # turns keep running: a widening change waits, then is left for later (said); a narrowing one restarts anyway
+  projects_busy() { echo 1; }
+  sleep() { :; }
+  PROJECTS_IDLE_MAX_S=20 PROJECTS_IDLE_POLL_S=10
+  : > "$TMP/dc"
+  out="$(project_mode app ro --when-idle 2>&1)" || return 1
+  assert_contains "$out" "restarting anyway (a folder removed or made read-only never waits longer)"
+  assert_contains "$(cat "$TMP/dc")" "dc up -d --no-deps --wait terminal"
+  : > "$TMP/dc"
+  out="$(project_mode app rw --when-idle 2>&1)" || return 1
+  assert_contains "$out" "the sandbox was not restarted"
+  assert_not_contains "$(cat "$TMP/dc")" "up -d --no-deps --wait terminal"
+  # no terminal to ask (the helper): a narrowing change restarts now
+  _have_tty() { return 1; }
+  projects_busy() { echo 0; }
+  : > "$TMP/dc"
+  ASSUME_YES=0 project_remove other 2>/dev/null || return 1
+  assert_contains "$(cat "$TMP/dc")" "dc up -d --no-deps --wait terminal"
+  # a narrowing restart that fails keeps the narrowed list: never back to the wider access
+  DC_FAIL_UP=x
+  out="$(project_remove app --now 2>&1)" && return 1
+  assert_contains "$out" "the list keeps the list without app (never back to wider access): the sandbox stays down until it starts with it"
+  assert_eq "$(projects_records)" ""
+}
+
+test_a_folder_docker_cannot_mount_is_named() {
+  _stubs
+  local a log out; a="$(_dir app)"
+  project_add "$a" --later 2>/dev/null || return 1
+  log="$TMP/up.log"
+  printf 'Error response from daemon: mounts denied:\nThe path %s is not shared from the host and is not known to Docker.\n' "$a" > "$log"
+  out="$(projects_mount_hint "$log" 2>&1)"
+  assert_contains "$out" "project folder app ($a) could not be mounted"
+  assert_contains "$out" "./stack project remove app"
+  printf 'some other failure\n' > "$log"
+  assert_eq "$(projects_mount_hint "$log" 2>&1)" ""
 }

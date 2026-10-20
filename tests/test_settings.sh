@@ -865,7 +865,8 @@ case "$1" in
   backup) echo "==> backup written to backups/20261014-120000 (724K) — databases" ;;
   test) printf '  ok    litellm alive\n  ok    portal login\n'; [ -z "${FAKE_FAIL:-}" ] || { printf '  FAIL  anthropic /v1/messages (got 400, want 200)\n'; exit 1; } ;;
   project) [ "$2" != add ] || echo "==> ${3##*/}: $3 → $3 in the sandbox (read-write) — a project on the Code page"
-           echo "==> restarting the sandbox: …" ;;
+           if [ -n "${FAKE_NOT_RUNNING:-}" ]; then echo "==> the sandbox is not running: it sees the folders when it starts (./stack up)"
+           else echo "==> restarting the sandbox: …"; fi ;;
 esac
 exit 0
 EOS
@@ -1094,7 +1095,16 @@ test_helper_project_remove_and_read_only_by_id() {
   _pact '"project-mode-ro"' '"when":"now","project":"p_0123abcd"' 11111111111111111111111111111111
   settings_poll_once 2>/dev/null
   assert_eq "$(tr '\n' ';' < "$CALLS")" "project remove p_0123abcd --when-idle;project mode p_0123abcd ro --now;"
-  assert_contains "$(cat "$(helper_status_file)")" '"message": "Read-only in the sandbox now; the sandbox restarted"'
+  assert_contains "$(cat "$(helper_status_file)")" '"message": "Read-only in the sandbox now; it restarted"'
+  # the sandbox not running: never "in the sandbox now" — it applies when it starts
+  export FAKE_NOT_RUNNING=1
+  _pact '"project-mode-ro"' '"when":"now","project":"p_0123abcd"' 33333333333333333333333333333333
+  settings_poll_once 2>/dev/null
+  assert_contains "$(cat "$(helper_status_file)")" '"message": "Marked read-only; the sandbox is not running — it applies when the sandbox starts"'
+  _pact '"project-remove"' '"when":"now","project":"p_0123abcd"' 44444444444444444444444444444444
+  settings_poll_once 2>/dev/null
+  assert_contains "$(cat "$(helper_status_file)")" '"message": "Removed from the list; the sandbox is not running — it applies when the sandbox starts'
+  unset FAKE_NOT_RUNNING
   # the password, as for every diagnostic
   _pact '"project-remove"' '"when":"now","project":"p_0123abcd"' 22222222222222222222222222222222 'wrong'
   if settings_poll_once 2>/dev/null; then return 1; fi

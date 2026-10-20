@@ -92,12 +92,37 @@ _phys() { (cd "$1" 2>/dev/null && /bin/pwd -P) || true; }
 # _fold PATH -> PATH as compared: lower case on macOS (its file systems ignore case), unchanged elsewhere
 _fold() { if [ "$(uname -s)" = Darwin ]; then printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; else printf '%s\n' "$1"; fi; }
 
+# socket_dir_component PATH -> the first part of PATH that is a folder programs keep their sockets in (tmux-<uid>,
+# ssh-<random> of ssh-agent, .X11-unix and the other X folders, emacs<uid>, systemd-private-…, launchd's
+# com.apple.launchd.…), printed; 1 when there is none. Tight patterns: a repository named ssh-tools is not one.
+socket_dir_component() {
+  local IFS=/ c
+  for c in $1; do
+    case "$c" in
+      .X11-unix | .ICE-unix | .XIM-unix | .font-unix | systemd-private-* | com.apple.launchd.*) printf '%s\n' "$c"; return 0 ;;
+    esac
+    if [[ $c =~ ^tmux-[0-9]+$ || $c =~ ^ssh-[A-Za-z0-9]{8,16}$ || $c =~ ^emacs[0-9]+$ ]]; then printf '%s\n' "$c"; return 0; fi
+  done
+  return 1
+}
+# first_socket DIR -> the first socket in DIR or its folders down to 3 levels (printed), else 1 — a program's way in
+first_socket() {
+  local s
+  s="$(find "$1" -maxdepth 3 -type s -print 2>/dev/null || true)"
+  s="${s%%$'\n'*}"
+  [ -n "$s" ] || return 1
+  printf '%s\n' "$s"
+}
+
 # terminal_workspace_check DIR -> the folder's physical path; fails, printing why, for a folder the terminal must
 # never see: the root or a system folder (the Docker socket lives in one), /Volumes, /mnt or /media themselves (every
 # mounted disk), your home folder or one around it, a
 # hidden folder in it (~/.ssh, ~/.aws, ~/.docker …), ~/Library (keychains, app data; its iCloud Drive folder,
 # ~/Library/Mobile Documents, is fine), this checkout (its .env holds every secret), or a folder that contains it or
-# lies inside it. Temporary folders are fine. On macOS every comparison ignores case, as the disk does.
+# lies inside it; a temporary folder itself (/tmp, /var/tmp, macOS's /private/var/folders …: programs of this computer
+# keep their sockets there — tmux, ssh-agent, X11 — and a socket there is a way to run commands on this computer), or a
+# path through a folder of sockets (socket_dir_component). A folder of your own inside a temporary folder is fine. On
+# macOS every comparison ignores case, as the disk does.
 terminal_workspace_check() {
   local real r h s p
   case "$1" in *:* | *,*) echo "its path contains ':' or ',' (Docker cannot mount that)"; return 1 ;; esac
@@ -115,7 +140,20 @@ terminal_workspace_check() {
       "$(_fold "$h/Library")" | "$(_fold "$h/Library")"/*) echo "it is in ~/Library (keychains, app data and settings live there)"; return 1 ;;
     esac
   fi
-  case "$r" in /tmp | /tmp/* | /var/tmp | /var/tmp/* | /private/tmp | /private/tmp/* | /private/var/folders/*) printf '%s\n' "$real"; return 0 ;; esac
+  # a temporary folder itself (macOS's per-user ones are /private/var/folders/<xx>/<id>/T and …/C: those and every
+  # folder above them), never a folder of yours in one
+  p="${r#/private/var/folders}"; p="${p//[!\/]/}"
+  case "$r" in
+    /tmp | /var/tmp | /private/tmp | /private/var/tmp | /dev/shm | /private/var/folders) p=x ;;
+    /private/var/folders/*) [ "${#p}" -ge 4 ] || p=x ;;
+  esac
+  if [ "$p" = x ]; then
+    echo "it is a temporary folder itself: programs of this computer keep their sockets there — pick a folder of your own in it, or elsewhere"; return 1
+  fi
+  if p="$(socket_dir_component "$real")"; then
+    echo "its path goes through $p, a folder where programs of this computer keep their sockets (a way to run commands on it)"; return 1
+  fi
+  case "$r" in /tmp/* | /var/tmp/* | /private/tmp/* | /private/var/tmp/* | /private/var/folders/*) printf '%s\n' "$real"; return 0 ;; esac
   # where other disks are mounted: the folder itself shows them all (a folder on one of them is fine)
   for p in /Volumes /mnt /media; do
     [ "$r" != "$(_fold "$p")" ] || { echo "it holds every mounted disk ($p) — pick a folder on one of them"; return 1; }
@@ -363,7 +401,14 @@ terminal_up_hook() {
   # TERMINAL_EGRESS no longer internet: its egress proxy goes before compose would find it an orphan
   [ "$(terminal_egress_mode)" = internet ] || terminal_proxy_rm
   why="$(terminal_why_out)"
-  [ -n "$why" ] || return 0
+  if [ -z "$why" ]; then
+    # (a socket in the workspace: said, never a reason to leave it out — a sandbox process may have made it there)
+    local ws sock; ws="$(get_env TERMINAL_WORKSPACE)"
+    if [ -n "$ws" ] && sock="$(first_socket "$ws")"; then
+      warn "the workspace holds a socket ($sock): a program of this computer listening there could take commands from the sandbox — remove it if it is not one the sandbox made"
+    fi
+    return 0
+  fi
   warn "the terminal is left out of this run: $why — ./stack terminal enable --workspace DIR (or ./stack terminal disable)"
   [ -z "$(get_env TERMINAL_WORKSPACE)" ] || dc rm -sf terminal terminal-gateway >/dev/null 2>&1 || true
   terminal_proxy_rm
@@ -374,6 +419,7 @@ terminal_up_hook() {
 terminal_after_up() {
   local p; p="$(project_name)"
   terminal_ready || return 0
+  projects_after_up   # lib/projects.sh: what the sandbox has mounted now (nothing pending)
   if [ -z "$(get_env LITELLM_KEY_TERMINAL)" ]; then
     if terminal_key; then dc up -d --no-deps terminal >/dev/null 2>&1 || true
     else warn "could not create the terminal's LiteLLM key — Claude Code in the terminal cannot reach Bedrock until ./stack terminal enable"; fi
@@ -408,6 +454,7 @@ terminal_setup_hook() {
     rm -f "$out"; log "$(phase_line "Terminal" $(($(_now) - start)))"; terminal_after_up; return 0
   fi
   TERMINAL_SETUP_FAILED=1; TERMINAL_SETUP_WHY="the terminal's image did not build or its container did not start"
+  projects_mount_hint "$out"   # lib/projects.sh: a project folder Docker could not mount, named
   warn "Terminal: could not build or start it — its last messages:"
   tail -n 15 "$out" | sed 's/^/    /' >&2; rm -f "$out"
   warn "Terminal: setup goes on without it; ./stack terminal enable tries again"
