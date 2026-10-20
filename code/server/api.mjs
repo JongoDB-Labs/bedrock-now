@@ -100,15 +100,20 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     if (projects) {
       try { place = projects.placer(); } catch (e) { log(`projects: ${short(e?.message || String(e), 200)}: sessions listed in the Workspace`); }
     }
+    // (the folders of this computer no longer added: their sessions are listed there — read, never resumed)
+    let gone = [];
+    try { gone = projects ? projects.list().filter((p) => p.gone).map((p) => p.root) : []; } catch { gone = []; }
+    const inGone = (cwd) => typeof cwd === 'string' && gone.some((g) => cwd === g || cwd.startsWith(`${g}/`));
     const rows = [];
     for (const raw of (Array.isArray(result.sessions) ? result.sessions : []).slice(0, SESSIONS_MAX)) {
       const r = sessionRow(raw);
       if (!r) continue;
       // (a sandbox from before projects names no folder: its sessions are the workspace's, as they were)
       const cwd = raw.cwd === undefined || raw.cwd === null ? WS : raw.cwd;
-      if (!cwdOk(cwd)) continue;
+      const outside = !cwdOk(cwd);
+      if (outside && !inGone(cwd)) continue;
       noteCwd(r.id, cwd);
-      rows.push({ ...r, cwd, project: place(r.id, cwd) });
+      rows.push({ ...r, cwd, project: place(r.id, cwd), ...(outside ? { gone: true } : {}) });
     }
     const open = new Map(sessions.list().map((s) => [s.id, s]));
     const needle = typeof q === 'string' ? q.trim().toLowerCase().slice(0, 200) : '';
@@ -326,7 +331,7 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     if (!p || p === '.' || p === '/') throw new HttpError(400, 'not the workspace itself');
     const pre = ifMtimeMs === undefined || ifMtimeMs === null ? undefined : num(ifMtimeMs, 0, 1e14);
     if (pre === null) throw new HttpError(400, 'bad ifMtimeMs');
-    const named = root?.rel ? (p === WS || p.startsWith(`${WS}/`) ? p : `${WS}/${p.replace(/^\/+/, '')}`) : p;
+    const named = root?.rel ? (p.startsWith('/') ? p : `${WS}/${p}`) : p;
     return { trash: okPath((await call({ op: 'fs.delete', path: named, ...rootField(root), ...(pre === undefined ? {} : { ifMtimeMs: pre }) })).result.trash) };
   }
 
@@ -681,20 +686,25 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     const out = new Map();
     if (!list.length) return out;
     try {
+      list = list.filter((p) => !p.gone);
+      if (!list.length) return out;
       const { result } = await call({ op: 'project.check', roots: list.map((p) => absOf(p.root)) }, { timeoutMs: 15000 });
       const rows = Array.isArray(result?.roots) ? result.roots : [];
       list.forEach((p, i) => {
         const r = rows[i];
         if (!r || r.root !== absOf(p.root)) return;
-        out.set(p.id, { folder: oneOf(r.type, ['dir', 'missing', 'link', 'other'], 'other'), git: r.git === true });
+        out.set(p.id, { folder: oneOf(r.type, ['dir', 'missing', 'link', 'other', 'unmounted'], 'other'), git: r.git === true });
       });
     } catch { /* not said */ }
     return out;
   }
   const projectOut = (p, f) => ({ id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created ?? null, workspace: p.id === WORKSPACE_ID,
     // its own Claude Code configuration (trust.mjs): as last looked at (a session's start, the dialog); null: not yet
-    folder: f?.folder ?? null, git: f?.git ?? null, settings: p.id === WORKSPACE_ID ? 'workspace' : f?.settings ?? settingsKnown(p.id) });
+    folder: f?.folder ?? null, git: f?.git ?? null, settings: p.id === WORKSPACE_ID || p.gone ? (p.gone ? null : 'workspace') : f?.settings ?? settingsKnown(p.id),
+    // a folder of this computer (./stack project): read-only or not, its path hidden from Claude or not; gone: no longer added
+    ...(p.host ? { host: true, mode: p.mode === 'ro' ? 'ro' : 'rw', hidden: p.hidden === true, gone: p.gone === true } : {}) });
   async function listProjects() {
+    try { store().syncHosts?.(); } catch (e) { log(`projects: ${short(e?.message || String(e), 200)}`); }
     const list = store().list();
     const f = await folders(list);
     return { projects: list.map((p) => projectOut(p, f.get(p.id))), max: PROJECTS_MAX };
@@ -703,6 +713,7 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
   // there; an older sandbox that cannot say: let it try)
   async function folderThere(root) {
     const f = (await folders([{ id: 'x', root: root.rel }])).get('x');
+    if (f && f.folder === 'unmounted') throw new HttpError(409, `the sandbox does not see ${root.abs} yet: it sees a newly added folder once it restarts (Settings › Claude Code › Project folders)`);
     if (f && f.folder !== 'dir') throw new HttpError(409, f.folder === 'missing' ? `the project's folder ${root.abs} is not there (any more)` : `the project's folder ${root.abs} is a link or not a folder`);
   }
   // addProject({kind: new | folder, folder, name?, git?}) -> {project, git?, gitError?}: a new folder of the workspace,
@@ -740,6 +751,10 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
     const p = store().get(id);
     if (!p) throw new HttpError(404, 'no such project (it was removed?)');
     if (p.id === WORKSPACE_ID) throw new HttpError(400, 'the Workspace is always there');
+    // a folder of this computer: removed on this computer (its record here is ./stack's); one no longer added: its
+    // record forgotten here, never its folder
+    if (p.host && !p.gone) throw new HttpError(400, 'a folder of this computer is removed on this computer: Settings › Claude Code › Project folders, or ./stack project remove NAME');
+    if (p.host && trash) throw new HttpError(400, 'a folder of this computer is never moved to the trash from here');
     let moved = null;
     if (trash) {
       if (confirm !== p.root) throw new HttpError(400, `to move its folder to the trash too, name it again: ${p.root}`);

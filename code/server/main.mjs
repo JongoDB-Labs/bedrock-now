@@ -169,7 +169,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   // a project's own Claude Code settings: applied once you trusted them (trust.mjs); decided before a process starts
   const trust = makeTrust({ call, store: proj, log: logger });
   const watchRootOf = (cwd) => {
-    try { const p = proj().folderOf(cwd); return p.root ? { rel: p.root, abs: `${WS}/${p.root}` } : null; } catch { return null; }
+    try { const p = proj().folderOf(cwd); return p.root && !p.gone ? { rel: p.root, abs: absOf(p.root) } : null; } catch { return null; }
   };
   const sandboxInfo = { egress: typeof sandbox.egress === 'boolean' ? sandbox.egress : null,
     egressHost: typeof sandbox.egressHost === 'boolean' ? sandbox.egressHost : null,
@@ -213,7 +213,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   });
   function onStateBoth(a, b) { toAll(stateMsg(a)); toAll(stateMsg(b)); }
   const api = makeApi({ call, sessions: mgr, projects: { list: () => proj().list(), get: (id) => proj().get(id), add: (b) => proj().add(b), rename: (id, n) => proj().rename(id, n),
-    remove: (id) => proj().remove(id), file: (ids, pid) => proj().file(ids, pid), placer: () => proj().placer() }, reloadPollMs, reloadMaxMs, log: logger,
+    remove: (id) => proj().remove(id), file: (ids, pid) => proj().file(ids, pid), placer: () => proj().placer(), syncHosts: () => proj().syncHosts() },
+    reloadPollMs, reloadMaxMs, log: logger,
     settingsKnown: (id) => trust.known(id) });
   // rootFor(v) -> the project a request names (?project= or {project}): its {id, rel, abs} from the records — never a
   // folder the page names; null (none, or the Workspace): the workspace, as every call was before projects

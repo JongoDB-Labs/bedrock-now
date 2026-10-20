@@ -186,7 +186,7 @@ const VALUED = {
   '--disallowedTools': (v) => RULES.test(v),
   '--tools': (v) => v === '',
   // the folder a session runs in (it only narrows what Claude Code reads: open() requires it, once, as the process's cwd)
-  '--project-config-root': (v) => (v === WORKSPACE || v.startsWith(`${WORKSPACE}/`)) && v.length <= 1024 && !/[\x00-\x1f\x7f]/.test(v),
+  '--project-config-root': (v) => cwdOk(v),
 };
 export function checkClaudeArgs(args) {
   if (!Array.isArray(args) || args.length > 64 || FIXED.some((a, i) => args[i] !== a)) return 'the stream-json prefix is missing';
@@ -303,32 +303,86 @@ export function cliEnv(base = process.env) {
 }
 
 const printable = (s, n) => String(s).replace(/[^\x20-\x7e]/g, '?').slice(0, n);
-const inside = (real) => real === WORKSPACE || real.startsWith(WORKSPACE + '/');
 const TRASH = '.bedrock-now-trash';
 
-// --- roots (see the head of this file): {abs, rel} — the workspace itself is {abs: WORKSPACE, rel: ''} ---
-export const WS_ROOT = Object.freeze({ abs: WORKSPACE, rel: '' });
+// --- the folders of this computer mounted beside the workspace (./stack project; lib/projects.sh): BN_CODE_ROOTS,
+// --- a JSON list of their paths here, set by the generated compose file — each a top of its own, like /workspace.
+// --- Taken only when it is one: absolute, plain, a real folder here (never through a link), not around or inside the
+// --- workspace, another top or a folder of the sandbox's own. bn-coded is not the boundary (the mounts are); this keeps
+// --- the paths it works on to the folders it was given. ---
+const SANDBOX_OWN = ['/home', '/workspace', '/tmp', '/run', '/etc', '/usr', '/opt', '/proc', '/sys', '/dev', '/var', '/srv', '/root', '/bin', '/sbin',
+  '/lib', '/lib32', '/lib64', '/libx32', '/boot'];
+export function hostTops(env = process.env.BN_CODE_ROOTS, workspace = WORKSPACE, own = workspace === '/workspace' ? SANDBOX_OWN : []) {
+  let list = [];
+  try { list = env ? JSON.parse(env) : []; } catch { return []; }
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  const around = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  for (const t of list.slice(0, 16)) {
+    if (typeof t !== 'string' || !t.startsWith('/') || t === '/' || t.length > 1024 || path.posix.normalize(t) !== t || t.endsWith('/') || /[\x00-\x1f\x7f]/.test(t)) continue;
+    if (around(t, workspace) || out.some((o) => around(t, o))) continue;
+    // (in the sandbox: never one of its own folders — a test's workspace elsewhere has none of them)
+    if (own.some((o) => t === o || (o !== '/home' && t.startsWith(`${o}/`))) || (own.length && (t === '/home/claude' || t.startsWith('/home/claude/')))) continue;
+    try { if (!fs.lstatSync(t).isDirectory() || fs.realpathSync(t) !== t) continue; } catch { continue; }
+    out.push(t);
+  }
+  return out;
+}
+export const HOST_TOPS = Object.freeze(hostTops());
+const TOPS = [WORKSPACE, ...HOST_TOPS];
+// topOf(abs) -> the top (/workspace or a folder of this computer) a path is in, or null
+const topOf = (abs) => TOPS.find((t) => abs === t || abs.startsWith(`${t}/`)) ?? null;
+// inside(real) -> whether a real path is in the workspace or one of the folders of this computer
+const inside = (real) => typeof real === 'string' && topOf(real) !== null;
+// pageOf(abs) -> a path as the page names it: relative to the workspace for one there, absolute in a folder of this
+// computer (its top's path is its own; nothing else is ever answered)
+const pageOf = (abs) => (abs === WORKSPACE ? '' : abs.startsWith(`${WORKSPACE}/`) ? abs.slice(WORKSPACE.length + 1) : abs);
+// pageAbs(p) -> {top, rest} for a page's path: relative to the workspace, or absolute in a folder of this computer;
+// null otherwise
+function pageAbs(p) {
+  if (typeof p !== 'string') return null;
+  if (!p.startsWith('/')) return { top: WORKSPACE, rest: p };
+  const top = HOST_TOPS.find((t) => p === t || p.startsWith(`${t}/`));
+  return top ? { top, rest: p === top ? '' : p.slice(top.length + 1) } : null;
+}
+// pageJoin(p) -> the absolute path of a page's path (pageAbs), or null
+const pageJoin = (p) => { const a = pageAbs(p); return a ? (a.rest ? path.join(a.top, a.rest) : a.top) : null; };
+
+// --- roots (see the head of this file): {abs, rel, top} — rel is relative to its top: the workspace itself is {abs:
+// --- WORKSPACE, rel: '', top: WORKSPACE}; a folder of this computer is its own top ({abs: t, rel: '', top: t}) ---
+export const WS_ROOT = Object.freeze({ abs: WORKSPACE, rel: '', top: WORKSPACE });
+// atTop(root) -> whether a root is a top itself (the workspace, or a folder of this computer)
+const atTop = (root) => !root.rel;
+// pageRoot(root) -> a root as the page names it: its workspace-relative folder, or a folder of this computer's path
+const pageRoot = (root) => (root.top === WORKSPACE ? root.rel : root.rel ? `${root.top}/${root.rel}` : root.top);
 export const ROOT_DEPTH = 8;
 // rootRel(rel) -> whether a workspace-relative folder may be a root: a path git can name (no "", "." or ".." part, no
 // NUL), no .git part, not the trash, at most ROOT_DEPTH levels
 const rootRel = (r) => typeof r === 'string' && gitPathOk(r) && r.split('/').length <= ROOT_DEPTH && !r.split('/').includes(TRASH);
-// rootArg(v) -> {abs, rel} of a project folder the code container names ("/workspace" or "/workspace/<folder>"; none:
-// the workspace), or throws: anything else, a folder that is not there, a link on its way or at its end
+// rootArg(v) -> {abs, rel, top} of a project folder the code container names ("/workspace", "/workspace/<folder>", or
+// a folder of this computer's path here — BN_CODE_ROOTS; none: the workspace), or throws: anything else, a folder
+// that is not there, a link on its way or at its end
 export function rootArg(v) {
   if (v === undefined || v === null || v === '' || v === WORKSPACE) return WS_ROOT;
+  if (typeof v === 'string' && HOST_TOPS.includes(v)) {
+    if (!isDirHere(v)) throw new Error('that folder of this computer is not here (the sandbox restarts to see it)');
+    return { abs: v, rel: '', top: v };
+  }
   if (typeof v !== 'string' || v.length > 1024 || !v.startsWith(`${WORKSPACE}/`)) throw new Error('not a project folder of the workspace');
   const r = v.slice(WORKSPACE.length + 1);
   if (!rootRel(r)) throw new Error('not a project folder of the workspace');
   if (statRel(r)?.type !== 'dir') throw new Error('no such project folder in the workspace (or a link on its way)');
-  return { abs: path.join(WORKSPACE, r), rel: r };
+  return { abs: path.join(WORKSPACE, r), rel: r, top: WORKSPACE };
 }
 const inRoot = (abs, root) => abs === root.abs || abs.startsWith(root.abs + '/');
+// isDirHere(abs) -> a real folder at that path (not a link)
+const isDirHere = (abs) => { try { return fs.lstatSync(abs).isDirectory(); } catch { return false; } };
 
-// confine(p, {mustExist, root}) -> the real path when it is /workspace or below (symlinks resolved here, in the
-// sandbox), else null. "/workspace/…" as given; anything else is relative to the root ("", "/" and "." are the root
-// itself; no root: /workspace) and may not leave it by its "..". A link may lead from one project into another (all of
-// them are the workspace's); never out of the workspace. mustExist false: the last part may be missing (a file to
-// create); its folder must exist and be inside.
+// confine(p, {mustExist, root}) -> the real path when it is in /workspace or a folder of this computer (symlinks
+// resolved here, in the sandbox), else null. An absolute path in one of them as given; anything else is relative to
+// the root ("", "/" and "." are the root itself; no root: /workspace) and may not leave it by its "..". A link may
+// lead from one project into another (all of them are the sandbox's to see); never out of them all. mustExist false:
+// the last part may be missing (a file to create); its folder must exist and be inside.
 export function confine(p, { mustExist = true, root = WS_ROOT } = {}) {
   const abs = asked(p, root);
   if (!abs) return null;
@@ -345,7 +399,7 @@ export function confine(p, { mustExist = true, root = WS_ROOT } = {}) {
 // is not one or leaves the root by its ".."
 function asked(p, root = WS_ROOT) {
   if (typeof p !== 'string' || p.length > 4096 || p.includes('\0')) return null;
-  const named = p === WORKSPACE || p.startsWith(WORKSPACE + '/');
+  const named = topOf(p) !== null;
   const abs = named ? path.resolve(p) : path.resolve(root.abs, p.replace(/^\/+/, ''));
   return named || inRoot(abs, root) ? abs : null;
 }
@@ -376,8 +430,8 @@ function existing(p, root = WS_ROOT) {
   throw new Error('not in the workspace');
 }
 // trashFor(real, root) -> the trash a deleted entry goes to: its root's (<root>/.bedrock-now-trash) when it is in the
-// root, else the workspace's
-const trashFor = (real, root) => path.join(real.startsWith(root.abs + '/') ? root.abs : WORKSPACE, TRASH);
+// root, else its top's (the workspace's, or a folder of this computer's)
+const trashFor = (real, root) => path.join(real.startsWith(root.abs + '/') ? root.abs : topOf(real) ?? WORKSPACE, TRASH);
 // newTrashDir(trash) -> a fresh <trash>/<time>-<random> (the trash made with a .gitignore of "*": git leaves it alone)
 function newTrashDir(trash) {
   const dir = path.join(trash, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
@@ -391,15 +445,21 @@ function newTrashDir(trash) {
 // --- -workspace-a-b, so a transcript is placed by the working folder it records, never by its folder's name ---
 const encodeCwd = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, '-');
 const PROJECTS = () => path.join(CONFIG_DIR, 'projects');
-// cwdOk(v): a working folder of the workspace a session may have — absolute, normalized, one line (it need not exist)
-export const cwdOk = (v) => typeof v === 'string' && v.length <= 1024 && (v === WORKSPACE || v.startsWith(`${WORKSPACE}/`))
+// cwdOk(v): a working folder a session may have — in the workspace or a folder of this computer; absolute,
+// normalized, one line (it need not exist)
+export const cwdOk = (v) => typeof v === 'string' && v.length <= 1024 && topOf(v) !== null
   && path.posix.normalize(v) === v && !v.endsWith('/') && !/[\x00-\x1f\x7f]/.test(v);
-// transcriptFile(id, cwd) -> the path of a session's transcript in the store folder of its working folder (none: the
-// workspace), or null when that folder is not a real folder; throws for a bad id or folder
-function transcriptFile(id, cwd) {
+// storeCwdOk(v): a working folder a transcript may record — absolute, normalized, one line, anywhere (a folder of this
+// computer no longer added is not a top any more: its sessions are still read, never resumed)
+const storeCwdOk = (v) => typeof v === 'string' && v.length <= 1024 && v.startsWith('/') && v !== '/' && path.posix.normalize(v) === v && !v.endsWith('/')
+  && !/[\x00-\x1f\x7f]/.test(v);
+// transcriptFile(id, cwd, {any}) -> the path of a session's transcript in the store folder of its working folder (none:
+// the workspace), or null when that folder is not a real folder; throws for a bad id or folder (any: a folder outside
+// every top too — reading only)
+function transcriptFile(id, cwd, { any = false } = {}) {
   if (!UUID.test(String(id))) throw new Error('bad session id');
   const c = cwd === undefined || cwd === null || cwd === '' ? WORKSPACE : cwd;
-  if (!cwdOk(c)) throw new Error('bad session folder');
+  if (!(any ? storeCwdOk(c) : cwdOk(c))) throw new Error('bad session folder');
   const dir = path.join(PROJECTS(), encodeCwd(c));
   try { if (!fs.lstatSync(dir).isDirectory()) return null; } catch { return null; }
   return path.join(dir, `${id}.jsonl`);
@@ -433,10 +493,13 @@ const humanPrompt = (e) => {
 // told apart this way); the workspace's own folder's are the workspace's.
 export function sessionsList() {
   const own = encodeCwd(WORKSPACE);
+  // the store folders of the workspace and its folders, of the folders of this computer (their own names), and any
+  // other (a folder of this computer no longer added: its sessions marked outside — read, never resumed)
+  const mine = (n) => n === own || n.startsWith(`${own}-`) || HOST_TOPS.some((t) => n === encodeCwd(t) || n.startsWith(`${encodeCwd(t)}-`));
   let dirs = [];
   try {
-    dirs = fs.readdirSync(PROJECTS(), { withFileTypes: true }).filter((d) => d.isDirectory() && (d.name === own || d.name.startsWith(`${own}-`)))
-      .map((d) => d.name).sort().slice(0, SESSION_DIRS);
+    const all = fs.readdirSync(PROJECTS(), { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith('-')).map((d) => d.name).sort();
+    dirs = [...all.filter(mine), ...all.filter((n) => !mine(n))].slice(0, SESSION_DIRS);
   } catch { return []; }
   const stats = [];
   for (const dir of dirs) {
@@ -467,7 +530,8 @@ export function sessionsList() {
       }
       if (dir === own) row.cwd = WORKSPACE;
       else if (cwdOk(said) && said !== WORKSPACE && encodeCwd(said) === dir) row.cwd = said;
-      else continue;   // (a folder it does not name, or not one of the workspace: not resumable from here)
+      else if (storeCwdOk(said) && encodeCwd(said) === dir && said !== WORKSPACE) { row.cwd = said; row.outside = true; }
+      else continue;   // (a folder it does not name: not placed)
       for (const e of head.concat(tail)) {
         if (e.type === 'custom-title' && typeof e.customTitle === 'string') row.customTitle = e.customTitle;
         if (e.type === 'ai-title' && typeof e.aiTitle === 'string') row.aiTitle = e.aiTitle;
@@ -486,7 +550,7 @@ export function sessionsList() {
 // One transcript's entries (the SDK's SessionStore.load shape): no symlink, at most its last 3 MiB. cwd: the session's
 // working folder (its store folder; none: the workspace's)
 export function sessionsLoad(id, cwd) {
-  const file = transcriptFile(id, cwd);
+  const file = transcriptFile(id, cwd, { any: true });
   if (!file) return { entries: null };
   let fd;
   try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch { return { entries: null }; }
@@ -527,8 +591,8 @@ function fsList(p, root = WS_ROOT) {
   return { path: rel(real, root), entries, truncated: all.length > MAX_LIST };
 }
 
-// (never the workspace or the root itself: those are the project's, not an entry of it)
-const notTop = (real, root) => real && real !== WORKSPACE && real !== root.abs;
+// (never a top or the root itself: those are the project's, not an entry of it)
+const notTop = (real, root) => real && !TOPS.includes(real) && real !== root.abs;
 function fsMkdir(p, root = WS_ROOT) {
   const real = confine(p, { mustExist: false, root });
   if (!notTop(real, root)) throw new Error('not in the workspace');
@@ -550,7 +614,7 @@ function fsRename(from, to, root = WS_ROOT) {
 function fsDelete(p, ifMtimeMs, root = WS_ROOT) {
   const real = existing(p, root);
   const trash = trashFor(real, root);
-  if (!notTop(real, root) || real === trash || real === path.join(WORKSPACE, TRASH)) throw new Error('not in the workspace');
+  if (!notTop(real, root) || real === trash || TOPS.some((t) => real === path.join(t, TRASH))) throw new Error('not in the workspace');
   if (ifMtimeMs !== undefined && ifMtimeMs !== null && fs.lstatSync(real).mtimeMs !== ifMtimeMs) throw new Error('changed on disk since it was opened');
   // (git, and whatever honours .gitignore, leaves the trash alone)
   const dest = path.join(newTrashDir(trash), path.basename(real));
@@ -821,10 +885,13 @@ export function cquote(p) {
 }
 // a workspace-relative path git names: one we can show and act on (no "..", no absolute, no NUL)
 const gitRel = (p) => typeof p === 'string' && p.length > 0 && p.length <= 4096 && !p.startsWith('/') && !p.includes('\0') && p.split('/').every((s) => s && s !== '.' && s !== '..');
-// statRel(rel) -> {mtimeMs, size, type} of an entry of the workspace, never through a link on the way or at its end
+// statRel(rel) -> {mtimeMs, size, type} of an entry of the workspace (relative to it) or of a folder of this computer
+// (its absolute path), never through a link on the way or at its end
 function statRel(rel) {
-  let p = WORKSPACE;
-  const segs = rel.split('/');
+  const at = pageAbs(rel);
+  if (!at || !at.rest) return null;
+  let p = at.top;
+  const segs = at.rest.split('/');
   for (let i = 0; i < segs.length; i++) {
     p = path.join(p, segs[i]);
     let st;
@@ -840,7 +907,8 @@ function untrackedDiff(rel, st, budget, wsRel = rel) {
   const head = `diff --git ${cquote(`a/${rel}`)} ${cquote(`b/${rel}`)}\nnew file mode ${st.mode & 0o111 ? '100755' : '100644'}\n`;
   if (st.type !== 'file' || st.size > GIT_UNTRACKED_TEXT || st.size > budget.left) return null;
   // (statRel found no link on the way; the file itself is opened O_NOFOLLOW)
-  const b = readRegular(path.join(WORKSPACE, wsRel), GIT_UNTRACKED_TEXT);
+  const abs = pageJoin(wsRel);
+  const b = abs ? readRegular(abs, GIT_UNTRACKED_TEXT) : null;
   if (!b) return null;
   budget.left -= b.length;
   if (b.subarray(0, 8000).includes(0)) return `${head}Binary files /dev/null and ${cquote(`b/${rel}`)} differ\n`;
@@ -859,7 +927,7 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
   let extra = [];
   // (in the root, the folder above it where git stops looking: the repository must be the root itself)
   const run = (args, opts = {}) => runCapped(git, [...GIT_PRE, ...args], { cwd: root.abs, env: gitEnv(extra, {}, { ceiling: path.dirname(root.abs) }), timeoutMs: left(), ...opts });
-  const ws = (p) => (root.rel ? `${root.rel}/${p}` : p);
+  const ws = (p) => pageOf(path.join(root.abs, p));
   const no = (reason) => ({ repo: false, reason });
   const why = (r) => printable((r.err || '').trim().split('\n').pop() || `exit ${r.code}`, 200);
   let r = await run(GIT_ARGS.toplevel, { maxOut: 8192 });
@@ -869,7 +937,7 @@ export async function gitDiff(send, { git = GIT, deadlineMs = GIT_DEADLINE, name
   const [top, format] = r.out.toString('utf8').split('\n');
   let realTop = '';
   try { realTop = fs.realpathSync(top); } catch { /* below */ }
-  if (realTop !== fs.realpathSync(root.abs)) return no(root.rel ? GIT_REASONS.notProject : GIT_REASONS.notWorkspace);
+  if (realTop !== fs.realpathSync(root.abs)) return no(root.abs !== WORKSPACE ? GIT_REASONS.notProject : GIT_REASONS.notWorkspace);
   // every filter and diff driver the configuration defines, switched off
   r = await run(GIT_ARGS.drivers, { maxOut: 1 << 20 });
   if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return no(r.timedOut ? GIT_REASONS.configNoAnswer : r.cut ? GIT_REASONS.configTooMuch : `git config: ${why(r)}`);
@@ -1047,10 +1115,21 @@ function sandboxIdentity() {
 // no .git part), at most 8 levels down, every folder on the way a real folder (never through a link)
 export const REPO_DEPTH = 8;
 export function repoRoot(rel) {
-  if (rel === undefined || rel === null || rel === '') return { abs: WORKSPACE, rel: '' };
+  if (rel === undefined || rel === null || rel === '') return { abs: WORKSPACE, rel: '', top: WORKSPACE };
+  // a folder of this computer (its path here), or a folder in it: the same rules below its top
+  const at = typeof rel === 'string' && rel.startsWith('/') ? pageAbs(rel) : null;
+  if (at && at.top !== WORKSPACE) {
+    if (!at.rest) {
+      if (!isDirHere(at.top)) throw new Error('that folder of this computer is not here (the sandbox restarts to see it)');
+      return { abs: at.top, rel: '', top: at.top };
+    }
+    if (!gitPathOk(at.rest) || at.rest.split('/').length > REPO_DEPTH || at.rest.split('/')[0] === TRASH) throw new Error('not a folder of the project');
+    if (statRel(rel)?.type !== 'dir') throw new Error('no such folder in the project (or a link on its way)');
+    return { abs: path.join(at.top, at.rest), rel: at.rest, top: at.top };
+  }
   if (typeof rel !== 'string' || !gitPathOk(rel) || rel.split('/').length > REPO_DEPTH || rel.split('/')[0] === TRASH) throw new Error('not a folder of the workspace');
   if (statRel(rel)?.type !== 'dir') throw new Error('no such folder in the workspace (or a link on its way)');
-  return { abs: path.join(WORKSPACE, rel), rel };
+  return { abs: path.join(WORKSPACE, rel), rel, top: WORKSPACE };
 }
 // gitPrep() -> {run, head, base, gitdir, left, ws} for a repository that is `root` itself (/workspace, or a folder of
 // it: repoRoot), or {no: reason}. run(args, opts) runs git there with the panel's arguments before `args`, its
@@ -1071,7 +1150,7 @@ async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '
   const [top, format, gitdir] = r.out.toString('utf8').split('\n');
   let realTop = '';
   try { realTop = fs.realpathSync(top); } catch { /* below */ }
-  if (realTop !== fs.realpathSync(root.abs)) return { no: root.rel ? GIT_REASONS.notTop : GIT_REASONS.notWorkspace };
+  if (realTop !== fs.realpathSync(root.abs)) return { no: root.abs !== WORKSPACE ? GIT_REASONS.notTop : GIT_REASONS.notWorkspace };
   if (!gitdir || !path.isAbsolute(gitdir)) return { no: GIT_REASONS.noGitDir };
   r = await run(GIT_PANEL_ARGS.config, { maxOut: 1 << 20 });
   if (r.timedOut || r.cut || (r.code !== 0 && r.code !== 1)) return { no: r.timedOut ? GIT_REASONS.configNoAnswer : r.cut ? GIT_REASONS.configTooMuch : `git config: ${gitWhy(r)}` };
@@ -1082,7 +1161,7 @@ async function gitPrep({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, procDir = '
   if (r.timedOut) return { no: GIT_REASONS.noAnswer };
   const head = r.code === 0 ? r.out.toString('utf8').trim() : null;
   if (head !== null && !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return { no: GIT_REASONS.badHead };
-  const ws = (p) => (root.rel ? `${root.rel}/${p}` : p);
+  const ws = (p) => pageOf(path.join(root.abs, p));
   return { run, head, base: head ?? EMPTY_TREE[format === 'sha256' ? 'sha256' : 'sha1'], gitdir, left, t0, procDir, root, ws, format };
 }
 const gitWhy = (r) => printable(`${r.err || ''}\n${r.out ? r.out.toString('utf8').slice(0, 2000) : ''}`.trim().split('\n').filter(Boolean).pop() || `exit ${r.code}`, 300);
@@ -1146,7 +1225,8 @@ export function parseNumstat(text) {
 // the lines of a new file (null: binary, not a regular file, larger than GIT_UNTRACKED_TEXT or past the budget)
 function lineCount(rel, st, budget) {
   if (st.type !== 'file' || st.size > GIT_UNTRACKED_TEXT || st.size > budget.left) return null;
-  const b = readRegular(path.join(WORKSPACE, rel), GIT_UNTRACKED_TEXT);
+  const abs = pageJoin(rel);
+  const b = abs ? readRegular(abs, GIT_UNTRACKED_TEXT) : null;
   if (!b) return null;
   budget.left -= b.length;
   if (b.subarray(0, 8000).includes(0)) return null;
@@ -1207,7 +1287,7 @@ export async function gitStatus({ git = GIT, deadlineMs = GIT_PANEL_DEADLINE, li
     if (e.xy[0] !== '.') out.staged.push({ path: e.path, code: e.xy[0], ...counts(sn, e.path), ...w(e.path) });
     if (e.xy[1] !== '.') out.unstaged.push({ path: e.path, code: e.xy[1], ...counts(un, e.path), ...where, ...w(e.path) });
   }
-  return { repo: true, root: g.root.rel, branch: st.branch, detached: st.detached, head: g.head, upstream: st.upstream, ahead: st.ahead, behind: st.behind,
+  return { repo: true, root: pageRoot(g.root), branch: st.branch, detached: st.detached, head: g.head, upstream: st.upstream, ahead: st.ahead, behind: st.behind,
     state: repoState(g.gitdir), identity: await gitIdentity(g.run), ...out, truncated };
 }
 
@@ -1360,15 +1440,17 @@ export async function gitCommit(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLIN
 // repository's project folder; none: the workspace) — <home>/.bedrock-now-trash/<time>/ — never through a link on its way
 function trashEntry(rel, home = WORKSPACE) {
   // (any name git can name — a backslash or a newline is part of it —, every folder on the way a real folder)
-  let on = WORKSPACE;
-  for (const seg of rel.split('/').slice(0, -1)) {
+  const at = pageAbs(rel);
+  if (!at || !at.rest) throw new Error('not in the workspace');
+  let on = at.top;
+  for (const seg of at.rest.split('/').slice(0, -1)) {
     on = path.join(on, seg);
     let st;
     try { st = fs.lstatSync(on); } catch { throw new Error('not in the workspace'); }
     if (!st.isDirectory()) throw new Error('a folder on its way is a link');
   }
-  const abs = path.join(WORKSPACE, rel);
-  const dest = path.join(newTrashDir(path.join(abs.startsWith(home + '/') ? home : WORKSPACE, TRASH)), path.basename(rel));
+  const abs = path.join(at.top, at.rest);
+  const dest = path.join(newTrashDir(path.join(abs.startsWith(home + '/') ? home : at.top, TRASH)), path.basename(at.rest));
   fs.renameSync(abs, dest);
   return { abs, dest };
 }
@@ -1391,7 +1473,7 @@ export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLI
   if (e.kind === 'untracked') {
     if (!st || st.type === 'dir') throw new Error('not a file');
     const { dest } = trashEntry(g.ws(p), g.root.abs);
-    return { ok: true, action: 'trashed', trash: path.relative(WORKSPACE, dest) };
+    return { ok: true, action: 'trashed', trash: pageOf(dest) };
   }
   if (e.xy[1] === '.') throw new Error('only staged changes: unstage it first');
   let moved = null;
@@ -1401,7 +1483,7 @@ export async function gitDiscard(req, { git = GIT, deadlineMs = GIT_PANEL_DEADLI
     if (moved) { try { fs.renameSync(moved.dest, moved.abs); } catch { /* left in the trash: said below */ } }
     gitFailed(c, 'git checkout', g);
   }
-  return { ok: true, action: 'restored', ...(moved ? { trash: path.relative(WORKSPACE, moved.dest) } : {}) };
+  return { ok: true, action: 'restored', ...(moved ? { trash: pageOf(moved.dest) } : {}) };
 }
 
 // --- Git remotes: the Git panel's clone, fetch, pull, push and publish, its branches and a repository's remotes — and
@@ -1770,6 +1852,15 @@ export function projectCheck(req) {
   const list = Array.isArray(req?.roots) ? req.roots.slice(0, CHECK_ROOTS) : [];
   return { roots: list.map((v) => {
     if (typeof v !== 'string') return { root: '', type: 'bad', git: false, real: null };
+    // a folder of this computer: here (a top of its own), or not (yet: the sandbox restarts to see it)
+    if (HOST_TOPS.includes(v)) {
+      let st = null;
+      try { st = fs.lstatSync(v); } catch { /* gone */ }
+      let isGit = false;
+      try { fs.lstatSync(path.join(v, '.git')); isGit = true; } catch { /* none */ }
+      return { root: v, type: !st ? 'missing' : st.isDirectory() ? 'dir' : 'other', git: isGit, real: st?.isDirectory() ? v : null };
+    }
+    if (storeCwdOk(v) && !v.startsWith(`${WORKSPACE}/`) && v !== WORKSPACE) return { root: v, type: 'unmounted', git: false, real: null };
     const r = v === WORKSPACE ? '' : v.startsWith(`${WORKSPACE}/`) ? v.slice(WORKSPACE.length + 1) : null;
     if (r === null || (r !== '' && !rootRel(r))) return { root: printable(v, 300), type: 'bad', git: false, real: null };
     const type = rootType(r);
@@ -3538,7 +3629,8 @@ const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 // a path of the workspace this list may name: relative, one-line, no "." or ".." part
 export const watchRel = (rel) => typeof rel === 'string' && rel.length > 0 && rel.length <= 1024 && !rel.startsWith('/') &&
   !/[\x00-\x1f\x7f\\]/.test(rel) && rel.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..');
-const inWorkspace = (abs) => abs === WORKSPACE || abs.startsWith(WORKSPACE + '/');
+// (a link's target counts when it is in the workspace or a folder of this computer: the sandbox sees them all)
+const inWorkspace = (abs) => inside(abs);
 const isFlag = (v) => /^(true|false|yes|no|on|off|1|0)?$/i.test(v.trim());
 
 // watchPath(rel, create, root) -> the absolute path (rel: relative to the root, the project's folder) when every folder

@@ -17,7 +17,9 @@ import { frame, T } from '../server/frames.mjs';
 const ROOT = tmp('bnpj');
 const WS = path.join(ROOT, 'ws'), HOME = path.join(ROOT, 'home'), SOCKDIR = path.join(ROOT, 'sock'), OUT = path.join(ROOT, 'outside');
 const CONF = path.join(HOME, '.claude'), LOG = path.join(ROOT, 'tmux.log');
-for (const d of [WS, HOME, OUT, CONF]) fs.mkdirSync(d, { recursive: true });
+// a folder of this computer mounted beside the workspace (./stack project: BN_CODE_ROOTS), and one listed but not here
+const HOST = path.join(ROOT, 'host'), UNMOUNTED = path.join(ROOT, 'not-mounted');
+for (const d of [WS, HOME, OUT, CONF, HOST]) fs.mkdirSync(d, { recursive: true });
 fs.writeFileSync(path.join(OUT, 'secret.txt'), 'outside');
 // a stand-in tmux that records what it was asked (as bn-coded-polish.test.mjs's)
 const TMUX = path.join(ROOT, 'tmux');
@@ -28,7 +30,7 @@ case "$1" in has-session) [ -e ${JSON.stringify(path.join(ROOT, 'session'))} ] |
 exit 0
 `, { mode: 0o755 });
 Object.assign(process.env, { BN_CODE_WORKSPACE: WS, BN_CODE_SOCK_DIR: SOCKDIR, BN_CODE_CHILDREN: path.join(ROOT, 'children'), BN_TMUX_BIN: TMUX,
-  HOME, CLAUDE_CONFIG_DIR: CONF });
+  HOME, CLAUDE_CONFIG_DIR: CONF, BN_CODE_ROOTS: JSON.stringify([HOST, UNMOUNTED, WS, `${WS}/p1`, ROOT, 'relative', `${HOST}/`]) });
 const coded = await import(path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'));
 const which = (n) => ['/usr/bin', '/usr/local/bin', '/bin', '/opt/homebrew/bin'].map((d) => path.join(d, n)).find((f) => fs.existsSync(f));
 const GIT = which('git');
@@ -50,11 +52,11 @@ test('roots: a real folder of the workspace, never through a link; anything else
   fs.mkdirSync(path.join(WS, '.bedrock-now-trash/x'), { recursive: true });
   fs.mkdirSync(path.join(WS, 'p1/.git'), { recursive: true });
   fs.symlinkSync(P2, path.join(P1, 'into-p2'));
-  assert.deepEqual(coded.rootArg(undefined), { abs: WS, rel: '' });
-  assert.deepEqual(coded.rootArg(''), { abs: WS, rel: '' });
-  assert.deepEqual(coded.rootArg(WS), { abs: WS, rel: '' });
-  assert.deepEqual(coded.rootArg(P1), { abs: P1, rel: 'p1' });
-  assert.deepEqual(coded.rootArg(`${WS}/p2/deep/er`), { abs: path.join(P2, 'deep/er'), rel: 'p2/deep/er' });
+  assert.deepEqual(coded.rootArg(undefined), { abs: WS, rel: '', top: WS });
+  assert.deepEqual(coded.rootArg(''), { abs: WS, rel: '', top: WS });
+  assert.deepEqual(coded.rootArg(WS), { abs: WS, rel: '', top: WS });
+  assert.deepEqual(coded.rootArg(P1), { abs: P1, rel: 'p1', top: WS });
+  assert.deepEqual(coded.rootArg(`${WS}/p2/deep/er`), { abs: path.join(P2, 'deep/er'), rel: 'p2/deep/er', top: WS });
   for (const v of ['p1', '/p1', `${WS}/`, `${WS}/p1/`, `${WS}//p1`, `${WS}/./p1`, `${WS}/p1/../p2`, `${WS}/../outside`, OUT, '/etc', `${WS}/missing`,
     `${WS}/a-file`, `${WS}/link-to-p2`, `${WS}/link-out`, `${WS}/link-to-p2/deep`, `${WS}/p1/into-p2`, `${WS}/.bedrock-now-trash`, `${WS}/.bedrock-now-trash/x`,
     `${WS}/p1/.git`, `${WS}/p1\0`, `${WS}/${'x'.repeat(2000)}`, `${WS}/${Array(10).fill('d').join('/')}`, 7, {}, ['p1']]) {
@@ -233,9 +235,11 @@ test('sessions by the working folder their transcript records: two folders shari
   // load, title and resume find a transcript by its folder
   assert.equal((await call({ op: 'sessions.load', id: nested, cwd: `${WS}/a/b` })).entries.length, 1);
   assert.equal((await call({ op: 'sessions.load', id: nested })).entries, null, 'not in the workspace\'s own folder');
-  for (const cwd of ['/etc', `${WS}/../etc`, `${WS}/a/./b`, `${WS}/a/b/`, 'a/b', `${WS}/a\nb`, 7]) {
+  for (const cwd of [`${WS}/../etc`, `${WS}/a/./b`, `${WS}/a/b/`, 'a/b', `${WS}/a\nb`, 7]) {
     assert.match((await call({ op: 'sessions.load', id: nested, cwd })).error, /bad session folder/, String(cwd));
   }
+  // (a folder outside every top: read from its own store folder only — there is none for /etc here)
+  assert.equal((await call({ op: 'sessions.load', id: nested, cwd: '/etc' })).entries, null);
   assert.equal((await call({ op: 'sessions.title', id: dash, cwd: `${WS}/a-b`, title: 'Renamed' })).ok, true);
   assert.equal((await call({ op: 'sessions.list' })).sessions.find((r) => r.id === dash).customTitle, 'Renamed');
   assert.match((await call({ op: 'sessions.title', id: linked, cwd: `${WS}/p2`, title: 'x' })).error, /no such session/);
@@ -269,7 +273,7 @@ test('project.create: a new folder of the workspace, git init without a template
   assert.ok(!fs.existsSync(path.join(P2, 'new')), 'nothing made through the link');
   const check = await call({ op: 'project.check', roots: [WS, P1, `${WS}/fresh`, `${WS}/gone`, `${WS}/link-to-p2`, `${WS}/a-file`, '/etc', 'p1', 7] });
   assert.deepEqual(check.roots.map((x) => [x.type, x.git]), [['dir', false], ['dir', true], ['dir', false], ['missing', false], ['link', false], ['other', false],
-    ['bad', false], ['bad', false], ['bad', false]]);
+    ['unmounted', false], ['bad', false], ['bad', false]]);
   // where each leads: a link into the workspace, its target; outside it or not there, null
   assert.deepEqual(check.roots.slice(0, 6).map((x) => x.real), [WS, P1, path.join(WS, 'fresh'), null, P2, path.join(WS, 'a-file')]);
   assert.equal((await call({ op: 'project.check', roots: [`${WS}/link-out`] })).roots[0].real, null, 'out of the workspace: not said');
@@ -472,4 +476,70 @@ test('terminal.window: a new window of the terminal\'s session in the project\'s
   assert.equal(nw2[nw2.indexOf('-c') + 1], path.join(WS, 'a##{pane_id}##(id)'));
   assert.equal(nw2[nw2.indexOf('-n') + 1], 'a--pane_id---id-', 'the window name: plain characters only');
   fs.rmSync(odd, { recursive: true });
+});
+
+// --- folders of this computer (./stack project; BN_CODE_ROOTS): tops of their own beside the workspace ---
+
+test('a folder of this computer: BN_CODE_ROOTS taken only as plain real folders apart from the workspace; a root of its own', () => {
+  // (the list given: HOST, a folder not here, the workspace, a folder of it, one around it, a relative path, a trailing /)
+  assert.deepEqual(coded.HOST_TOPS, [HOST]);
+  assert.deepEqual(coded.hostTops(JSON.stringify([HOST, HOST]), WS), [HOST], 'once');
+  fs.mkdirSync(path.join(ROOT, 'real'), { recursive: true }); fs.symlinkSync(path.join(ROOT, 'real'), path.join(ROOT, 'via-link'));
+  assert.deepEqual(coded.hostTops(JSON.stringify([path.join(ROOT, 'via-link'), '/', `${HOST}/../outside`, 7, null]), WS), [], 'a link, the root, a .. part, junk');
+  assert.deepEqual(coded.hostTops('not json', WS), []);
+  assert.deepEqual(coded.hostTops(JSON.stringify({ a: HOST }), WS), []);
+  // in the sandbox (the workspace at /workspace): never one of its own folders
+  assert.deepEqual(coded.hostTops(JSON.stringify(['/tmp/x', '/home/claude/x', '/etc', '/home']), '/workspace'), []);
+  assert.deepEqual(coded.rootArg(HOST), { abs: HOST, rel: '', top: HOST });
+  for (const v of [`${HOST}/sub`, UNMOUNTED, OUT, ROOT]) assert.throws(() => coded.rootArg(v), /project folder|not here/, v);
+});
+
+test('a folder of this computer: paths relative to it or absolute in it; links out never; its own trash; git there answers its paths', async (t) => {
+  fs.mkdirSync(path.join(HOST, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(HOST, 'src/app.js'), 'app');
+  fs.symlinkSync(OUT, path.join(HOST, 'out'));
+  fs.symlinkSync(path.join(HOST, 'src'), path.join(WS, 'into-host'));
+  const h = coded.rootArg(HOST);
+  assert.equal(coded.confine('src/app.js', { root: h }), path.join(HOST, 'src/app.js'));
+  assert.equal(coded.confine(`${HOST}/src/app.js`), path.join(HOST, 'src/app.js'), 'an absolute path in it, from the workspace\'s root too');
+  assert.equal(coded.confine('into-host/app.js'), path.join(HOST, 'src/app.js'), 'a link from the workspace into it resolves');
+  assert.equal(coded.confine('out/secret.txt', { root: h }), null, 'a link out of every top: never');
+  assert.equal(coded.confine(`${UNMOUNTED}/x`), null, 'a folder listed but not here');
+  assert.equal(coded.confine('../outside/secret.txt', { root: h }), null);
+  // the ops: listed and written relative to it, deleted into its own trash; never the folder itself
+  let r = await call({ op: 'fs.list', path: '', root: HOST });
+  assert.deepEqual(r.entries.map((e) => e.name).sort(), ['out', 'src']);
+  r = await call({ op: 'fs.list', path: `${HOST}/src` });
+  assert.equal(r.path, `${HOST}/src`, 'an absolute path in it is answered as such');
+  r = await call({ op: 'fs.delete', path: 'src/app.js', root: HOST });
+  assert.match(r.trash, /^\.bedrock-now-trash\/[^/]+\/app\.js$/);
+  assert.ok(fs.existsSync(path.join(HOST, r.trash)));
+  assert.match((await call({ op: 'fs.delete', path: '', root: HOST })).error, /not in the workspace/);
+  assert.match((await call({ op: 'fs.delete', path: HOST })).error, /not in the workspace/);
+  assert.equal((await call({ op: 'project.check', roots: [HOST, UNMOUNTED] })).roots.map((x) => x.type).join(), 'dir,unmounted');
+  if (!GIT) { t.skip('no git'); return; }
+  git(HOST, 'init', '-q', '--template=', '-b', 'main');
+  fs.writeFileSync(path.join(HOST, 'src/new.js'), 'new');
+  const st = await call({ op: 'git.status', repo: HOST });
+  assert.equal(st.repo, true);
+  assert.equal(st.root, HOST, 'the repository as the page names it: its path');
+  assert.ok(st.untracked.some((x) => x.path === 'src/new.js' && x.type === 'file'), JSON.stringify(st.untracked));
+  const d = await call({ op: 'git.diff', root: HOST });
+  assert.equal(d.repo, true);
+  assert.ok(d.untracked.some((x) => x.path === 'src/new.js' && x.shown), 'Review: its paths relative to it (the code container names them as the page does)');
+  assert.match((await call({ op: 'git.status', repo: `${HOST}/../outside` })).error, /not a folder/);
+  assert.match((await call({ op: 'git.status', repo: UNMOUNTED })).error, /not a folder/);
+});
+
+test('sessions in a folder of this computer: placed by their folder; one no longer added: listed as outside, read, never resumed', async () => {
+  const here = crypto.randomUUID(), gone = crypto.randomUUID();
+  transcript(enc(HOST), here, HOST, 'in the host folder');
+  transcript(enc(UNMOUNTED), gone, UNMOUNTED, 'in a folder no longer added');
+  const rows = (await call({ op: 'sessions.list' })).sessions;
+  const by = Object.fromEntries(rows.map((r) => [r.id, r]));
+  assert.equal(by[here].cwd, HOST); assert.equal(by[here].outside, undefined);
+  assert.equal(by[gone].cwd, UNMOUNTED); assert.equal(by[gone].outside, true);
+  assert.equal((await call({ op: 'sessions.load', id: gone, cwd: UNMOUNTED })).entries.length, 1, 'read');
+  assert.match((await call({ op: 'sessions.title', id: gone, cwd: UNMOUNTED, title: 'x' })).error, /bad session folder/, 'never written');
+  assert.match((await call({ op: 'terminal.resume', id: gone, cwd: UNMOUNTED })).error, /bad session folder|no such session/, 'never resumed');
 });

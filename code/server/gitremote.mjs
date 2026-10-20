@@ -9,6 +9,7 @@
 // it, and is then given like an access token.
 import crypto from 'node:crypto';
 import { GitHosts, HostError, githubTokenType, httpsAuth } from './githosts.mjs';
+import { hostRoots } from './projects.mjs';
 import { makeOAuth } from './oauth.mjs';
 import { agentAnswer, FAILURE, knownHostFingerprint, KNOWN_HOSTS } from './sshagent.mjs';
 import { short, int } from './validate.mjs';
@@ -78,8 +79,11 @@ const kindOf = (host, p) => host?.kind && host.kind !== 'other' ? host.kind : p.
 // --- the sandbox's answers, checked (it can say anything) ---
 const HEX = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const STATES = ['merge', 'rebase', 'cherry-pick', 'revert', 'bisect'];
-export const repoOk = (v) => v === '' || (typeof v === 'string' && v.length <= 4096 && v.split('/').length <= 8 && !v.startsWith('/') && !v.includes('\0')
-  && v.split('/').every((x) => x && x !== '.' && x !== '..' && x.toLowerCase() !== '.git'));
+const segsOk = (v) => v.split('/').length <= 8 && v.split('/').every((x) => x && x !== '.' && x !== '..' && x.toLowerCase() !== '.git');
+// repoOk(v) -> a repository folder the page may name: one of the workspace (relative to it), or a folder of this computer
+// ./stack lists (its path) or one in it — never an absolute path that is not in one of those
+export const repoOk = (v, hosts = hostRoots()) => v === '' || (typeof v === 'string' && v.length <= 4096 && !v.includes('\0')
+  && (!v.startsWith('/') ? segsOk(v) : hosts.some((h) => v === h.path || (v.startsWith(`${h.path}/`) && segsOk(v.slice(h.path.length + 1))))));
 export function reposOf(r) {
   const out = [];
   for (const x of Array.isArray(r?.repos) ? r.repos.slice(0, 50) : []) if (x && repoOk(x.path) && !out.some((y) => y.path === x.path)) out.push({ path: x.path });
