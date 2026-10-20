@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-20
+
 ### Added
 
 - **The sidebar folds to its icons for more room** (desktops): the button at its top, or Ctrl+\ (⌘\ on a Mac) with
@@ -2007,7 +2009,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.16.0...v0.17.0
