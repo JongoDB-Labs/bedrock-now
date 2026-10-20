@@ -1743,6 +1743,104 @@ def tablet(ctx):
     return "icon rail with Home/Chat/Admin/Files/Settings, no More; Settings opens as a page, Files in the frame"
 
 
+# --- the sidebar collapsed to its icons (nav.js): desktops only; tablets keep the rail, phones the tab bar ---
+
+NAV_CSP = ("(() => { window.__csp = []; document.addEventListener('securitypolicyviolation', "
+           "(e) => __csp.push(e.violatedDirective + ' ' + e.blockedURI)); })();")
+
+
+def _stored_nav(page, value: str):
+    """bn.nav holds VALUE when the portal first loads in this context (and is left to the page after that)."""
+    page.context.add_init_script(f"(o => {{ try {{ if (location.origin === o && !sessionStorage.getItem('bn-e2e-nav')) {{ "
+                                 f"localStorage.setItem('bn.nav', {json.dumps(value)}); sessionStorage.setItem('bn-e2e-nav', '1'); }} }} "
+                                 f"catch (e) {{}} }})({json.dumps(origin())});")
+
+
+@check("browser", "sidebar-collapse")
+def sidebar_collapse(ctx):
+    page, rec = ctx.page("sidebar-collapse")
+    page.context.add_init_script(NAV_CSP)
+    login(page)
+    page.wait_for_selector("#home:not([hidden])")
+    toggle = page.locator("#nav-toggle")
+    toggle.wait_for()
+    wide = _settled_width(page, ".sidebar")
+    expect(round(wide["width"]) == 200, f"expanded: {wide}")
+    expect(toggle.get_attribute("aria-expanded") == "true" and toggle.get_attribute("title") == "Collapse the sidebar (Ctrl+\\)",
+           f"button {toggle.get_attribute('aria-expanded')} {toggle.get_attribute('title')!r}")
+    shot(page, "16-sidebar-expanded")
+    toggle.click()
+    rail = _settled_width(page, ".sidebar")
+    expect(round(rail["width"]) == 76, f"collapsed: {rail}")
+    expect(toggle.get_attribute("aria-expanded") == "false" and toggle.get_attribute("title").startswith("Expand the sidebar"), "button state")
+    expect(page.evaluate("document.activeElement.id") == "nav-toggle", "the focus left the button")
+    expect(page.evaluate("localStorage.getItem('bn.nav')") == "collapsed", "not remembered")
+    tips = page.eval_on_selector_all(".tab", "els => els.filter(e => e.offsetParent).map(e => [e.dataset.tab, e.title, e.textContent.trim()])")
+    expect(len(tips) >= 5 and all(t and n for _, t, n in tips), f"each icon: a tooltip and a name {tips}")
+    for sel in ("#search-btn", "#activity-btn", "#tour-btn", ".version-label"):
+        expect(page.locator(f".sidebar {sel}").first.is_visible(), f"{sel} not in the rail")
+    shot(page, "17-sidebar-collapsed")
+    page.click(".tab[data-tab=chat]")
+    page.wait_for_selector("iframe[data-app=chat]:not([hidden])")
+    frame = _settled_width(page, "iframe[data-app=chat]")
+    expect(round(frame["width"]) == 1400 - 76, f"Chat's frame {frame} (the window: 1400)")
+    shot(page, "18-sidebar-collapsed-chat")
+    # a reload: collapsed from the first paint (no slide), still on Chat
+    page.reload()
+    page.wait_for_selector("iframe[data-app=chat]:not([hidden])")
+    first = page.evaluate("document.querySelector('.sidebar').getBoundingClientRect().width")
+    expect(round(first) == 76 and toggle.get_attribute("aria-expanded") == "false", f"after a reload: {first} px")
+    # the key, with the focus in the portal: back and forth
+    page.click(".tab[data-tab=home]")
+    page.keyboard.press("Control+Backslash")
+    expect(round(_settled_width(page, ".sidebar")["width"]) == 200, "Ctrl+\\ did not expand it")
+    page.keyboard.press("Control+Backslash")
+    expect(round(_settled_width(page, ".sidebar")["width"]) == 76, "Ctrl+\\ did not collapse it")
+    # the walkthrough beside the icons: the tablets' card; Escape closes it, the focus back on its button
+    page.click("#tour-btn")
+    page.wait_for_selector("#tour:not([hidden]) #tour-cur")
+    card = page.locator("#tour").bounding_box()
+    side = _settled_width(page, ".sidebar")
+    expect(round(side["width"]) == 76 and card["x"] >= side["width"] and card["width"] <= 361, f"card {card} beside {side}")
+    shot(page, "19-sidebar-collapsed-walkthrough")
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#tour", state="hidden")
+    expect(page.evaluate("document.activeElement.id") == "tour-btn", "Escape: the focus did not return to the button")
+    v = page.evaluate("window.__csp")
+    probs = rec.problems(allow=FRAME_NOISE)
+    rec.save()
+    expect(not v and not probs, f"CSP violations {v[:4]}, errors {probs[:6]}")
+
+    # tablets and phones: as before, whatever this browser chose on a desktop
+    page, rec = ctx.page("sidebar-collapse-tablet", device="tablet")
+    page.context.add_init_script(NAV_CSP)
+    _stored_nav(page, "collapsed")
+    login(page)
+    page.wait_for_selector("#home:not([hidden])")
+    t_side = page.locator(".sidebar").bounding_box()
+    expect(t_side["width"] < 120 and not page.locator("#nav-toggle").is_visible(), f"tablet: {t_side}, the button shown")
+    expect(page.locator(".tab[data-tab=settings]").get_attribute("title") == "Settings", "tablet: no tooltip")
+    probs, v = rec.problems(), page.evaluate("window.__csp")
+    rec.save()
+    expect(not v and not probs, f"tablet: CSP violations {v[:4]}, errors {probs[:6]}")
+    page, rec = ctx.page("sidebar-collapse-phone", device="phone")
+    page.context.add_init_script(NAV_CSP)
+    _stored_nav(page, "collapsed")
+    login(page)
+    page.wait_for_selector("iframe[data-app=chat]", timeout=20000)
+    bar = page.locator(".sidebar").bounding_box()
+    expect(bar["y"] + bar["height"] >= 844 - 2 and bar["width"] >= 380 and not page.locator("#nav-toggle").is_visible(),
+           f"phone: the tab bar {bar}, the button shown")
+    expect(page.locator("#more-btn").is_visible(), "phone: no More")
+    probs, v = rec.problems(allow=FRAME_NOISE), page.evaluate("window.__csp")
+    rec.save()
+    expect(not v and not probs, f"phone: CSP violations {v[:4]}, errors {probs[:6]}")
+    return (f"button (aria-expanded, tooltip with Ctrl+\\) folds the {wide['width']:.0f} px sidebar to a {rail['width']:.0f} px rail: "
+            f"icons with tooltips and names, Search, Activity, version and walkthrough kept; Chat's frame {frame['width']:.0f} px; "
+            "kept across a reload (no slide); Ctrl+\\ both ways; the walkthrough a card beside it, Escape back to its button; "
+            f"tablet ({t_side['width']:.0f} px rail, no button) and phone (tab bar) unchanged; no CSP violation")
+
+
 # --- the walkthrough (tour.js): desktop sidebar section, tablet card, phone sheet ---
 
 # 23 steps everywhere; where the Code page is on, its 9 steps and Connect a git host (else one on how to turn it on);

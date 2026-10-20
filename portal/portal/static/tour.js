@@ -3,8 +3,8 @@
 // the workspace, @-mentions, clone, review and push, run and preview, what the sandbox reaches, plugins), the models from
 // your own tools (claude-bedrock, the LiteLLM API, the shared store) and keeping it running (Home, Activity and search,
 // spend, updates and backups, your phone). It lives at the bottom of the sidebar: on desktops a section of the widened
-// sidebar (the apps' frames just get narrower), on tablets a card next to the icon rail, on phones a sheet above the tab
-// bar opened from More.
+// sidebar (the apps' frames just get narrower), on tablets — and on a desktop whose sidebar is collapsed to its icons
+// (nav.js) — a card next to the icon rail, on phones a sheet above the tab bar opened from More.
 // Loaded after app.js, mobile.js and code.js (all deferred); uses app.js's globals ($, el, api, showTab, appUrl, copy,
 // toast, usd, loadLogins, logins, lastSummary). Progress is a per-browser convenience in localStorage (bn.tour), with the
 // steps this browser has opened (seen): a browser that went through an older walkthrough sees the steps it never opened
@@ -138,6 +138,9 @@
   const CFG_MS = 300000;   // the settings snapshot, asked again after 5 minutes (at most once a minute)
   const PHONE = window.matchMedia("(max-width: 767.98px)");
   const TABLET = window.matchMedia("(min-width: 768px) and (max-width: 1099.98px)");
+  // the sidebar is the icon rail (a tablet, or a collapsed desktop sidebar: nav.js) — the panel is then the card
+  // beside it
+  const rail = () => (root.bnNav && root.bnNav.rail ? root.bnNav.rail() : TABLET.matches);
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)");
   const REPO = "https://github.com/JongoDB-Labs/bedrock-now";
   const NAMES = { chat: "Chat", admin: "Admin", files: "Files" };
@@ -224,7 +227,7 @@
     return button(label, `open-${which}`, () => {
       const o = which === "activity" ? window.bnActivity : window.bnSearch;
       if (!o || !o.open) return;
-      if (PHONE.matches || TABLET.matches) setOpen(false, false);
+      if (PHONE.matches || rail()) setOpen(false, false);
       o.open();
     });
   }
@@ -772,6 +775,9 @@
           [b("Models"), ": status, price, and why a model is not available."],
           CODE.here ? [b("Code"), ": the sessions that need you, with Answer and Resume, and a box to start a prompt in Code."] : null].filter(Boolean)),
         note("If you use free OpenRouter models, the cost switch on the Spend card shows what you were actually charged ($0 for free models) or what the same usage would have cost at paid rates."),
+        // (desktops: tablets always have the icon rail, phones the tab bar)
+        !PHONE.matches && !TABLET.matches ? note("More room for an app: the button at the top of the sidebar (or ", kbd("Ctrl/⌘+\\"),
+          ") folds it to its icons, and back; this browser remembers it.") : null,
       ],
       actions: () => [showOnHome("spend", "Show spend"), showOnHome("services", "Show services"), showOnHome("models", "Show models")],
     },
@@ -992,7 +998,7 @@
     opener.setAttribute("aria-expanded", String(Boolean(st.open)));
     opener.classList.toggle("has-new", fresh > 0);
     const words = (fresh ? `Walkthrough: ${plural(fresh, "new step", "new steps")} · ` : "Walkthrough: ") + (all ? "finished" : `${n} of ${ORDER.length} steps done`);
-    if (TABLET.matches) opener.title = words; else opener.removeAttribute("title");
+    if (rail()) opener.title = words; else opener.removeAttribute("title");
     if (moreEntry) {
       $("#more-tour-note").textContent = fresh ? `${plural(fresh, "new step", "new steps")} since you last looked · ${n}/${ORDER.length}`
         : all ? "Finished ✓ · read it again" : `Set up, Chat, Code, your own tools · ${n}/${ORDER.length}`;
@@ -1170,10 +1176,10 @@
     poll();
     askCfg();
   }
-  // Phones and tablets: the sheet or card would cover the app (or the card on Home) it just opened — it steps aside,
+  // Phones and the rail: the sheet or card would cover the app (or the card on Home) it just opened — it steps aside,
   // and focus goes to what opens it again (the compass button, or More).
   function away() {
-    if (!(PHONE.matches || TABLET.matches) || !st.open) return;
+    if (!(PHONE.matches || rail()) || !st.open) return;
     setOpen(false);
     toast(PHONE.matches ? "The walkthrough is under More" : "The walkthrough is under the compass button");
   }
@@ -1220,8 +1226,8 @@
       .observe(signins, { childList: true, characterData: true, subtree: true });
   }
   document.addEventListener("keydown", (e) => {
-    // Escape closes the floating card (tablets) and the sheet (phones); on desktops it is part of the page.
-    if (e.key !== "Escape" || !st.open || !(PHONE.matches || TABLET.matches)) return;
+    // Escape closes the floating card (the rail) and the sheet (phones); in an expanded sidebar it is part of the page.
+    if (e.key !== "Escape" || !st.open || !(PHONE.matches || rail())) return;
     const more = $("#more-sheet"), confirm = $("#confirm");
     if ((more && !more.hidden) || (confirm && confirm.open)) return;
     e.preventDefault();
@@ -1230,6 +1236,7 @@
   const relayout = () => { if (st.open) render(); else renderButtons(); };
   PHONE.addEventListener("change", relayout);
   TABLET.addEventListener("change", relayout);
+  document.addEventListener("bn:nav", relayout);   // (collapsed or expanded: the card, or the sidebar's section)
   // The Extras step offers Install app or Open in the app once install.js knows which.
   document.addEventListener("bn:app", () => { if (st.open && st.cur === "extras") render(); });
   // The global search (search.js): the steps by title, and the walkthrough opened at one (or where it was)

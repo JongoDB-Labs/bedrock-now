@@ -180,7 +180,11 @@ Home's **Credentials** copies them and opens each app's own form; an app's own *
 (opening the app from Home again signs you in). A password changed inside LiteLLM's own UI is not known to the
 portal: set it in Settings as well, or the automatic sign-in to Admin stops (it then says so, with a link to the form).
 
-Each app stays open while you switch tabs; the arrow next to a tab opens it in its own browser tab. If port 80
+Each app stays open while you switch tabs; the arrow next to a tab opens it in its own browser tab. For more room,
+the button at the top of the sidebar (or **Ctrl+\\**, **⌘\\** on a Mac, with the focus in the portal) folds it to a
+column of icons, as on a tablet: each icon names itself in a tooltip, Search, the Activity bell and the version stay,
+the walkthrough opens as a card beside the icons, and the apps get the width. The same button (or key) brings the names
+back; the browser remembers which you chose. If port 80
 is taken, the portal is on 8800 (`http://bedrock-now.localhost:8800`) and setup says so. To change the
 password, use **Settings → Account & security** (or `./stack config set PORTAL_PASSWORD`). Setup prints the password once, and only
 in a terminal; piped into a log it prints where it is instead. Tools can use the LiteLLM API at
@@ -198,8 +202,9 @@ reloading the page shows the new version.
 
 New here? **Walkthrough** at the bottom of the sidebar takes you through what a developer uses in bedrock-now, in six
 parts you can fold away or skip (about 30 minutes for all of it, a few cents of usage). It opens by itself on your
-first visit (not on a phone, where it would cover Chat); on a desktop it widens the sidebar instead of covering an app,
-on a tablet it is a card next to the icons, and on a phone it is under **More**.
+first visit (not on a phone, where it would cover Chat); on a desktop it widens the sidebar instead of covering an app
+(with the sidebar folded to its icons, it is a card beside them), on a tablet it is a card next to the icons, and on a
+phone it is under **More**.
 
 1. **Set up:** the Bedrock models your AWS key can use (and how to get more), optional OpenRouter models and voice,
    Claude Code on your computer (`claude-bedrock` and its lean `~/.claude-bedrock` config folder), **Connect a git
@@ -1887,7 +1892,7 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
 | A remote address of the terminal, the Code page or its previews does not answer | Each is a Tailscale Service of its own: define it in the admin console and approve it (`./stack remote status` lists the Services; [docs/remote.md](docs/remote.md)). |
 | On the Code page or in `claude-bedrock`, a model answers but never reads, edits or runs anything (or writes its tool calls out as text) | It is marked **chat only** (Llama 3.3 70B; OpenRouter models whose listing names no tool use): it cannot use Claude Code's tools. Pick a Claude model or one marked **works** — in the picker, with `/model`, or `claude-bedrock --model` (`claude-bedrock --models` says how each works); a **not tested** one may do the same ([Models for Claude Code](#models-for-claude-code)). |
 | In the sandbox, a download, `npm install` or `git clone` fails with 403 from the proxy (curl: `CONNECT tunnel failed, response 403`) | The egress proxy refused it: `./stack logs terminal-egress` says why. A name left out by `TERMINAL_EGRESS_ALLOW` or listed in `TERMINAL_EGRESS_DENY`: change the list in `.env`, then `./stack up`; a port other than 80, 443 and 22: `TERMINAL_EGRESS_ALLOW=*,name:PORT`. Something on this computer or your network (a dev server or registry on your Mac, a git server on your LAN) is never reached through the proxy: Settings › Claude Code › Sandbox internet access › **+ this computer** (`host`, from this computer only; [what it opens](#claude-code-in-the-browser)). |
-| Ctrl/⌘+K opens Chat's search or the Code page's command palette, not the portal's Search | While the focus is inside an app's tab, the key goes to that app (Chat and the Code page have a Ctrl/⌘+K of their own). Click the search box at the top of the sidebar (on a phone **More → Search**), or click the sidebar first. |
+| Ctrl/⌘+K opens Chat's search or the Code page's command palette, not the portal's Search (or Ctrl/⌘+\\ does not fold the sidebar) | While the focus is inside an app's tab, the key goes to that app (Chat and the Code page have a Ctrl/⌘+K of their own). Click the search box at the top of the sidebar (on a phone **More → Search**) or the button above it, or click the sidebar first. |
 | Search finds no sections of the README or `docs/` ("this portal's image has no index of them") | Docker Compose older than 2.17 builds the portal without that index (`./stack` says so when it builds it). Update Docker Compose (`docker compose version` shows yours), then `./stack setup` rebuilds the portal. Meanwhile the docs are on GitHub. |
 | Speech-to-text error in Chat | Your browser has no speech recognition (e.g. Firefox), or you use an installed / home-screen app. [Server speech-to-text](#voice-speech-to-text) works there: `./stack stt set bedrock`. |
 | "Call feature is not supported when using Web STT engine" | Voice calls need [server speech-to-text](#voice-speech-to-text): `./stack stt set bedrock` (no key; `./stack stt status` says why it is off), or `openai` / `groq`. |

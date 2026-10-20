@@ -15,6 +15,28 @@ body.shell { height: 100vh; display: grid; grid-template-columns: 200px minmax(0
 .logout button { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--muted); text-align: left; }
 .logout button:hover { color: var(--ink); }
 
+/* Collapse / expand the sidebar (nav.js; desktops only: tablets always have the rail, phones the tab bar). Collapsed,
+   it is the tablets' icon rail — the sidebar as the "rail" container, whose insides mobile.css, activity.css and
+   tour.css style — and the apps' frames take the room; the walkthrough is then the tablets' card beside it. */
+.nav-toggle { display: none; }
+.nav-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.nav-chev { transform-box: fill-box; transform-origin: center; }
+html.nav-collapsed .nav-chev { transform: scaleX(-1); }   /* « collapses, » expands */
+@media (min-width: 1100px) {
+  .sidebar { position: relative; overflow-x: clip; }   /* (clip: the names, while the width animates) */
+  .sidebar .brand > span, .tab, .side-search, .logout button, .install-btn { white-space: nowrap; }
+  .nav-toggle { position: absolute; top: 16px; right: 8px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0;
+    border: 0; border-radius: 6px; background: none; color: var(--muted); }
+  .nav-toggle:hover { color: var(--ink); background: var(--surface); }
+  html.nav-collapsed body.shell, html.nav-collapsed body.shell.tour-open { grid-template-columns: 76px minmax(0, 1fr); }
+  /* (positioned and above the stage: the walkthrough's card beside it, as on tablets) */
+  html.nav-collapsed .sidebar { container: rail / inline-size; z-index: 6; overflow: visible; padding: 18px 8px 14px; align-items: stretch; }
+  html.nav-anim body.shell { transition: grid-template-columns .2s ease-out; }
+}
+@container rail (min-width: 0px) {
+  .nav-toggle { position: static; width: 100%; height: 40px; margin-top: -10px; }
+}
+
 .stage { position: relative; min-width: 0; height: 100vh; overflow: hidden; }
 .frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--surface); }
 .home { height: 100%; overflow-y: auto; padding: 28px clamp(16px, 4vw, 48px) 48px; }
@@ -226,7 +248,10 @@ a.form-link:not([href]) { display: none; }
   .grid { grid-template-columns: minmax(0, 1fr); }
 }
 /* Phones and tablets: mobile.css. */
-@media (prefers-reduced-motion: reduce) { .toast { transition: none; } .spinner { animation: none; border-top-color: var(--line); } }
+@media (prefers-reduced-motion: reduce) {
+  .toast, html.nav-anim body.shell { transition: none; }
+  .spinner { animation: none; border-top-color: var(--line); }
+}
 
 /* Install app (install.js shows these only when the browser can install the portal), or Open in the app. */
 .install-btn { margin-top: auto; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px;

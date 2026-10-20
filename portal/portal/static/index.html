@@ -21,6 +21,8 @@
 <link rel="stylesheet" href="/static/tour.css">
 <link rel="stylesheet" href="/static/settings.css">
 <link rel="stylesheet" href="/static/activity.css">
+<!-- (not deferred: a sidebar collapsed in this browser is collapsed from the first paint) -->
+<script src="/static/nav.js"></script>
 <script src="/static/app.js" defer></script>
 <script src="/static/updatecheck.js" defer></script>
 <script src="/static/mobile.js" defer></script>
@@ -34,9 +36,11 @@
 <script src="/static/search.js" defer></script>
 </head>
 <body class="shell">
-<nav class="sidebar" aria-label="Apps">
+<nav class="sidebar" id="sidebar" aria-label="Apps">
   <div class="brand"><img src="/static/logo.svg" alt="" width="28" height="28"><span>bedrock-now</span></div>
   <a class="version-label" id="version" target="_blank" rel="noopener noreferrer" hidden></a>
+  <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Sidebar" aria-controls="sidebar" aria-expanded="true" hidden>
+    <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M8 4v12"/><path class="nav-chev" d="m13.5 8-2 2 2 2"/></svg></button>
   <div class="side-tools">
     <button type="button" class="side-search" id="search-btn" aria-haspopup="dialog" aria-controls="search" aria-expanded="false" title="Search the portal" hidden>
       <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.3 12.3 4.2 4.2"/></svg><span class="side-search-text">Search</span><kbd class="side-kbd" id="search-kbd">Ctrl K</kbd></button>

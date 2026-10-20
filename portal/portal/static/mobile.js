@@ -171,14 +171,16 @@
   });
 
   document.addEventListener("DOMContentLoaded", () => {
-    // Icon rail on tablets: the label is hidden, so the tooltip carries it (elsewhere the label is visible).
+    // The icon rail (tablets, a collapsed desktop sidebar: nav.js): the label is hidden, so the tooltip carries it
+    // (elsewhere the label is visible).
     const TABLET = window.matchMedia("(min-width: 768px) and (max-width: 1099.98px)");
+    const rail = () => (window.bnNav && window.bnNav.rail ? window.bnNav.rail() : TABLET.matches);
     const titles = () => {
       for (const b of document.querySelectorAll(".tab")) {
-        if (TABLET.matches) b.title = b.dataset.label || b.textContent.trim(); else b.removeAttribute("title");
+        if (rail()) b.title = b.dataset.label || b.textContent.trim(); else b.removeAttribute("title");
       }
     };
-    titles(); TABLET.addEventListener("change", titles);
+    titles(); TABLET.addEventListener("change", titles); document.addEventListener("bn:nav", titles);
     // From an iPhone/iPad Home Screen app, Admin and Files open in Safari, which has its own cookies.
     if (isIOS() && navigator.standalone) {
       const n = $("#more-sheet .note");

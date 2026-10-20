@@ -1,6 +1,6 @@
 /* Walkthrough (tour.js): the sidebar button and the panel. Desktops: a section of the sidebar, which widens;
-   tablets: a card next to the icon rail; phones: a sheet above the tab bar, opened from More.
-   Loaded after mobile.css; tokens come from login.css. */
+   tablets, and a desktop whose sidebar is collapsed (nav.js): a card next to the icon rail; phones: a sheet above the
+   tab bar, opened from More. Loaded after mobile.css; tokens come from login.css. */
 
 /* The button at the bottom of the sidebar: progress as text and as a thin bar. */
 .tour-btn { margin-top: auto; display: grid; grid-template-columns: 18px max-content minmax(0, 1fr); align-items: center; gap: 6px 8px;
@@ -122,12 +122,16 @@
 /* With the walkthrough open, a window narrower than 1440 px has room for one column of Home's cards (two would
    clip the Models table's prices). */
 @media (min-width: 1100px) and (max-width: 1439.98px) {
-  body.tour-open .grid { grid-template-columns: minmax(0, 1fr); }
+  html:not(.nav-collapsed) body.tour-open .grid { grid-template-columns: minmax(0, 1fr); }
+}
+/* A collapsed sidebar stays the rail with the walkthrough open (app.css): the panel is the card below, its button
+   stays */
+@media (min-width: 1100px) {
+  html.nav-collapsed .tour-open .tour-btn { display: grid; }
 }
 
-/* ---------- Tablets: a card next to the icon rail ---------- */
-@media (min-width: 768px) and (max-width: 1099.98px) {
-  .sidebar { position: relative; }
+/* ---------- The icon rail (tablets; a collapsed desktop sidebar: mobile.css): a card next to it ---------- */
+@container rail (min-width: 0px) {
   .tour-btn { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 6px; min-height: 48px; padding: 10px 0 7px; }
   .tour-btn svg { width: 22px; height: 22px; }
   .tour-btn-text, .tour-count { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

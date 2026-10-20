@@ -1,5 +1,6 @@
-/* Phones (< 768 px): bottom tab bar, compact Home, full-height Chat. Tablets (768-1099 px): icon rail.
-   Loaded after app.css; tokens come from login.css. Everything here is layout: no new colours. */
+/* Phones (< 768 px): bottom tab bar, compact Home, full-height Chat. Tablets (768-1099 px): icon rail — and a desktop
+   whose sidebar is collapsed (nav.js, app.css): the rail is the sidebar as the "rail" container, its insides one set of
+   rules for both. Loaded after app.css; tokens come from login.css. Everything here is layout: no new colours. */
 
 /* Pieces that exist only on some screens. */
 .tabs .more-item, .health-line { display: none; }
@@ -36,7 +37,12 @@
   body.shell { position: fixed; left: 0; right: 0; top: var(--app-top, 0px); height: var(--app-h, 100dvh);
     grid-template-columns: 76px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
   .stage { height: 100%; }
-  .sidebar { padding: max(16px, env(safe-area-inset-top)) 8px max(14px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); align-items: stretch; }
+  /* (positioned and above the stage: the walkthrough's card beside it, tour.css) */
+  .sidebar { container: rail / inline-size; position: relative; z-index: 6;
+    padding: max(16px, env(safe-area-inset-top)) 8px max(14px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); align-items: stretch; }
+}
+/* ---------- Inside the icon rail (tablets; a collapsed desktop sidebar) ---------- */
+@container rail (min-width: 0px) {
   .sidebar .brand { justify-content: center; padding: 0; }
   .sidebar .brand span, .popout { display: none; }
   .tabs { gap: 6px; }

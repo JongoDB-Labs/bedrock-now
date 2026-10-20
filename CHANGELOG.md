@@ -6,6 +6,15 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The sidebar folds to its icons for more room** (desktops): the button at its top, or Ctrl+\ (⌘\ on a Mac) with
+  the focus in the portal, turns it into the icon column a tablet shows — each icon with its name as a tooltip and
+  for screen readers; Search, the Activity bell, the version and the walkthrough stay, the walkthrough opening as the
+  tablet's card beside the icons — and Chat, Code, Admin, Files and the Terminal get the width. The browser remembers
+  it, from the first paint of the next load. Tablets keep their icon rail and phones their tab bar, unchanged; with
+  reduced motion it switches without the slide.
+
 ## [0.18.1] - 2026-10-19
 
 ### Changed
