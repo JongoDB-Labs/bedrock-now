@@ -52,25 +52,36 @@ const under = (v, top) => v === top || v.startsWith(`${top}/`);
  *  workspace or around or inside it. */
 export const hostPathOk = (v) => typeof v === 'string' && v.startsWith('/') && v !== '/' && v.length <= 1024 && path.posix.normalize(v) === v
   && !v.endsWith('/') && !ODD.test(v) && !under(v, WS) && !under(WS, v);
-let hostCache = { key: null, list: [] };
-/** hostRoots(file) -> the folders of this computer ./stack lists: [{id, name, path, mode, hidden}], each checked (one that
- *  does not fit, repeats an id, a name or a folder, or lies around another, is left out). */
-export function hostRoots(file = HOSTS_FILE) {
+let hostCache = { key: null, list: [], leaving: [] };
+const PENDING = ['add', 'ro', 'rw'];
+function hostFile(file) {
   let st;
-  try { st = fs.statSync(file); } catch { return []; }
+  try { st = fs.statSync(file); } catch { return { list: [], leaving: [] }; }
   const key = `${file}\0${st.ino}\0${st.mtimeMs}\0${st.size}`;
-  if (hostCache.key === key) return hostCache.list;
+  if (hostCache.key === key) return hostCache;
   let v = null;
   try { v = st.size <= 64 << 10 ? JSON.parse(fs.readFileSync(file, 'utf8')) : null; } catch { v = null; }
   const out = [];
   for (const r of Array.isArray(v?.roots) ? v.roots.slice(0, HOSTS_MAX) : []) {
     if (!r || !ID.test(r.id) || !HOST_NAME.test(r.name) || !hostPathOk(r.path) || (r.mode !== 'rw' && r.mode !== 'ro')) continue;
     if (out.some((x) => x.id === r.id || x.name.toLowerCase() === r.name.toLowerCase() || under(x.path, r.path) || under(r.path, x.path))) continue;
-    out.push({ id: r.id, name: r.name, path: r.path, mode: r.mode, hidden: r.hidden === true });
+    out.push({ id: r.id, name: r.name, path: r.path, mode: r.mode, hidden: r.hidden === true, pending: PENDING.includes(r.pending) ? r.pending : null });
   }
-  hostCache = { key, list: out };
-  return out;
+  const leaving = [];
+  for (const l of Array.isArray(v?.leaving) ? v.leaving.slice(0, HOSTS_MAX) : []) {
+    if (l && hostPathOk(l.path) && (l.mode === 'rw' || l.mode === 'ro') && !leaving.some((x) => x.path === l.path)) leaving.push({ path: l.path, mode: l.mode });
+  }
+  hostCache = { key, list: out, leaving };
+  return hostCache;
 }
+/** hostRoots(file) -> the folders of this computer ./stack lists: [{id, name, path, mode, hidden, pending}], each checked
+ *  (one that does not fit, repeats an id, a name or a folder, or lies around another, is left out). pending: what the
+ *  running sandbox does not have yet as listed — 'add' (not mounted yet), 'ro' (still read-write there), 'rw' (still
+ *  read-only there) — until it restarts; null: as listed (or the sandbox does not run). ./stack's word (Docker's), never
+ *  the sandbox's. */
+export const hostRoots = (file = HOSTS_FILE) => hostFile(file).list;
+/** hostLeaving(file) -> the folders no longer listed that the running sandbox still has mounted: [{path, mode}] */
+export const hostLeaving = (file = HOSTS_FILE) => hostFile(file).leaving;
 /** A session's working folder as the code container takes it (from the sandbox's transcripts): /workspace or a folder of it,
  *  or a folder of this computer (or in one), absolute and normalized, one line. */
 export const cwdOk = (v, hosts = hostRoots()) => typeof v === 'string' && v.length <= 1024 && (under(v, WS) || hosts.some((h) => under(v, h.path)))
@@ -92,6 +103,8 @@ export class Projects {
   }
   /** the folders of this computer ./stack lists now (roots.json) */
   hosts() { return hostRoots(this.hostsFile); }
+  /** the folders no longer listed that the running sandbox still has (until it restarts) */
+  leaving() { return hostLeaving(this.hostsFile); }
   // read() -> the store, every record checked (one that does not fit is dropped: page state, never a reason to fail)
   read() {
     let v;
@@ -143,10 +156,12 @@ export class Projects {
    *  then those no longer added ({…, gone: true}) — an id one of the workspace's records has, left out */
   hostRecords(v = this.read()) {
     const hosts = this.hosts().filter((h) => !v.projects.some((p) => p.id === h.id));
-    const live = hosts.map((h) => ({ id: h.id, name: h.name, root: h.path, created: null, host: true, mode: h.mode, hidden: h.hidden,
+    const live = hosts.map((h) => ({ id: h.id, name: h.name, root: h.path, created: null, host: true, mode: h.mode, hidden: h.hidden, pending: h.pending,
       ...(v.hostTrust[h.id] ? { trust: { ...v.hostTrust[h.id] } } : {}) }));
+    const leaving = this.leaving();
     const gone = v.gone.filter((g) => !hosts.some((h) => h.id === g.id || h.path === g.path) && !v.projects.some((p) => p.id === g.id))
-      .map((g) => ({ id: g.id, name: g.name, root: g.path, created: null, host: true, gone: true, mode: 'ro', hidden: false }));
+      .map((g) => ({ id: g.id, name: g.name, root: g.path, created: null, host: true, gone: true, mode: 'ro', hidden: false,
+        ...(leaving.some((l) => l.path === g.path) ? { leaving: true } : {}) }));
     return [...live, ...gone];
   }
   /** syncHosts() — a folder of this computer ./stack no longer lists is remembered as one no longer added (its sessions

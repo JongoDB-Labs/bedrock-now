@@ -56,7 +56,7 @@ export function FileTree({ onOpen }: { onOpen?: () => void }) {
   const root = project.root;
   // (a folder of this computer added read-only: nothing made, renamed, uploaded or deleted from here)
   const ro = useSel(store, () => readOnlyTopOf(root));
-  const roTitle = 'Read-only: a folder of this computer added read-only';
+  const roTitle = 'Read-only: a folder of this computer listed read-only';
   const coarse = useMedia('(pointer: coarse)');
   const rowH = coarse ? 36 : 24;
   const [edit, setEdit] = useState<Edit>(null);

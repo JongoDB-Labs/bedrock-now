@@ -149,7 +149,14 @@ const iconOf = (p: Project): string => (p.workspace ? 'files' : p.host ? 'monito
 /** Where a project's folder is, said for a hint: its path in the sandbox, and for a folder of this computer what it is. */
 function whereOf(p: Project): string {
   if (!p.host) return p.path;
-  return `${p.path} — a folder of this computer${p.readOnly ? ', read-only' : ''}${p.hidden ? ' (its path on the computer hidden from Claude)' : ''}`;
+  return `${p.path} — a folder of this computer${p.readOnly ? ', read-only' : ''}${p.hidden ? ' (its path on the computer kept out of what Claude Code sends the model; programs in the sandbox can still find it)' : ''}`;
+}
+/** What the running sandbox does not have yet as listed (./stack's word), said until it restarts. */
+function pendingNote(p: Project): string {
+  if (p.leaving) return 'Removed, but still in the sandbox until it restarts: until then Claude can still read and change it.';
+  return p.pending === 'ro' ? 'Read-only once the sandbox restarts: until then Claude can still change it (this page already changes nothing there).'
+    : p.pending === 'rw' ? 'Read-write once the sandbox restarts: read-only there until then.'
+      : '';
 }
 // a name ./stack gives a folder (folders.tsv): one a command line can carry as it is
 const STACK_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -285,7 +292,11 @@ export function ProjectsPanel() {
             </button>
           )}
           {p.readOnly && !p.gone && (
-            <span class="proj-ro" title="Read-only: Claude, the commands it runs and this page change nothing in it" data-testid="project-read-only">read-only</span>
+            <span class={`proj-ro${p.pending === 'ro' ? ' pending' : ''}`} data-testid="project-read-only"
+              title={p.pending === 'ro' ? 'Listed read-only: the sandbox applies it when it restarts — until then Claude can still change it; this page already changes nothing there'
+                : 'Read-only: Claude, the commands it runs and this page change nothing in it'}>
+              {p.pending === 'ro' ? 'read-only (pending)' : 'read-only'}
+            </span>
           )}
           {p.git && !p.gone && <span class="proj-tag" title="A git repository"><Icon name="branch" size={12} /></span>}
           {note && !p.gone && <span class="proj-tag warn-text" title={note} data-testid="project-folder-note"><Icon name="alert" size={12} /></span>}
@@ -301,6 +312,9 @@ export function ProjectsPanel() {
         </div>
         {open && (
           <div class="proj-body">
+            {pendingNote(p) && (
+              <div class="side-note small warn-text" data-testid="project-pending">{pendingNote(p)}</div>
+            )}
             {p.folder === 'unmounted' && !p.gone && (
               <div class="side-note small" data-testid="project-unmounted">Added on this computer: the sandbox sees it once it restarts (as chosen there: now, or when no turn runs).</div>
             )}

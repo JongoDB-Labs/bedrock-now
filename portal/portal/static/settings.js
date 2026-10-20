@@ -1128,17 +1128,22 @@
     const rw = ownFrame(r, "Project folders");
     const pf = data.projects || { folders: [], max: 16 };
     const helperDoes = (a) => canChange() && (data.helper.projects || []).includes(a);
+    // (Restart now by default: a folder removed or made read-only must not stay mounted as before; when no turn runs,
+    // such a change still restarts after 30 minutes whatever runs)
     const when = el("select", { id: "set-projects-when", "aria-label": "When the sandbox restarts" },
-      el("option", { value: "idle", text: "Restart when no Code session has a turn running" }), el("option", { value: "now", text: "Restart now" }));
+      el("option", { value: "now", text: "Restart now" }), el("option", { value: "idle", text: "Restart when no Code session has a turn running" }));
     const working = window.bnCode && window.bnCode.working ? window.bnCode.working() : null;
-    if (working === 0) when.value = "now";
+    const PENDING = { add: "Not in the sandbox yet: it sees this folder once it restarts.",
+      ro: "Read-only once the sandbox restarts: until then Claude can still change it.",
+      rw: "Read-write once the sandbox restarts: read-only there until then." };
     const list = el("ul", { class: "set-projects", id: "set-projects" });
     for (const f of pf.folders) {
       const li = el("li", { class: `set-project${f.ok ? "" : " left-out"}`, "data-project": f.id },
         el("span", { class: "set-project-name", text: f.name }), " ",
-        el("span", { class: "note", text: f.hidden ? `${f.host} → ${f.path} (path hidden from Claude)` : f.host }), " ",
+        el("span", { class: "note", text: f.hidden ? `${f.host} → ${f.path} (its path kept out of what Claude Code sends the model)` : f.host }), " ",
         el("span", { class: `badge${f.mode === "ro" ? "" : " badge-local"}`, text: f.mode === "ro" ? "read-only" : "read-write" }));
       if (!f.ok) li.append(el("p", { class: "error", text: `Left out of the sandbox: ${f.why}` }));
+      else if (PENDING[f.pending]) li.append(el("p", { class: "note set-project-pending", text: `Applies when the sandbox restarts — ${PENDING[f.pending]} (./stack project apply, or the next ./stack up)` }));
       const acts = el("span", { class: "set-project-actions" });
       if (f.mode === "rw") {
         const ro = el("button", { type: "button", class: "action", text: "Make read-only", "data-act": "project-mode-ro" });
@@ -1155,7 +1160,11 @@
       li.append(acts);
       list.append(li);
     }
-    if (!pf.folders.length) list.append(el("li", { class: "note", text: "None yet: the sandbox sees only the workspace." }));
+    for (const x of pf.leaving || []) {
+      list.append(el("li", { class: "set-project leaving" }, el("span", { class: "note", text: x.path }), " ",
+        el("p", { class: "note set-project-pending", text: `Removed, but still in the sandbox (${x.mode === "ro" ? "read-only" : "read-write"}) until it restarts — ./stack project apply, or the next ./stack up.` })));
+    }
+    if (!pf.folders.length && !(pf.leaving || []).length) list.append(el("li", { class: "note", text: "None yet: the sandbox sees only the workspace." }));
     rw._main.append(list);
     // adding: on this computer only
     const add = el("div", { class: "set-projects-add" });
@@ -1169,7 +1178,8 @@
       `A folder chooser opens on the screen of the computer running bedrock-now; nothing is added unless you pick a folder there. ${ro.checked ? "Claude may read it, never change it." : "Read-write: Claude — and anything it runs, or text it reads and follows — can change its files, and what it writes can run on this computer when your own tools open the folder (git hooks, .envrc, VS Code tasks, package.json scripts)."} Every project shares one sandbox: a session in one can read and change the others. ${RESTART_ENDS}`,
       "Open the folder chooser"));
     add.append(el("label", { class: "set-inline" }, ro, " Read-only for Claude"), " ",
-      el("label", { class: "set-inline" }, hide, " Hide its path from Claude (/projects/<name> in the sandbox)"), " ", pick);
+      el("label", { class: "set-inline", title: "At /projects/<name> in the sandbox: its path on this computer stays out of what Claude Code sends the model and off the Code page; programs in the sandbox can still find it (/proc/self/mountinfo)" },
+        hide, " Hide its path (/projects/<name> in the sandbox)"), " ", pick);
     rw._main.append(add);
     const why = !local ? "Adding a folder works only on the computer running bedrock-now (its folder chooser opens on that screen)."
       : !data.helper.running ? "Choose on this computer… needs the update helper (./stack helper install)."
@@ -1178,7 +1188,7 @@
     if (why) rw._main.append(el("p", { class: "note set-extra", text: why }));
     rw._main.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: "In a terminal on this computer: " }), el("code", { text: "./stack project add ~/path/to/folder" }), " ",
       copyButton("./stack project add ~/path/to/folder")));
-    rw._main.append(el("p", { class: "note set-extra", text: `${working ? `${working} Code session${working === 1 ? " has a turn" : "s have turns"} running now. ` : ""}${RESTART_ENDS}` }));
+    rw._main.append(el("p", { class: "note set-extra", text: `${working ? `${working} Code session${working === 1 ? " has a turn" : "s have turns"} running now. ` : ""}${RESTART_ENDS} Removing a folder or making it read-only never waits more than 30 minutes, whatever runs.` }));
     rw._actions.append(when);
     return rw;
   }

@@ -206,10 +206,20 @@ def project_folders(status_dir: Path) -> dict:
             continue
         out.append({"id": f["id"], "name": f["name"], "host": host, "path": where, "mode": f["mode"], "hidden": f.get("hidden") is True,
                     "added": f["added"] if isinstance(f.get("added"), int) else None, "ok": f.get("ok") is not False,
-                    "why": _s(f.get("why"), 300) if f.get("ok") is False else ""})
+                    "why": _s(f.get("why"), 300) if f.get("ok") is False else "",
+                    # what the running sandbox does not have yet as listed, until it restarts (./stack's word: Docker's)
+                    "pending": f.get("pending") if f.get("pending") in ("add", "ro", "rw") else None})
         if len(out) >= 16:
             break
-    return {"written_at": d.get("written_at") if isinstance(d.get("written_at"), int) else None, "max": 16, "folders": out}
+    # removed (or left out) but still mounted in the running sandbox until it restarts
+    leaving = []
+    for x in d.get("leaving") or []:
+        p = x.get("path") if isinstance(x, dict) else None
+        if (isinstance(p, str) and p.startswith("/") and len(p) <= 1024 and not re.search(r"[\x00-\x1f\x7f]", p)
+                and x.get("mode") in ("rw", "ro") and len(leaving) < 16):
+            leaving.append({"path": p, "mode": x["mode"]})
+    return {"written_at": d.get("written_at") if isinstance(d.get("written_at"), int) else None, "max": 16, "folders": out,
+            "leaving": leaving, "running": d.get("running") is True}
 
 
 def backups(status_dir: Path) -> dict:

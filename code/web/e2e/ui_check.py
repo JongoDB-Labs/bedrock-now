@@ -4990,7 +4990,7 @@ def projects_host(browser):
     post(NORMAL + "/__mock/reset")
     post(NORMAL + "/__mock/projects?host=1")
     ids = {x["name"]: x["id"] for x in mock_get(NORMAL, "/api/projects")["projects"]}
-    tools, notes, later, old = ids["tools"], ids["notes"], ids["later"], ids["old-site"]
+    tools, notes, later, old, drafts = ids["tools"], ids["notes"], ids["later"], ids["old-site"], ids["drafts"]
     p = Page(browser, NORMAL, "projects-host", **DESKTOP)
     page = p.open()
     page.get_by_test_id("side-sessions").click()
@@ -5002,6 +5002,10 @@ def projects_host(browser):
     expect(proj(page, later).get_by_test_id("project-folder-note")).to_have_count(1)
     unfold(page, later)
     expect(proj(page, later).get_by_test_id("project-unmounted")).to_contain_text("once it restarts")
+    # listed read-only, the sandbox still has it read-write until it restarts: said so — never "read-only" alone
+    expect(proj(page, drafts).get_by_test_id("project-read-only")).to_have_text("read-only (pending)")
+    unfold(page, drafts)
+    expect(proj(page, drafts).get_by_test_id("project-pending")).to_contain_text("until then Claude can still change it")
     # no longer added: under its own heading, its session listed, read only
     gone = page.get_by_test_id("projects-gone")
     expect(gone).to_contain_text("Folders no longer added")
@@ -5009,6 +5013,7 @@ def projects_host(browser):
     unfold(page, old)
     expect(proj(page, old).get_by_test_id("project-new-session")).to_have_count(0)
     expect(proj(page, old).get_by_test_id("project-gone-note")).to_contain_text("/home/you/src/old-site")
+    expect(proj(page, old).get_by_test_id("project-pending")).to_contain_text("still in the sandbox until it restarts")
     row = proj(page, old).get_by_test_id("session-row").filter(has_text="Port the old site")
     expect(row).to_have_count(1, timeout=10_000)
     expect(row.get_by_test_id("session-menu")).to_have_count(0)

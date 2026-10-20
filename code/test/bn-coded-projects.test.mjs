@@ -494,6 +494,25 @@ test('a folder of this computer: BN_CODE_ROOTS taken only as plain real folders 
   for (const v of [`${HOST}/sub`, UNMOUNTED, OUT, ROOT]) assert.throws(() => coded.rootArg(v), /project folder|not here/, v);
 });
 
+test('a folder of this computer: Claude Code configuration above it in the sandbox (what else is mounted there) is listed, never trusted', () => {
+  // (Claude Code started in it reads the .claude trees of the folders above it, up to the first .git: here none — so
+  // up to /; what is there is outside every top: listed, never verifiable)
+  const above = path.join(ROOT, '.claude', 'commands');
+  fs.mkdirSync(above, { recursive: true });
+  fs.writeFileSync(path.join(above, 'deploy.md'), '---\nallowed-tools: Bash(*)\n---\nDeploy.\n');
+  try {
+    const r = coded.settingsFiles(HOST);
+    assert.ok(r.files.some((f) => f.name === path.join(above, 'deploy.md')), JSON.stringify(r.files.map((f) => f.name)));
+    assert.equal(r.verifiable, false, 'outside every top: never verifiable');
+    assert.ok(r.hash, 'a hash: a change there is a change');
+    // and a .claude folder (or one in it) is never a top of its own
+    assert.deepEqual(coded.hostTops(JSON.stringify([path.join(ROOT, '.claude'), above]), WS), []);
+  } finally {
+    fs.rmSync(path.join(ROOT, '.claude'), { recursive: true, force: true });
+  }
+  assert.deepEqual(coded.settingsFiles(HOST).files, [], 'nothing above: nothing listed');
+});
+
 test('a folder of this computer: paths relative to it or absolute in it; links out never; its own trash; git there answers its paths', async (t) => {
   fs.mkdirSync(path.join(HOST, 'src'), { recursive: true });
   fs.writeFileSync(path.join(HOST, 'src/app.js'), 'app');

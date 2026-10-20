@@ -56,10 +56,16 @@ export interface Project {
   host?: boolean;
   /** read-only in the sandbox (a folder of this computer) */
   readOnly?: boolean;
-  /** its path on this computer hidden from Claude (at /projects/<name>) */
+  /** at /projects/<name>: its path on this computer kept out of what Claude Code sends the model and off the page (programs
+   *  in the sandbox can still find it: /proc/self/mountinfo) */
   hidden?: boolean;
   /** no longer added (./stack removed it): its sessions listed, read only */
   gone?: boolean;
+  /** what the running sandbox does not have yet as listed, until it restarts: 'add' (not mounted yet), 'ro' (listed
+   *  read-only, still read-write there), 'rw' (listed read-write, still read-only there) — ./stack's word */
+  pending?: 'add' | 'ro' | 'rw' | null;
+  /** no longer added, but still mounted in the sandbox until it restarts */
+  leaving?: boolean;
 }
 /** Where a session runs and which project it is shown in. */
 export interface Where {
@@ -115,7 +121,8 @@ export function normProject(v: unknown): Project | null {
     if (!hostPathOk(o.root)) return null;
     const name = nameOk(o.name) ? o.name : label(o.root.split('/').pop(), 80);
     return { id: o.id, name, root: o.root, path: o.root, created: null, workspace: false, folder, git, settings: settings === 'workspace' ? null : settings,
-      host: true, readOnly: o.mode === 'ro', hidden: o.hidden === true, gone: o.gone === true };
+      host: true, readOnly: o.mode === 'ro', hidden: o.hidden === true, gone: o.gone === true,
+      pending: o.pending === 'add' || o.pending === 'ro' || o.pending === 'rw' ? o.pending : null, leaving: o.gone === true && o.leaving === true };
   }
   if (!rootOk(o.root)) return null;
   const created = typeof o.created === 'number' && Number.isFinite(o.created) && o.created > 0 ? o.created : null;

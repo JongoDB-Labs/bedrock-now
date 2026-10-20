@@ -701,8 +701,10 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
   const projectOut = (p, f) => ({ id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created ?? null, workspace: p.id === WORKSPACE_ID,
     // its own Claude Code configuration (trust.mjs): as last looked at (a session's start, the dialog); null: not yet
     folder: f?.folder ?? null, git: f?.git ?? null, settings: p.id === WORKSPACE_ID || p.gone ? (p.gone ? null : 'workspace') : f?.settings ?? settingsKnown(p.id),
-    // a folder of this computer (./stack project): read-only or not, its path hidden from Claude or not; gone: no longer added
-    ...(p.host ? { host: true, mode: p.mode === 'ro' ? 'ro' : 'rw', hidden: p.hidden === true, gone: p.gone === true } : {}) });
+    // a folder of this computer (./stack project): read-only or not, its path hidden or not (at /projects/<name>); gone: no longer added
+    // pending: not yet so in the running sandbox (until it restarts); leaving: no longer added, still mounted until then
+    ...(p.host ? { host: true, mode: p.mode === 'ro' ? 'ro' : 'rw', hidden: p.hidden === true, gone: p.gone === true,
+      pending: ['add', 'ro', 'rw'].includes(p.pending) ? p.pending : null, leaving: p.leaving === true } : {}) });
   async function listProjects() {
     try { store().syncHosts?.(); } catch (e) { log(`projects: ${short(e?.message || String(e), 200)}`); }
     const list = store().list();

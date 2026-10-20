@@ -13,7 +13,7 @@ import { tmp } from './helpers.mjs';
 const DIR = tmp('bnhost');
 const ROOTS = path.join(DIR, 'roots.json');
 process.env.BN_CODE_PROJECTS_FILE = ROOTS;
-const { Projects, hostRoots, cwdOk, absOf, WORKSPACE_ID } = await import('../server/projects.mjs');
+const { Projects, hostRoots, hostLeaving, cwdOk, absOf, WORKSPACE_ID } = await import('../server/projects.mjs');
 const { createServer } = await import('../server/main.mjs');
 const { SandboxError } = await import('../server/spawn-client.mjs');
 const { fakeQuery } = await import('./fake-sdk.mjs');
@@ -38,7 +38,7 @@ test('roots.json: each entry checked; a hostile one cannot widen anything', () =
     { id: 'p_77777777', name: 'APP', path: '/z', mode: 'rw' }, { id: 'p_88888888', name: 'mode', path: '/m', mode: 'rwx' },
     { id: 'p_99999999', name: 'nl', path: '/a\nb', mode: 'rw' }]);
   assert.deepEqual(hostRoots().map((r) => r.name), ['app', 'notes', 'old']);
-  assert.deepEqual(hostRoots()[1], { id: ID.notes, name: 'notes', path: NOTES, mode: 'ro', hidden: true });
+  assert.deepEqual(hostRoots()[1], { id: ID.notes, name: 'notes', path: NOTES, mode: 'ro', hidden: true, pending: null });
   // a working folder in one of them is one a session may have; a path next to them is not
   for (const ok of [APP, `${APP}/src`, NOTES, '/workspace']) assert.ok(cwdOk(ok), ok);
   for (const bad of ['/Volumes/me/src/appx', '/Volumes/me', '/projects', '/etc', `${APP}/../x`]) assert.equal(cwdOk(bad), false, bad);
@@ -46,6 +46,21 @@ test('roots.json: each entry checked; a hostile one cannot widen anything', () =
   assert.equal(absOf('web'), '/workspace/web');
   fs.writeFileSync(ROOTS, 'not json');
   assert.deepEqual(hostRoots(), []);
+});
+
+test('roots.json: what the running sandbox does not have yet (pending), and a folder removed but still mounted (leaving)', () => {
+  const t = new Date(Date.now() + 5000);
+  fs.writeFileSync(ROOTS, JSON.stringify({ version: 1, running: true,
+    roots: [{ ...live[0], pending: 'ro' }, { ...live[1], pending: 'add' }, { id: ID.old, name: 'old', path: '/Volumes/me/x', mode: 'rw', pending: 'everything' }],
+    leaving: [{ path: GONE, mode: 'rw' }, { path: '/workspace/x', mode: 'rw' }, { path: '/a\nb', mode: 'rw' }, { path: '/z', mode: 'rwx' }] }));
+  fs.utimesSync(ROOTS, t, t);
+  assert.deepEqual(hostRoots().map((r) => r.pending), ['ro', 'add', null], 'only add, ro, rw');
+  assert.deepEqual(hostLeaving(), [{ path: GONE, mode: 'rw' }], 'each checked');
+  const s = new Projects({ dir: tmp('bnhostleave') });
+  s.update((v) => { v.gone = [{ id: ID.gone ?? 'p_0d0d0d0d', name: 'gone', path: GONE, at: 1 }]; });
+  const g = s.list().find((p) => p.gone);
+  assert.equal(g.leaving, true, 'no longer added, still mounted until the sandbox restarts');
+  assert.equal(s.list().find((p) => p.id === ID.app).pending, 'ro');
 });
 
 test('the records: a folder of this computer is a project; renamed, removed, trusted as such; no longer added: remembered', () => {

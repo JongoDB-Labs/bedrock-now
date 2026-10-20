@@ -45,8 +45,9 @@
 // project endpoints were asked (terminal windows, git init). In --hostile mode the projects list also carries records a
 // backend should never send (a folder outside the workspace, bad ids, markup in a name) and the session list sessions
 // that claim folders outside the workspace and projects that are not there. /__mock/projects?host=1 adds folders of this
-// computer (./stack project): one read-write, one read-only (its path hidden), one the sandbox does not see yet, and one
-// no longer added with a session of it (read only).
+// computer (./stack project): one read-write, one read-only (its path hidden), one the sandbox does not see yet, one
+// listed read-only that the sandbox still has read-write (pending), and one no longer added — still mounted until the
+// sandbox restarts — with a session of it (read only).
 // /__mock/spend?session=&add= books more spend for a session (its budget's warnings); /__mock/age?session=&ms= makes a
 // session's last activity that long ago (the cold-cache line); /__mock/terminal-exit?session= is Claude Code exiting in
 // the terminal after "Open in the terminal" (until then a resume here is refused); GET /__mock/terminal-log lists what
@@ -797,7 +798,7 @@ function projectView(p) {
     settings: settingsStateOf(p) };
 }
 const folderView = (h) => ({ id: h.id, name: h.name, root: h.root, path: h.root, created: null, workspace: false, folder: h.gone ? null : h.folder, git: false,
-  settings: h.gone ? null : 'none', host: true, mode: h.mode, hidden: h.hidden, gone: h.gone });
+  settings: h.gone ? null : 'none', host: true, mode: h.mode, hidden: h.hidden, gone: h.gone, pending: h.pending ?? null, leaving: h.leaving === true });
 function seedHosts() {
   if (hostMock.length) return;
   const now = Date.now() - 3_600_000;
@@ -809,8 +810,9 @@ function seedHosts() {
   hostMock = [
     { id: id(), name: 'tools', root: '/home/you/src/tools', mode: 'rw', hidden: false, gone: false, folder: 'dir' },
     { id: id(), name: 'notes', root: '/projects/notes', mode: 'ro', hidden: true, gone: false, folder: 'dir' },
-    { id: id(), name: 'later', root: '/home/you/src/later', mode: 'rw', hidden: false, gone: false, folder: 'unmounted' },
-    { id: id(), name: 'old-site', root: '/home/you/src/old-site', mode: 'rw', hidden: false, gone: true, folder: null },
+    { id: id(), name: 'later', root: '/home/you/src/later', mode: 'rw', hidden: false, gone: false, folder: 'unmounted', pending: 'add' },
+    { id: id(), name: 'drafts', root: '/home/you/src/drafts', mode: 'ro', hidden: false, gone: false, folder: 'dir', pending: 'ro' },
+    { id: id(), name: 'old-site', root: '/home/you/src/old-site', mode: 'rw', hidden: false, gone: true, folder: null, leaving: true },
   ];
   const sid = crypto.randomUUID();
   saved.set(sid, { id: sid, title: 'Port the old site', firstPrompt: 'Port the old site', branch: 'main', modified: Date.now() - 5 * 86400e3, cwd: '/home/you/src/old-site',

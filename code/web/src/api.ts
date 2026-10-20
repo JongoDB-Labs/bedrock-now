@@ -529,7 +529,7 @@ export class ApiError extends Error {
 export function writable(...paths: (string | null | undefined)[]): void {
   for (const p of paths) {
     const top = typeof p === 'string' ? readOnlyTopOf(p) : null;
-    if (top) throw new ApiError(409, `${top} is read-only: a folder of this computer added read-only (Settings › Claude Code › Project folders)`);
+    if (top) throw new ApiError(409, `${top} is read-only: a folder of this computer listed read-only (Settings › Claude Code › Project folders)`);
   }
 }
 

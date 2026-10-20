@@ -196,7 +196,7 @@ function FilePane({ tab, active }: { tab: FileTab; active: boolean }) {
       {locked && (
         <div class="banner subtle" data-testid="file-read-only">
           <Icon name="eye" size={15} />
-          <span>Read-only: {label(locked, 200)} is a folder of this computer added read-only (Settings › Claude Code › Project folders).</span>
+          <span>Read-only: {label(locked, 200)} is a folder of this computer listed read-only (Settings › Claude Code › Project folders).</span>
         </div>
       )}
       {phone && canMount && !tab.truncated && !locked && view !== 'preview' && (

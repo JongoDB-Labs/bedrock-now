@@ -89,3 +89,4 @@
 .np-computer { display: flex; flex-direction: column; gap: 6px; }
 .np-cmd { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .np-cmd code { min-width: 0; overflow-wrap: anywhere; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }
+.proj-ro.pending { border-style: dashed; color: var(--warn); }

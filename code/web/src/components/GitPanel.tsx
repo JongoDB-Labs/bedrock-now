@@ -89,7 +89,7 @@ export function GitPanel() {
           )}
           {ro ? (
             <div class="banner subtle small" data-testid="git-read-only">
-              {label(ro, 300)} is a folder of this computer added read-only: its changes are shown here; staging, commits and discards are off (Settings ›
+              {label(ro, 300)} is a folder of this computer listed read-only: its changes are shown here; staging, commits and discards are off (Settings ›
               Claude Code › Project folders).
             </div>
           ) : (

@@ -321,6 +321,9 @@ export function hostTops(env = process.env.BN_CODE_ROOTS, workspace = WORKSPACE,
   for (const t of list.slice(0, 16)) {
     if (typeof t !== 'string' || !t.startsWith('/') || t === '/' || t.length > 1024 || path.posix.normalize(t) !== t || t.endsWith('/') || /[\x00-\x1f\x7f]/.test(t)) continue;
     if (around(t, workspace) || out.some((o) => around(t, o))) continue;
+    // (never a .claude folder or one in it: Claude Code reads it as configuration of the folders below it — ./stack
+    // refuses such a folder too)
+    if (t.split('/').some((c) => c.toLowerCase() === '.claude')) continue;
     // (in the sandbox: never one of its own folders — a test's workspace elsewhere has none of them)
     if (own.some((o) => t === o || (o !== '/home' && t.startsWith(`${o}/`))) || (own.length && (t === '/home/claude' || t.startsWith('/home/claude/')))) continue;
     try { if (!fs.lstatSync(t).isDirectory() || fs.realpathSync(t) !== t) continue; } catch { continue; }
@@ -1962,10 +1965,13 @@ export function settingsFiles(abs, { text = false } = {}) {
   // the folder's own .claude/ and .mcp.json
   for (const n of named(abs, '.claude')) tree(path.join(abs, n), n);
   for (const n of named(abs, '.mcp.json')) one(n, path.join(abs, n));
-  // the folders above it, to the git root (else the workspace itself): their six trees
+  // the folders above it, to the git root (else the workspace itself): their six trees. Above a folder of this computer
+  // (its path in the sandbox: folders Docker made for its mount, or what else is mounted there), up to / — anything
+  // there is read by Claude Code too, so it is listed (outside every top: never verifiable, never trusted)
   let g = gitOf(abs);
   if (g === 'file') over ??= 'a linked git worktree or a submodule (Claude Code reads another checkout\'s configuration then)';
-  for (let d = path.dirname(abs); g === null && !over && abs !== WORKSPACE && inside(d); d = path.dirname(d)) {
+  const hostTop = topOf(abs) !== null && topOf(abs) !== WORKSPACE;
+  for (let d = path.dirname(abs); g === null && !over && abs !== WORKSPACE && (hostTop || inside(d)); d = path.dirname(d)) {
     g = gitOf(d);
     if (g === 'file') { over = 'a linked git worktree or a submodule above it (Claude Code reads another checkout\'s configuration then)'; break; }
     for (const c of named(d, '.claude')) {
@@ -1977,7 +1983,7 @@ export function settingsFiles(abs, { text = false } = {}) {
         if (CONFIG_SURFACES.includes(sname.toLowerCase())) tree(path.join(cp, sname), path.join(cp, sname));
       }
     }
-    if (d === WORKSPACE) break;
+    if (d === WORKSPACE || d === '/') break;
   }
   files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const hash = files.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null;

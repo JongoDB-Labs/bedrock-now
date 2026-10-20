@@ -232,7 +232,7 @@ def test_get_settings_needs_a_session_and_shows_the_snapshot(make, dirs):
     assert d["available"] and d["snapshot"]["base"] == BASE
     assert d["helper"] == {"running": False, "heartbeat_at": None, "settings": False, "diagnostics": [], "projects": [], "screen": False,
                            "in_progress": False, "job": None}
-    assert d["projects"] == {"written_at": None, "max": 16, "folders": []}
+    assert d["projects"] == {"written_at": None, "max": 16, "folders": [], "leaving": [], "running": False}
     assert d["here"] == {"remote": False, "allowed": True}
     assert "correct horse" not in json.dumps(d) and PASSWORD_HASH not in json.dumps(d)
     helper_up(sd)
@@ -599,8 +599,23 @@ def test_project_folders_list_is_checked(dirs):
     d = st.project_folders(sd)
     assert [f["id"] for f in d["folders"]] == ["p_0123abcd"]
     assert d["folders"][0] == {"id": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "path": "/Volumes/me/src/app", "mode": "rw", "hidden": False,
-                               "added": 1, "ok": True, "why": ""}
+                               "added": 1, "ok": True, "why": "", "pending": None}
     assert st.capability(sd)["projects"] == list(st.PROJECT_ACTIONS) and st.capability(sd)["screen"] is True
+
+
+def test_project_folders_pending_and_still_mounted(dirs):
+    """What the running sandbox does not have yet (pending: add, ro, rw — nothing else), and folders removed but still
+    mounted until it restarts (leaving): checked like the rest."""
+    sd, _ = dirs
+    (sd / "projects.json").write_text(json.dumps({"version": 1, "written_at": 1, "max": 16, "running": True, "folders": [
+        {"id": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "path": "/Volumes/me/src/app", "mode": "ro", "ok": True, "pending": "ro"},
+        {"id": "p_0123abce", "name": "new", "host": "/Volumes/me/new", "path": "/Volumes/me/new", "mode": "rw", "ok": True, "pending": "add"},
+        {"id": "p_0123abcf", "name": "odd", "host": "/Volumes/me/odd", "path": "/Volumes/me/odd", "mode": "rw", "ok": True, "pending": "<b>"}],
+        "leaving": [{"path": "/Volumes/me/old", "mode": "rw"}, {"path": "rel", "mode": "rw"}, {"path": "/x\ny", "mode": "rw"}, {"path": "/y", "mode": "all"}, "junk"]}))
+    d = st.project_folders(sd)
+    assert [f["pending"] for f in d["folders"]] == ["ro", "add", None]
+    assert d["leaving"] == [{"path": "/Volumes/me/old", "mode": "rw"}]
+    assert d["running"] is True
 
 
 def test_project_actions_write_fixed_requests_and_never_a_path(make, dirs):
