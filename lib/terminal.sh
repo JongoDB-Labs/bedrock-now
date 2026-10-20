@@ -220,6 +220,7 @@ terminal_enable() {
   code_remote_sync   # lib/code.sh: the Code page's remote name follows the terminal's switch
   log "LiteLLM and shared-mcp restart once as they join the terminal's gateway network (the first enable): Chat" \
     "answers, claude-bedrock requests and MCP sessions in progress drop for a few seconds"
+  projects_up_hook   # lib/projects.sh: the project folders' mounts (kept from before), each folder checked again
   run_phase "Terminal image (build; the first one takes a few minutes)" terminal terminal_build
   run_phase "Terminal + its gateway + portal + Caddy" "terminal terminal-gateway portal caddy litellm shared-mcp" _terminal_up
   terminal_after_up
@@ -395,6 +396,7 @@ terminal_setup_hook() {
   terminal_remote_sync
   terminal_on || return 0
   terminal_secrets
+  projects_up_hook   # lib/projects.sh: the project folders' mounts, each folder checked again
   why="$(terminal_why_out)"
   if [ -n "$why" ]; then TERMINAL_SETUP_FAILED=1; TERMINAL_SETUP_WHY="$why"; warn "Terminal: not started — $why (./stack terminal enable --workspace DIR)"; return 0; fi
   if ! terminal_key; then
@@ -421,8 +423,9 @@ terminal_status() {
   ws="$(get_env TERMINAL_WORKSPACE)"; why="$(terminal_why_out)"
   st="$(dc ps -a --format '{{.State}} {{.Health}}' terminal 2>/dev/null | head -n 1 || true)"
   printf 'Terminal: on — %s (the Terminal tab; unlock with the portal password, 12 h per browser)\n' "$(portal_url terminal)"
-  printf '  Workspace  %s → /workspace (the only folder of this computer it sees)\n' "${ws:-(none)}"
+  printf '  Workspace  %s → /workspace\n' "${ws:-(none)}"
   [ -z "$why" ] || printf '             !! left out: %s\n' "$why"
+  projects_status_lines   # lib/projects.sh: the project folders of this computer it sees too
   printf '  Container  %s\n' "${st:-not created — ./stack up}"
   printf '  Key        claude-code-terminal, its own monthly budget: $%s (BUDGET_TERMINAL: Settings → Spending & budgets; spend on Home)\n' "$(get_env BUDGET_TERMINAL)"
   case "$(terminal_egress_mode)" in

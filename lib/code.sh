@@ -452,6 +452,7 @@ code_status() {
   printf '  Container  %s\n' "${st:-not created — ./stack up}"
   printf '  Sandbox    the terminal'"'"'s: %s → /workspace, key claude-code-terminal (budget $%s), internet %s\n' \
     "$(get_env TERMINAL_WORKSPACE)" "$(get_env BUDGET_TERMINAL)" "$(terminal_egress_words)"
+  projects_status_lines   # lib/projects.sh: the folders of this computer it sees too
   printf '  Previews   of servers in the sandbox (Ports, in its status bar), at p<port>-<link>.%s\n' "$(get_env PREVIEW_DOMAIN)"
   if [ -n "$(get_env REMOTE_PREVIEW_HOST)" ]; then
     printf '             remote: https://%s (one port at a time per browser; off: ./stack config set REMOTE_PREVIEW (then: false))\n' "$(get_env REMOTE_PREVIEW_HOST)"

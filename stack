@@ -37,6 +37,7 @@ if [ "$want_help" = 1 ]; then
     remote) remote_usage; exit 0 ;;
     terminal) terminal_usage; exit 0 ;;
     code) code_usage; exit 0 ;;
+    project) projects_usage; exit 0 ;;
     git-host) githost_usage; exit 0 ;;
     *) cmd_help_for "$cmd" || die "unknown command: $cmd (try ./stack help)"; exit 0 ;;
   esac
@@ -77,6 +78,7 @@ case "$cmd" in
   stt) [ ! -f "$ENV_FILE" ] || guard_project; cmd_stt "$@" ;;
   terminal) [ ! -f "$ENV_FILE" ] || guard_project; cmd_terminal "$@" ;;
   code) [ ! -f "$ENV_FILE" ] || guard_project; cmd_code "$@" ;;
+  project) [ ! -f "$ENV_FILE" ] || guard_project; cmd_project "$@" ;;
   git-host) [ ! -f "$ENV_FILE" ] || guard_project --no-claim; cmd_git_host "$@" ;;   # (no Compose change: an exec)
   password) cmd_password "$@" ;;
   config) cmd_config "$@" ;;   # guards the project itself before a change (set, apply)

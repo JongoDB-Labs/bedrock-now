@@ -60,6 +60,9 @@ Usage: ./stack <command> [--yes]
   code         Claude Code in the browser with a chat: a Code tab with permission prompts, models and
                your files, in the terminal's sandbox (on by default with the terminal; disable keeps it off)
                status | enable [--workspace DIR] | disable   (asks for the portal password again)
+  project      Folders of this computer as projects of the Code page, mounted into its sandbox:
+               list | add DIR [--read-only] [--hide-path] [--name N] | remove NAME | mode NAME ro|rw | apply
+               (each change restarts the sandbox: --now, --when-idle or --later)
   git-host     The Code page's Git hosts from a CLI login on this computer: import gh | import glab
                [--host HOST]   (the token goes to the code container on stdin, never printed; you confirm)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
@@ -966,6 +969,7 @@ cmd_up() {
   if remote_on; then remote_ensure_proxy_secret; remote_net_preflight; fi   # lib/remote.sh: before any compose call
   terminal_up_hook     # lib/terminal.sh: its remote name, and a missing workspace folder said out loud
   code_up_hook         # lib/code.sh: its remote name and secret; left out (said) while the terminal is
+  projects_up_hook     # lib/projects.sh: the project folders' mounts, each folder checked again (one left out: said)
   save_portal_origin   # Caddy's frame-ancestors follows PORTAL_HOST / PORTAL_PORT edited by hand in .env
   ensure_portal_password_hash   # lib/settings.sh: PORTAL_PASSWORD edited by hand gets a new hash
   owner_email_lowercase         # lib/settings.sh: as Chat keeps it
@@ -1191,6 +1195,7 @@ cmd_test() {
   _check "shared-mcp lists tools" "$code" '"search_knowledge"'
   stt_test_checks   # lib/stt.sh: Bedrock speech-to-text, when on (~$0.00005)
   terminal_test_checks   # lib/terminal.sh: the browser terminal's checks, when on (no Bedrock calls)
+  projects_test_checks   # lib/projects.sh: the sandbox sees each project folder, read-only where chosen
   code_test_checks       # lib/code.sh: the Code page's checks, when on (no Bedrock calls)
   rm -f "$tmp"
   [ "$fails" -eq 0 ] || die "$fails check(s) failed — see ./stack logs"
@@ -1270,6 +1275,8 @@ _backup_named() {
   s3_job "$tmp" "" 'set -e; for b in openwebui shared; do aws --endpoint-url http://rustfs:9000 s3 sync --only-show-errors s3://$b /backup/s3/$b; done' ||
     die "could not copy the object-store buckets — the incomplete backup was removed; see ./stack logs rustfs"
   cp "$ENV_FILE" "$tmp/.env"   # encrypted DB fields need the same secrets
+  # the project folders of this computer (lib/projects.sh: the list, not the folders themselves)
+  [ ! -f "$(projects_file)" ] || cp "$(projects_file)" "$tmp/project-folders.tsv"
   chmod -R go-rwx "$tmp"       # dumps hold chats, hashed keys and encrypted credentials
   mv "$tmp" "$dir"
   _BACKUP_PARTIAL=''; off_exit _cleanup_partial_backup
@@ -1387,6 +1394,11 @@ cmd_restore() {
       else $S3 s3 rm --recursive --only-show-errors s3://$b; fi
     done' || die "restoring the object-store buckets failed (databases are restored, services are stopped); $hint"
   _restore_key_trio "$dir"
+  # the project folders' list as it was (each folder checked again before the sandbox sees it: projects_up_hook)
+  if [ -f "$dir/project-folders.tsv" ]; then
+    projects_write "$(cat "$dir/project-folders.tsv")"; projects_sync >/dev/null 2>&1 || true
+    log "restored the list of project folders (./stack project list)"
+  fi
   ensure_portal_password_hash   # lib/settings.sh: a .env copied from an older backup has no PORTAL_PASSWORD_HASH yet
   write_mcp_config
   # .env may have changed: recreate the containers that read these keys, then start everything else.
@@ -1749,6 +1761,7 @@ cmd_uninstall() {
   dc down -v --remove-orphans
   code_uninstall_cleanup       # lib/code.sh: its network, socket volume and image (before the terminal's)
   terminal_uninstall_cleanup   # lib/terminal.sh: its volume, networks and image, also while it is off
+  projects_uninstall_cleanup   # lib/projects.sh: the generated files (the list stays; the folders are never touched)
   local_builds_remove          # lib/images.sh: <project>/portal:local, …:previous, by exact name (never a prune)
   ! helper_installed || helper_uninstall
   if [ "$(readlink "$target" 2>/dev/null)" = "$STACK_DIR/bin/claude-bedrock" ]; then rm -f "$target"; log "removed the $target link"; fi
@@ -1793,6 +1806,8 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/terminal.sh"
 # The Code page (./stack code; Claude Code with a chat and files, in the terminal's sandbox; the Code tab; on by default).
 . "$STACK_DIR/lib/code.sh"
+# Folders of this computer as Code page projects (./stack project): their mounts into the sandbox.
+. "$STACK_DIR/lib/projects.sh"
 # Its Git hosts from a gh / glab login on this computer (./stack git-host import).
 . "$STACK_DIR/lib/githost.sh"
 # claude-bedrock's own Claude Code config folder (./stack uninstall names it; bin/claude-bedrock uses it).

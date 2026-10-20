@@ -55,6 +55,14 @@ services:
       # container's alone: never the sandbox's, never in .env, the portal or a backup (a token is entered again, a key
       # made again, after `docker volume rm`).
       - code-state:/var/lib/bn-code
+      # The project folders of this computer (./stack project; lib/projects.sh writes roots.json in it): their ids, names,
+      # paths in the sandbox and read-only switches — never a path the sandbox says. The folder, read-only (a new list
+      # renamed into it is seen at once); never created by Docker (./stack makes it).
+      - type: bind
+        source: ${BN_PROJECTS_PUBLIC:?run ./stack up}
+        target: /etc/bn-code/projects
+        read_only: true
+        bind: { create_host_path: false, selinux: z }
     networks:
       code-link:
         aliases: [code-upstream]

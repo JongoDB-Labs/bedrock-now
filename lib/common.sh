@@ -271,7 +271,12 @@ dc() {
   local f=() o
   # the portal's docs index (compose.portal-docs.yaml): only where this Docker Compose reads additional_contexts
   if compose_reads_contexts; then f+=(-f "$STACK_DIR/compose.portal-docs.yaml"); fi
-  for o in $(compose_overlays); do f+=(-f "$STACK_DIR/$o"); done
+  for o in $(compose_overlays); do
+    case "$o" in @projects) f+=(-f "$STATE_DIR/projects/compose.yaml") ;; *) f+=(-f "$STACK_DIR/$o") ;; esac
+  done
+  # The Code page's container mounts the project folders' public list (compose.code.yaml: the folder, read-only, never
+  # created by Docker): there before compose needs it (lib/projects.sh writes its roots.json)
+  if flag_on "$(get_env CODE_ENABLED)"; then mkdir -p "$STATE_DIR/projects/public" 2>/dev/null && chmod 700 "$STATE_DIR/projects" 2>/dev/null || true; fi
   # Bedrock speech-to-text: its container is in the "stt" profile (lib/stt.sh), so down/ps/logs include it too.
   if [ "${_STT_PROFILE:-}" = 1 ] || [ "$(get_env STT_PROVIDER)" = bedrock ]; then f+=(--profile stt); fi
   # The browser terminal too: an exported TERMINAL_WORKSPACE must never decide what the container sees.
@@ -282,7 +287,7 @@ dc() {
       REMOTE_TERMINAL REMOTE_TERMINAL_HOST CODE_ENABLED CODE_HOST CODE_PROXY_SECRET REMOTE_CODE_HOST PREVIEW_DOMAIN PREVIEW_PROXY_SECRET CODE_ALLOW_BYPASS \
       CODE_AUTO_MODE TERMINAL_AUTO_MODE GIT_GITHUB_CLIENT_ID GIT_GITHUB_APP_SLUG GIT_GITLAB_CLIENT_ID
     # which of terminal/managed/*.json the sandbox gets as Claude Code's managed settings (read-only): from .env alone
-    TERMINAL_CLAUDE_POLICY="$(claude_policy)" \
+    TERMINAL_CLAUDE_POLICY="$(claude_policy)" BN_PROJECTS_PUBLIC="$STATE_DIR/projects/public" \
     BEDROCK_NOW_ENV_DISPLAY="$(env_file_display)" COMPOSE_PROJECT_NAME="$p" docker compose -p "$p" --project-directory "$STACK_DIR" -f "$STACK_DIR/compose.yaml" ${f[@]+"${f[@]}"} \
       --env-file "$ENV_FILE" "$@" )
 }
@@ -317,7 +322,8 @@ compose_reads_contexts() {
 # (TERMINAL_ENABLED=true, lib/terminal.sh) its container, and its way out to the internet (TERMINAL_EGRESS, read by
 # egress_mode below): the egress proxy (internet, the default), the sandbox on the internet itself
 # (host) or none (off); the Code page (CODE_ENABLED=true, lib/code.sh) its container, only together with the terminal
-# (its sandbox).
+# (its sandbox). The project folders' generated file (.state/projects/compose.yaml, lib/projects.sh) comes after the
+# terminal's (@projects).
 compose_overlays() {
   if [ "${REMOTE_DEGRADED:-0}" != 1 ]; then   # remote network unusable this run (lib/remote.sh remote_net_preflight)
     case "$(get_env REMOTE_MODE)" in
@@ -329,6 +335,9 @@ compose_overlays() {
   # says why — lib/terminal.sh terminal_up_hook.)
   if flag_on "$(get_env TERMINAL_ENABLED)" && [ -n "$(get_env TERMINAL_WORKSPACE)" ]; then
     echo compose.terminal.yaml
+    # the project folders of this computer (lib/projects.sh generates it while there are any): @projects is
+    # .state/projects/compose.yaml for dc (a word: a checkout's path may have spaces)
+    [ ! -f "$STATE_DIR/projects/compose.yaml" ] || echo @projects
     case "$(egress_mode "$(get_env TERMINAL_EGRESS)")" in
       internet) echo compose.terminal-proxy.yaml ;;
       host) echo compose.terminal-egress.yaml ;;
