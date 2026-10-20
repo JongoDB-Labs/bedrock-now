@@ -210,10 +210,8 @@ def project_folders(status_dir: Path) -> dict:
                     # what the running sandbox does not have yet as listed, until it restarts (./stack's word: Docker's)
                     "pending": f.get("pending") if f.get("pending") in ("add", "ro", "rw") else None,
                     # a linked worktree, a submodule's checkout, a .git leading elsewhere: git won't work on it in the
-                    # sandbox (the repository it belongs to is never shared); gitmain: that repository, said here only
-                    "linked": f.get("linked") if f.get("linked") in ("worktree", "submodule", "other") else None,
-                    "gitmain": f["gitmain"] if f.get("linked") in ("worktree", "submodule", "other") and isinstance(f.get("gitmain"), str)
-                    and f["gitmain"].startswith("/") and len(f["gitmain"]) <= 1024 and not re.search(r"[\x00-\x1f\x7f]", f["gitmain"]) else None})
+                    # sandbox (the repository it belongs to is never shared) — the kind only, never a path
+                    "linked": f.get("linked") if f.get("linked") in ("worktree", "submodule", "other") else None})
         if len(out) >= 16:
             break
     # removed (or left out) but still mounted in the running sandbox until it restarts

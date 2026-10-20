@@ -2558,8 +2558,14 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
 - [x] **A linked worktree's or a submodule's repository is never shared.** Such a folder's `.git` is a file leading
   to the main repository's `.git`; mounting that too would let the sandbox write its hooks and configuration, which
   git runs on this computer when you use it there. So the folder is added alone, and `./stack`, Settings and
-  `./stack project list` say plainly that git won't work on it inside the sandbox (add the main repository instead);
-  the repository's path is said there only, never in what the code container or the sandbox gets.
+  `./stack project list` say plainly that git won't work on it inside the sandbox (add the main repository instead).
+  In a read-write folder the sandbox can rewrite that `.git` file, so only its first 4 KiB are read, as text: the
+  path it names is never followed, looked at or printed (one under `/net/…` would mount a share), only its kind said.
+- [x] **Nothing the sandbox wrote in a folder is followed or printed raw.** The checks run again at every `./stack
+  up` and `list` look into folders the sandbox may have written: no link there is followed (a link to `/net/…` or
+  `/Network/…` would mount a share; one to a FIFO would hang), files are read bounded and as text, and every name
+  said from inside a folder (a socket's, a subfolder's) has its control characters removed, so no escape sequence
+  reaches your terminal (its title, the clipboard, the cursor).
 - [x] **The list is ./stack's, not the sandbox's.** It lives in `.state/projects/folders.tsv` (mode 600 in a folder of
   mode 700), which no container mounts. From it ./stack writes `.state/projects/compose.yaml`: for each folder a bind
   mount into the terminal container (`create_host_path: false`: Docker never creates a folder; `read_only` for a

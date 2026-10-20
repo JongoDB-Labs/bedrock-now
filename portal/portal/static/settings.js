@@ -1148,10 +1148,9 @@
       // would let the sandbox run code here when you use git there)
       const LINKED = { worktree: "This is a linked git worktree", submodule: "This is a git submodule's checkout" };
       if (f.linked) {
-        const where = f.gitmain ? `${f.gitmain}${f.linked === "other" ? "" : "/.git"}` : "another folder";
         li.append(el("p", { class: "note set-project-git", "data-linked": f.linked,
-          text: f.linked === "other" ? `Its .git leads to a git folder elsewhere (${where}): git won't work on it inside the sandbox, which doesn't share that folder. To use git there, add the repository that holds it instead.`
-            : `${LINKED[f.linked]}: git won't work on it inside the sandbox (its history lives in ${where}, which isn't shared). To use git there, add the main repository instead.` }));
+          text: f.linked === "other" ? "Its .git leads to a git folder elsewhere: git won't work on it inside the sandbox, which doesn't share that folder. To use git there, add the repository that holds it instead."
+            : `${LINKED[f.linked]}: git won't work on it inside the sandbox (its history lives in the main repository's .git, which isn't shared). To use git there, add the main repository instead.` }));
       }
       const acts = el("span", { class: "set-project-actions" });
       if (f.mode === "rw") {

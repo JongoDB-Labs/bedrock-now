@@ -599,7 +599,7 @@ def test_project_folders_list_is_checked(dirs):
     d = st.project_folders(sd)
     assert [f["id"] for f in d["folders"]] == ["p_0123abcd"]
     assert d["folders"][0] == {"id": "p_0123abcd", "name": "app", "host": "/Volumes/me/src/app", "path": "/Volumes/me/src/app", "mode": "rw", "hidden": False,
-                               "added": 1, "ok": True, "why": "", "pending": None, "linked": None, "gitmain": None}
+                               "added": 1, "ok": True, "why": "", "pending": None, "linked": None}
     assert st.capability(sd)["projects"] == list(st.PROJECT_ACTIONS) and st.capability(sd)["screen"] is True
 
 
@@ -620,8 +620,8 @@ def test_project_folders_pending_and_still_mounted(dirs):
 
 
 def test_project_folders_linked_worktree(dirs):
-    """A linked worktree or a submodule's checkout: said on its row with the repository it belongs to (git won't work on
-    it in the sandbox); anything else there is dropped."""
+    """A linked worktree or a submodule's checkout: said on its row (git won't work on it in the sandbox) — the kind only,
+    never a path (the sandbox can rewrite a .git file); anything else there is dropped."""
     sd, _ = dirs
     row = {"host": "/Volumes/me/wt", "path": "/Volumes/me/wt", "mode": "rw", "ok": True}
     (sd / "projects.json").write_text(json.dumps({"version": 1, "written_at": 1, "max": 16, "folders": [
@@ -630,7 +630,8 @@ def test_project_folders_linked_worktree(dirs):
         {**row, "id": "p_0000000c", "name": "odd", "linked": "<b>", "gitmain": "/x"},
         {**row, "id": "p_0000000d", "name": "plain", "linked": None, "gitmain": None}]}))
     d = st.project_folders(sd)
-    assert [(f["linked"], f["gitmain"]) for f in d["folders"]] == [("worktree", "/Volumes/me/main"), ("submodule", None), (None, None), (None, None)]
+    assert [f["linked"] for f in d["folders"]] == ["worktree", "submodule", None, None]
+    assert all("gitmain" not in f for f in d["folders"])
 
 
 def test_project_actions_write_fixed_requests_and_never_a_path(make, dirs):

@@ -113,7 +113,10 @@ first_socket() {
   [ -n "$s" ] || return 1
   printf '%s\n' "$s"
 }
-# sockets_in DIR -> every socket in DIR or its folders down to 3 levels, one a line
+# plain_text TEXT -> TEXT without control characters: a name inside a folder the sandbox writes is its to choose, and
+# escape sequences must never reach your terminal (titles, the clipboard, the cursor)
+plain_text() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
+# sockets_in DIR -> every socket in DIR or its folders down to 3 levels, one a line (links never followed)
 sockets_in() { find "$1" -maxdepth 3 -type s -print 2>/dev/null || true; }
 # host_socket_in DIR -> a socket in DIR (down to 3 levels) whose path inside DIR goes through a folder of sockets
 # (socket_dir_component): one a program of this computer made — printed; 1 when there is none
@@ -405,7 +408,7 @@ terminal_why_out() {
   elif ! why="$(terminal_workspace_check "$ws")"; then echo "its workspace folder $ws is refused now: $why"
   # (a socket in a folder of sockets there — tmux-<uid>, .X11-unix … — is a program of this computer's, not one the
   # sandbox made: the workspace is left out until it is gone; any other socket is only said, terminal_up_hook)
-  elif sock="$(host_socket_in "$ws")"; then echo "its workspace folder $ws holds a socket of a program of this computer ($sock): the sandbox could take commands from it — remove it"
+  elif sock="$(host_socket_in "$ws")"; then echo "its workspace folder $ws holds a socket of a program of this computer ($(plain_text "$sock")): the sandbox could take commands from it — remove it"
   fi
 }
 
@@ -424,7 +427,7 @@ terminal_up_hook() {
     # (any other socket in the workspace: said, never a reason to leave it out — a sandbox process may have made it)
     local ws sock; ws="$(get_env TERMINAL_WORKSPACE)"
     if [ -n "$ws" ] && sock="$(first_socket "$ws")"; then
-      warn "the workspace holds a socket ($sock): a program of this computer listening there could take commands from the sandbox — remove it if it is not one the sandbox made"
+      warn "the workspace holds a socket ($(plain_text "$sock")): a program of this computer listening there could take commands from the sandbox — remove it if it is not one the sandbox made"
     fi
     return 0
   fi

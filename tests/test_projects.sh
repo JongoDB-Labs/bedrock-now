@@ -551,19 +551,57 @@ test_a_linked_worktree_or_submodule_is_added_and_said() {
   main="$(_dir main)"; mkdir -p "$main/.git/worktrees/feature" "$main/.git/modules/lib"
   wt="$(_dir feature)"; printf 'gitdir: %s/.git/worktrees/feature\n' "$main" > "$wt/.git"
   out="$(project_add "$wt" --later 2>&1)" || { echo "$out" >&2; return 1; }
-  assert_contains "$out" "feature: This is a linked git worktree: git won't work on it inside the sandbox (its history lives in $main/.git, which isn't shared). To use git there, add the main repository instead."
+  assert_contains "$out" "feature: This is a linked git worktree: git won't work on it inside the sandbox (its history lives in the main repository's .git, which isn't shared). To use git there, add the main repository instead."
   assert_contains "$(projects_list)" "git: This is a linked git worktree"
-  assert_contains "$(tr '{' '\n' < "$(projects_status_file)" | grep '"name":"feature"')" "\"linked\":\"worktree\",\"gitmain\":\"$main\""
-  assert_not_contains "$(cat "$(projects_roots_file)")" "$main"   # (the code container's list: never the repository's path)
+  assert_contains "$(tr '{' '\n' < "$(projects_status_file)" | grep '"name":"feature"')" '"linked":"worktree"}'
+  # (the path the .git file names is the sandbox's to rewrite in a read-write folder: never said anywhere)
+  assert_not_contains "$out$(projects_list)$(cat "$(projects_status_file)" "$(projects_roots_file)")" "$main/.git"
   # a submodule's checkout, its gitdir relative
   sub="$(_dir lib)"; printf 'gitdir: ../main/.git/modules/lib\n' > "$sub/.git"
   out="$(project_add "$sub" --later 2>&1)" || { echo "$out" >&2; return 1; }
-  assert_contains "$out" "lib: This is a git submodule's checkout: git won't work on it inside the sandbox (its history lives in $main/.git"
+  assert_contains "$out" "lib: This is a git submodule's checkout: git won't work on it inside the sandbox"
   # a .git file leading inside the folder, or a .git folder: nothing to say
   ok="$(_dir plain)"; mkdir -p "$ok/.git-real"; printf 'gitdir: .git-real\n' > "$ok/.git"
   out="$(project_add "$ok" --later 2>&1)" || return 1
   assert_not_contains "$out" "git won't work"
-  assert_contains "$(tr '{' '\n' < "$(projects_status_file)" | grep '"name":"plain"')" '"linked":null,"gitmain":null'
+  assert_contains "$(tr '{' '\n' < "$(projects_status_file)" | grep '"name":"plain"')" '"linked":null}'
+}
+
+test_nothing_the_sandbox_wrote_in_a_folder_is_followed_or_printed_raw() {
+  _stubs
+  local a out esc calls
+  esc="$(printf '\033]52;c;aGk=\007\033[2J')"
+  a="$(_dir app)"
+  project_add "$a" --later 2>/dev/null || return 1
+  # a .git file the sandbox rewrote: escape sequences and a path that would mount a share (/net/…) — read as text,
+  # never followed, never printed
+  printf 'gitdir: /net/attacker/share/.git/worktrees/x%s\n' "$esc" > "$a/.git"
+  calls="$TMP/followed"; : > "$calls"
+  _phys() { case "$1" in /net/*) echo "$1" >> "$TMP/followed" ;; esac; (cd "$1" 2>/dev/null && /bin/pwd -P) || true; }
+  out="$(projects_list 2>&1; projects_sync 2>&1; projects_status_lines 2>&1; cat "$(projects_status_file)")"
+  assert_contains "$out" "git: This is a linked git worktree"
+  assert_not_contains "$out" "$(printf '\033')"
+  assert_not_contains "$out" "/net/attacker"
+  assert_eq "$(cat "$calls")" ""
+  # a socket named with escape sequences: said as plain text
+  _sock "$a/s$(printf '\033')]0;x$(printf '\007').sock" || return 77
+  out="$(projects_sync 2>&1)"
+  assert_contains "$out" "holds a socket"
+  assert_not_contains "$out" "$(printf '\033')"
+  assert_not_contains "$out" "$(printf '\007')"
+  rm -f "$a"/s*.sock
+  # links in it are never followed by the keys check (one to /net/… would mount a share): a link to a folder with
+  # keys is not that folder
+  local elsewhere; elsewhere="$TMP/elsewhere"; mkdir -p "$elsewhere/.ssh" "$elsewhere/gh"
+  ln -s "$elsewhere" "$a/linked-home"; mkdir -p "$a/.config"; ln -s "$elsewhere/gh" "$a/.config/gh"
+  ln -s "$elsewhere/.ssh" "$a/.ssh"
+  local self; self="$(_rec app | cut -f1)"
+  out="$(_PC_SELF="$self" project_check "$a" 2>&1)" || { echo "refused through a link: $out" >&2; return 1; }
+  # and a folder named with escape sequences holding keys: said as plain text
+  mkdir -p "$a/x$(printf '\033')[31m/.aws"
+  out="$(_PC_SELF="$self" project_check "$a" 2>&1)" && return 1
+  assert_contains "$out" "it holds keys or logins: x[31m/.aws"
+  assert_not_contains "$out" "$(printf '\033')"
 }
 
 test_a_socket_found_again_the_sandbox_could_not_have_made_drops_the_folder() {

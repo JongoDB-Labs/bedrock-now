@@ -166,32 +166,47 @@ project_find() {
 # bedrock-now folder (stack, .env and compose.yaml side by side: its .env holds this computer's keys) or a Time Machine
 # backup. Bounded: 3 levels, node_modules, .git and vendor not entered.
 _project_secrets() {
-  local d k f hit
-  for d in "$1" "$1"/*/ "$1"/.[!.]*/; do
-    [ -d "$d" ] || continue
-    d="${d%/}"
+  local e d k f hit rel
+  # (in a read-write folder the sandbox may have written any of it: no link there is followed — one to /net/… would
+  # mount a share — and what is said of it is made plain text, _pj_plain)
+  for e in "$1" "$1"/* "$1"/.[!.]*; do
+    [ "$e" = "$1" ] || { [ ! -L "$e" ] && [ -d "$e" ]; } || continue
+    rel="${e#"$1"}"; rel="${rel#/}"
     for k in .ssh .aws .gnupg .kube .docker .azure .config/gh .config/glab-cli .config/gcloud Library/Keychains; do
-      [ ! -d "$d/$k" ] || { printf '%s\n' "${d#"$1"}/$k" | sed 's#^/##'; return 0; }
+      ! _pj_entry_is "$e" "$k" d || { _pj_plain "${rel:+$rel/}$k"; return 0; }
     done
     for k in .netrc .git-credentials; do
-      [ ! -f "$d/$k" ] || { printf '%s\n' "${d#"$1"}/$k" | sed 's#^/##'; return 0; }
+      ! _pj_entry_is "$e" "$k" f || { _pj_plain "${rel:+$rel/}$k"; return 0; }
     done
   done
   for k in .npmrc .pypirc; do
-    if [ -f "$1/$k" ] && grep -qE '_authToken|_auth[[:space:]]*=|password' "$1/$k" 2>/dev/null; then echo "$k (a token or password in it)"; return 0; fi
+    if _pj_entry_is "$1" "$k" f && head -c 65536 "$1/$k" 2>/dev/null | grep -qE '_authToken|_auth[[:space:]]*=|password'; then echo "$k (a token or password in it)"; return 0; fi
   done
   hit="$(find "$1" -maxdepth 3 \( -name node_modules -o -name .git -o -name vendor \) -prune -o \
     \( \( -type f -name stack \) -o -name Backups.backupdb -o -name '*.backupbundle' -o -name .timemachine \) -print 2>/dev/null || true)"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     case "$f" in
-      */stack) if [ -f "${f%/stack}/.env" ] && { [ -f "${f%/stack}/compose.yaml" ] || [ -f "${f%/stack}/compose.yml" ]; }; then
-                 k="${f%/stack}"; k="${k#"$1"}"; echo "another bedrock-now folder (${k#/}${k:+/}.env holds that install's keys)"; return 0; fi ;;
-      *) k="${f#"$1"/}"; echo "a Time Machine backup ($k)"; return 0 ;;
+      */stack) if _pj_entry_is "${f%/stack}" .env f && { _pj_entry_is "${f%/stack}" compose.yaml f || _pj_entry_is "${f%/stack}" compose.yml f; }; then
+                 k="${f%/stack}"; k="${k#"$1"}"; echo "another bedrock-now folder ($(_pj_plain "${k#/}${k:+/}").env holds that install's keys)"; return 0; fi ;;
+      *) echo "a Time Machine backup ($(_pj_plain "${f#"$1"/}"))"; return 0 ;;
     esac
   done <<< "$hit"
   return 1
 }
+# _pj_entry_is BASE REL d|f -> 0 when BASE/REL is a folder (d) or a regular file (f) and no part of REL is a link
+# (nothing a sandbox process wrote is followed)
+_pj_entry_is() {
+  local p="$1" c IFS=/
+  for c in $2; do
+    p="$p/$c"
+    [ ! -L "$p" ] && [ -e "$p" ] || return 1
+  done
+  case "$3" in d) [ -d "$p" ] ;; *) [ -f "$p" ] ;; esac
+}
+# _pj_plain TEXT -> TEXT without control characters (a name in a project folder is the sandbox's to choose: escape
+# sequences never reach your terminal)
+_pj_plain() { plain_text "$1"; }
 
 # _project_path_rules REAL -> fails, printing why, for a path a project folder never has (beyond the workspace's
 # rules): in a temporary or runtime folder, through a folder of sockets, a .claude folder or one in it (Claude Code
@@ -266,12 +281,14 @@ project_check() {
   # one there; _PC_MODE) or the socket is in a folder of sockets (tmux-<uid>, .X11-unix …: a program of this computer
   # made it); any other one is only said — a sandbox process may have made it in its own folder
   if sock="$(first_socket "$real")"; then
+    sock="$(_pj_plain "$sock")"
     case "$sock" in */.git/fsmonitor--daemon.ipc) why=" (git's fsmonitor daemon: git fsmonitor--daemon stop in that repository, or core.fsmonitor false)" ;; *) why='' ;; esac
     if [ -z "${_PC_RECHECK:-}" ]; then echo "it holds a socket, $sock$why: a program of this computer listening there would take commands from the sandbox"; return 1; fi
     if [ "${_PC_MODE:-}" = ro ]; then
       echo "it holds a socket, $sock$why, though the sandbox cannot write in it (read-only): a program of this computer made it, and the sandbox could take commands from it"; return 1
     fi
     if hs="$(host_socket_in "$real")"; then
+      hs="$(_pj_plain "$hs")"
       echo "it holds a socket of a program of this computer, $hs (in a folder where programs keep their sockets): the sandbox could take commands from it"; return 1
     fi
     warn "project folder $real holds a socket ($sock$why): if a program of this computer listens there, the sandbox can talk to it"
@@ -279,30 +296,30 @@ project_check() {
   printf '%s\n' "$real"
 }
 
-# _project_linked_git DIR -> "KIND<TAB>MAIN" when DIR's .git is a file whose gitdir lies outside DIR — a linked worktree
-# (KIND worktree, MAIN the repository it belongs to), a submodule's checkout (submodule, MAIN the repository around it)
-# or a separate git folder (other, MAIN that folder) — else 1. Git there needs that other folder, which is never shared
-# with the sandbox: its hooks and configuration would let the sandbox run code on this computer when you use git there.
+# _project_linked_git DIR -> worktree | submodule | other when DIR's .git is a regular file (not a link) whose first
+# line is a gitdir: leading out of DIR — a linked worktree, a submodule's checkout, a separate git folder — else 1.
+# Git there needs that other folder, which is never shared with the sandbox: its hooks and configuration would let the
+# sandbox run code on this computer when you use git there. In a read-write folder the sandbox can rewrite that file:
+# its first 4 KiB are read as text only — the path it names is never followed, looked at or printed.
 _project_linked_git() {
-  local f="$1/.git" g r
-  [ -f "$f" ] && [ ! -L "$f" ] || return 1
-  g="$(sed -n '1s/^gitdir:[[:space:]]*//p' "$f" 2>/dev/null || true)"
+  local f="$1/.git" g
+  [ ! -L "$f" ] && [ -f "$f" ] || return 1
+  g="$(head -c 4096 "$f" 2>/dev/null | sed -n '1s/^gitdir:[[:space:]]*//p' || true)"
   [ -n "$g" ] || return 1
-  case "$g" in /*) ;; *) g="$1/$g" ;; esac
-  r="$(_phys "$g")"; [ -z "$r" ] || g="$r"
-  case "$(_fold "$g")/" in "$(_fold "$1")/"*) return 1 ;; esac
+  # (a relative one without a .. part stays in the folder: git's own layout, nothing elsewhere)
+  case "$g" in /* | ../* | */../* | .. | */..) ;; *) return 1 ;; esac
   case "$g" in
-    */.git/worktrees/*) printf 'worktree\t%s\n' "${g%%/.git/worktrees/*}" ;;
-    */.git/modules/*) printf 'submodule\t%s\n' "${g%%/.git/modules/*}" ;;
-    *) printf 'other\t%s\n' "$g" ;;
+    */.git/worktrees/*) echo worktree ;;
+    */.git/modules/*) echo submodule ;;
+    *) echo other ;;
   esac
 }
-# _pj_linked_text KIND MAIN -> what is said of such a folder (to you only: ./stack, Settings — never the sandbox)
+# _pj_linked_text KIND -> what is said of such a folder
 _pj_linked_text() {
   case "$1" in
-    worktree) echo "This is a linked git worktree: git won't work on it inside the sandbox (its history lives in $2/.git, which isn't shared). To use git there, add the main repository instead." ;;
-    submodule) echo "This is a git submodule's checkout: git won't work on it inside the sandbox (its history lives in $2/.git, which isn't shared). To use git there, add the main repository instead." ;;
-    *) echo "Its .git leads to a git folder elsewhere ($2): git won't work on it inside the sandbox, which doesn't share that folder. To use git there, add the repository that holds it instead." ;;
+    worktree) echo "This is a linked git worktree: git won't work on it inside the sandbox (its history lives in the main repository's .git, which isn't shared). To use git there, add the main repository instead." ;;
+    submodule) echo "This is a git submodule's checkout: git won't work on it inside the sandbox (its history lives in the main repository's .git, which isn't shared). To use git there, add the main repository instead." ;;
+    *) echo "Its .git leads to a git folder elsewhere: git won't work on it inside the sandbox, which doesn't share that folder. To use git there, add the repository that holds it instead." ;;
   esac
 }
 
@@ -327,7 +344,7 @@ _project_name_from() {
 
 # _pj_json TEXT -> TEXT as a JSON string (the paths and names here have no quote, backslash or control character;
 # made safe anyway)
-_pj_json() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | LC_ALL=C tr -d '\000-\037')"; }
+_pj_json() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | LC_ALL=C tr -d '\000-\037\177')"; }
 
 # projects_sync — the generated files from folders.tsv, each folder checked again (left out, with the reason, when it
 # is gone, now leads elsewhere, or a rule refuses it now), and what of it the running sandbox has mounted (_pj_applied:
@@ -335,7 +352,7 @@ _pj_json() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\
 # mounted — "pending" until the sandbox restarts). Prints nothing but the warnings.
 projects_sync() {
   local d pub id name mode sbx added keys host real why roots='' rows='' vols='' paths='' kopt n=0 hidden bad applied running=false
-  local pend leaving='' wanted='' p m linked gitmain lk
+  local pend leaving='' wanted='' p m linked lk
   d="$(projects_dir)"; pub="$(projects_public_dir)"
   # (public/ is mounted read-only into the code container, which runs as the terminal's user — yours, or 10104 when
   # ./stack runs as root: readable by it; roots.json holds no secret, paths in the sandbox only)
@@ -350,17 +367,16 @@ projects_sync() {
     elif ! why="$(_PC_RECHECK=1 _PC_MODE="$mode" _PC_SELF="$id" project_check "$host" $kopt)"; then :
     else why=''; fi
     hidden=false; [ "$sbx" = "$host" ] || hidden=true
-    # (a linked worktree or submodule checkout: said in Settings — the path of its repository too, which the portal
-    # alone reads; roots.json, the code container's, gets neither)
-    linked=null; gitmain=null
-    if [ -n "$real" ] && lk="$(_project_linked_git "$real")"; then linked="\"${lk%%$'\t'*}\""; gitmain="$(_pj_json "${lk#*$'\t'}")"; fi
+    # (a linked worktree or submodule checkout: said in Settings — the kind only, never the path its .git names)
+    linked=null
+    if [ -n "$real" ] && lk="$(_project_linked_git "$real")"; then linked="\"$lk\""; fi
     # what the running sandbox has of it (nothing said while it does not run: it sees the list when it starts)
     pend=null
     if [ -z "$why" ] && [ "$running" = true ]; then
       m="$(printf '%s\n' "$applied" | awk -F'\t' -v p="$sbx" '$1 == p && !f { print $2; f = 1 }')"
       if [ -z "$m" ]; then pend='"add"'; elif [ "$m" != "$mode" ]; then pend="\"$mode\""; fi
     fi
-    rows="$rows${rows:+,}{\"id\":$(_pj_json "$id"),\"name\":$(_pj_json "$name"),\"host\":$(_pj_json "$host"),\"path\":$(_pj_json "$sbx"),\"mode\":\"$mode\",\"hidden\":$hidden,\"added\":$added,\"ok\":$([ -z "$why" ] && echo true || echo false),\"why\":$(_pj_json "$why"),\"pending\":$pend,\"linked\":$linked,\"gitmain\":$gitmain}"
+    rows="$rows${rows:+,}{\"id\":$(_pj_json "$id"),\"name\":$(_pj_json "$name"),\"host\":$(_pj_json "$host"),\"path\":$(_pj_json "$sbx"),\"mode\":\"$mode\",\"hidden\":$hidden,\"added\":$added,\"ok\":$([ -z "$why" ] && echo true || echo false),\"why\":$(_pj_json "$why"),\"pending\":$pend,\"linked\":$linked}"
     if [ -n "$why" ]; then warn "project folder $name ($host) is left out of the sandbox: $why"; continue; fi
     n=$((n + 1))
     wanted="$wanted$sbx"$'\n'
@@ -572,7 +588,7 @@ project_add() {
   _projects_change "$name" "${old:+$old$'\n'}$line" "$old" 0 ${args[@]+"${args[@]}"}
   projects_pending_on "$name" && log "$name: the sandbox sees it once it restarts (./stack project apply, or the next ./stack up)"
   log "$name: $real → $sbx in the sandbox ($([ "$ro" = 1 ] && echo read-only || echo read-write)) — a project on the Code page"
-  if lk="$(_project_linked_git "$real")"; then warn "$name: $(_pj_linked_text "${lk%%$'\t'*}" "${lk#*$'\t'}")"; fi
+  if lk="$(_project_linked_git "$real")"; then warn "$name: $(_pj_linked_text "$lk")"; fi
 }
 
 project_remove() {
@@ -619,7 +635,7 @@ projects_list() {
     why="$(_projects_left_out "$id")"; pend="$(_pj_pending_of "$id")"
     printf '%-13s %s → %s (%s)%s\n' "$name" "$host" "$sbx" "$([ "$mode" = ro ] && echo read-only || echo read-write)" "${why:+  !! left out: $why}"
     [ -z "$pend" ] || [ -n "$why" ] || printf '              pending: %s\n' "$(_pj_pending_text "$pend")"
-    if lk="$(_project_linked_git "$host")"; then printf '              git: %s\n' "$(_pj_linked_text "${lk%%$'\t'*}" "${lk#*$'\t'}")"; fi
+    if lk="$(_project_linked_git "$host")"; then printf '              git: %s\n' "$(_pj_linked_text "$lk")"; fi
   done < <(projects_records)
   while IFS=$'\t' read -r p m; do
     [ -n "$p" ] || continue
