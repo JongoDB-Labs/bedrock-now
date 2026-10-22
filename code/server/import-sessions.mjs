@@ -391,7 +391,7 @@ export const HELPER_ACTIONS = Object.freeze(['sessions-scan', 'sessions-fetch', 
 // why a request did not go through (lib/sessions.sh and the helper say one of these words; the page says them in
 // sentences of its own: never a store's or a request's text)
 export const REQUEST_WHY = Object.freeze(['password', 'busy', 'limit', 'denied', 'no-screen', 'remote', 'no-consent', 'no-project', 'no-store',
-  'no-sessions', 'stale', 'reader', 'code', 'bad-request', 'changed']);
+  'no-sessions', 'stale', 'reader', 'code', 'bad-request', 'changed', 'timeout']);
 
 // --- the command line (./stack, in the code container: docker compose exec -T code node server/import-sessions.mjs) ---
 const opt = (argv, k) => { const i = argv.indexOf(k); return i >= 0 && typeof argv[i + 1] === 'string' ? argv[i + 1] : null; };

@@ -61,9 +61,9 @@
 #                    project refuses — in a temporary folder, or in a .claude folder that is not a worktree's: the run
 #                    says so at once). Either parent must not exist yet; the suite makes it and removes it after.
 #   --host-sessions  Claude Code and claude-bedrock sessions of this computer copied into the sandbox
-#                    (E2E_HOST_SESSIONS=1 does the same; needs the Code page and the browser part): a folder made
-#                    under this run's --out (or E2E_HOST_SESSIONS_DIR, a new folder: never one of yours, never under
-#                    /tmp) added with ./stack project add, and a FAKE home folder beside it whose ~/.claude and
+#                    (E2E_HOST_SESSIONS=1 does the same; needs the Code page and the browser part): a folder made in
+#                    tests/e2e/work/<project>-host-sessions (or E2E_HOST_SESSIONS_DIR, a new folder: never one of
+#                    yours, never a temporary one) added with ./stack project add, and a FAKE home folder beside it whose ~/.claude and
 #                    ~/.claude-bedrock stores the suite writes (synthetic transcripts: a word to remember, a thinking
 #                    block, fake secrets made at run time — in a prompt, and in a subagent's transcript), read with
 #                    BN_SESSIONS_HOME pointing there — never your real ~/.claude. ./stack sessions scan without
@@ -164,6 +164,17 @@ if [ "$HOST_FOLDERS" = 1 ]; then
   [ ! -e "$HF_PARENT" ] || { echo "--host-folders: $HF_PARENT is there already (an earlier run's? remove it), or set E2E_HOST_FOLDERS_DIR=/abs/new-folder" >&2; exit 2; }
   if why="$(host_folders_refused "$HF_PARENT")"; then
     echo "--host-folders: ./stack project would refuse folders in $HF_PARENT: $why — set E2E_HOST_FOLDERS_DIR=/abs/new-folder somewhere it accepts (a folder of yours, not a temporary one)" >&2
+    exit 2
+  fi
+fi
+
+# --host-sessions: its folder's parent (host_sessions_parent), checked the same way
+if [ "$HOST_SESSIONS" = 1 ]; then
+  HS_PARENT="$(host_sessions_parent)"
+  case "$HS_PARENT" in /*) ;; *) echo "E2E_HOST_SESSIONS_DIR must be an absolute path" >&2; exit 2 ;; esac
+  [ ! -e "$HS_PARENT" ] || { echo "--host-sessions: $HS_PARENT is there already (an earlier run's? remove it), or set E2E_HOST_SESSIONS_DIR=/abs/new-folder" >&2; exit 2; }
+  if why="$(host_folders_refused "$HS_PARENT")"; then
+    echo "--host-sessions: ./stack project would refuse a folder in $HS_PARENT: $why — set E2E_HOST_SESSIONS_DIR=/abs/new-folder somewhere it accepts" >&2
     exit 2
   fi
 fi
@@ -888,12 +899,9 @@ if [ "$HOST_SESSIONS" = 1 ] && { [ "$CODE" = 0 ] || ! part_on browser; }; then
   record projects host-sessions SKIP 0 "--host-sessions needs the Code page and the browser part"
 elif [ "$HOST_SESSIONS" = 1 ]; then
   say "sessions of this computer: a fake home's stores, consent, a look, a read, the Import sheet, a resume on Haiku"
-  HS_OWN="${E2E_HOST_SESSIONS_DIR:-}"
-  if [ -n "$HS_OWN" ]; then
-    case "$HS_OWN" in /*) ;; *) die "E2E_HOST_SESSIONS_DIR must be an absolute path" ;; esac
-    [ ! -e "$HS_OWN" ] || die "E2E_HOST_SESSIONS_DIR ($HS_OWN) must not exist yet: the suite makes it, and removes it at the end"
-    HS="$HS_OWN"
-  else HS="$OUT/host-sessions"; rm -rf "$HS"; fi
+  # (their parent: host_sessions_parent, checked at the start — made here, removed at the end)
+  HS="$HS_PARENT"
+  [ ! -e "$HS" ] || die "--host-sessions: $HS is there already (an earlier run's? remove it)"
   mkdir -p "$HS/app" "$HS/home"; HS="$(cd "$HS" && pwd -P)"; chmod 755 "$HS" "$HS/app"
   printf 'an app\n' > "$HS/app/README.md"
   HS_CWD="$HS/app"
@@ -958,8 +966,8 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   else record projects host-sessions-forgotten PASS "$(( $(now) - t0 ))" "taken back: the code container's list is forgotten (the copies in the sandbox stay)"; fi
   BN_SESSIONS_HOME="$HS/home" cli sessions-fetch-after-revoke 1 'no list of this project|that list is gone|not allowed' sessions fetch --project e2e-sessions-app --all
   cli sessions-project-remove 0 'no longer in the sandbox' project remove e2e-sessions-app --now
-  # (the fake home goes — its fake secrets with it; the folder too when it was E2E_HOST_SESSIONS_DIR)
-  rm -rf "$HS/home"; [ -z "$HS_OWN" ] || rm -rf "$HS"
+  # (the folder and the fake home go — its fake secrets with them)
+  rm -rf -- "$HS"
   rm -f "$OUT/browser/host-sessions-ids.txt"
 fi
 

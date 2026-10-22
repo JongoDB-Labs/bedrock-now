@@ -326,6 +326,9 @@ _job_deadline() {
     models-recheck) echo "1200 0" ;;
     restart-*) echo "${HELPER_LONG_MAX_S:-14400} $idle" ;;
     project-*) echo "${HELPER_PROJECT_MAX_S:-2700} 0" ;;
+    # (the Code page's Import sheet, and Take back: a dialog of 2 minutes, a reader of 3, commands in the code
+    # container with deadlines of their own — 15 minutes in all is generous; lib/sessions.sh)
+    sessions-*) echo "${HELPER_SESSIONS_MAX_S:-900} 0" ;;
     settings) echo "${HELPER_LONG_MAX_S:-14400} $idle" ;;
     *) echo "0 0" ;;
   esac

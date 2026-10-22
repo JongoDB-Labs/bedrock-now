@@ -40,6 +40,8 @@ const WHY: Record<string, string> = {
   reader: 'The reader on the computer could not read the store.',
   code: 'The Code page\'s container did not take what was read (./stack sessions in a terminal says more).',
   'bad-request': 'The helper refused the request.',
+  timeout: 'It took too long on the computer and was stopped: nothing more was done (./stack sessions in a terminal there says why).',
+  changed: 'That session was read again since you checked it: check it again.',
 };
 const STATE: Record<string, string> = {
   unknown: 'Waiting for the update helper on the computer…',

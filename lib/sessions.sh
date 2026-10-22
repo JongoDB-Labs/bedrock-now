@@ -39,6 +39,10 @@ SESSIONS_TOOLS="claude claude-bedrock"
 SESSIONS_ONCE_S=3600              # an "Allow once" holds for the look it was given for, an hour at most
 SESSIONS_SCAN_KEEP_S=86400        # a look's record (row -> session) is kept a day
 SESSIONS_READER_TIMEOUT_S="${SESSIONS_READER_TIMEOUT_S:-180}"
+# what this computer waits on, at most (_with_deadline: a watchdog here — the code container and the reader handle what
+# a store held): one command in the code container (its check runs in a worker with 2 minutes of its own), a copy of
+# up to 50 sessions, a dialog on the screen (each tool's own 2 minutes, then this)
+SESSIONS_EXEC_S="${SESSIONS_EXEC_S:-180}"; SESSIONS_COPY_S="${SESSIONS_COPY_S:-1800}"; SESSIONS_DIALOG_S="${SESSIONS_DIALOG_S:-130}"
 SESSIONS_ROWS_MAX=50              # sessions one read may name
 SESSIONS_SUGGEST_MAX=500          # store folders looked at for suggestions, per tool
 SESSIONS_WALK_MAX=400             # folders listed to turn store folder names into paths, per suggest
@@ -132,12 +136,23 @@ _ss_project() {
 # --- what the Code page asked (the helper's requests): its state told to the code container, in fixed words ---
 SS_REQ=''
 # _ss_tell STATE [WHY] — this request's state (and why it did not go through) for the Code page; nothing without one
+# _ss_code [--secs N] [--in FILE] ARGS… — node server/import-sessions.mjs ARGS… in the code container (its stdin FILE,
+# else nothing), under a deadline on this computer (N, else SESSIONS_EXEC_S): a command there that handles what a store
+# held never holds ./stack, or the helper, for ever. 124 after the deadline.
+_ss_code_run() { local f="$1"; shift; if [ -n "$f" ]; then dc exec -T code node server/import-sessions.mjs "$@" < "$f"; else dc exec -T code node server/import-sessions.mjs "$@" </dev/null; fi; }
+_ss_code() {
+  local f='' secs="$SESSIONS_EXEC_S"
+  while :; do
+    case "${1:-}" in --secs) secs="$2"; shift 2 ;; --in) f="$2"; shift 2 ;; *) break ;; esac
+  done
+  _with_deadline "$secs" _ss_code_run "$f" "$@"
+}
 _ss_tell() {
   [ -n "$SS_REQ" ] || return 0
   local act="${SS_REQ_ACTION:-}" pid="${SS_REQ_PROJECT:-${SS_ID:-}}"
   case "$act" in sessions-scan | sessions-fetch | sessions-suggest | sessions-copy) ;; *) act='' ;; esac
   case "$pid" in p_[0-9a-f]*) ;; *) pid='' ;; esac
-  dc exec -T code node server/import-sessions.mjs request --id "$SS_REQ" --state "$1" ${2:+--why "$2"} ${act:+--action "$act"} ${pid:+--project "$pid"} </dev/null >/dev/null 2>&1 || true
+  _ss_code --secs 30 request --id "$SS_REQ" --state "$1" ${2:+--why "$2"} ${act:+--action "$act"} ${pid:+--project "$pid"} >/dev/null 2>&1 || true
   case "$1" in done | refused | cancelled | failed) printf 'sessions-result: %s\n' "$1" >&2 ;; esac
 }
 # _ss_fail WHY MESSAGE — told (refused, cancelled or failed by its kind), then the command ends saying why
@@ -232,7 +247,7 @@ _ss_forget_pending() {
   code_on && [ -n "$(dc ps -q --status running code 2>/dev/null)" ] || return 0
   while IFS=$'\t' read -r p t; do
     case "$p:$t" in all:* | p_[0-9a-f]*:*) ;; *) continue ;; esac
-    res="$(dc exec -T code node server/import-sessions.mjs forget --project "$p" --tool "$t" </dev/null 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true
+    res="$(_ss_code --secs 60 forget --project "$p" --tool "$t" 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true
     case "$res" in '{"ok":true'*) ;; *) left="$left$p	$t"$'\n' ;; esac
   done < "$f"
   if [ -n "$left" ]; then printf '%s' "$left" > "$f.tmp" && mv -f "$f.tmp" "$f"; else rm -f "$f"; fi
@@ -260,18 +275,20 @@ SS_TEXT_SUGGEST='The Code page asks to read the names of the folders %s keep ses
 _ss_dialog() {
   local out='' t
   helper_screen || return 3
-  if [ -n "${BN_DIALOG_CMD:-}" ]; then out="$("$BN_DIALOG_CMD" --consent "$1" 2>/dev/null | head -n 1)" || out=''
+  # (every dialog under a deadline here: kdialog has no timeout of its own, and none must hold the helper — past it,
+  # Don't allow)
+  local rc=0
+  if [ -n "${BN_DIALOG_CMD:-}" ]; then out="$(_with_deadline "$SESSIONS_DIALOG_S" "$BN_DIALOG_CMD" --consent "$1" 2>/dev/null | head -n 1)" || out=''
   else
     t="$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
     case "$(_helper_os)" in
-      Darwin) out="$(osascript -e "button returned of (display dialog \"$t\" with title \"bedrock-now\" buttons {\"Don't allow\", \"Allow once\", \"Always for this folder\"} default button \"Don't allow\" cancel button \"Don't allow\" with icon caution giving up after 120)" 2>/dev/null)" || out='' ;;
+      Darwin) out="$(_with_deadline "$SESSIONS_DIALOG_S" osascript -e "button returned of (display dialog \"$t\" with title \"bedrock-now\" buttons {\"Don't allow\", \"Allow once\", \"Always for this folder\"} default button \"Don't allow\" cancel button \"Don't allow\" with icon caution giving up after 120)" 2>/dev/null)" || out='' ;;
       *) if command -v zenity >/dev/null 2>&1; then
-           local rc=0
-           out="$(zenity --question --title bedrock-now --no-wrap --text "$1" --ok-label 'Allow once' --cancel-label "Don't allow" --extra-button 'Always for this folder' --timeout 120 2>/dev/null)" || rc=$?
+           out="$(_with_deadline "$SESSIONS_DIALOG_S" zenity --question --title bedrock-now --no-wrap --text "$1" --ok-label 'Allow once' --cancel-label "Don't allow" --extra-button 'Always for this folder' --timeout 120 2>/dev/null)" || rc=$?
            [ "$rc" != 0 ] || out='Allow once'
+           [ "$rc" != 124 ] || out=''
          else
-           local rc=0
-           kdialog --title bedrock-now --yesnocancel "$1" --yes-label 'Allow once' --no-label 'Always for this folder' --cancel-label "Don't allow" >/dev/null 2>&1 || rc=$?
+           _with_deadline "$SESSIONS_DIALOG_S" kdialog --title bedrock-now --yesnocancel "$1" --yes-label 'Allow once' --no-label 'Always for this folder' --cancel-label "Don't allow" >/dev/null 2>&1 || rc=$?
            case "$rc" in 0) out='Allow once' ;; 1) out='Always for this folder' ;; *) out='' ;; esac
          fi ;;
     esac
@@ -317,21 +334,20 @@ _ss_reader_user() {
 SS_MOUNTS=()
 # _ss_reader OUT ARGS… — node server/harness/claude.mjs ARGS… in the reader container (SS_MOUNTS: its folders), its
 # output into OUT; at most SESSIONS_READER_TIMEOUT_S (then the container is removed by its name). 0 when it ran.
+_ss_reader_run() {   # _ss_reader_run NAME USER ARGS… — the reader's container (its output: stdout)
+  local name="$1" user="$2"
+  shift 2
+  docker run --rm --name "$name" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 768m \
+    --tmpfs /tmp:size=8m --user "$user" --entrypoint node ${SS_MOUNTS[@]+"${SS_MOUNTS[@]}"} "$(_ss_image)" server/harness/claude.mjs "$@" </dev/null
+}
 _ss_reader() {
-  local out="$1" name pid rc=0 waited=0 user
+  local out="$1" name rc=0 user
   shift
   user="$(_ss_reader_user "$(_ss_home)")" || { echo "not as root: run ./stack sessions as the user whose sessions they are" > "$out.err"; return 1; }
   name="bn-reader-$(gen_hex 6)"
-  docker run --rm --name "$name" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 768m \
-    --tmpfs /tmp:size=8m --user "$user" --entrypoint node ${SS_MOUNTS[@]+"${SS_MOUNTS[@]}"} "$(_ss_image)" server/harness/claude.mjs "$@" \
-    </dev/null > "$out" 2> "$out.err" &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$waited" -ge "$SESSIONS_READER_TIMEOUT_S" ]; then docker rm -f "$name" >/dev/null 2>&1 || true; kill "$pid" 2>/dev/null || true; break; fi
-    sleep 1; waited=$((waited + 1))
-  done
-  wait "$pid" || rc=$?
-  [ "$waited" -lt "$SESSIONS_READER_TIMEOUT_S" ] || { echo "no answer in ${SESSIONS_READER_TIMEOUT_S} s" > "$out.err"; return 1; }
+  _with_deadline "$SESSIONS_READER_TIMEOUT_S" _ss_reader_run "$name" "$user" "$@" > "$out" 2> "$out.err" || rc=$?
+  # (past its deadline the docker client is ended here; the container is removed by its name)
+  if [ "$rc" = 124 ]; then docker rm -f "$name" >/dev/null 2>&1 || true; echo "no answer in ${SESSIONS_READER_TIMEOUT_S} s" > "$out.err"; return 1; fi
   return "$rc"
 }
 # _ss_store_name PATH -> "NAME PREFIX": the store folder Claude Code names after the path (PREFIX: - for a name of at
@@ -429,7 +445,7 @@ sessions_scan() {
   rm -f "$tmp.err"
   _ss_consent_bind "$tools" "$SS_ID" "$scan"
   # (the list to the code container on stdin; the helper's own record of the look: row -> tool and session id)
-  res="$(dc exec -T code node server/import-sessions.mjs index --project "$SS_ID" --scan "$scan" --consent "$scope" --host "$(_ss_b64 "$SS_HOST")" < "$tmp" 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true
+  res="$(_ss_code --in "$tmp" index --project "$SS_ID" --scan "$scan" --consent "$scope" --host "$(_ss_b64 "$SS_HOST")" 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true
   _ss_secure_dir "$(_ss_scans_dir)" || true
   scanfile="$(_ss_scans_dir)/$scan.tsv"
   { printf 'project\t%s\nhost\t%s\nat\t%s\nscope\t%s\ntools\t%s\n' "$SS_ID" "$SS_HOST" "$(_ss_now)" "$scope" "$tools"; printf '%s' "$inlines"
@@ -554,24 +570,22 @@ sessions_fetch() {
 }
 # _ss_fetch_pipe RESULT STAGE_ARGS… -- READER_ARGS… — the reader's output piped into import-sessions.mjs stage, with
 # the reader's time limit; the code container's answer into RESULT
-_ss_fetch_pipe() {
-  local res="$1" name user pid waited=0 rc=0
+_ss_fetch_run() {   # _ss_fetch_run NAME USER STAGE_ARGS… -- READER_ARGS… — the reader's output into the code container
+  local name="$1" user="$2"
   local -a st=()
-  shift
+  shift 2
   while [ $# -gt 0 ] && [ "$1" != -- ]; do st+=("$1"); shift; done
+  shift
+  _ss_reader_run "$name" "$user" "$@" | dc exec -T code node server/import-sessions.mjs stage --project "$SS_ID" --scan "$scan" "${st[@]}"
+}
+_ss_fetch_pipe() {
+  local res="$1" name user rc=0
   shift
   user="$(_ss_reader_user "$(_ss_home)")" || return 1
   name="bn-reader-$(gen_hex 6)"
-  ( docker run --rm --name "$name" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 768m \
-      --tmpfs /tmp:size=8m --user "$user" --entrypoint node ${SS_MOUNTS[@]+"${SS_MOUNTS[@]}"} "$(_ss_image)" server/harness/claude.mjs "$@" </dev/null 2> "$res.err" |
-    dc exec -T code node server/import-sessions.mjs stage --project "$SS_ID" --scan "$scan" "${st[@]}" > "$res" 2>> "$res.err" ) &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$waited" -ge "$SESSIONS_READER_TIMEOUT_S" ]; then docker rm -f "$name" >/dev/null 2>&1 || true; break; fi
-    sleep 1; waited=$((waited + 1))
-  done
-  wait "$pid" || rc=$?
-  [ "$waited" -lt "$SESSIONS_READER_TIMEOUT_S" ] || return 1
+  _with_deadline "$SESSIONS_READER_TIMEOUT_S" _ss_fetch_run "$name" "$user" "$@" > "$res" 2> "$res.err" || rc=$?
+  # (past its deadline the clients are ended here; the reader's container is removed by its name)
+  if [ "$rc" = 124 ]; then docker rm -f "$name" >/dev/null 2>&1 || true; return 1; fi
   return "$rc"
 }
 
@@ -609,7 +623,7 @@ sessions_copy() {
   _ss_project "$ref"
   _ss_need_code
   _ss_tell copying
-  res="$(dc exec -T code node server/import-sessions.mjs copy --project "$SS_ID" --ids "$session" --digest "$digest" --keep "$keep" ${th:+"$th"} --request "${SS_REQ:-}" --tsv </dev/null 2>/dev/null)" || true
+  res="$(_ss_code copy --project "$SS_ID" --ids "$session" --digest "$digest" --keep "$keep" ${th:+"$th"} --request "${SS_REQ:-}" --tsv 2>/dev/null)" || true
   line="$(printf '%s\n' "$res" | grep -E "^$session"$'\t' | head -n 1)" || true
   [ -n "$line" ] || _ss_fail code "the Code page's container did not copy it"
   _ss_tell done
@@ -656,7 +670,7 @@ sessions_import() {
     case "$flag" in *copied*) note='  (copied before)' ;; esac
     case "$flag" in *too-large*) note="$note  (too large to copy)" ;; esac
     printf '  %3s  %s  %-60s  %6s msgs  %s%s\n' "$k" "$(_ss_badge "$t")" "$(plain_text "$title" | cut -c1-60)" "${msgs:--}" "$(date -r "$((at / 1000))" '+%Y-%m-%d' 2>/dev/null || date -d "@$((at / 1000))" '+%Y-%m-%d' 2>/dev/null || echo '?')" "$note"
-  done < <(dc exec -T code node server/import-sessions.mjs list --project "$SS_ID" --tsv </dev/null 2>/dev/null)
+  done < <(_ss_code list --project "$SS_ID" --tsv 2>/dev/null)
   [ "$n" -gt 0 ] || { log "no sessions of $SS_NAME to import"; return 0; }
   printf '\n'
   if [ "$all" = 1 ]; then rows="all"; fi
@@ -679,7 +693,7 @@ sessions_import() {
     fi
     [ "${outside:-0}" = 0 ] || printf '      %s path(s) outside the project named in its tool calls (not in the sandbox)\n' "$outside"
     [ "${left:-0}" = 0 ] || printf '      %s file(s) beside it that cannot be checked: not copied\n' "$left"
-  done < <(dc exec -T code node server/import-sessions.mjs findings --project "$SS_ID" --ids "$list" --tsv </dev/null 2>/dev/null)
+  done < <(_ss_code --secs "$SESSIONS_COPY_S" findings --project "$SS_ID" --ids "$list" --tsv 2>/dev/null)
   [ -n "$ids" ] || die "none of those sessions could be read"
   printf '\n'
   confirm "Copy $(printf '%s' "$ids" | tr ',' '\n' | grep -c .) session(s) into the sandbox (the project $SS_NAME)?" || { log "not copied: they wait on the Code page's Import sheet for an hour"; return 0; }
@@ -690,7 +704,7 @@ sessions_import() {
     # (the sandbox's own words are shown apart, labelled as the sandbox's — never as a sentence of bedrock-now's)
     elif [ "$by" = sandbox ]; then warn "not copied: $id — the sandbox refused it. What it said:"; printf '      | %s\n' "$(plain_text "$why" | head -c 300)" >&2
     else warn "not copied: $id — $(plain_text "$why" | head -c 300)"; fi
-  done < <(dc exec -T code node server/import-sessions.mjs copy --project "$SS_ID" --ids "$ids" --tsv $([ "$keep" = 1 ] && echo --keep-secrets) $([ "$think_keep" = 1 ] && echo --keep-thinking) </dev/null 2>/dev/null)
+  done < <(_ss_code --secs "$SESSIONS_COPY_S" copy --project "$SS_ID" --ids "$ids" --tsv $([ "$keep" = 1 ] && echo --keep-secrets) $([ "$think_keep" = 1 ] && echo --keep-thinking) 2>/dev/null)
   log "on the Code page: $SS_NAME › its sessions (badged CC or CB) resume on any model there"
 }
 
@@ -849,7 +863,10 @@ sessions_suggest() {
     [ -n "$p" ] || continue
     rows="$rows{\"path_b64\":\"$(_ss_b64 "$p")\",\"claude\":${n:-0},\"claude-bedrock\":${s:-0},\"last\":$(( ${last:-0} * 1000 ))}"$'\n'
   done <<< "$out"
-  res="$(printf '%s' "$rows" | dc exec -T code node server/import-sessions.mjs suggest --consent "$(_ss_consent_scope suggest claude - - || echo once)" 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true
+  local rf; rf="$(mktemp "$(sessions_dir)/.suggest.XXXXXX")" || _ss_fail code "cannot write in $(sessions_dir)"
+  printf '%s' "$rows" > "$rf"
+  res="$(_ss_code --in "$rf" suggest --consent "$(_ss_consent_scope suggest claude - - || echo once)" 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true
+  rm -f "$rf"
   case "$res" in '{"ok":true'*) ;; *) _ss_fail code "the Code page's container did not take the suggestions" ;; esac
   sessions_status_sync
   _ss_tell done
@@ -939,8 +956,15 @@ sessions_poll_once() {
     esac
     logf="$(helper_dir)/last-sessions.log"
     : > "$logf"; chmod 600 "$logf"
+    # (in a process group of its own, within its limit: past it, the whole job is ended — its dialog, the reader's
+    # client, a command in the code container — and said as stopped)
+    local pid lim idle
+    read -r lim idle <<< "$(_job_deadline "$action")"
+    set -m
     ( cd "$STACK_DIR" && exec env BEDROCK_NOW_JOB_ORIGIN=helper BEDROCK_NOW_NO_OPEN=1 NO_COLOR=1 "$STACK_DIR/stack" "$@" ) </dev/null > "$logf" 2>&1 &
-    rc=0; _wait_beating $! || rc=$?
+    pid=$!; set +m
+    rc=0; _wait_beating "$pid" "$lim" "$logf" "$idle" || rc=$?
+    if [ "$rc" = 124 ] || [ "$rc" = 125 ]; then _ss_tell_req "$nonce" failed timeout; return 0; fi
     # (./stack sessions told how it went; one that ended without saying: failed)
     grep -q '^sessions-result: ' "$logf" || _ss_tell_req "$nonce" failed code
     return 0

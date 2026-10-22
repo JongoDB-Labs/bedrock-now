@@ -282,6 +282,37 @@ test_the_helper_takes_the_code_pages_requests_from_the_portal_only_in_their_fixe
   assert_contains "$(cat "$(settings_capability_file)")" '"sessions": ["sessions-revoke","sessions-scan","sessions-fetch","sessions-suggest","sessions-copy"]'
 }
 
+test_nothing_on_this_computer_waits_for_ever_a_dialog_a_command_in_the_code_container_a_helper_job() {
+  _stubs
+  local t0 out rc
+  # a dialog nobody answers (kdialog has no timeout of its own): Don't allow, after the deadline, the dialog ended
+  printf '#!/bin/sh\necho $$ > "%s/dialog.pid"\nexec sleep 300\n' "$TMP" > "$TMP/dialog"; chmod +x "$TMP/dialog"
+  export BN_DIALOG_CMD="$TMP/dialog" SESSIONS_DIALOG_S=1
+  t0="$(date +%s)"; out="$(_ss_dialog 'a question')"
+  [ -z "$out" ] && [ $(( $(date +%s) - t0 )) -le 6 ] || { echo "the dialog held it: '$out' after $(( $(date +%s) - t0 )) s" >&2; return 1; }
+  ! kill -0 "$(cat "$TMP/dialog.pid")" 2>/dev/null || { echo "the dialog still runs" >&2; return 1; }
+  # a command in the code container that does not end: ended at its deadline (124)
+  dc() { case "$*" in "exec -T code "*) sleep 300 ;; *) return 0 ;; esac; }
+  export SESSIONS_EXEC_S=1
+  t0="$(date +%s)"; rc=0; _ss_code list --project p_0000aaaa --tsv >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 124 ] && [ $(( $(date +%s) - t0 )) -le 6 ] || { echo "the code container's command held it: rc $rc" >&2; return 1; }
+  # a helper job past its limit (a ./stack sessions that never ends): ended, told as stopped (timeout), the helper goes on
+  _stubs
+  STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"
+  printf '#!/bin/sh\necho $$ > "%s/job.pid"\nexec sleep 300\n' "$TMP" > "$STACK_DIR/stack"; chmod +x "$STACK_DIR/stack"
+  export HELPER_JOB_POLL_S=1 SESSIONS_JOB_MIN_INTERVAL_S=0 HELPER_SESSIONS_MAX_S=2
+  set_env_batch PORTAL_PASSWORD 'correct horse battery'
+  mkdir -p "$(helper_dir)" "$(request_dir)"; chmod 700 "$(helper_dir)"
+  ensure_portal_password_hash
+  printf '{"action":"sessions-suggest","requested_at":%s,"nonce":"%s","auth":"%s","origin":"local"}\n' "$(date +%s)" 99999999999999999999999999999999 \
+    "$(printf '%s' 'correct horse battery' | openssl base64 -A)" > "$(request_dir)/ses-99999999999999999999999999999999.json"
+  t0="$(date +%s)"; sessions_poll_once 2>/dev/null || true
+  [ $(( $(date +%s) - t0 )) -le 20 ] || { echo "the helper waited $(( $(date +%s) - t0 )) s" >&2; return 1; }
+  ! kill -0 "$(cat "$TMP/job.pid")" 2>/dev/null || { echo "the job still runs" >&2; return 1; }
+  assert_contains "$(cat "$TMP/dc")" "request --id 99999999999999999999999999999999 --state failed --why timeout"
+  assert_eq "$(_job_deadline sessions-revoke)" "2 0"
+}
+
 test_the_helper_follows_no_link_and_writes_only_its_own_folders() {
   _stubs
   local secret
