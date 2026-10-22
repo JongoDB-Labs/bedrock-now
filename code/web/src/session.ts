@@ -328,7 +328,9 @@ export function turnModels(items: Item[]): string[] {
   const out: string[] = [];
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
-    if (it.t === 'result') break;
+    // (back to the turn's own prompt: a transcript shown before it has no results, and its answers — a session copied
+    // from this computer ran elsewhere — are not this turn's)
+    if (it.t === 'result' || (it.t === 'user' && !it.folded)) break;
     if (it.t === 'assistant' && !it.parent && it.model && !out.includes(it.model) && out.length < 4) out.push(it.model);
   }
   return out.reverse();

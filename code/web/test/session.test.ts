@@ -281,6 +281,14 @@ test('a turn records which models answered (subagents left out) and the model pi
   v = applyEvent(v, { kind: 'result', subtype: 'success', turns: 1, durationMs: 5, usage, isError: false });
   const r2 = v.items.at(-1);
   assert.deepEqual(r2 && r2.t === 'result' && r2.models, ['claude-haiku-5-5'], 'only this turn');
+  // a transcript before it (no results: a session copied from this computer, answered elsewhere): not this turn's
+  let h: SessionView = mergeHistory({ ...newView(ID), model: 'claude-haiku-5-5' }, [
+    { kind: 'user', text: 'remember', uuid: U1, images: 0 }, { kind: 'text', text: 'ok', model: 'claude-sonnet-4-5', parent: null }]);
+  h = applyEvent(h, { kind: 'user', text: 'which word?', uuid: U2, images: 0 });
+  h = applyEvent(h, { kind: 'text', text: 'PELICAN', model: 'claude-haiku-5-5', parent: null });
+  h = applyEvent(h, { kind: 'result', subtype: 'success', turns: 1, durationMs: 5, usage, isError: false });
+  const r3 = h.items.at(-1);
+  assert.deepEqual(r3 && r3.t === 'result' && r3.models, ['claude-haiku-5-5'], 'the transcript\'s answers are not this turn\'s');
 });
 
 test('history merged after a reload keeps the mode the backend says now, not the one of the last turn\'s init', () => {
