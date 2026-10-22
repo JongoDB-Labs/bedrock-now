@@ -401,9 +401,10 @@ test('a keep is bound to its file and what it is, never to a position: parts in 
   imports.drop('p_00000001', id2);
 });
 
-test('a check in a worker thread, one at a time; the stage swept on its own, never a read that is coming in', async () => {
+test('a check in a worker thread, one at a time, each within its deadline; the stage swept on its own, never a read that is coming in', async (t) => {
   const w = new Imports({ dir: path.join(ROOT, 'state', 'imports'), stage: path.join(ROOT, 'stage'), helperFile: path.join(ROOT, 'public', 'helper.json'),
     projects: { get: (id) => PROJECTS[id] ?? null }, worker: true });
+  t.after(() => w.close());
   const id = uuid(), key = fake.awsKeyId();
   const dir = hostStore(APP, [[id, session({ id, cwd: APP, prompts: [`key ${key}`] })]]);
   const scan = nonce();
@@ -412,6 +413,17 @@ test('a check in a worker thread, one at a time; the stage swept on its own, nev
   const [a, b] = await Promise.all([w.plan('p_00000001', id), w.plan('p_00000001', id, { kind: 'copy' })]);
   assert.deepEqual([a.findingsTotal, b.redacted], [1, 1]);
   assert.ok(Buffer.isBuffer(b.main) && !b.main.toString().includes(key));
+  // a job past its deadline: refused in fixed words (not copied), the worker ended — the next job runs in a new one
+  const big = uuid();
+  const dirB = hostStore(APP, [[big, session({ id: big, cwd: APP }), { 'tool-results/big.txt': `${'word '.repeat(1 << 20)}\n`.repeat(6) }]]);
+  const scanB = nonce();
+  w.saveIndex('p_00000001', indexText(APP, dirB), { scan: scanB, consent: 'once', host: APP });
+  await w.stageBundle('p_00000001', scanB, Readable.from([bundle(APP, dirB, [big])]));
+  w.queue.deadlineMs = 2;
+  await assert.rejects(w.plan('p_00000001', big, { kind: 'copy' }), /could not be checked in time: it is not copied/);
+  w.queue.deadlineMs = 60000;
+  w.drop('p_00000001', big);
+  assert.equal((await w.plan('p_00000001', id)).findingsTotal, 1);
   await w.close();
   // a read coming in (.<id>, no meta yet) is left alone by a sweep; one left behind for more than an hour goes
   const coming = path.join(ROOT, 'stage', 'p_00000001', `.${uuid()}`);

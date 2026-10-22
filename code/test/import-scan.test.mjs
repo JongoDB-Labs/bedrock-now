@@ -358,14 +358,39 @@ test('overlapping findings become one: their union, said as the most specific ki
   assert.deepEqual(r.entries, [{ password: '[REDACTED:github-token]' }]);
 });
 
-test('the new shapes and the hand-made scan stay linear on hostile text', () => {
-  for (const s of ['token=', 'passwordpasswordtoken', '--password ', 'Cookie: ', 'Authorization: ', '"secret":"', '\\"token\\": \\"', 'SG.', 'PuTTY-User-Key-File-',
-    'hooks.slack.com/services/', 'AccountKey=', 'pypi-', 'ABSK', 'bedrock-api-key-', 'x_password=y ', 'a'.repeat(1000) + 'token']) {
-    const text = s.repeat(Math.ceil((4 << 20) / s.length));
+test('every shape stays linear on hostile 7 MiB text — runs of spaces and tabs, repeated names and prefixes, endless runs — never near a second', () => {
+  const M = 7 << 20;
+  const fill = (head, unit, tail = '') => head + unit.repeat(Math.floor((M - head.length - tail.length) / unit.length)) + tail;
+  const P = (...a) => a.join('');   // (prefixes split: no literal here has a token's shape)
+  const cases = [
+    ['a list item: spaces in its value', fill('A_TOKEN=', 'x '), { item: true }], ['a list item: a run of spaces and tabs', fill('TOKEN=x', ' \t', 'z'), { item: true }],
+    ['a list item: no =', fill('', ' '), { item: true }], ['a named value: spaces', fill('', ' ', 'x'), { named: true }],
+    ['a named value: one character repeated', fill('', 'a', 'b'), { named: true }], ['a named value: $VAR', fill('$', 'A', ' x'), { named: true }],
+    ['a named value: %VAR', fill('%', 'A'), { named: true }],
+    ['a name and spaces, no separator', fill('', 'password     ')], ['a separator and spaces', fill('', 'password=        ')], ['YAML', fill('', 'password:   \n')],
+    ['--flag and spaces', fill('', '--password    ')], ['names repeated', fill('', 'passpasspasspass')], ['an endless identifier', fill('', 'a', 'token=x')],
+    ['an open quote', fill('password="', 'x ')], ['escaped quotes', fill('', '\\"token\\": \\"')], ['=>', fill('', "'secret' => ")],
+    ['Authorization and spaces', fill('Authorization:', ' ')], ['Cookie repeated', fill('', 'Cookie: ')], ['a scheme and spaces', fill('Authorization: Bearer', ' ', 'x')],
+    ['Bearer and spaces', fill('', 'Bearer        ')], ['an indented line', fill('', ' \t', 'AAA=b')], ['a value, then spaces', fill('AAA=', 'x', `${' '.repeat(1000)}y`)],
+    ['many .env lines', fill('', '    AAA=xxxxxxxxxxxxxxxxx \n')], ['a BEGIN label run', fill('-----BEGIN ', 'A ')], ['an SSH2 label run', fill('---- BEGIN SSH2 ', 'A ')],
+    ['BEGINs repeated', fill('', P('-----BEGIN RSA PRI', 'VATE KEY-----'))], ['PuTTY headers', fill('', 'PuTTY-User-Key-File-2: x\n')],
+    ['SendGrid: no second dot', fill(P('S', 'G.'), 'a')], ['SendGrid repeated', fill('', P('S', 'G.aaaaaaaaaaaaaaaaaa.'))], ['AWS secret: spaces', fill('aws_secret_access_key', ' ')],
+    ['AWS secret: after the colon', fill('secret_access_key:', ' ', 'x')], ['URL passwords', fill('', 'a://a:')], ['a URL\'s endless user', fill('http://', 'a', ':b')],
+    ['sk- prefixes', fill('', P('sk', '-proj-'))], ['AccountKey=', fill('', 'AccountKey=')], ['webhooks', fill('', P('hooks.sla', 'ck.com/services/'))],
+    ['JWT runs', fill('', P('ey', 'Jaaaaaaaaaaa.'))],
+    ['an endless AWS key id', fill(P('AK', 'IA'), 'A')], ['an endless GitHub token', fill(P('gh', 'p_'), 'a')], ['an endless Bedrock key', fill(P('AB', 'SK'), 'a')],
+    ['an endless short-term Bedrock key', fill(P('bedrock-api', '-key-'), 'a')], ['an endless JWT', fill(P('ey', 'J'), 'a', P('.ey', 'Jaaaaaaaaaaaa.aaaaaaaaa'))],
+    ['many AWS key ids, no gap', fill('', P('AK', 'IA', 'AAAAAAAAAAAAAAAA'))],
+  ];
+  for (const [label, text, opts] of cases) {
     const t0 = Date.now();
-    scan(text);
-    assert.ok(Date.now() - t0 < 2500, `${JSON.stringify(s.slice(0, 30))}: ${Date.now() - t0} ms`);
+    scan(text, opts ?? {});
+    assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
   }
+  // keys and values together: a 7 MiB key with a secret's name, an environment item of spaces
+  const t0 = Date.now();
+  processEntries([{ [`password${' '.repeat(M - 20)}`]: 'x '.repeat(1000), env: [fill('TOKEN=', ' ', 'x')] }]);
+  assert.ok(Date.now() - t0 < 1500, `processEntries: ${Date.now() - t0} ms`);
 });
 
 test('thinking blocks kept: a block that holds a finding or a path to rewrite is left out whole; the others stay exactly as they were', () => {

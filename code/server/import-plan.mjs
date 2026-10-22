@@ -148,10 +148,14 @@ export async function runJob(job) {
   };
 }
 
-/** PlanQueue: runJob in a worker thread, one job at a time (inline: in this thread — tests, the command line) */
+// a job past its deadline: the worker is ended (and made anew for the next job), the job refused in fixed words — the
+// session is not copied (fail closed)
+export const TOO_SLOW = 'that session could not be checked in time: it is not copied (in a terminal on the computer, ./stack sessions import copies it)';
+/** PlanQueue: runJob in a worker thread, one job at a time, each within deadlineMs (inline: in this thread — tests, the
+ *  command line, which has a process of its own) */
 export class PlanQueue {
-  constructor({ inline = false, maxOldGenerationSizeMb = 640 } = {}) {
-    Object.assign(this, { inline, maxOldGenerationSizeMb });
+  constructor({ inline = false, maxOldGenerationSizeMb = 640, deadlineMs = 120000 } = {}) {
+    Object.assign(this, { inline, maxOldGenerationSizeMb, deadlineMs });
     this.tail = Promise.resolve();
     this.worker = null;
     this.waiting = new Map();
@@ -166,27 +170,38 @@ export class PlanQueue {
     if (!this.worker) {
       const w = new Worker(new URL('./import-worker.mjs', import.meta.url), { resourceLimits: { maxOldGenerationSizeMb: this.maxOldGenerationSizeMb } });
       w.unref();
+      // (each job knows its worker: a worker that ended answers for its own jobs only, never a newer worker's)
+      const mine = () => [...this.waiting.entries()].filter(([, p]) => p.w === w);
       w.on('message', ({ seq, ok, value, status, message }) => {
         const p = this.waiting.get(seq);
-        if (!p) return;
-        this.waiting.delete(seq);
-        if (!this.waiting.size) w.unref();
-        if (ok) p.resolve(value); else p.reject(status ? new ImportError(status, message) : new ImportError(500, 'the session could not be checked'));
+        if (p && p.w === w) {
+          this.waiting.delete(seq);
+          if (ok) p.resolve(value); else p.reject(status ? new ImportError(status, message) : new ImportError(500, 'the session could not be checked'));
+        }
+        if (!mine().length) w.unref();
       });
       const gone = () => {
         if (this.worker === w) this.worker = null;
-        for (const p of this.waiting.values()) p.reject(new ImportError(507, 'checking that session took more memory than the Code page has: copy it in a terminal on the computer (./stack sessions import)'));
-        this.waiting.clear();
+        for (const [seq, p] of mine()) { this.waiting.delete(seq); p.reject(new ImportError(507, 'checking that session took more memory than the Code page has: copy it in a terminal on the computer (./stack sessions import)')); }
       };
       w.on('error', gone);
       w.on('exit', gone);
       this.worker = w;
     }
     const seq = ++this.seq;
-    this.worker.ref();   // (while a job runs: the process waits for it)
+    const w = this.worker;
+    w.ref();   // (while a job runs: the process waits for it)
     return new Promise((resolve, reject) => {
-      this.waiting.set(seq, { resolve, reject });
-      this.worker.postMessage({ seq, job });
+      const timer = setTimeout(() => {
+        if (!this.waiting.has(seq)) return;
+        this.waiting.delete(seq);
+        if (this.worker === w) this.worker = null;
+        w.terminate().catch(() => {});
+        reject(new ImportError(504, TOO_SLOW));
+      }, this.deadlineMs);
+      timer.unref?.();
+      this.waiting.set(seq, { w, resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
+      w.postMessage({ seq, job });
     });
   }
   close() { if (this.worker) { const w = this.worker; this.worker = null; return w.terminate(); } return undefined; }

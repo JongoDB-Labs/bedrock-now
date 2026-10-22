@@ -23,25 +23,51 @@ export const MAX_TEXT = 8 << 20, MAX_FINDINGS = 1000;
 // the whole text, redacted (never kept)
 export const WHOLE = Object.freeze(['too-long', 'too-many']);
 
+// --- character classes as tables, for runs taken by loops (no pattern here has an unbounded run: a pattern finds where
+// something starts and its least length, a loop takes the rest — linear, nothing tried twice, no backtracking at all,
+// so no input can make V8's backtrack stack overflow either) ---
+function cls(spec) {
+  const t = new Uint8Array(128);
+  for (let i = 0; i < spec.length; i++) {
+    if (spec[i + 1] === '-' && i + 2 < spec.length) { for (let c = spec.charCodeAt(i); c <= spec.charCodeAt(i + 2); c++) t[c] = 1; i += 2; } else t[spec.charCodeAt(i)] = 1;
+  }
+  return t;
+}
+const runEnd = (text, at, t) => { let e = at; while (e < text.length) { const c = text.charCodeAt(e); if (c >= 128 || t[c] !== 1) break; e++; } return e; };
+const runStart = (text, at, t) => { let s = at; while (s > 0) { const c = text.charCodeAt(s - 1); if (c >= 128 || t[c] !== 1) break; s--; } return s; };
+const ALNUM = cls('A-Za-z0-9');
+const isBlank = (c) => c === ' ' || c === '\t';
+const skipBlanks = (text, at) => { let i = at; while (i < text.length && isBlank(text[i])) i++; return i; };
+
 // --- private keys: BEGIN and END markers paired in one pass (no scan between them): a BEGIN, the first END after it.
 // PEM (-----BEGIN … PRIVATE KEY-----), SSH2 (---- BEGIN SSH2 … PRIVATE KEY ----) and PuTTY's .ppk (from its first
-// line to the end of its Private-MAC line) ---
-const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|---- BEGIN SSH2 [A-Z0-9 ]*PRIVATE KEY ----/g;
-const PEM_END = /-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|---- END SSH2 [A-Z0-9 ]*PRIVATE KEY ----/g;
+// line to the end of its Private-MAC line). A marker's label is taken by a loop: [A-Z0-9 ] up to the dashes ---
+const LABEL = cls('A-Z0-9 ');
+// markers(text, open) -> [{at, end}] of the BEGIN (open) or END markers, in order
+function markers(text, open) {
+  const out = [];
+  const forms = open ? [['-----BEGIN ', '-----', /PRIVATE KEY(?: BLOCK)?$/], ['---- BEGIN SSH2 ', '----', /PRIVATE KEY $/]]
+    : [['-----END ', '-----', /PRIVATE KEY(?: BLOCK)?$/], ['---- END SSH2 ', '----', /PRIVATE KEY $/]];
+  for (const [head, tail, ends] of forms) {
+    for (let at = text.indexOf(head); at >= 0; at = text.indexOf(head, at + 1)) {
+      const l = at + head.length, e = runEnd(text, l, LABEL);
+      // (the label's last 18 characters are all the pattern looks at: bounded)
+      if (text.startsWith(tail, e) && ends.test(text.slice(Math.max(l, e - 18), e))) out.push({ at, end: e + tail.length });
+    }
+  }
+  return out.length > 1 ? out.sort((x, y) => x.at - y.at) : out;
+}
 function pemBlocks(text) {
-  const ends = [];
-  PEM_END.lastIndex = 0;
-  for (let m; (m = PEM_END.exec(text)) !== null;) ends.push(m.index + m[0].length);
+  const ends = markers(text, false).map((m) => m.end);
   const out = [];
   let j = 0, after = 0;
-  PEM_BEGIN.lastIndex = 0;
-  for (let m; (m = PEM_BEGIN.exec(text)) !== null;) {
-    if (m.index < after) continue;
+  for (const m of markers(text, true)) {
+    if (m.at < after) continue;
     // (an END with no BEGIN before it — the key's beginning cut off: from the start, or the last block, to it)
-    for (; j < ends.length && ends[j] <= m.index; j++) if (ends[j] > after) { out.push({ start: after, end: ends[j] }); after = ends[j]; }
-    if (m.index < after) continue;
+    for (; j < ends.length && ends[j] <= m.at; j++) if (ends[j] > after) { out.push({ start: after, end: ends[j] }); after = ends[j]; }
+    if (m.at < after) continue;
     const end = j < ends.length ? ends[j] : text.length;   // (no end: to the end of the text)
-    out.push({ start: m.index, end });
+    out.push({ start: m.at, end });
     after = end;
     if (end === text.length) break;
     j++;
@@ -57,27 +83,29 @@ function pemBlocks(text) {
     if (end >= text.length) break;
     at = text.indexOf('PuTTY-User-Key-File-', end);
   }
-  return putty.length ? [...out, ...putty].sort((a, b) => a.start - b.start) : out;
+  return putty.length ? [...out, ...putty].sort((x, y) => x.start - y.start) : out;
 }
 
 // --- JSON web tokens, by hand: each run of [A-Za-z0-9_.-] once (linear); where a segment of it starts with eyJ and the
 // next one does too, with a third after it, the run is redacted from that segment to its end ---
-const RUN = /[A-Za-z0-9_.-]+/g;
+const JWT_RUN = cls('A-Za-z0-9_.-');
 function jwts(text) {
   const out = [];
-  RUN.lastIndex = 0;
-  for (let m; (m = RUN.exec(text)) !== null;) {
-    const run = m[0];
-    if (run.length < 30 || !run.includes('eyJ')) continue;
-    const segs = run.split('.');
-    let at = 0;
-    for (let i = 0; i + 2 < segs.length; i++) {
-      if (segs[i].startsWith('eyJ') && segs[i].length >= 11 && segs[i + 1].startsWith('eyJ') && segs[i + 1].length >= 11 && segs[i + 2].length >= 8) {
-        out.push({ start: m.index + at, end: m.index + run.length });
-        break;
+  for (let i = text.indexOf('eyJ'); i >= 0; i = text.indexOf('eyJ', i)) {
+    const s = runStart(text, i, JWT_RUN), e = runEnd(text, i, JWT_RUN);
+    const run = text.slice(s, e);
+    if (run.length >= 30) {
+      const segs = run.split('.');
+      let at = 0;
+      for (let k = 0; k + 2 < segs.length; k++) {
+        if (segs[k].startsWith('eyJ') && segs[k].length >= 11 && segs[k + 1].startsWith('eyJ') && segs[k + 1].length >= 11 && segs[k + 2].length >= 8) {
+          out.push({ start: s + at, end: e });
+          break;
+        }
+        at += segs[k].length + 1;
       }
-      at += segs[i].length + 1;
     }
+    i = Math.max(e, i + 3);
   }
   return out;
 }
@@ -101,7 +129,7 @@ for (const c of ' \t\r\n\f\v"\'`,;)}]\\&') STOP[c.charCodeAt(0)] = 1;
 
 // a value that is a placeholder, not a secret — only when the WHOLE value is one (a value that merely starts like one,
 // "Test1234…" or "true-blue…", is a finding): a redaction already, a variable, a template, an example word, a type
-// name, one character repeated
+// name, one character repeated. Every alternative is anchored and bounded; the pattern sees at most 256 characters
 const PLACEHOLDER = new RegExp(`^(?:${[
   '\\[REDACTED(?::[a-z-]*)?\\]?',
   '\\$\\{?[A-Za-z_][A-Za-z0-9_]*(?::?[-=?+][^}]{0,80})?\\}?',
@@ -111,13 +139,16 @@ const PLACEHOLDER = new RegExp(`^(?:${[
   '\\{\\{[^{}]{0,80}\\}\\}',
   '(?:process\\.env|import\\.meta\\.env|os\\.environ|env)(?:\\.[A-Za-z_][A-Za-z0-9_]*|\\[[^\\]]{1,80}\\]?)',
   '(?:os\\.)?getenv\\([^)]{0,80}\\)?',
-  '(.)\\1*',
   'your[-_][A-Za-z0-9_-]{1,40}',
   'example|changeme|change[-_]me|placeholder|dummy|test|none|null|nil|undefined|true|false|password|secret|redacted|hidden|todo|tbd',
   'string|str|number|int|integer|bool|boolean|bytes|any|object|required|optional',
   '\\.{3}|\u{2026}',
 ].join('|')})$`, 'i');
-export const placeholder = (v) => PLACEHOLDER.test(v);
+// (a placeholder is short: a longer value is none — the pattern only ever sees 256 characters at most; one character
+// repeated is checked by a loop, at any length)
+const PLACEHOLDER_MAX = 256;
+const repeated = (v) => { for (let i = 1; i < v.length; i++) if (v[i] !== v[0]) return false; return v.length > 0; };
+export const placeholder = (v) => repeated(v) || (v.length <= PLACEHOLDER_MAX && PLACEHOLDER.test(v));
 
 // entropy(s) -> Shannon entropy in bits per character
 export function entropy(s) {
@@ -159,7 +190,9 @@ function assignments(text) {
     if (text[v] === '\\' && (text[v + 1] === '"' || text[v + 1] === "'")) { q = text[v + 1]; v += 2; }
     else if (text[v] === '"' || text[v] === "'" || text[v] === '`') { q = text[v]; v++; }
     const name = text.slice(s, e);
-    const header = HEADER.test(name.replace(/^-+/, ''));
+    let d = 0;
+    while (d < name.length && name[d] === '-') d++;
+    const header = name.length - d <= 20 && HEADER.test(name.slice(d));
     let end = v;
     if (q || header) {
       while (end < n) {
@@ -186,47 +219,143 @@ function assignments(text) {
 }
 const byKind = (kind) => (text, ctx) => (ctx.assign ??= assignments(text)).filter((x) => x.kind === kind);
 
+// --- the shapes found by hand that a pattern would take with a run followed by more (each loop moves forward only) ---
+// what \s is: ASCII spaces, and the Unicode ones a pattern's \s also stands for
+const isSpace = (c) => c === 32 || (c >= 9 && c <= 13) || c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029
+  || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
+// runUntil(text, at, stop) -> the end of a run of characters that are not spaces and not in the table stop
+const runUntil = (text, at, stop) => { let e = at; while (e < text.length) { const c = text.charCodeAt(e); if (isSpace(c) || (c < 128 && stop[c] === 1)) break; e++; } return e; };
+const QUOTE = (c) => c === '"' || c === "'";
+// skipQuote(text, i) -> past an optional quote: " ' \" \'
+const skipQuote = (text, i) => (text[i] === '\\' && QUOTE(text[i + 1]) ? i + 2 : QUOTE(text[i]) ? i + 1 : i);
+
+// AWS's secret access key: its name, then : or = (spaces, quotes around), then 40 or more of [A-Za-z0-9/+]
+const AWS_SECRET_NAME = /aws_secret_access_key|aws_secret_key|secret_?access_?key/gi, AWS_SECRET = cls('A-Za-z0-9/+');
+function awsSecrets(text) {
+  const out = [];
+  AWS_SECRET_NAME.lastIndex = 0;
+  for (let m; (m = AWS_SECRET_NAME.exec(text)) !== null;) {
+    let i = skipBlanks(text, skipQuote(text, m.index + m[0].length));
+    if (text[i] !== ':' && text[i] !== '=') continue;
+    i = skipQuote(text, skipBlanks(text, i + 1));
+    const e = runEnd(text, i, AWS_SECRET);
+    if (e - i >= 40) out.push({ start: i, end: e });
+    AWS_SECRET_NAME.lastIndex = Math.max(AWS_SECRET_NAME.lastIndex, e);
+  }
+  return out;
+}
+// SendGrid: SG. then two runs of 16 or more of [A-Za-z0-9_-], a dot between them
+const SENDGRID = /(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{16}/g, SG_RUN = cls('A-Za-z0-9_-');
+function sendgrid(text) {
+  const out = [];
+  SENDGRID.lastIndex = 0;
+  for (let m; (m = SENDGRID.exec(text)) !== null;) {
+    const e1 = runEnd(text, m.index + m[0].length, SG_RUN);
+    let e = e1;
+    if (text[e1] === '.') { const e2 = runEnd(text, e1 + 1, SG_RUN); if (e2 - e1 - 1 >= 16) { out.push({ start: m.index, end: e2 }); e = e2; } }
+    SENDGRID.lastIndex = e;
+  }
+  return out;
+}
+// a bearer token: Bearer, spaces, then 16 or more of [A-Za-z0-9._~+/=-]
+const BEARER = /(?<![A-Za-z0-9_-])[Bb]earer[ \t]/g, BEARER_RUN = cls('A-Za-z0-9._~+/=-');
+function bearers(text) {
+  const out = [];
+  BEARER.lastIndex = 0;
+  for (let m; (m = BEARER.exec(text)) !== null;) {
+    const i = skipBlanks(text, m.index + m[0].length), e = runEnd(text, i, BEARER_RUN);
+    if (e - i >= 16) out.push({ start: i, end: e });
+    BEARER.lastIndex = Math.max(i, e);
+  }
+  return out;
+}
+// a password in a URL: scheme://user:password@ — the scheme a run of [a-z0-9+.-] starting with a letter (and no such
+// character before it), the user up to ":", the password (3 or more) up to "@"; neither has a space, / " ' ` (nor the
+// user : or @, the password @)
+const URL_SCHEME = cls('a-zA-Z0-9+.-'), USER_STOP = cls('/:@"\'`'), PASS_STOP = cls('/@"\'`');
+function urlPasswords(text) {
+  const out = [];
+  for (let at = text.indexOf('://'); at >= 0; at = text.indexOf('://', at + 3)) {
+    const s = runStart(text, at, URL_SCHEME);
+    if (s === at || !/[A-Za-z]/.test(text[s])) continue;
+    const u = at + 3, ue = runUntil(text, u, USER_STOP);
+    if (ue === u || text[ue] !== ':') continue;
+    const pe = runUntil(text, ue + 1, PASS_STOP);
+    if (pe - ue - 1 >= 3 && text[pe] === '@') {
+      const v = text.slice(ue + 1, pe);
+      if (!placeholder(v)) out.push({ start: ue + 1, end: pe });
+    }
+  }
+  return out;
+}
+// a .env-style line: (spaces) (export) NAME=value (quotes around it, spaces after it) to the end of the line — NAME of
+// [A-Z][A-Z0-9_]{2,}, the value 16 or more of [A-Za-z0-9_+/=.-] with 3.5 bits a character
+const ENV_NAME = cls('A-Z0-9_'), ENV_VALUE = cls('A-Za-z0-9_+/=.-');
+const lineBreak = (c) => c === 10 || c === 13 || c === 0x2028 || c === 0x2029;
+function envLines(text) {
+  const out = [];
+  const n = text.length;
+  for (let ls = 0; ls <= n;) {
+    let le = ls;
+    while (le < n && !lineBreak(text.charCodeAt(le))) le++;
+    let i = skipBlanks(text, ls);
+    if (text.startsWith('export', i) && isBlank(text[i + 6])) i = skipBlanks(text, i + 6);
+    const c0 = text.charCodeAt(i);
+    if (c0 >= 65 && c0 <= 90) {
+      const ne = runEnd(text, i + 1, ENV_NAME);
+      if (ne - i >= 3 && text[ne] === '=') {
+        let v = ne + 1;
+        if (QUOTE(text[v])) v++;
+        const ve = runEnd(text, v, ENV_VALUE);
+        let j = ve;
+        if (QUOTE(text[j])) j++;
+        j = skipBlanks(text, j);
+        if (j === le && ve - v >= 16) {
+          const val = text.slice(v, ve);
+          if (!placeholder(val) && entropy(val) >= 3.5) out.push({ start: v, end: ve });
+        }
+      }
+    }
+    ls = le + 1;
+  }
+  return out;
+}
+
 // (the specific shapes first: overlapping findings become one, said as the first kind of this list among them). Every
 // shape takes the whole run of its characters (no upper bound: a longer one is redacted whole, never missed); a token
-// starts where no letter or digit is before it (an AWS key after an underscore too). generic: a shape that also
-// matches placeholders and examples; entropy: the least a value must have, in bits a character
+// starts where no letter or digit is before it (an AWS key after an underscore too). A token's pattern finds its start
+// and its least length (one group, at the pattern's end: where the finding starts); the run that follows is taken by a
+// loop. generic: a shape that also matches placeholders and examples
 const T = '(?<![A-Za-z0-9])';
+const tok = (re, run) => ({ re: new RegExp(re, 'g'), run: cls(run) });
 const KINDS_ = [
   { kind: 'private-key', label: 'a private key', find: pemBlocks },
-  { kind: 'aws-key-id', label: 'an AWS access key ID', re: new RegExp(`${T}((?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16,})`, 'g') },
-  { kind: 'aws-secret', label: 'an AWS secret access key',
-    re: /(?:aws_secret_access_key|aws_secret_key|secret_?access_?key)(?:\\?["'])?[ \t]*[:=][ \t]*(?:\\?["'])?([A-Za-z0-9/+]{40,})/gi },
+  { kind: 'aws-key-id', label: 'an AWS access key ID', tokens: [tok(`${T}((?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16})`, 'A-Z0-9')] },
+  { kind: 'aws-secret', label: 'an AWS secret access key', find: awsSecrets },
   { kind: 'bedrock-api-key', label: 'an Amazon Bedrock API key',
-    re: new RegExp(`${T}(ABSK[A-Za-z0-9+/=]{20,}|bedrock-api-key-[A-Za-z0-9+/=%_-]{20,})`, 'g') },
-  { kind: 'github-token', label: 'a GitHub token', re: new RegExp(`${T}(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})`, 'g') },
-  { kind: 'gitlab-token', label: 'a GitLab token', re: new RegExp(`${T}(gl(?:pat|dt|rt|ptt|cbt|oas|ft|imt|soat|agent)-[A-Za-z0-9_-]{20,})`, 'g') },
-  { kind: 'slack-token', label: 'a Slack token', re: new RegExp(`${T}(xox[abposrce]-[A-Za-z0-9-]{10,})`, 'g') },
-  { kind: 'slack-webhook', label: 'a Slack webhook', re: /hooks\.slack\.com\/((?:services|workflows|triggers)\/[A-Za-z0-9_/+-]{16,})/g },
-  { kind: 'anthropic-key', label: 'an Anthropic API key', re: new RegExp(`${T}(sk-ant-[A-Za-z0-9_-]{20,})`, 'g') },
-  { kind: 'openai-key', label: 'an OpenAI-style API key', re: new RegExp(`${T}(sk-(?!ant-)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,})`, 'g') },
-  { kind: 'google-api-key', label: 'a Google API key', re: new RegExp(`${T}(AIza[0-9A-Za-z_-]{35,})`, 'g') },
-  { kind: 'stripe-key', label: 'a Stripe secret key', re: new RegExp(`${T}((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9+/=]{20,})`, 'g') },
-  { kind: 'sendgrid-key', label: 'a SendGrid API key', re: new RegExp(`${T}(SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,})`, 'g') },
-  { kind: 'azure-key', label: 'an Azure account key', re: /(?<![A-Za-z0-9])(?:AccountKey|SharedAccessKey)=([A-Za-z0-9+/=]{20,})/gi },
-  { kind: 'npm-token', label: 'an npm token', re: new RegExp(`${T}(npm_[A-Za-z0-9]{36,})`, 'g') },
-  { kind: 'pypi-token', label: 'a PyPI token', re: new RegExp(`${T}(pypi-[A-Za-z0-9_-]{40,})`, 'g') },
-  { kind: 'huggingface-token', label: 'a Hugging Face token', re: new RegExp(`${T}(hf_[A-Za-z]{34,})`, 'g') },
+    tokens: [tok(`${T}(ABSK[A-Za-z0-9+/=]{20})`, 'A-Za-z0-9+/='), tok(`${T}(bedrock-api-key-[A-Za-z0-9+/=%_-]{20})`, 'A-Za-z0-9+/=%_-')] },
+  { kind: 'github-token', label: 'a GitHub token', tokens: [tok(`${T}(gh[pousr]_[A-Za-z0-9]{36})`, 'A-Za-z0-9'), tok(`${T}(github_pat_[A-Za-z0-9_]{22})`, 'A-Za-z0-9_')] },
+  { kind: 'gitlab-token', label: 'a GitLab token', tokens: [tok(`${T}(gl(?:pat|dt|rt|ptt|cbt|oas|ft|imt|soat|agent)-[A-Za-z0-9_-]{20})`, 'A-Za-z0-9_-')] },
+  { kind: 'slack-token', label: 'a Slack token', tokens: [tok(`${T}(xox[abposrce]-[A-Za-z0-9-]{10})`, 'A-Za-z0-9-')] },
+  { kind: 'slack-webhook', label: 'a Slack webhook', tokens: [tok('hooks\\.slack\\.com\\/((?:services|workflows|triggers)\\/[A-Za-z0-9_/+-]{16})', 'A-Za-z0-9_/+-')] },
+  { kind: 'anthropic-key', label: 'an Anthropic API key', tokens: [tok(`${T}(sk-ant-[A-Za-z0-9_-]{20})`, 'A-Za-z0-9_-')] },
+  // (proj-, svcacct-, admin-: in the run's characters already)
+  { kind: 'openai-key', label: 'an OpenAI-style API key', tokens: [tok(`${T}(sk-(?!ant-)[A-Za-z0-9_-]{20})`, 'A-Za-z0-9_-')] },
+  { kind: 'google-api-key', label: 'a Google API key', tokens: [tok(`${T}(AIza[0-9A-Za-z_-]{35})`, '0-9A-Za-z_-')] },
+  { kind: 'stripe-key', label: 'a Stripe secret key', tokens: [tok(`${T}((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10})`, 'A-Za-z0-9'), tok(`${T}(whsec_[A-Za-z0-9+/=]{20})`, 'A-Za-z0-9+/=')] },
+  { kind: 'sendgrid-key', label: 'a SendGrid API key', find: sendgrid },
+  { kind: 'azure-key', label: 'an Azure account key', tokens: [{ re: /(?<![A-Za-z0-9])(?:AccountKey|SharedAccessKey)=([A-Za-z0-9+/=]{20})/gi, run: cls('A-Za-z0-9+/=') }] },
+  { kind: 'npm-token', label: 'an npm token', tokens: [tok(`${T}(npm_[A-Za-z0-9]{36})`, 'A-Za-z0-9')] },
+  { kind: 'pypi-token', label: 'a PyPI token', tokens: [tok(`${T}(pypi-[A-Za-z0-9_-]{40})`, 'A-Za-z0-9_-')] },
+  { kind: 'huggingface-token', label: 'a Hugging Face token', tokens: [tok(`${T}(hf_[A-Za-z]{34})`, 'A-Za-z')] },
   { kind: 'jwt', label: 'a JSON web token', find: jwts },
-  { kind: 'authorization', label: 'an Authorization header or bearer token', find: (text, ctx) => {
-    const out = byKind('authorization')(text, ctx);
-    BEARER.lastIndex = 0;
-    for (let m; (m = BEARER.exec(text)) !== null;) out.push({ start: m.index + m[0].length - m[1].length, end: m.index + m[0].length });
-    return out.sort((a, b) => a.start - b.start);
-  } },
+  { kind: 'authorization', label: 'an Authorization header or bearer token', find: (text, ctx) => [...byKind('authorization')(text, ctx), ...bearers(text)].sort((x, y) => x.start - y.start) },
   { kind: 'cookie', label: 'a cookie', find: byKind('cookie') },
-  // (the scheme starts a run of its own characters: one try per run)
-  { kind: 'url-password', label: 'a password in a URL', generic: true, re: /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s/:@"'`]+:([^\s/@"'`]{3,})@/gi },
+  { kind: 'url-password', label: 'a password in a URL', find: urlPasswords },
   { kind: 'named', label: 'a value under a secret\'s name (a password, token, key or cookie)' },
   { kind: 'assignment', label: 'a password, token or key set to a value', find: byKind('assignment') },
-  { kind: 'env-line', label: 'a .env-style line with a long random value', generic: true, entropy: 3.5,
-    re: /^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]{2,}=["']?([A-Za-z0-9_\-+/=.]{16,})["']?[ \t]*$/gm },
+  { kind: 'env-line', label: 'a .env-style line with a long random value', find: envLines },
 ];
-const BEARER = /(?<![A-Za-z0-9_-])[Bb]earer[ \t]+([A-Za-z0-9._~+/=-]{16,})/g;
 // What each bound does beyond it — every one closed (more is redacted, nothing is missed):
 //   a token's usual length (AKIA… 20, ghp_… 40 …)  none: the whole run of its characters is redacted, however long
 //   spaces around ":" or "=", a URL's parts        none: any number, any length
@@ -251,35 +380,52 @@ export const LABELS = Object.freeze({
 // candidates(k, text, cap, ctx) -> a kind's matches, in order, at most cap ([{start, end}]); null when there are more
 function candidates(k, text, cap, ctx) {
   if (k.find) { const l = k.find(text, ctx); return l.length > cap ? null : l; }
-  if (!k.re) return [];
+  if (!k.tokens) return [];
   const out = [];
-  k.re.lastIndex = 0;
-  for (let m; (m = k.re.exec(text)) !== null;) {
-    if (m[0].length === 0) { k.re.lastIndex++; continue; }
-    const v = m[1];
-    const start = m.index + m[0].lastIndexOf(v);
-    if ((k.generic && placeholder(v)) || (k.entropy && entropy(v) < k.entropy)) continue;
-    out.push({ start, end: start + v.length });
-    if (out.length > cap) return null;
+  for (const t of k.tokens) {
+    t.re.lastIndex = 0;
+    for (let m; (m = t.re.exec(text)) !== null;) {
+      const at = m.index + m[0].length;
+      const end = runEnd(text, at, t.run);
+      out.push({ start: at - m[1].length, end });
+      t.re.lastIndex = end;   // (the run is the token's: no other one starts inside it)
+      if (out.length > cap) return null;
+    }
   }
-  return out;
+  return k.tokens.length > 1 ? out.sort((x, y) => x.start - y.start) : out;
 }
-// a NAME=value item of a list (an environment: docker's Env, a process's): the value, when NAME names a secret
-const ITEM = /^[ \t]*([A-Za-z_][A-Za-z0-9_.-]{0,127})[ \t]*=[ \t]*(.*?)[ \t]*$/s;
+// item(text) -> {name, start, end} of a NAME=value item of a list (an environment: docker's Env, a process's), by hand:
+// the first "=", a name of at most 128 characters around it (spaces and tabs trimmed by loops), the value trimmed the
+// same way — no pattern that could try a run of spaces again and again
+const NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
+const blank = (c) => c === ' ' || c === '\t';
+function item(text) {
+  const eq = text.indexOf('=');
+  if (eq < 1 || eq > 256) return null;
+  let a = 0, b = eq;
+  while (a < b && blank(text[a])) a++;
+  while (b > a && blank(text[b - 1])) b--;
+  const name = text.slice(a, b);
+  if (!NAME.test(name)) return null;
+  let start = eq + 1, end = text.length;
+  while (start < end && blank(text[start])) start++;
+  while (end > start && blank(text[end - 1])) end--;
+  return { name, start, end };
+}
 
 /** scan(text, {named, item}) -> [{kind, start, end}] of the secrets in one string, in order, never overlapping
  *  (overlapping matches become one, their union, said as the most specific kind) — or one finding of the whole text
  *  (too-long, too-many). named: the string's own key names a secret (the whole value is one, if it is not a
  *  placeholder); item: the string is an item of a list (NAME=value: the value, if NAME names a secret). */
-export function scan(text, { named: isNamed = false, item = false } = {}) {
+export function scan(text, { named: isNamed = false, item: isItem = false } = {}) {
   if (typeof text !== 'string' || !text.length) return [];
   if (text.length > MAX_TEXT) return [{ kind: 'too-long', start: 0, end: text.length }];
   const all = [];
   const ctx = {};
   if (isNamed && named(text.trim())) all.push({ kind: 'named', start: 0, end: text.length });
-  if (item) {
-    const m = ITEM.exec(text);
-    if (m && isSecretName(m[1]) && named(m[2])) { const start = text.indexOf(m[2], m[0].indexOf('=')); all.push({ kind: 'named', start, end: start + m[2].length }); }
+  if (isItem) {
+    const it = item(text);
+    if (it && it.end > it.start && isSecretName(it.name) && named(text.slice(it.start, it.end))) all.push({ kind: 'named', start: it.start, end: it.end });
   }
   if (text.length >= 8) {
     for (const k of KINDS) {
