@@ -220,7 +220,7 @@ its apps. The e2e throwaway uses `<project>.localhost` on free ports instead (de
 | Home voice line | e2e `browser/home-voice-line` (+ `@stt-off`, `@stt-on-again`, `@stt-refused`) | "Voice: Bedrock Mistral Voxtral Small (~$… per minute of audio, estimated) — audio goes to your AWS account …"; off: "Voice: browser speech recognition (Call is unavailable) …". The stt container is a 6th service on Home and in `/api/summary`. |
 | Transcription | e2e `browser/stt-transcription` (+ `@stt-on-again`) | A committed spoken WebM clip (`tests/e2e/browser/fixtures/speech.webm`, espeak-ng: `make-speech.sh`) posted to Open WebUI's `/api/v1/audio/transcriptions` comes back as its text ("hello world, this is the … voice test"); ~$0.00005. |
 | Isolation | e2e `voice/stt-isolation` | From the stt container: LiteLLM reachable; Open WebUI, the portal, Postgres, RustFS and the internet (IP and DNS) not; Caddy `:8090` answers `/healthz` 200 and `/v1/audio/transcriptions` (405 to a GET) and 404 to anything else. From Open WebUI: `caddy:8090/healthz` 200, `stt:8000` not resolvable. (The stt container can open Caddy's main `:8080` listener, where every site still requires the portal login — noted, not a failure.) |
-| `./stack test` voice checks | e2e `cli/test` | stt `/healthz`, Open WebUI → `caddy:8090/healthz`, a 1 s tone transcribed. |
+| `./stack test` voice checks | e2e `cli/test` | stt `/healthz`, Open WebUI → `caddy:8090/healthz`, a 1 s tone transcribed (AWS refusing the audio: recorded and a failed check, in plain words; the next `up` switches — unit `tests/test_stt.sh`). |
 
 ## 7c. The browser terminal (only `--terminal` / `E2E_TERMINAL=1`)
 

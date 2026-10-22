@@ -989,7 +989,7 @@ test_status_after_up_lists_stt_once() {
 test_stack_test_checks_bedrock_speech_to_text() {
   _probed voxtral-small
   printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"
-  dc() { echo "dc $*" | cut -c1-60 >> "$TMP/argv"; cat >> "$TMP/stdin"; echo 200; }
+  dc() { echo "dc $*" | cut -c1-60 >> "$TMP/argv"; [ -t 0 ] || cat >> "$TMP/stdin"; echo 200; }
   fails=0
   out="$(stt_test_checks)"
   assert_contains "$out" "ok    speech-to-text health (stt container)"
@@ -1003,7 +1003,7 @@ test_stack_test_checks_bedrock_speech_to_text() {
   assert_contains "$STT_TEST_PY" "http://caddy:8090/v1/audio/transcriptions"
   # chosen explicitly: a failure is counted
   stt_set_choice bedrock
-  dc() { case "$*" in *healthz*) echo 200 ;; *) cat > /dev/null; echo "403 Bedrock refused voxtral-small" ;; esac; }
+  dc() { case "$*" in *healthz*) echo 200 ;; *) [ -t 0 ] || cat > /dev/null; echo "403 Bedrock refused voxtral-small" ;; esac; }
   fails=0; out="$(stt_test_checks; echo "fails=$fails")"
   assert_contains "$out" "FAIL  speech-to-text, 1 s tone"
   assert_contains "$out" "fails=1"
@@ -1014,13 +1014,13 @@ test_stack_test_checks_bedrock_speech_to_text() {
   assert_contains "$out" "fails=1"
   [ ! -e "$TMP/tone" ]
   # throttled: not checked, not a failure
-  dc() { case "$*" in *healthz*) echo 200 ;; *) cat > /dev/null; echo "429 Bedrock is throttling" ;; esac; }
+  dc() { case "$*" in *healthz*) echo 200 ;; *) [ -t 0 ] || cat > /dev/null; echo "429 Bedrock is throttling" ;; esac; }
   fails=0; out="$(stt_test_checks; echo "fails=$fails")"
   assert_contains "$out" "skip  speech-to-text, 1 s tone"
   assert_contains "$out" "fails=0"
   # on by default (no choice): a failure turns it off instead of failing setup or an update; Home follows
   rm -f "$STATE_DIR/stt-choice"
-  dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; case "$*" in *healthz*) echo 200 ;; ps*) echo abc ;; *) cat > /dev/null 2>&1; echo "403 Bedrock refused voxtral-small" ;; esac; }
+  dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; case "$*" in *healthz*) echo 200 ;; ps*) echo abc ;; *) [ -t 0 ] || cat > /dev/null 2>&1; echo "403 Bedrock refused voxtral-small" ;; esac; }
   : > "$STATE_DIR/stt-service"
   fails=0; out="$(stt_test_checks 2>&1; echo "fails=$fails")"
   assert_contains "$out" "goes back to browser speech"
@@ -1363,25 +1363,61 @@ test_a_voice_choice_ends_the_notice() {
   [ ! -e "$STATE_DIR/status/stt-notice.json" ]
 }
 
-test_stack_test_turns_bedrock_speech_off_when_the_tone_is_refused() {
+test_stack_test_records_a_refused_tone_and_fails_but_switches_nothing() {
+  # (./stack test holds no stack lock: .env may be changing under it — the next up/update/setup switches)
   _probed voxtral-small
-  printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"; stt_sync_env
-  stt_set_choice bedrock   # chosen: any other failure would count; this one turns it off
-  : > "$STATE_DIR/stt-service"
-  ensure_portal_password_hash() { :; }
+  stt_set_choice bedrock
   for answer in "400 Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models — switch to browser speech in Settings › Voice." \
       "400 Bedrock could not transcribe this audio: {'error': '{\"message\":\"The model returned the following errors: Model does not support audio modality\"}'}"; do
     _probed voxtral-small
-    printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"; stt_sync_env; rm -f "$STATE_DIR/status/stt-notice.json" "$TMP/dcs"
+    printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"; stt_sync_env; rm -f "$TMP/dcs"
+    cp "$ENV_FILE" "$TMP/before"
     A="$answer"
-    dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; case "$*" in *healthz*) echo 200 ;; ps*) echo abc ;; "exec -T open-webui python3"*) cat > /dev/null 2>&1; printf '%s\n' "$A" ;; esac; }
+    dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; case "$*" in *healthz*) echo 200 ;; ps*) echo abc ;; "exec -T open-webui python3"*) [ -t 0 ] || cat > /dev/null 2>&1; printf '%s\n' "$A" ;; esac; }
     fails=0; out="$(stt_test_checks 2>&1; echo "fails=$fails")"
-    assert_contains "$out" "skip  speech-to-text, 1 s tone through Caddy (Bedrock Mistral Voxtral Small) (AWS no longer accepts audio for the Voxtral models (since October 2026) — turned off, see above)"
-    assert_contains "$out" "Voice: Bedrock speech-to-text was turned off"
-    assert_contains "$out" "fails=0"
-    assert_eq "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)" ""
-    assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait open-webui"
-    [ -e "$STATE_DIR/status/stt-notice.json" ]
-    stt_model_refused voxtral-small
+    assert_contains "$out" "FAIL  speech-to-text, 1 s tone through Caddy (Bedrock Mistral Voxtral Small) (AWS no longer accepts audio for the Voxtral models (since October 2026) — the next ./stack up switches voice to browser speech)"
+    assert_contains "$out" "fails=1"
+    assert_not_contains "$out" "{"   # never AWS's raw answer
+    assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"   # nothing switched…
+    assert_not_contains "$(cat "$TMP/dcs")" "dc up"
+    [ ! -e "$STATE_DIR/status/stt-notice.json" ]
+    stt_model_refused voxtral-small                         # …only recorded, for the next up
   done
+}
+
+test_audio_checks_have_a_deadline_and_up_waits_one_at_most() {
+  _probed voxtral-small voxtral-mini; _stub_audio
+  printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"; stt_sync_env
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-service"
+  dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; }
+  ensure_portal_password_hash() { :; }
+  STT_CHECK_DEADLINE_S=2
+  # LiteLLM (or Bedrock) hangs: "other" after the deadline, the hung request ended
+  litellm_call() { echo "$3" >> "$TMP/audio-calls"; sleep 30; echo 200; }
+  t0="$(date +%s)"; stt_audio_check voxtral-small
+  assert_eq "$STT_AUDIO $STT_AUDIO_CODE" "other timeout"
+  [ "$(( $(date +%s) - t0 ))" -le 8 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
+  # at up: nothing switched, and the second model is not asked after a timeout
+  : > "$TMP/audio-calls"; t0="$(date +%s)"
+  stt_up_check 2>/dev/null
+  [ "$(( $(date +%s) - t0 ))" -le 8 ] || return 1
+  assert_eq "$(wc -l < "$TMP/audio-calls" | tr -d ' ')" 1
+  assert_eq "$(get_env STT_PROVIDER)|$(get_env OWUI_STT_ENGINE)" "bedrock|openai"
+  [ ! -e "$TMP/dcs" ]
+  # the first refused at once, the second hangs: both within one deadline (the second gets what is left, or none)
+  litellm_call() {
+    echo "$3" >> "$TMP/audio-calls"
+    case "$3" in */voxtral-small/*) printf '%s' '{"message":"Model does not support audio modality"}' > "$5"; echo 400 ;; *) sleep 30; echo 200 ;; esac
+  }
+  STT_CHECK_DEADLINE_S=4; : > "$TMP/audio-calls"; t0="$(date +%s)"
+  stt_up_check 2>/dev/null
+  [ "$(( $(date +%s) - t0 ))" -le 10 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
+  stt_model_refused voxtral-small
+  if stt_model_refused voxtral-mini; then return 1; fi   # (unknown: not recorded)
+  # the model check: one deadline per Voxtral model, and its text verdict stands
+  _probed voxtral-small voxtral-mini
+  litellm_call() { sleep 30; echo 200; }
+  STT_CHECK_DEADLINE_S=2; t0="$(date +%s)"
+  assert_eq "$(stt_probe_audio voxtral-mini ok)" ok
+  [ "$(( $(date +%s) - t0 ))" -le 8 ] || return 1
 }

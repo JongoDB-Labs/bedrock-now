@@ -110,8 +110,11 @@ stt_model_reason() {
 # ./stack status, ./stack stt status), and is refused while a check gets that answer. Its code stays: when a check
 # gets audio through again (AWS re-enabling it, or another Bedrock model), it works again. Other failures (network,
 # permissions, throttling) keep their own handling — they never switch anything off here.
-#   checks: the model check (stt_probe_audio), ./stack up (stt_up_check), ./stack test (stt_test_checks), ./stack stt
-#   set bedrock and Settings › Voice (stt_audio_check); the stt container says it to Chat in its own words.
+#   checks: the model check (stt_probe_audio), ./stack up (stt_up_check), ./stack stt set bedrock and Settings › Voice
+#   (stt_audio_check) — commands that hold the stack lock; ./stack test (stt_test_checks, no lock) only records it and
+#   fails its check, the next up/update/setup switches. The stt container says it to Chat in its own words.
+# Each check has a deadline on this computer (STT_CHECK_DEADLINE_S, 20 s): LiteLLM or Bedrock hanging is "other".
+STT_CHECK_DEADLINE_S="${STT_CHECK_DEADLINE_S:-20}"
 STT_AUDIO_GONE="AWS no longer accepts audio for the Voxtral models (since October 2026)"
 STT_REFUSED_NOTICE="Bedrock speech-to-text was turned off: $STT_AUDIO_GONE. Voice uses your browser's speech recognition; or use your own OpenAI/Groq key: ./stack stt set openai|groq."
 STT_REFUSED_ERR="Bedrock speech-to-text is unavailable: $STT_AUDIO_GONE. Use browser speech, or your own OpenAI/Groq key: ./stack stt set openai|groq."
@@ -135,12 +138,13 @@ stt_bedrock_refused() {
   for m in $(stt_catalog | awk -F'\t' '$1 == "bedrock" { print $2 }'); do stt_model_refused "$m" || return 1; done
 }
 
-# stt_audio_check MODEL -> STT_AUDIO: ok (Bedrock took the audio), refused (that answer) or other (anything else:
-# not this state), STT_AUDIO_CODE: the HTTP status. Half a second of a tone (stt/check-tone.mp3: 16 kHz MP3, as the stt
-# container sends) through LiteLLM's Bedrock pass-through with the setup key, at most 8 output tokens: well under
-# $0.0001 when it works, nothing when refused.
+# stt_audio_check MODEL [SECS] -> STT_AUDIO: ok (Bedrock took the audio), refused (that answer) or other (anything
+# else: not this state — also no answer within SECS, default STT_CHECK_DEADLINE_S), STT_AUDIO_CODE: the HTTP status
+# ("timeout" past the deadline). Half a second of a tone (stt/check-tone.mp3: 16 kHz MP3, as the stt container sends)
+# through LiteLLM's Bedrock pass-through with the setup key, at most 8 output tokens: well under $0.0001 when it works,
+# nothing when refused.
 stt_audio_check() {
-  local tmp body code tone="$STACK_DIR/stt/check-tone.mp3"
+  local tmp body code rc=0 tone="$STACK_DIR/stt/check-tone.mp3"
   STT_AUDIO=other
   # shellcheck disable=SC2034  # for the caller (and the tests)
   STT_AUDIO_CODE=''
@@ -149,10 +153,13 @@ stt_audio_check() {
   body="$(printf '{"messages":[{"role":"user","content":[{"text":"Transcribe the recording."},{"audio":{"format":"mp3","source":{"bytes":"%s"}}}]}],"inferenceConfig":{"temperature":0,"maxTokens":8}}' \
     "$(base64 < "$tone" | tr -d '\n')")"
   tmp="$(mktemp)"
-  code="$(litellm_call "$(setup_key)" POST "/bedrock/model/$1/converse" "$body" "$tmp")"
+  code="$(_with_deadline "${2:-$STT_CHECK_DEADLINE_S}" litellm_call "$(setup_key)" POST "/bedrock/model/$1/converse" "$body" "$tmp")" ||
+    rc=$?
+  [ "$rc" != 124 ] || code=timeout
   # shellcheck disable=SC2034
   STT_AUDIO_CODE="$code"
-  if [ "$code" = 200 ]; then STT_AUDIO=ok
+  if [ "$code" = timeout ]; then :
+  elif [ "$code" = 200 ]; then STT_AUDIO=ok
   elif stt_refusal_in "$(head -c 4000 "$tmp" 2>/dev/null)"; then STT_AUDIO=refused; fi
   rm -f "$tmp"
 }
@@ -212,9 +219,10 @@ stt_turn_off_refused() {
 
 # stt_up_check — ./stack up, once the services run, while Bedrock speech-to-text is on: half a second of audio
 # (stt_audio_check). Refused: the other Voxtral model if Bedrock takes its audio, else browser speech
-# (stt_turn_off_refused) with Chat and the portal restarted. Any other answer changes nothing.
+# (stt_turn_off_refused) with Chat and the portal restarted. Any other answer changes nothing. Both checks share one
+# deadline (STT_CHECK_DEADLINE_S): a LiteLLM or Bedrock that hangs slows up by that much at most.
 stt_up_check() {
-  local m alt
+  local m alt t0=$SECONDS left
   [ "$(stt_provider)" = bedrock ] || return 0
   m="$(stt_model 2>/dev/null)"
   stt_audio_check "$m"
@@ -224,8 +232,9 @@ stt_up_check() {
     *) return 0 ;;
   esac
   alt=voxtral-small; [ "$m" != voxtral-small ] || alt=voxtral-mini
-  if is_enabled "$alt" "$(_enabled_or_all)"; then
-    stt_audio_check "$alt"
+  left=$((STT_CHECK_DEADLINE_S - (SECONDS - t0)))
+  if [ "$left" -ge 3 ] && is_enabled "$alt" "$(_enabled_or_all)"; then
+    stt_audio_check "$alt" "$left"
     if [ "$STT_AUDIO" = ok ]; then
       _stt_mark_audio "$alt" ok
       _stt_store_bedrock "$alt" 2>/dev/null
@@ -854,13 +863,12 @@ stt_test_checks() {
     tone="$(printf '%s\n' "$sk" | dc exec -T open-webui python3 -c "$STT_TEST_PY" 2>/dev/null || true)"
   fi
   if [ -n "$tone" ] && [ "$tone" != 200 ] && stt_refusal_in "$tone"; then
-    # Bedrock refusing audio: off, said once (whatever was chosen: nothing else would work), not a failure
+    # Bedrock refusing audio: recorded (the model check's "no audio"), and a failure, in plain words. ./stack test holds
+    # no lock (.env may be changing under it), so the switch to browser speech is left to the next up/update/setup.
     _check "speech-to-text health (stt container)" 200 200; _check "speech-to-text reachable from Open WebUI (Caddy :8090)" 200 200
     _stt_mark_audio "$(stt_model)" refused
-    stt_turn_off_refused
-    dc up -d --no-deps --wait open-webui >/dev/null 2>&1 || warn "could not restart Open WebUI — ./stack up applies browser speech"
-    _stt_refresh_portal
-    _skip "$label" "$STT_AUDIO_GONE — turned off, see above"
+    printf '  FAIL  %s (%s — the next ./stack up switches voice to browser speech)\n' "$label" "$STT_AUDIO_GONE"
+    fails=$((fails + 1))
     return 0
   fi
   case "$health:$hop:$tone" in 200:200:429*)

@@ -47,8 +47,11 @@ failure (network, permissions, throttling) is handled as before and never switch
 
 **How it is checked.** Half a second of audio (`stt/check-tone.mp3`, the MP3 the stt container sends) through
 LiteLLM's Bedrock pass-through with the setup key: at each model check, at `./stack up` while Bedrock
-speech-to-text is on, at `./stack test`, and before `./stack stt set bedrock` or a Settings change to Bedrock.
-A refused request costs nothing; one that works costs well under $0.0001. The Bedrock code path stays in place:
+speech-to-text is on, and before `./stack stt set bedrock` or a Settings change to Bedrock. Each check waits 20
+seconds at most (a LiteLLM or Bedrock that does not answer changes nothing). `./stack test` (and Settings' smoke
+test) only reports it — its speech-to-text check fails with the reason and the refusal is recorded; the switch
+itself happens at the next `./stack up`, update or setup. A refused request costs nothing; one that works costs
+well under $0.0001. The Bedrock code path stays in place:
 when AWS takes audio again, the next check finds it and `./stack stt set bedrock` (or, if you never chose
 otherwise, the next `./stack setup`) turns it back on.
 

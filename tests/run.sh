@@ -7,6 +7,7 @@
 # really exercises bash 3.2 even when a newer bash is first on PATH. Paths reach the child
 # via environment variables, never by interpolation into the script text.
 set -uo pipefail
+exec </dev/null   # no test reads this terminal (or an open pipe) and waits for ever
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$PWD"
 SH="${BASH:-bash}"

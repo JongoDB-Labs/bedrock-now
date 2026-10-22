@@ -18,8 +18,10 @@ All notable changes to bedrock-now are documented here. The format follows
   your browser's speech recognition; or use your own OpenAI/Groq key: ./stack stt set openai|groq." `./stack stt set
   bedrock` and Settings › Voice refuse Bedrock with the reason (Settings shows it unavailable), the model check lists
   voxtral-* as "no audio (AWS)", setup no longer turns it on by default, and Chat shows a fixed message instead of AWS's
-  raw answer. Any other failure (network, permissions, throttling) is handled as before. The Bedrock path stays: half a
-  second of audio decides at each of those checks, so it works again if AWS takes audio again (docs/voice.md).
+  raw answer. Any other failure (network, permissions, throttling) is handled as before, and a check that gets no answer
+  within 20 seconds changes nothing; `./stack test` (and Settings' smoke test) only reports the refusal as a failed
+  check. The Bedrock path stays: half a second of audio decides at each of those checks, so it works again if AWS takes
+  audio again (docs/voice.md).
 
 ## [0.20.1] - 2026-10-22
 
