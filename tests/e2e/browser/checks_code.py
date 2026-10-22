@@ -3378,6 +3378,8 @@ def host_sessions_a(ctx):
     ask(page, "Which word did I ask you to remember earlier in this conversation? Reply with that word only.")
     answered(page)
     expect("PELICAN" in last_answer(page).upper(), f"the resumed session's answer: {last_answer(page)!r}")
+    # (the copied transcript's answers ran elsewhere: not this turn's — no "ran on" under a Haiku answer)
+    see(page.get_by_test_id("turn-model")).to_have_count(0)
     st = state_of(c, s1)
     expect(st.get("cwd") == app["root"] and st.get("mode") == "default", f"the resumed session: {st}")
     shot(page, "s2-code-host-sessions-resumed")
