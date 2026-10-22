@@ -26,6 +26,7 @@ Object.assign(process.env, { BN_CODE_WORKSPACE: WS, BN_CODE_SOCK_DIR: SOCKDIR, B
 const coded = await import(path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'));
 const { sandboxCall } = await import('../server/spawn-client.mjs');
 const { Imports, parseIndex, ImportError, LIMITS, cli } = await import('../server/import-sessions.mjs');
+const { KEEP_TOKEN } = await import('../server/secrets.mjs');
 const { copy, preview, continueIn, fork } = await import('../server/import-copy.mjs');
 const reader = await import('../server/harness/claude.mjs');
 
@@ -40,7 +41,7 @@ const PROJECTS = {
   p_00000002: { id: 'p_00000002', name: 'notes', root: NOTES_SBX, host: true, mode: 'rw', hidden: true },
   p_00000003: { id: 'p_00000003', name: 'gone', root: '/gone', host: true, gone: true },
 };
-const imports = new Imports({ dir: path.join(ROOT, 'state', 'imports'), stage: path.join(ROOT, 'stage'), requests: path.join(ROOT, 'req'), helperFile: path.join(ROOT, 'public', 'helper.json'),
+const imports = new Imports({ dir: path.join(ROOT, 'state', 'imports'), stage: path.join(ROOT, 'stage'), helperFile: path.join(ROOT, 'public', 'helper.json'),
   projects: { get: (id) => PROJECTS[id] ?? null } });
 const storeOf = (cwd) => path.join(CONF, 'projects', coded.encodeCwd(cwd));
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
@@ -70,10 +71,21 @@ test('bn-coded sessions.import: into the store folder of a folder the sandbox ha
   assert.equal(fs.readFileSync(path.join(storeOf(APP), id, 'subagents', 'agent-1.jsonl'), 'utf8'), 'sub\n');
   assert.equal(fs.readFileSync(path.join(storeOf(APP), id, 'tool-results', 't1.txt'), 'utf8'), 'abc');
   assert.deepEqual(fs.readdirSync(storeOf(APP)).filter((n) => n.startsWith('.')), [], 'no temporary file left');
-  // again: refused; replacing needs the SHA-256 it has now
+  // again: refused; replacing needs the SHA-256 it has now — and a refused transcript leaves the files beside it as they
+  // were (they go in only after the transcript did)
   const m = [{ part: 'main', size: 2 }];
-  assert.equal((await raw({ op: 'sessions.import', id, cwd: APP, parts: m }, Buffer.from('{}'))).error, 'that session is in the sandbox already');
-  assert.equal((await raw({ op: 'sessions.import', id, cwd: APP, parts: m, replace: 'a'.repeat(64) }, Buffer.from('{}'))).error, 'that session changed in the sandbox since it was copied');
+  const withSide = [{ part: 'main', size: 2 }, { part: 'subagents/agent-1.jsonl', size: 4 }];
+  assert.equal((await raw({ op: 'sessions.import', id, cwd: APP, parts: withSide }, Buffer.from('{}NEW\n'))).error, 'that session is in the sandbox already');
+  assert.equal((await raw({ op: 'sessions.import', id, cwd: APP, parts: withSide, replace: 'a'.repeat(64) }, Buffer.from('{}NEW\n'))).error, 'that session changed in the sandbox since it was copied');
+  assert.equal(fs.readFileSync(path.join(storeOf(APP), id, 'subagents', 'agent-1.jsonl'), 'utf8'), 'sub\n', 'untouched by a refused copy');
+  // the transcript changed in the sandbox while the copy came in: refused at its end — the files beside it untouched
+  const w = coded.sessionsImportBegin({ id, cwd: APP, parts: withSide, replace: sha(main) });
+  fs.appendFileSync(path.join(storeOf(APP), `${id}.jsonl`), '{"type":"custom-title","customTitle":"meanwhile"}\n');
+  w.chunk(Buffer.from('{}NEW\n'));
+  assert.throws(() => w.end(), /changed in the sandbox since it was copied/);
+  assert.equal(fs.readFileSync(path.join(storeOf(APP), id, 'subagents', 'agent-1.jsonl'), 'utf8'), 'sub\n', 'untouched when the transcript was refused at the end');
+  fs.writeFileSync(path.join(storeOf(APP), `${id}.jsonl`), main);
+  assert.deepEqual(fs.readdirSync(storeOf(APP)).filter((n) => n.startsWith('.')), [], 'no temporary file left');
   assert.deepEqual(await raw({ op: 'sessions.import', id, cwd: APP, parts: m, replace: sha(main) }, Buffer.from('{}')), { ok: true, size: 2, parts: 0, replaced: true });
   assert.equal(fs.readFileSync(path.join(storeOf(APP), `${id}.jsonl`), 'utf8'), '{}');
   assert.equal((await raw({ op: 'sessions.import', id: uuid(), cwd: APP, parts: m, replace: sha(Buffer.from('{}')) }, Buffer.from('{}'))).error, 'that session is not in the sandbox (any more)');
@@ -235,7 +247,8 @@ test('the files beside a transcript go through the same scan: a secret only in a
   const pv = await preview(imports, 'p_00000001', id);
   assert.deepEqual(pv.findings.map((x) => [x.kind, x.part]).sort(), [['aws-key-id', 'tool-results/toolu_1.txt'], ['github-token', 'subagents/agent-1.jsonl'],
     ['gitlab-token', 'subagents/agent-1.meta.json']].sort());
-  assert.ok(pv.findings.every((x) => /^p[0-9]+:[0-9]+\.[0-9]+$/.test(x.id)), 'ids of their own');
+  assert.ok(pv.findings.every((x) => KEEP_TOKEN.test(x.id) && x.id.startsWith(`${x.part}#`)), 'each kept by its file and a hash of what it is');
+  assert.match(pv.digest, /^[0-9a-f]{64}$/);
   assert.deepEqual(pv.left.map((l) => [l.part, l.why]).sort(), [['subagents/agent-2.meta.json', 'not valid JSON'], ['tool-results/toolu_2.bin', 'not text (not UTF-8)']]);
   assert.ok(!JSON.stringify(pv).includes(sub) && !JSON.stringify(pv).includes(out) && !JSON.stringify(pv).includes(json));
   // copied: redacted (the subagent's thinking out too), the unreadable ones not copied; one finding kept on request
@@ -328,28 +341,88 @@ test('Continue in this project: a session of the sandbox forked into another pro
   assert.ok(f.entries.every((e) => e.parentUuid === null || e.parentUuid === undefined || ids.has(e.parentUuid)));
 });
 
-test('requests to the update helper: one fixed line in the shared folder, only while it runs and offers it; the password apart', () => {
-  const dir = path.join(ROOT, 'req');
-  assert.throws(() => imports.request('sessions-scan', { project: 'p_00000001', tool: 'both' }, 'pw', 'local'), /not running/);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.mkdirSync(path.join(ROOT, 'public'), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, 'public', 'helper.json'), JSON.stringify({ sessions: ['sessions-scan'], screen: true, written_at: Math.floor(Date.now() / 1000) }));
-  assert.throws(() => imports.request('sessions-fetch', { project: 'p_00000001', scan: nonce(), rows: '1' }, 'pw', 'local'), /does not read sessions yet/);
-  for (const pw of ['', 'a\nb', 'x'.repeat(301), 7]) assert.throws(() => imports.request('sessions-scan', { project: 'p_00000001', tool: 'both' }, pw, 'local'), /password/);
-  const n = imports.request('sessions-scan', { project: 'p_00000001', tool: 'both' }, 'pässword', 'local');
-  const line = fs.readFileSync(path.join(dir, `sx-${n}.json`), 'utf8');
-  assert.match(line, /^\{"action":"sessions-scan","requested_at":[0-9]{1,12},"nonce":"[0-9a-f]{32}","auth":"[A-Za-z0-9+/]+={0,2}","origin":"local","project":"p_00000001","tool":"both"\}\n$/);
-  assert.equal(Buffer.from(JSON.parse(line).auth, 'base64').toString('utf8'), 'pässword');
-  assert.equal((fs.statSync(path.join(dir, `sx-${n}.json`)).mode & 0o777), 0o600);
-  assert.throws(() => imports.request('sessions-scan', { project: 'p_00000001', tool: 'both' }, 'pw', 'local'), /every 5 seconds/);
-  assert.equal(imports.requests()[0].state, 'sent');
+test('how a request to the helper went: said by the helper (fixed words), kept here by its id — a copy\'s with its results; this container writes no request', () => {
+  assert.equal(typeof imports.request, 'undefined', 'the page asks the portal: no request file is written here');
+  const n = nonce();
+  imports.noteRequest(n, { action: 'sessions-scan', project: 'p_00000001', state: 'asking' });
+  assert.deepEqual([imports.requests()[0].id, imports.requests()[0].state, imports.requests()[0].action, imports.requests()[0].project], [n, 'asking', 'sessions-scan', 'p_00000001']);
   imports.noteRequest(n, { state: 'refused', why: 'password' });
-  assert.deepEqual([imports.requests()[0].state, imports.requests()[0].why], ['refused', 'password']);
-  assert.throws(() => imports.noteRequest(n, { state: 'refused', why: 'free text from somewhere' }), /bad request state/);
-  // a stale helper: not running
+  assert.deepEqual([imports.requests()[0].state, imports.requests()[0].why, imports.requests()[0].action], ['refused', 'password', 'sessions-scan']);
+  for (const bad of [{ state: 'refused', why: 'free text from somewhere' }, { state: 'pwned' }, { state: 'done', action: 'rm -rf' }, { state: 'done', project: '../x' }]) {
+    assert.throws(() => imports.noteRequest(n, bad), /bad request state/);
+  }
+  assert.throws(() => imports.noteRequest('x', { state: 'done' }), /bad request state/);
+  const c = nonce();
+  imports.noteRequest(c, { action: 'sessions-copy', project: 'p_00000001', state: 'copying', results: [{ id: uuid(), ok: true, redacted: 1 }] });
+  imports.noteRequest(c, { state: 'done' });
+  assert.equal(imports.requests().find((r) => r.id === c).results.length, 1, 'its results stay with it');
+  // what the helper offers: from ./stack's read-only folder, while it beats
   fs.mkdirSync(path.join(ROOT, 'public'), { recursive: true });
+  fs.writeFileSync(path.join(ROOT, 'public', 'helper.json'), JSON.stringify({ sessions: ['sessions-scan', 'sessions-copy', 'rm'], screen: true, written_at: Math.floor(Date.now() / 1000) }));
+  assert.deepEqual(imports.helper(), { running: true, actions: ['sessions-scan', 'sessions-copy'], screen: true });
   fs.writeFileSync(path.join(ROOT, 'public', 'helper.json'), JSON.stringify({ sessions: ['sessions-scan'], written_at: 1000 }));
   assert.equal(imports.helper().running, false);
+});
+
+test('a keep is bound to its file and what it is, never to a position: parts in order of name; a copy names the digest it was checked with', async () => {
+  const id = uuid();
+  const same = fake.github(), other = fake.awsKeyId();
+  // two files beside it with a secret at the same place (line 1, first finding), the same one in both; one more in another
+  const dir = hostStore(APP, [[id, session({ id, cwd: APP }), {
+    'tool-results/b.txt': `token ${same}\n`, 'tool-results/a.txt': `token ${same}\n`, 'tool-results/c.txt': `id ${other}\n`,
+  }]]);
+  const scan = nonce();
+  imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
+  await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
+  const pv = await preview(imports, 'p_00000001', id);
+  assert.deepEqual(pv.findings.map((f) => f.part), ['tool-results/a.txt', 'tool-results/b.txt', 'tool-results/c.txt'], 'in order of name, whatever the folder\'s');
+  const [fa, fb] = pv.findings;
+  assert.notEqual(fa.id, fb.id, 'the same secret in two files: two keeps');
+  // a copy checked with another digest (read again since): refused, nothing written
+  await assert.rejects(imports.plan('p_00000001', id, { kind: 'copy', digest: 'f'.repeat(64) }), /read again since you checked it/);
+  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [fa.id], digest: 'e'.repeat(64) }]);
+  assert.deepEqual([r[0].ok, r[0].why], [false, 'that session was read again since you checked it: check it again']);
+  assert.ok(!fs.existsSync(path.join(storeOf(APP), `${id}.jsonl`)));
+  // kept in a.txt only: b.txt and c.txt redacted
+  const r2 = await copy(imports, call, 'p_00000001', [{ id, keep: [fa.id], digest: pv.digest }]);
+  assert.equal(r2[0].ok, true, JSON.stringify(r2));
+  const base = path.join(storeOf(APP), id, 'tool-results');
+  assert.ok(fs.readFileSync(path.join(base, 'a.txt'), 'utf8').includes(same));
+  assert.equal(fs.readFileSync(path.join(base, 'b.txt'), 'utf8'), 'token [REDACTED:github-token]\n');
+  assert.equal(fs.readFileSync(path.join(base, 'c.txt'), 'utf8'), 'id [REDACTED:aws-key-id]\n');
+  // a token of another waiting session (another key) keeps nothing here
+  const id2 = uuid();
+  const dir2 = hostStore(APP, [[id2, session({ id: id2, cwd: APP }), { 'tool-results/a.txt': `token ${same}\n` }]]);
+  const scan2 = nonce();
+  imports.saveIndex('p_00000001', indexText(APP, dir2), { scan: scan2, consent: 'once', host: APP });
+  await imports.stageBundle('p_00000001', scan2, Readable.from([bundle(APP, dir2, [id2])]));
+  const pl = await imports.plan('p_00000001', id2, { kind: 'copy', keep: [fa.id] });
+  assert.deepEqual([pl.kept, pl.redacted], [0, 1]);
+  imports.drop('p_00000001', id2);
+});
+
+test('a check in a worker thread, one at a time; the stage swept on its own, never a read that is coming in', async () => {
+  const w = new Imports({ dir: path.join(ROOT, 'state', 'imports'), stage: path.join(ROOT, 'stage'), helperFile: path.join(ROOT, 'public', 'helper.json'),
+    projects: { get: (id) => PROJECTS[id] ?? null }, worker: true });
+  const id = uuid(), key = fake.awsKeyId();
+  const dir = hostStore(APP, [[id, session({ id, cwd: APP, prompts: [`key ${key}`] })]]);
+  const scan = nonce();
+  w.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
+  await w.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
+  const [a, b] = await Promise.all([w.plan('p_00000001', id), w.plan('p_00000001', id, { kind: 'copy' })]);
+  assert.deepEqual([a.findingsTotal, b.redacted], [1, 1]);
+  assert.ok(Buffer.isBuffer(b.main) && !b.main.toString().includes(key));
+  await w.close();
+  // a read coming in (.<id>, no meta yet) is left alone by a sweep; one left behind for more than an hour goes
+  const coming = path.join(ROOT, 'stage', 'p_00000001', `.${uuid()}`);
+  fs.mkdirSync(coming, { recursive: true });
+  imports.sweep();
+  assert.ok(fs.existsSync(coming));
+  const old = (Date.now() - LIMITS.stageMs - 60000) / 1000;
+  fs.utimesSync(coming, old, old);
+  imports.sweep();
+  assert.ok(!fs.existsSync(coming));
+  imports.drop('p_00000001', id);
 });
 
 test('taken back: a tool\'s rows and waiting sessions forgotten (the copies in the sandbox stay); suggestions forgotten', async () => {

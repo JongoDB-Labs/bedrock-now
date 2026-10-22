@@ -710,19 +710,27 @@ export function sessionsImportBegin(req) {
       try {
         openNext();
         if (i < files.length) throw new Error('fewer bytes than announced');
-        // the files beside it first (<id>/subagents/…, <id>/tool-results/…), then the transcript itself
-        for (const f of files.slice(1)) {
-          const [sub, base] = f.part.split('/');
-          realDir(path.join(dir, req.id), true);
-          realDir(path.join(dir, req.id, sub), true);
-          const dest = path.join(dir, req.id, sub, base);
-          try { if (!fs.lstatSync(dest).isFile()) throw new Error('a folder is there now'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-          fs.renameSync(f.tmp, dest);
+        // every file is here, in the temporary folder. Where the files beside it go (<id>/subagents/…,
+        // <id>/tool-results/…) is checked first — no link on the way, no folder where a file goes — without changing
+        // anything; then the transcript itself (refused: nothing of the copy goes in); only then the files beside it
+        const dests = files.slice(1).map((f) => { const [sub, base] = f.part.split('/'); return { f, sub, dest: path.join(dir, req.id, sub, base) }; });
+        const there = (p) => { try { if (!fs.lstatSync(p).isDirectory()) throw new Error('a folder on its way is a link'); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; } };
+        if (dests.length && there(path.join(dir, req.id))) {
+          for (const d of dests) {
+            if (!there(path.join(dir, req.id, d.sub))) continue;
+            try { if (!fs.lstatSync(d.dest).isFile()) throw new Error('a folder is there now'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+          }
         }
         if (replace === null) fs.linkSync(files[0].tmp, final);   // (never over one that came meanwhile)
         else {
           if (fileSha256(final) !== replace) throw new Error('that session changed in the sandbox since it was copied');
           fs.renameSync(files[0].tmp, final);
+        }
+        for (const d of dests) {
+          realDir(path.join(dir, req.id), true);
+          realDir(path.join(dir, req.id, d.sub), true);
+          try { if (!fs.lstatSync(d.dest).isFile()) throw new Error('a folder is there now'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+          fs.renameSync(d.f.tmp, d.dest);
         }
         return { ok: true, size: files[0].size, parts: files.length - 1, replaced: replace !== null };
       } catch (e) {

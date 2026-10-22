@@ -9,10 +9,10 @@
 // a fork starts without them, as the SDK's forks do. Continue in this project forks a session of the sandbox into
 // another project's folder: its working folder rewritten there wherever it stands as a path of its own (transcript.mjs).
 import crypto from 'node:crypto';
-import { forkSession, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
-import { fromHistory } from './normalize.mjs';
+import { forkSession } from '@anthropic-ai/claude-agent-sdk';
 import { SandboxError } from './spawn-client.mjs';
 import { ImportError, SANDBOX_STORE, LIMITS } from './import-sessions.mjs';
+import { KEEP_TOKEN } from './secrets.mjs';
 import { UUID, encodeCwd, LIMITS as READER } from './harness/claude.mjs';
 import { parseLines, toJsonl, rewritePaths } from './transcript.mjs';
 
@@ -47,42 +47,36 @@ async function write(call, id, cwd, main, parts, replace) {
 const OTHER_ID = /^that session (is in the sandbox already|changed in the sandbox since it was copied)$/;
 
 /** preview(imports, pid, id, choices) -> what the Import sheet shows of a picked session: its findings (never a whole
- *  secret: a few characters, a length, words around it with every finding masked), the thinking blocks and what
- *  becomes of them, paths outside the project, lines that are no JSON, and the transcript as it would be copied, as the
- *  page's history events (sandbox text) */
+ *  secret: a few characters, a length, words around it with every finding masked; id: the token that keeps it), the
+ *  thinking blocks and what becomes of them, paths outside the project, lines that are no JSON, the transcript as it
+ *  would be copied, as the page's history events (sandbox text), and the digest of what is waiting (a copy names it) */
 export async function preview(imports, pid, id, choices = {}) {
-  const pl = imports.plan(pid, id, choices);
-  const store = memoryStore(id, pl.entries);
-  let events = [], total = 0;
-  try {
-    const msgs = await getSessionMessages(id, { dir: pl.project.root, sessionStore: store, includeSystemMessages: true });
-    total = Array.isArray(msgs) ? msgs.length : 0;
-    for (const m of (msgs || []).slice(-300)) events.push(...fromHistory(m));
-  } catch { events = []; }
+  const pl = await imports.plan(pid, id, { kind: 'preview', thinking: choices.thinking ?? null });
   const copied = imports.imported()[id];
   return {
-    id, tool: pl.meta.tool, title: pl.row?.title ?? '', messages: pl.row?.messages ?? null, size: pl.size,
-    findings: pl.findings.map((f) => ({ id: f.id, kind: f.kind, label: f.label, message: f.message, part: f.part, preview: f.preview, context: f.context, keepable: f.keepable }))
-      .slice(0, 500),
-    findingsTotal: pl.findings.length, thinking: pl.thinking, outside: pl.outside, bad: pl.bad, rewritten: pl.rewritten, hidden: pl.hidden,
-    parts: pl.parts.length, left: pl.left, format: pl.row?.format ?? 'unknown', version: pl.row?.version ?? null,
-    again: copied ? { at: copied.at } : null, events, total,
+    id, tool: pl.meta.tool, title: pl.row?.title ?? '', messages: pl.row?.messages ?? null, size: pl.size, digest: pl.digest,
+    findings: pl.findings, findingsTotal: pl.findingsTotal, thinking: pl.thinking, outside: pl.outside, bad: pl.bad, rewritten: pl.rewritten, hidden: pl.hidden,
+    parts: pl.parts, left: pl.left, format: pl.row?.format ?? 'unknown', version: pl.row?.version ?? null,
+    again: copied ? { at: copied.at } : null, events: pl.events, total: pl.total,
   };
 }
 
-/** copy(imports, call, pid, items) -> [{id, ok, as?, forked?, why?}]: each picked session (items: [{id, keep, thinking}])
- *  written into the sandbox's store, then its stage dropped and the copy recorded */
+/** copy(imports, call, pid, items) -> [{id, ok, as?, forked?, why?}]: each picked session (items: [{id, keep, thinking,
+ *  digest}]) written into the sandbox's store, then its stage dropped and the copy recorded. keep: tokens of findings
+ *  (the Code page sends none: a copy that keeps any goes through the portal and the helper, with the password); digest:
+ *  the one the check step showed — refused when the session was read again since */
 export async function copy(imports, call, pid, items) {
   if (!Array.isArray(items) || !items.length || items.length > LIMITS.copy) throw new ImportError(400, `1 to ${LIMITS.copy} sessions at once`);
   const out = [];
   for (const it of items) {
     if (!it || !UUID.test(String(it.id))) { out.push({ id: null, ok: false, why: 'bad session id' }); continue; }
-    const keep = Array.isArray(it.keep) ? it.keep.filter((k) => typeof k === 'string' && /^(p[0-9]{1,4}:)?[0-9]{1,7}\.[0-9]{1,5}$/.test(k)).slice(0, 2000) : [];
+    const keep = it.keep === true ? true : Array.isArray(it.keep) ? it.keep.filter((k) => typeof k === 'string' && KEEP_TOKEN.test(k)).slice(0, 2000) : [];
     const thinking = it.thinking === 'keep' || it.thinking === 'strip' ? it.thinking : null;
+    const digest = typeof it.digest === 'string' && /^[0-9a-f]{64}$/.test(it.digest) ? it.digest : null;
     try {
-      const pl = imports.plan(pid, it.id, { keep, thinking });
+      const pl = await imports.plan(pid, it.id, { kind: 'copy', keep, thinking, digest });
       const cwd = pl.project.root;
-      const main = toJsonl(pl.entries);
+      const { main } = pl;
       if (main.length + pl.parts.reduce((s, p) => s + p.data.length, 0) > READER.sessionBytes) throw new ImportError(413, 'that session is too large to copy (more than 32 MiB)');
       const had = imports.imported()[it.id];
       let as = it.id, forked = false, written = main;
@@ -94,15 +88,16 @@ export async function copy(imports, call, pid, items) {
       if (why && (!(why instanceof SandboxError) || !OTHER_ID.test(why.message))) throw why;
       if (why) {
         // (here already and continued since, or never ours: a new session with fresh ids; its subagents stay behind)
-        const f = await fork(it.id, pl.entries, cwd);
+        const f = await fork(it.id, parseLines(main).entries, cwd);
         written = toJsonl(f.entries);
         await write(call, f.id, cwd, written, [], null);
         as = f.id; forked = true;
       }
       imports.noteImported(as, { project: pid, tool: pl.meta.tool, source: it.id, sourceSha: pl.sourceSha, writtenSha: sha256(written), at: Date.now(),
-        redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, bad: pl.bad, rewritten: pl.rewritten, ...(forked ? { forkedFrom: it.id } : {}) });
+        redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, thinkingLeft: pl.thinking.left, bad: pl.bad, rewritten: pl.rewritten, ...(forked ? { forkedFrom: it.id } : {}) });
       imports.drop(pid, it.id);
-      out.push({ id: it.id, ok: true, as, forked, redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, left: pl.left.length + (forked ? pl.parts.length : 0) });
+      out.push({ id: it.id, ok: true, as, forked, redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, thinkingLeft: pl.thinking.left,
+        left: pl.left.length + (forked ? pl.parts.length : 0) });
     } catch (e) {
       out.push({ id: it.id, ok: false, why: e instanceof ImportError || e instanceof SandboxError ? e.message : 'the copy failed', sandbox: e instanceof SandboxError });
     }
@@ -110,10 +105,11 @@ export async function copy(imports, call, pid, items) {
   return out;
 }
 
-/** continueIn(call, {id, cwd, to}) -> {id}: Continue in this project — a session of the sandbox (its working folder
- *  cwd) forked into another project's folder (to): read whole, forked with fresh ids, its folder rewritten (and the
- *  store folder's, where a large tool result is kept), written there as a new session */
-export async function continueIn(call, { id, cwd, to }) {
+/** continueIn(call, {id, cwd, to}, imports) -> {id}: Continue in this project — a session of the sandbox (its working
+ *  folder cwd) forked into another project's folder (to): read whole, forked with fresh ids, its folder rewritten (and
+ *  the store folder's, where a large tool result is kept), written there as a new session. A fork of a session copied
+ *  from this computer is recorded as one (its badge; its first open in Manual, as the copy's). */
+export async function continueIn(call, { id, cwd, to }, imports = null) {
   if (!UUID.test(String(id))) throw new ImportError(400, 'bad session id');
   if (cwd === to) throw new ImportError(400, 'that session runs in this project\'s folder already');
   const { result, stdout } = await call({ op: 'sessions.export', id, ...(cwd ? { cwd } : {}) }, { maxBytes: READER.sessionBytes + (1 << 20), timeoutMs: 120000 });
@@ -122,6 +118,9 @@ export async function continueIn(call, { id, cwd, to }) {
   if (!entries.length) throw new ImportError(409, 'that session has nothing to continue yet');
   const f = await fork(id, entries, cwd);
   const rw = rewritePaths(f.entries, [[cwd, to], [`${SANDBOX_STORE}/${encodeCwd(cwd)}`, `${SANDBOX_STORE}/${encodeCwd(to)}`]]);
-  await write(call, f.id, to, toJsonl(rw.entries), [], null);
+  const written = toJsonl(rw.entries);
+  await write(call, f.id, to, written, [], null);
+  const src = imports?.imported()[id];
+  if (src) imports.noteImported(f.id, { project: src.project, tool: src.tool, source: src.source, sourceSha: src.sourceSha, writtenSha: sha256(written), at: Date.now(), forkedFrom: id, continued: true });
   return { id: f.id, rewritten: rw.n };
 }

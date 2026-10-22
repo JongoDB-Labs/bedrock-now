@@ -1,9 +1,9 @@
-// The Import sheet's routes over the backend's API (main.mjs, imports-api.mjs) with a stand-in sandbox: a look and
-// suggestions asked only on the computer running bedrock-now (never over remote access: X-Bn-Remote), a read of a look
-// allowed there from anywhere while it holds, requests to the helper written as one fixed line (never a path), the
-// preview, the copy through bn-coded's sessions.import, the CC / CB badge on the session list, an imported session's
-// first open in Manual, Continue in this project (sessions.export, then a fork written into the project's folder), and
-// suggestions without the folders that are projects already. Everything in temporary folders.
+// The Import sheet's routes over the backend's API (main.mjs, imports-api.mjs) with a stand-in sandbox: what needs the
+// portal password (a look, a read, suggestions, a copy that keeps a possible secret) is never asked here — the page asks
+// the portal; this container only follows a request by its id and never writes one. The preview (its digest), the copy
+// through bn-coded's sessions.import (nothing kept), the CC / CB badge on the session list, an imported session's first
+// open in Manual (and a fork's), Continue in this project (sessions.export, then a fork written into the project's
+// folder: an imported one's fork badged too), and suggestions without the folders that are projects already.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -52,12 +52,11 @@ const call = async (req, opts = {}) => {
 };
 const queries = [];
 const fq = fakeQuery();
-const REQS = path.join(DIR, 'requests');
 let srv, base, imports;
 before(async () => {
   const dist = tmp('bnimdist');
   const store = new Projects({ dir: tmp('bnimstate') });
-  imports = new Imports({ dir: path.join(DIR, 'imports'), stage: path.join(DIR, 'stage'), requests: REQS, helperFile: path.join(DIR, 'public', 'helper.json'),
+  imports = new Imports({ dir: path.join(DIR, 'imports'), stage: path.join(DIR, 'stage'), helperFile: path.join(DIR, 'public', 'helper.json'),
     projects: { get: (id) => store.get(id) } });
   srv = createServer({ secret: SECRET, query: (a) => { const q = fq(a); queries.push(a); return q; }, spawn: () => {}, call, distDir: dist,
     plainDir: path.resolve(import.meta.dirname, '../plain'), logger: () => {}, projects: store, imports });
@@ -82,51 +81,41 @@ const helperUp = (actions = ['sessions-scan', 'sessions-fetch', 'sessions-sugges
   fs.mkdirSync(path.join(DIR, 'public'), { recursive: true });
   fs.writeFileSync(path.join(DIR, 'public', 'helper.json'), JSON.stringify({ sessions: actions, screen: true, written_at: Math.floor(Date.now() / 1000) }));
 };
-const sxFiles = () => (fs.existsSync(REQS) ? fs.readdirSync(REQS).filter((n) => n.startsWith('sx-')) : []);
+// (anything this container wrote that looks like a request: none, anywhere under its folders)
+const requestFiles = () => { const out = []; const walk = (d) => { let es = []; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+  for (const e of es) { if (e.isDirectory()) walk(path.join(d, e.name)); else if (/^(sx|ses)-/.test(e.name)) out.push(e.name); } }; walk(DIR); return out; };
 const nonce = () => crypto.randomBytes(16).toString('hex');
 let A;
 
-test('a look: only on the computer running bedrock-now, through the helper, with the password — a fixed line, never a path', async () => {
+test('what needs the password is not asked here: no look, read or suggestions route; a request followed by its id only', async () => {
   let r = await req('GET', `/api/imports?project=${ID}`);
   assert.equal(r.status, 200);
   assert.deepEqual([r.json.index, r.json.staged, r.json.helper.running, r.json.local], [null, [], false, true]);
   assert.equal((await req('GET', '/api/imports?project=ws')).status, 400, 'the Workspace is no folder of this computer added as a project');
   assert.equal((await req('GET', '/api/imports?project=p_99999999')).status, 404);
-  r = await req('POST', '/api/imports/scan', { project: ID, password: 'pw' });
-  assert.equal(r.status, 409);
-  assert.match(r.json.error, /helper is not running/);
   helperUp();
-  r = await req('POST', '/api/imports/scan', { project: ID, password: 'pw' }, { remote: true });
-  assert.equal(r.status, 403);
-  assert.match(r.json.error, /Only on the computer running bedrock-now/);
   assert.equal((await req('GET', `/api/imports?project=${ID}`, undefined, { remote: true })).json.local, false);
-  for (const b of [{ project: ID, password: '' }, { project: ID, password: 'pw', tool: 'codex' }, { project: '/home/test/src/app', password: 'pw' }]) {
-    assert.equal((await req('POST', '/api/imports/scan', b)).status, 400, JSON.stringify(b));
+  for (const p of ['/api/imports/scan', '/api/imports/fetch', '/api/imports/suggest']) {
+    r = await req('POST', p, { project: ID, password: 'pw', ids: [uuid()] });
+    assert.equal(r.status, 404, `${p}: ${JSON.stringify(r.json)}`);
   }
-  assert.deepEqual(sxFiles(), []);
-  r = await req('POST', '/api/imports/scan', { project: ID, password: 'pw', tool: 'claude', path: '/etc' });
-  assert.equal(r.status, 200, JSON.stringify(r.json));
-  const [f] = sxFiles();
-  const line = fs.readFileSync(path.join(REQS, f), 'utf8');
-  assert.match(line, new RegExp(`^\\{"action":"sessions-scan","requested_at":[0-9]+,"nonce":"${r.json.request}","auth":"cHc=","origin":"local","project":"${ID}","tool":"claude"\\}\\n$`));
-  assert.ok(!line.includes('/etc'));
-  r = await req('GET', `/api/imports/request/${r.json.request}`);
-  assert.deepEqual([r.json.state, r.json.action, r.json.project], ['sent', 'sessions-scan', ID]);
-  // (the helper's word on it: a fixed state and reason)
-  imports.noteRequest(r.json.id, { state: 'refused', why: 'password' });
-  assert.equal((await req('GET', `/api/imports/request/${r.json.id}`)).json.why, 'password');
-  assert.equal((await req('GET', `/api/imports/request/${'0'.repeat(32)}`)).status, 404);
-  // suggestions too: only there
-  imports.lastRequest = 0;
-  assert.equal((await req('POST', '/api/imports/suggest', { password: 'pw' }, { remote: true })).status, 403);
+  assert.deepEqual(requestFiles(), []);
+  // a request the portal wrote for the helper: not heard of yet, then what the helper says (fixed words)
+  const n = nonce();
+  r = await req('GET', `/api/imports/request/${n}`);
+  assert.deepEqual(r.json, { id: n, state: 'unknown' });
+  imports.noteRequest(n, { action: 'sessions-scan', project: ID, state: 'refused', why: 'password' });
+  r = await req('GET', `/api/imports/request/${n}`);
+  assert.deepEqual([r.json.state, r.json.why, r.json.action, r.json.project], ['refused', 'password', 'sessions-scan', ID]);
+  assert.equal((await req('GET', '/api/imports/request/xyz')).status, 404);
 });
 
-test('a read of a look allowed there: from anywhere while it holds; only sessions of that list, by its row numbers', async () => {
+test('a read done by the helper waits here; the preview never has the secret, and says the digest of what waits', async () => {
   const dir = path.join(DIR, 'store', reader.encodeCwd(APP));
   fs.mkdirSync(dir, { recursive: true });
   A = uuid();
   const key = fake.awsKeyId();
-  fs.writeFileSync(path.join(dir, `${A}.jsonl`), jsonl(session({ id: A, cwd: APP, prompts: [`deploy ${key}`], title: 'Deploy' })));
+  fs.writeFileSync(path.join(dir, `${A}.jsonl`), jsonl(session({ id: A, cwd: APP, prompts: [`deploy ${key}`], title: `Deploy ${fake.github()}` })));
   const B = uuid();
   fs.writeFileSync(path.join(dir, `${B}.jsonl`), jsonl(session({ id: B, cwd: APP })));
   const scan = nonce();
@@ -134,58 +123,54 @@ test('a read of a look allowed there: from anywhere while it holds; only session
   let r = await req('GET', `/api/imports?project=${ID}`);
   assert.equal(r.json.index.rows.length, 2);
   assert.equal(r.json.index.fetchable, true);
-  const nA = r.json.index.rows.find((x) => x.id === A).n;
-  imports.lastRequest = 0;
-  r = await req('POST', '/api/imports/fetch', { project: ID, ids: [A], password: 'pw' }, { remote: true });
-  assert.equal(r.status, 200, JSON.stringify(r.json));
-  const line = fs.readFileSync(path.join(REQS, `sx-${r.json.request}.json`), 'utf8');
-  assert.match(line, new RegExp(`"origin":"remote","project":"${ID}","scan":"${scan}","rows":"${nA}"\\}`));
-  for (const b of [{ project: ID, ids: [uuid()], password: 'pw' }, { project: ID, ids: [], password: 'pw' }, { project: ID, ids: ['../x'], password: 'pw' }]) {
-    imports.lastRequest = 0;
-    assert.ok([400, 409].includes((await req('POST', '/api/imports/fetch', b)).status), JSON.stringify(b));
-  }
-  // an Allow once, more than an hour ago: not any more
-  const ix = JSON.parse(fs.readFileSync(path.join(DIR, 'imports', `index-${ID}.json`), 'utf8'));
-  fs.writeFileSync(path.join(DIR, 'imports', `index-${ID}.json`), JSON.stringify({ ...ix, at: Date.now() - 3700e3 }));
-  imports.lastRequest = 0;
-  r = await req('POST', '/api/imports/fetch', { project: ID, ids: [A], password: 'pw' });
-  assert.equal(r.status, 409);
-  assert.match(r.json.error, /look again/);
-  fs.writeFileSync(path.join(DIR, 'imports', `index-${ID}.json`), JSON.stringify(ix));
-  // the helper read them: they wait here (the stage)
+  // (a title is what a past session said: scanned too)
+  assert.equal(r.json.index.rows.find((x) => x.id === A).title, 'Deploy [REDACTED:github-token]');
   const b = [];
   reader.fetchSessions(APP, [{ tool: 'claude', dir }], [{ tool: 'claude', id: A }], (x) => b.push(x));
   await imports.stageBundle(ID, scan, Readable.from([Buffer.concat(b)]));
   r = await req('GET', `/api/imports?project=${ID}`);
   assert.deepEqual(r.json.staged.map((s) => s.id), [A]);
-  // the preview: never the secret
   r = await req('GET', `/api/imports/preview?project=${ID}&id=${A}`);
   assert.equal(r.status, 200);
   assert.equal(r.json.findings[0].kind, 'aws-key-id');
+  assert.match(r.json.digest, /^[0-9a-f]{64}$/);
+  assert.equal(r.json.digest, (await req('GET', `/api/imports?project=${ID}`)).json.staged[0].digest);
   assert.ok(!JSON.stringify(r.json).includes(key));
   assert.ok(r.json.events.length > 0);
 });
 
-test('the copy: through sessions.import, then badged on the list; its first open is in Manual', async () => {
-  let r = await req('POST', '/api/imports/copy', { project: ID, items: [{ id: A }] });
+test('the copy: nothing kept here (keeping needs the password: the portal), the digest checked; badged; its first open in Manual — a fork\'s too, marked once it opened', async () => {
+  const pv = (await req('GET', `/api/imports/preview?project=${ID}&id=${A}`)).json;
+  let r = await req('POST', '/api/imports/copy', { project: ID, items: [{ id: A, keep: [pv.findings[0].id], digest: pv.digest }] });
+  assert.equal(r.status, 403);
+  assert.match(r.json.error, /portal password/);
+  r = await req('POST', '/api/imports/copy', { project: ID, items: [{ id: A, digest: 'a'.repeat(64) }] });
+  assert.deepEqual([r.json.results[0].ok, r.json.results[0].why], [false, 'that session was read again since you checked it: check it again']);
+  r = await req('POST', '/api/imports/copy', { project: ID, items: [{ id: A, digest: pv.digest }] });
   assert.equal(r.status, 200, JSON.stringify(r.json));
-  assert.deepEqual([r.json.results[0].ok, r.json.results[0].as, r.json.results[0].redacted], [true, A, 1]);
+  assert.deepEqual([r.json.results[0].ok, r.json.results[0].as, r.json.results[0].redacted], [true, A, 2], "the key and the title's token");
   const imp = calls.filter((c) => c.op === 'sessions.import').at(-1);
   assert.deepEqual([imp.id, imp.cwd, imp.replace, imp.parts.length], [A, APP, null, 1]);
   assert.ok(!stored.get(A).toString().includes('AK'.concat('IA')));
   r = await req('GET', '/api/sessions');
   assert.deepEqual(r.json.sessions.find((s) => s.id === A).imported, { tool: 'claude', at: r.json.sessions.find((s) => s.id === A).imported.at, forked: false });
   assert.equal(r.json.sessions.find((s) => s.id === WSID).imported, undefined);
+  // a fork of it, before it was ever opened: in Manual too — and the copy still counts as not opened
+  r = await req('POST', '/api/sessions', { resume: A, fork: true, mode: 'acceptEdits' });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const forked = srv.mgr.list().find((x) => x.id !== A && x.mode === 'default');
+  assert.ok(forked, 'the fork opened in Manual');
+  assert.equal(imports.isFirstOpen(A), true);
   r = await req('POST', '/api/sessions', { resume: A, mode: 'acceptEdits' });
   assert.equal(r.status, 200, JSON.stringify(r.json));
   assert.equal(srv.mgr.get(A).mode, 'default', 'opened in Manual the first time');
   srv.mgr.get(A).close();
-  assert.equal(imports.firstOpen(A), false, 'only the first time');
+  assert.equal(imports.isFirstOpen(A), false, 'only the first time');
   assert.equal((await req('DELETE', `/api/imports/staged?project=${ID}&id=${uuid()}`)).status, 200);
   assert.equal((await req('DELETE', `/api/imports/staged?project=${ID}&id=../x`)).status, 400);
 });
 
-test('Continue in this project: the session read whole, forked, written into the project\'s folder', async () => {
+test('Continue in this project: the session read whole, forked, written into the project\'s folder — a fork of a copied session badged, first open in Manual', async () => {
   let r = await req('POST', `/api/sessions/${WSID}/continue`, { project: ID });
   assert.equal(r.status, 200, JSON.stringify(r.json));
   assert.ok(reader.UUID.test(r.json.id) && r.json.id !== WSID);
@@ -194,8 +179,13 @@ test('Continue in this project: the session read whole, forked, written into the
   assert.deepEqual([w.id, w.cwd, w.replace], [r.json.id, APP, null]);
   const text = stored.get(r.json.id).toString();
   assert.ok(text.includes(`${APP}/a.txt`) && !text.includes('"/workspace'));
+  assert.equal(imports.imported()[r.json.id], undefined, 'a session of the sandbox: no badge');
   assert.equal((await req('POST', `/api/sessions/${WSID}/continue`, { project: 'p_99999999' })).status, 404);
   assert.equal((await req('POST', `/api/sessions/${uuid()}/continue`, { project: ID })).status, 400, 'no such session in the sandbox: its refusal');
+  // the copied session continued in the Workspace: its fork is one of the copies (badge; Manual the first time)
+  r = await req('POST', `/api/sessions/${A}/continue`, { project: 'ws' });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.deepEqual([imports.imported()[r.json.id].forkedFrom, imports.isFirstOpen(r.json.id)], [A, true]);
 });
 
 test('suggestions: the folders your tools kept sessions for, but those that are projects already', async () => {
@@ -204,9 +194,4 @@ test('suggestions: the folders your tools kept sessions for, but those that are 
     .map((x) => JSON.stringify(x)).join('\n'), { consent: 'always' });
   const r = await req('GET', '/api/imports/suggestions');
   assert.deepEqual(r.json.rows, [{ path: '/home/test/src/other', claude: 0, 'claude-bedrock': 1, last: 5 }]);
-  helperUp();
-  imports.lastRequest = 0;
-  const s = await req('POST', '/api/imports/suggest', { password: 'pw' });
-  assert.equal(s.status, 200);
-  assert.match(fs.readFileSync(path.join(REQS, `sx-${s.json.request}.json`), 'utf8'), /"action":"sessions-suggest",.*"origin":"local"\}\n$/);
 });

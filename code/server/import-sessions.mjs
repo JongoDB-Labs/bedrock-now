@@ -6,37 +6,40 @@
 // kept sessions for (suggest). Then this container — never the sandbox — scans each picked transcript for secrets
 // (secrets.mjs: redacted by default), shows it (the page's own renderer, as sandbox text), and on Copy into the
 // sandbox writes it into the sandbox's own store through bn-coded (sessions.import). Nothing ever goes back to the
-// computer. The Code page asks for a look or a read through the update helper (a request file in the one folder this
-// container writes for the helper: sx-<nonce>.json, every field fixed, never a path — the helper only reads it), which
-// asks you on the computer's screen first; what the helper offers it reads from ./stack's read-only folder (helper.json).
+// computer. The Code page asks for a look or a read through the portal (POST /.bn/sessions on the code host: the
+// portal checks the password and writes the update helper a request with fixed fields, never a path), which asks you
+// on the computer's screen first; this container never sees the password — it learns how a request went from the
+// helper (./stack sessions → `request --id … --state …` here), and what the helper offers from ./stack's read-only
+// folder (helper.json). A check or a copy runs in a worker thread, one at a time (import-plan.mjs).
 //
 //   /var/lib/bn-code/imports/   (code-state; mode 700, files 600)
 //     index-<project>.json      the last list of a project's sessions (replaced by the next look; forgotten on revoke)
 //     suggestions.json          folders of this computer your tools kept sessions for (names only)
-//     requests.json             the last requests to the helper and how they went
+//     requests.json             the last requests to the helper and how they went (a copy's: its results)
 //     imported.json             what was copied: session id -> where from, its SHA-256 then and as written, redactions
 //   /run/bn-import-stage/<project>/<session>/   (tmpfs) the picked sessions' files, until copied, dropped, or an hour old
+//                                               (swept every 5 minutes; .<session>/ while a read is coming in)
 import fs from 'node:fs';
-import { isUtf8 } from 'node:buffer';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { STATE_DIR } from './githosts.mjs';
 import { TOOLS, UUID, clean, encodeCwd, LIMITS as READER } from './harness/claude.mjs';
-import { scanEntries, redactEntries, LABELS } from './secrets.mjs';
-import { parseLines, toJsonl, stripThinking, thinkingCount, rewritePaths, outsidePaths } from './transcript.mjs';
+import { LABELS, redactText, KEEP_TOKEN } from './secrets.mjs';
 import { Projects } from './projects.mjs';
+import { ImportError, PlanQueue, readJson as readJsonMax, readStaged, stageDigest } from './import-plan.mjs';
+
+export { ImportError };
 
 export const IMPORTS_DIR = process.env.BN_IMPORTS_DIR || path.join(STATE_DIR, 'imports');
 export const STAGE_DIR = process.env.BN_IMPORT_STAGE || '/run/bn-import-stage';
-export const REQUESTS_DIR = process.env.BN_CODE_REQUESTS || '/run/bn-code-requests';
 // what the update helper offers (lib/sessions.sh writes it in the folder ./stack writes for this container: read-only here)
 export const HELPER_FILE = process.env.BN_CODE_HELPER_FILE || '/etc/bn-code/projects/helper.json';
 // the sandbox's own store (its home: terminal/Dockerfile; Claude Code's default config folder there)
 export const SANDBOX_STORE = process.env.BN_SANDBOX_STORE || '/home/claude/.claude/projects';
 export const LIMITS = Object.freeze({
   rows: 4000, stage: 128 << 20, stageMs: 3600000, onceMs: 3600000, index: 8 << 20, suggestions: 500, requests: 50, imported: 2000,
-  copy: 50, recordLine: 4096, requestMs: 5000,
+  copy: 50, recordLine: 4096, sweepMs: 300000, results: 50,
 });
 const PID = /^p_[0-9a-f]{8}$/;
 const NONCE = /^[0-9a-f]{32}$/;
@@ -44,6 +47,7 @@ const SHA = /^[0-9a-f]{64}$/;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/;
 const VERSION = /^[0-9]{1,4}(\.[0-9]{1,6}){1,3}([.-][A-Za-z0-9.-]{1,40})?$/;
 const PART = /^(main|(subagents|tool-results)\/[A-Za-z0-9][A-Za-z0-9._-]{0,199})$/;
+const DIGEST = /^[0-9a-f]{64}$/;
 // eslint-disable-next-line no-control-regex
 const ODD = /[\u{0}-\u{1f}\u{7f}-\u{9f}\u{61c}\u{200b}-\u{200f}\u{2028}-\u{202e}\u{2060}-\u{2064}\u{2066}-\u{2069}\u{feff}\u{e0000}-\u{e007f}]/u;
 // an owner's path as ./stack sends it: absolute, normalized, one line, nothing that turns or hides text
@@ -51,10 +55,6 @@ export const ownerPathOk = (v) => typeof v === 'string' && v.startsWith('/') && 
   && !v.endsWith('/') && !ODD.test(v);
 const b64 = (v) => Buffer.from(String(v ?? ''), 'base64').toString('utf8');
 const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : null);
-
-export class ImportError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
-}
 
 // --- files of this container's own: a folder of mode 700, files of 600, written whole (a temporary file renamed) ---
 function writeJson(dir, name, v) {
@@ -64,15 +64,7 @@ function writeJson(dir, name, v) {
   fs.renameSync(tmp, path.join(dir, name));
 }
 // readJson(file, max) -> the JSON of a regular file of at most max bytes (never through a link), else null
-function readJson(file, max = LIMITS.index) {
-  let fd;
-  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); } catch { return null; }
-  try {
-    const st = fs.fstatSync(fd);
-    if (!st.isFile() || st.size > max) return null;
-    return JSON.parse(fs.readFileSync(fd, 'utf8'));
-  } catch { return null; } finally { fs.closeSync(fd); }
-}
+const readJson = (file, max = LIMITS.index) => readJsonMax(file, max);
 
 // --- the list of a project's sessions (index): every row checked here again, whatever the reader said ---
 const ISO = (v) => (typeof v === 'string' && v.length <= 40 && !Number.isNaN(Date.parse(v)) ? new Date(Date.parse(v)).toISOString() : null);
@@ -81,13 +73,14 @@ export function rowOf(r) {
   const n = int(r.n, 1, LIMITS.rows);
   if (n === null || !TOOLS.includes(r.tool) || typeof r.id !== 'string' || !UUID.test(r.id)) return null;
   return {
-    n, tool: r.tool, id: r.id, title: clean(r.title), first: clean(r.first), started: ISO(r.started), last: int(r.last, 0, 1e14) ?? 0,
+    // (titles, first prompts and branches are what a past session said: shown, so scanned too — L2)
+    n, tool: r.tool, id: r.id, title: redactText(clean(r.title)), first: redactText(clean(r.first)), started: ISO(r.started), last: int(r.last, 0, 1e14) ?? 0,
     messages: int(r.messages, 0, 1e7), size: int(r.size, 0, 1 << 40) ?? 0, parts: int(r.parts, 0, 100000) ?? 0, partsSkipped: int(r.partsSkipped, 0, 100000) ?? 0,
     models: Array.isArray(r.models) ? r.models.filter((m) => typeof m === 'string' && MODEL.test(m)).slice(0, 6) : [],
     version: typeof r.version === 'string' && VERSION.test(r.version) ? r.version : null,
     format: ['tested', 'other', 'unknown'].includes(r.format) ? r.format : 'unknown',
     source: ['bedrock-now', 'bedrock', 'anthropic', 'unknown'].includes(r.source) ? r.source : 'unknown',
-    thinking: int(r.thinking, 0, 1e7), branch: r.branch ? clean(r.branch, 80) || null : null, tooLarge: r.tooLarge === true || (int(r.size, 0, 1 << 40) ?? 0) > READER.sessionBytes,
+    thinking: int(r.thinking, 0, 1e7), branch: r.branch ? redactText(clean(r.branch, 80)) || null : null, tooLarge: r.tooLarge === true || (int(r.size, 0, 1 << 40) ?? 0) > READER.sessionBytes,
   };
 }
 const COUNTS = ['folders', 'listed', 'older', 'otherFolder', 'noCwd', 'unreadable', 'sidechain'];
@@ -118,31 +111,20 @@ export function parseIndex(text) {
   return { head, rows };
 }
 
-// readPart(part, k) -> a file beside the transcript, read to be scanned and copied like it: a subagent's transcript
-// (lines: as the transcript's), a JSON file, or a tool's large output (text: scanned whole, as one string — one longer
-// than the scan takes is redacted whole) — {part, kind, prefix, entries, findings}; or {part, left: why} for one that is
-// none of these, text that is not UTF-8, or JSON that does not parse: it is not copied (the preview says so)
-export function readPart({ part, data }, k) {
-  const prefix = `p${k}:`;
-  let kind, entries;
-  if (/^subagents\/[^/]+\.jsonl$/.test(part)) { kind = 'lines'; ({ entries } = parseLines(data)); }
-  else if (/\.json$/.test(part)) {
-    if (!isUtf8(data)) return { part, left: 'not text (not UTF-8)' };
-    try { entries = [JSON.parse(data.toString('utf8'))]; kind = 'json'; } catch { return { part, left: 'not valid JSON' }; }
-  } else if (/^tool-results\//.test(part)) {
-    if (!isUtf8(data)) return { part, left: 'not text (not UTF-8)' };
-    kind = 'text';
-    entries = [data.toString('utf8')];
-  } else return { part, left: 'not a kind of file the copy knows' };
-  return { part, kind, prefix, entries, findings: scanEntries(entries, { prefix }).map((f) => ({ ...f, part })) };
-}
-
 /** The imports of this container: the lists, the picked sessions, the requests to the helper, what was copied. */
 export class Imports {
-  constructor({ dir = IMPORTS_DIR, stage = STAGE_DIR, requests = REQUESTS_DIR, helperFile = HELPER_FILE, now = () => Date.now(), call = null, projects = null, log = () => {} } = {}) {
-    Object.assign(this, { dir, stageDir: stage, requestsDir: requests, helperFile, now, call, projects, log });
-    this.lastRequest = 0;
+  constructor({ dir = IMPORTS_DIR, stage = STAGE_DIR, helperFile = HELPER_FILE, now = () => Date.now(), call = null, projects = null, log = () => {}, worker = false } = {}) {
+    Object.assign(this, { dir, stageDir: stage, helperFile, now, call, projects, log });
+    // (a check or a copy: in a worker thread, one at a time — the server's; in this thread: tests, the command line)
+    this.queue = new PlanQueue({ inline: !worker });
+    this.sweeper = null;
   }
+  /** startSweeper(ms) — the stage swept every few minutes, whether anyone looks or not (an hour at most there) */
+  startSweeper(ms = LIMITS.sweepMs) {
+    if (!this.sweeper) { this.sweeper = setInterval(() => { try { this.sweep(); } catch { /* next time */ } }, ms); this.sweeper.unref?.(); }
+    return this;
+  }
+  close() { if (this.sweeper) clearInterval(this.sweeper); this.sweeper = null; return this.queue.close(); }
 
   // --- the project: a folder of this computer the code container's records have (roots.json: never the sandbox's) ---
   project(id) {
@@ -184,6 +166,13 @@ export class Imports {
       let ids = [];
       try { ids = fs.readdirSync(this.stagePath(pid)); } catch { continue; }
       for (const id of ids) {
+        // (.<session>: a read coming in now — left alone, unless it was left behind more than an hour ago)
+        if (id.startsWith('.')) {
+          let st = null;
+          try { st = fs.lstatSync(this.stagePath(pid, id)); } catch { continue; }
+          if (Date.now() - st.mtimeMs > LIMITS.stageMs) fs.rmSync(this.stagePath(pid, id), { recursive: true, force: true });
+          continue;
+        }
         const m = readJson(path.join(this.stagePath(pid, id), 'meta.json'), 1 << 20);
         if (!m || !UUID.test(id) || this.now() - (m.at || 0) > LIMITS.stageMs) fs.rmSync(this.stagePath(pid, id), { recursive: true, force: true });
       }
@@ -201,7 +190,7 @@ export class Imports {
     try { ids = fs.readdirSync(this.stagePath(pid)).filter((n) => UUID.test(n)); } catch { return []; }
     return ids.map((id) => {
       const m = readJson(path.join(this.stagePath(pid, id), 'meta.json'), 1 << 20);
-      return m && m.id === id && TOOLS.includes(m.tool) ? { id, tool: m.tool, scan: m.scan, at: m.at, size: m.parts.reduce((s, p) => s + p.size, 0), parts: m.parts.length - 1 } : null;
+      return m && m.id === id && TOOLS.includes(m.tool) && Array.isArray(m.parts) ? { id, tool: m.tool, scan: m.scan, at: m.at, size: m.parts.reduce((s, p) => s + p.size, 0), parts: m.parts.length - 1, digest: stageDigest(m) } : null;
     }).filter(Boolean).sort((a, b) => b.at - a.at);
   }
   drop(pid, id) {
@@ -264,7 +253,9 @@ export class Imports {
     // (complete: each session's folder renamed into place, its meta last)
     for (const [id, g] of got) {
       const store = typeof stores[g.tool] === 'string' && ownerPathOk(stores[g.tool]) ? stores[g.tool] : null;
-      fs.writeFileSync(path.join(this.stagePath(pid, `.${id}`), 'meta.json'), JSON.stringify({ id, tool: g.tool, scan, at: this.now(), parts: g.parts, store }), { mode: 0o600 });
+      // (key: the waiting session's own, for the hashes that keep a finding — never shown, gone with the stage)
+      fs.writeFileSync(path.join(this.stagePath(pid, `.${id}`), 'meta.json'), JSON.stringify({ id, tool: g.tool, scan, at: this.now(), parts: g.parts, store,
+        key: crypto.randomBytes(32).toString('hex') }), { mode: 0o600 });
       fs.rmSync(this.stagePath(pid, id), { recursive: true, force: true });
       fs.renameSync(this.stagePath(pid, `.${id}`), this.stagePath(pid, id));
     }
@@ -272,98 +263,58 @@ export class Imports {
   }
   // stagedSession(pid, id) -> {meta, main: Buffer, parts: [{part, data}]} of a picked session, each file checked again
   stagedSession(pid, id) {
-    if (!PID.test(String(pid)) || !UUID.test(String(id))) throw new ImportError(400, 'bad session id');
     this.sweep();
-    const dir = this.stagePath(pid, id);
-    const m = readJson(path.join(dir, 'meta.json'), 1 << 20);
-    if (!m || m.id !== id || !TOOLS.includes(m.tool) || !Array.isArray(m.parts) || m.parts[0]?.part !== 'main') throw new ImportError(404, 'that session is not waiting to be copied (read it again)');
-    const files = m.parts.map((p) => {
-      if (!PART.test(String(p.part)) || !/^p[0-9]{1,4}$/.test(String(p.file))) throw new ImportError(500, 'a waiting session is not whole');
-      const data = fs.readFileSync(path.join(dir, p.file));
-      if (crypto.createHash('sha256').update(data).digest('hex') !== p.sha256) throw new ImportError(500, 'a waiting session is not whole');
-      return { part: p.part, data };
-    });
-    return { meta: m, main: files[0].data, parts: files.slice(1) };
+    return readStaged(this.stageDir, pid, id);
   }
 
-  // --- what a copy will be: the transcript after the choices (findings redacted unless kept, thinking out or not) ---
-  plan(pid, id, { keep = [], thinking = null } = {}) {
+  /** plan(pid, id, {kind, keep, thinking, digest}) -> what a copy of a waiting session will be (import-plan.mjs runJob,
+   *  in the worker): kind 'preview' (findings, the transcript as events) or 'copy' (its bytes). keep: tokens of
+   *  findings to keep (or true: all); digest: the one the check step showed (a copy is refused when it changed). */
+  async plan(pid, id, { kind = 'preview', keep = [], thinking = null, digest = null } = {}) {
     const p = this.project(pid);
+    if (!UUID.test(String(id))) throw new ImportError(400, 'bad session id');
+    this.sweep();
     const ix = this.index(pid);
-    const s = this.stagedSession(pid, id);
-    const row = ix?.rows.find((r) => r.id === id && r.tool === s.meta.tool) ?? null;
-    const { entries, bad } = parseLines(s.main);
-    // the files beside it (subagents' transcripts, large tool results): read the same way, findings of their own
-    const read = s.parts.map((pt, i) => readPart(pt, i + 1));
-    const findings = [...scanEntries(entries).map((f) => ({ ...f, part: null })), ...read.flatMap((r) => r.findings ?? [])];
-    const keepSet = new Set(keep.filter((k) => findings.some((f) => f.id === k && f.keepable)));
-    const source = row?.source ?? (s.meta.tool === 'claude-bedrock' ? 'bedrock-now' : 'unknown');
-    // (thinking blocks out, by default, when the session ran elsewhere than on Bedrock: their signatures are that platform's)
-    const strip = thinking === null ? !['bedrock-now', 'bedrock'].includes(source) : thinking === 'strip';
+    const m = readJson(path.join(this.stagePath(pid, id), 'meta.json'), 1 << 20);
+    if (!m || m.id !== id || !TOOLS.includes(m.tool)) throw new ImportError(404, 'that session is not waiting to be copied (read it again)');
+    const row = ix?.rows.find((r) => r.id === id && r.tool === m.tool) ?? null;
+    const source = row?.source ?? (m.tool === 'claude-bedrock' ? 'bedrock-now' : 'unknown');
     const host = ix?.host ?? p.root;
-    const pairs = [];
-    if (host !== p.root) pairs.push([host, p.root]);
-    if (s.meta.store) pairs.push([`${s.meta.store}/${encodeCwd(host)}`, `${SANDBOX_STORE}/${encodeCwd(p.root)}`]);
-    // the transcript: findings redacted (but those kept), thinking out or not, paths rewritten
-    const red = redactEntries(entries, keepSet);
-    const th = strip ? stripThinking(red.entries) : { entries: red.entries, blocks: 0, dropped: 0 };
-    const rw = rewritePaths(th.entries, pairs);
-    // … and each file beside it the same way; one that cannot be read so is left behind (said)
-    let redacted = red.redacted, kept = red.kept, removed = th.blocks, rewritten = rw.n;
-    const parts = [], left = [];
-    for (const r of read) {
-      if (r.left) { left.push({ part: r.part, why: r.left }); continue; }
-      const pr = redactEntries(r.entries, keepSet, { prefix: r.prefix });
-      const pt = strip && r.kind === 'lines' ? stripThinking(pr.entries) : { entries: pr.entries, blocks: 0 };
-      const pw = rewritePaths(pt.entries, pairs);
-      redacted += pr.redacted; kept += pr.kept; removed += pt.blocks; rewritten += pw.n;
-      const data = r.kind === 'lines' ? toJsonl(pw.entries) : r.kind === 'json' ? Buffer.from(JSON.stringify(pw.entries[0]), 'utf8') : Buffer.from(pw.entries.join(''), 'utf8');
-      parts.push({ part: r.part, data });
-    }
-    return {
-      project: p, row, meta: s.meta, parts, left, size: s.main.length, entries: rw.entries, bad, findings, kept, redacted,
-      thinking: { blocks: thinkingCount(entries), removed, strip, source }, rewritten, hidden: host !== p.root,
-      outside: outsidePaths(entries, [host]), sourceSha: crypto.createHash('sha256').update(s.main).digest('hex'),
-    };
+    if (digest !== null && !DIGEST.test(String(digest))) throw new ImportError(400, 'bad digest');
+    const res = await this.queue.run({
+      kind, stageDir: this.stageDir, pid, id, root: p.root, host, source, sandboxStore: SANDBOX_STORE, storeName: encodeCwd(host), sandboxName: encodeCwd(p.root),
+      keep: keep === true ? true : (Array.isArray(keep) ? keep.filter((k) => typeof k === 'string' && KEEP_TOKEN.test(k)).slice(0, 2000) : []),
+      thinking: thinking === 'keep' || thinking === 'strip' ? thinking : null, digest,
+    });
+    // (the Buffers come back from the worker as Uint8Arrays)
+    if (kind === 'copy') { res.main = Buffer.from(res.main); res.parts = res.parts.map((x) => ({ part: x.part, data: Buffer.from(x.data) })); }
+    return { ...res, project: p, row, meta: { tool: m.tool } };
   }
 
-  // --- requests to the update helper (a file it reads from the folder only it and this container share) ---
+  // --- requests to the update helper: the page asks the portal (POST /.bn/sessions), which writes the helper's request;
+  // --- the helper says here how it went (./stack sessions → request --id … --state …) — this container only keeps that ---
   helper() {
     const v = readJson(this.helperFile, 4096);
     const at = int(v?.written_at, 0, 1e11);
-    const actions = Array.isArray(v?.sessions) ? v.sessions.filter((a) => ['sessions-scan', 'sessions-fetch', 'sessions-suggest'].includes(a)) : [];
+    const actions = Array.isArray(v?.sessions) ? v.sessions.filter((a) => HELPER_ACTIONS.includes(a)) : [];
     return { running: at !== null && Math.abs(this.now() / 1000 - at) < 180, actions, screen: v?.screen === true };
-  }
-  /** request(action, fields, password, origin) -> nonce: sx-<nonce>.json for the helper, one line, its fields in a
-   *  fixed order (the helper matches the line whole: lib/settings_helper.sh) */
-  request(action, fields, password, origin) {
-    if (typeof password !== 'string' || !password || Buffer.byteLength(password) > 300 || /[\x00-\x1f\x7f]/.test(password)) throw new ImportError(400, 'the portal password, please');
-    const h = this.helper();
-    if (!h.running) throw new ImportError(409, 'The update helper is not running on the computer: in a terminal there, ./stack sessions (./stack helper install keeps it running).');
-    if (!h.actions.includes(action)) throw new ImportError(409, 'This update helper does not read sessions yet: ./stack helper install refreshes it.');
-    if (this.now() - this.lastRequest < LIMITS.requestMs) throw new ImportError(429, 'One request every 5 seconds, please.');
-    const nonce = crypto.randomBytes(16).toString('hex');
-    const body = { action, requested_at: Math.floor(this.now() / 1000), nonce, auth: Buffer.from(password, 'utf8').toString('base64'), origin, ...fields };
-    const raw = JSON.stringify(body);
-    if (raw.length > 768) throw new ImportError(400, 'too large');
-    fs.mkdirSync(this.requestsDir, { recursive: true, mode: 0o700 });
-    const tmp = path.join(this.requestsDir, `.sx-${nonce}`);
-    fs.writeFileSync(tmp, `${raw}\n`, { mode: 0o600, flag: 'wx' });
-    fs.renameSync(tmp, path.join(this.requestsDir, `sx-${nonce}.json`));
-    this.lastRequest = this.now();
-    this.noteRequest(nonce, { action, project: fields.project ?? null, state: 'sent' });
-    return nonce;
   }
   requests() {
     const v = readJson(path.join(this.dir, 'requests.json'), 1 << 20);
     return Array.isArray(v) ? v.filter((r) => r && NONCE.test(String(r.id))) : [];
   }
-  /** noteRequest(nonce, {state, why}) — how a request went (the helper says it: lib/sessions.sh; a fixed word only) */
-  noteRequest(nonce, { action = null, project = null, state, why = null }) {
+  /** noteRequest(nonce, {action, project, state, why, results}) — how a request went (the helper says it: lib/sessions.sh;
+   *  fixed words only; a copy's results: as copy() gives them) */
+  noteRequest(nonce, { action = null, project = null, state, why = null, results = null }) {
     if (!NONCE.test(String(nonce)) || !REQUEST_STATES.includes(state) || (why !== null && !REQUEST_WHY.includes(why))) throw new ImportError(400, 'bad request state');
+    if (action !== null && !HELPER_ACTIONS.includes(action)) throw new ImportError(400, 'bad request state');
+    if (project !== null && !PID.test(String(project))) throw new ImportError(400, 'bad request state');
     const list = this.requests();
     const had = list.find((r) => r.id === nonce);
     const rec = { ...(had || { id: nonce, action, project, at: this.now() }), state, why, updated: this.now() };
+    if (action !== null) rec.action = action;
+    if (project !== null) rec.project = project;
+    if (Array.isArray(results)) rec.results = results.slice(0, LIMITS.results);
     writeJson(this.dir, 'requests.json', [rec, ...list.filter((r) => r.id !== nonce)].slice(0, LIMITS.requests));
     return rec;
   }
@@ -375,13 +326,17 @@ export class Imports {
     if (v && typeof v === 'object' && !Array.isArray(v)) for (const [k, r] of Object.entries(v).slice(0, LIMITS.imported)) if (UUID.test(k) && r && TOOLS.includes(r.tool)) out[k] = r;
     return out;
   }
-  /** firstOpen(id) -> true the first time a session copied from this computer is opened here (then never again) */
-  firstOpen(id) {
+  /** isFirstOpen(id) -> a session copied from this computer (or a fork of one) not opened here yet: it opens in Manual */
+  isFirstOpen(id) {
+    const r = this.imported()[id];
+    return Boolean(r && !r.opened);
+  }
+  /** markOpened(id) — opened (once it did): from now on as asked */
+  markOpened(id) {
     const all = this.imported();
-    if (!all[id] || all[id].opened) return false;
+    if (!all[id] || all[id].opened) return;
     all[id].opened = this.now();
     writeJson(this.dir, 'imported.json', all);
-    return true;
   }
   noteImported(id, rec) {
     const all = this.imported();
@@ -400,7 +355,7 @@ export class Imports {
       try { o = JSON.parse(line); } catch { continue; }
       const p = b64(o?.path_b64);
       if (!ownerPathOk(p) || rows.some((r) => r.path === p)) continue;
-      rows.push({ path: p, claude: int(o.claude, 0, 1e6) ?? 0, 'claude-bedrock': int(o['claude-bedrock'], 0, 1e6) ?? 0, last: int(o.last, 0, 1e14) ?? 0 });
+      rows.push({ path: redactText(p), claude: int(o.claude, 0, 1e6) ?? 0, 'claude-bedrock': int(o['claude-bedrock'], 0, 1e6) ?? 0, last: int(o.last, 0, 1e14) ?? 0 });
     }
     writeJson(this.dir, 'suggestions.json', { version: 1, at: this.now(), consent, rows });
     return { rows: rows.length };
@@ -431,11 +386,12 @@ export class Imports {
     return { ok: true };
   }
 }
-export const REQUEST_STATES = Object.freeze(['sent', 'asking', 'reading', 'done', 'refused', 'cancelled', 'failed']);
+export const REQUEST_STATES = Object.freeze(['sent', 'asking', 'reading', 'copying', 'done', 'refused', 'cancelled', 'failed']);
+export const HELPER_ACTIONS = Object.freeze(['sessions-scan', 'sessions-fetch', 'sessions-suggest', 'sessions-copy']);
 // why a request did not go through (lib/sessions.sh and the helper say one of these words; the page says them in
 // sentences of its own: never a store's or a request's text)
 export const REQUEST_WHY = Object.freeze(['password', 'busy', 'limit', 'denied', 'no-screen', 'remote', 'no-consent', 'no-project', 'no-store',
-  'no-sessions', 'stale', 'reader', 'code', 'bad-request']);
+  'no-sessions', 'stale', 'reader', 'code', 'bad-request', 'changed']);
 
 // --- the command line (./stack, in the code container: docker compose exec -T code node server/import-sessions.mjs) ---
 const opt = (argv, k) => { const i = argv.indexOf(k); return i >= 0 && typeof argv[i + 1] === 'string' ? argv[i + 1] : null; };
@@ -465,41 +421,46 @@ export async function cli(argv, { stdin = process.stdin, imports = new Imports({
       last: r.last, size: r.size, tooLarge: r.tooLarge, format: r.format, copied: Boolean(r.copied) })) });
   }
   const ids = () => String(opt(argv, '--ids') ?? '').split(',').filter((x) => UUID.test(x)).slice(0, LIMITS.copy);
+  const thinkingOpt = () => (argv.includes('--keep-thinking') ? 'keep' : argv.includes('--strip-thinking') ? 'strip' : null);
   if (cmd === 'findings') {
     const pid = opt(argv, '--project');
+    const all = [];
+    for (const id of ids()) {
+      try {
+        const pl = await imports.plan(pid, id, { thinking: thinkingOpt() });
+        const kinds = {};
+        for (const f of pl.findings) kinds[f.kind] = (kinds[f.kind] || 0) + 1;
+        all.push({ id, title: pl.row?.title ?? '', findings: pl.findingsTotal, kinds, thinking: pl.thinking, outside: pl.outside.count, left: pl.left.length, bad: pl.bad, hidden: pl.hidden });
+      } catch (e) { all.push({ id, error: e instanceof ImportError ? e.message : 'unreadable' }); }
+    }
     if (tsv) {
-      for (const id of ids()) {
-        try {
-          const pl = imports.plan(pid, id);
-          const kinds = [...new Set(pl.findings.map((x) => x.kind))].join(',');
-          line([id, pl.findings.length, kinds || '-', pl.thinking.strip ? pl.thinking.blocks : 0, pl.outside.count, pl.left.length, pl.row?.title ?? ''].map(cell).join('\t'));
-        } catch { /* (not waiting: left out) */ }
+      for (const r of all) {
+        if (r.error) continue;
+        const th = r.thinking.strip ? r.thinking.removed : r.thinking.left;
+        line([r.id, r.findings, Object.keys(r.kinds).join(',') || '-', th, r.thinking.strip ? 'out' : 'left', r.outside, r.left, r.title].map(cell).join('\t'));
       }
       return undefined;
     }
-    return out({ ok: true, sessions: ids().map((id) => {
-      try {
-        const pl = imports.plan(pid, id);
-        const kinds = {};
-        for (const f of pl.findings) kinds[f.kind] = (kinds[f.kind] || 0) + 1;
-        return { id, title: pl.row?.title ?? '', findings: pl.findings.length, kinds, thinking: pl.thinking, outside: pl.outside.count, bad: pl.bad, hidden: pl.hidden };
-      } catch (e) { return { id, error: e instanceof ImportError ? e.message : 'unreadable' }; }
-    }) });
+    return out({ ok: true, sessions: all });
   }
   if (cmd === 'copy') {
+    // (the terminal: --keep-secrets keeps every finding; the helper, for a copy asked on the page with some kept: --keep
+    // the tokens the page sent, --digest the one its check step showed, --request how it went, kept here for the page)
     const pid = opt(argv, '--project');
-    const keepAll = argv.includes('--keep-secrets');
-    const thinking = argv.includes('--keep-thinking') ? 'keep' : null;
-    const items = ids().map((id) => {
-      let keep = [];
-      if (keepAll) { try { keep = imports.plan(pid, id).findings.map((f) => f.id); } catch { keep = []; } }
-      return { id, keep, thinking };
-    });
+    const keepArg = opt(argv, '--keep');
+    const keep = argv.includes('--keep-secrets') ? true : keepArg ? keepArg.split(',').filter((k) => KEEP_TOKEN.test(k)) : [];
+    const digest = opt(argv, '--digest');
+    const nonce = opt(argv, '--request');
+    const items = ids().map((id) => ({ id, keep, thinking: thinkingOpt(), digest: digest && DIGEST.test(digest) ? digest : null }));
     const { copy } = await import('./import-copy.mjs');
     const { sandboxCall } = await import('./spawn-client.mjs');
     const results = await copy(imports, call ?? sandboxCall, pid, items);
+    if (nonce && NONCE.test(nonce)) {
+      try { imports.noteRequest(nonce, { action: 'sessions-copy', project: PID.test(String(pid)) ? pid : null, state: 'copying', results }); } catch { /* (a bad nonce: not kept) */ }
+    }
     if (tsv) {
-      for (const r of results) line([r.id, r.ok ? 'ok' : 'no', r.as ?? '-', r.redacted ?? 0, r.kept ?? 0, r.left ?? 0, r.ok ? '' : r.why].map(cell).join('\t'));
+      // (said: whose words a refusal is — the sandbox's are shown apart, as the sandbox's, never in a sentence of ours)
+      for (const r of results) line([r.id, r.ok ? 'ok' : 'no', r.as ?? '-', r.redacted ?? 0, r.kept ?? 0, r.left ?? 0, r.ok ? '-' : r.sandbox ? 'sandbox' : 'ours', r.ok ? '' : r.why].map(cell).join('\t'));
       return undefined;
     }
     return out({ ok: true, results });
@@ -514,7 +475,10 @@ export async function cli(argv, { stdin = process.stdin, imports = new Imports({
     return out({ ok: true, ...(await imports.stageBundle(opt(argv, '--project'), opt(argv, '--scan'), stdin, { stores })) });
   }
   if (cmd === 'suggest') return out({ ok: true, ...imports.saveSuggestions(await readAll(stdin, 1 << 20), { consent: opt(argv, '--consent') }) });
-  if (cmd === 'request') { imports.noteRequest(opt(argv, '--id'), { state: opt(argv, '--state'), why: opt(argv, '--why') }); return out({ ok: true }); }
+  if (cmd === 'request') {
+    imports.noteRequest(opt(argv, '--id'), { state: opt(argv, '--state'), why: opt(argv, '--why'), action: opt(argv, '--action'), project: opt(argv, '--project') });
+    return out({ ok: true });
+  }
   if (cmd === 'forget') return out({ ok: true, ...imports.forget(opt(argv, '--project'), opt(argv, '--tool')) });
   throw new ImportError(400, 'unknown command');
 }

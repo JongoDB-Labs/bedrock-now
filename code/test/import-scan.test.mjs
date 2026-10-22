@@ -4,41 +4,54 @@
 // rewritten only where it stands as a path of its own, lines that are no JSON dropped). Fake secrets are made at run time.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scan, scanEntries, redactEntries, entropy, masked, KINDS, MAX_TEXT } from '../server/secrets.mjs';
-import { parseLines, toJsonl, stripThinking, thinkingCount, rewriteString, rewritePaths, outsidePaths } from '../server/transcript.mjs';
+import { scan, scanEntries, redactEntries, processEntries, redactText, entropy, masked, keepToken, KINDS, MAX_TEXT, KEEP_TOKEN } from '../server/secrets.mjs';
+import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewriteString, rewritePaths, rewrites, outsidePaths } from '../server/transcript.mjs';
 import { session, fake, rand, uuid } from './transcripts.mjs';
 
 test('every kind of secret is found, said in plain words with a few characters and its length — never whole', () => {
   const cases = {
     'aws-key-id': () => `aws_access_key_id = ${fake.awsKeyId()}`,
     'aws-secret': () => `AWS_SECRET_ACCESS_KEY=${fake.awsSecret()}`,
+    'bedrock-api-key': () => `export AWS_BEARER_KEY ${fake.bedrock()}`,
     'github-token': () => `git push https://github.com with ${fake.github()} now`,
     'gitlab-token': () => `export TOKEN_FOR_CI ${fake.gitlab()}`,
     'slack-token': () => `slack: ${fake.slack()}`,
+    'slack-webhook': () => `curl -X POST ${fake.slackWebhook()} -d x`,
     'anthropic-key': () => `key ${fake.anthropic()} here`,
     'openai-key': () => `OPENAI ${fake.openai()}`,
     'google-api-key': () => `maps ${fake.google()}`,
     'stripe-key': () => `stripe ${fake.stripe()}`,
-    'npm-token': () => `//registry.npmjs.org/:_authToken ${fake.npm()}`,
-    'jwt': () => `cookie ${fake.jwt()}`,
+    'sendgrid-key': () => `mail ${fake.sendgrid()} ok`,
+    'azure-key': () => `conn ${fake.azure()}`,
+    'npm-token': () => `//registry.npmjs.org/:_auth ${fake.npm()}`,
+    'pypi-token': () => `twine upload -u __x__ ${fake.pypi()}`,
+    'jwt': () => `see ${fake.jwt()}`,
     'huggingface-token': () => `HF ${['hf', '_'].join('')}${rand(34, 'abcdefghijklmnopqrstuvwxyzABCDEFGH')} ok`,
     'private-key': () => `cat id_rsa\n${fake.pem()}\n`,
     'authorization': () => `curl -H "Authorization: Bearer ${fake.bearer()}" https://api`,
+    'cookie': () => `curl -H 'Cookie: sid=${rand(24)}; theme=dark' https://x`,
     'url-password': () => `postgres://admin:${fake.password()}@db.internal:5432/app`,
+    'named': () => [rand(12), { named: true }],
     'assignment': () => `db_password: "${fake.password()}"`,
-    'env-line': () => `\nSERVICE_CREDENTIAL_VALUE=${rand(32)}\n`,
+    'env-line': () => `\nSERVICE_CREDENTIAL_VALUE=${rand(32)}\n`.replace('CREDENTIAL', 'VALUE_OF'),
   };
   assert.deepEqual(Object.keys(cases).sort(), KINDS.map((k) => k.kind).sort(), 'a case for every kind');
   for (const [kind, make] of Object.entries(cases)) {
-    const text = make();
-    const found = scan(text);
+    const made = make();
+    const [text, opts] = Array.isArray(made) ? made : [made, {}];
+    const found = scan(text, opts);
     assert.deepEqual(found.map((f) => f.kind), [kind], `${kind}: ${text.slice(0, 60)}`);
     const secret = text.slice(found[0].start, found[0].end);
-    const [f] = scanEntries([{ type: 'user', message: { role: 'user', content: text } }]);
+    const [f] = opts.named ? scanEntries([{ type: 'user', password: text }]) : scanEntries([{ type: 'user', message: { role: 'user', content: text } }]);
     assert.equal(f.kind, kind);
     assert.ok(!f.preview.includes(secret) && !f.context.includes(secret), kind);
-    assert.match(f.preview, kind === 'private-key' ? /^a PEM block of \d+ lines$/ : /… \(\d+ characters\)$/);
-    assert.ok(f.label.length > 5);
+    assert.match(f.preview, kind === 'private-key' ? /^a private key of \d+ lines$/ : /… \(\d+ characters\)$/);
+    assert.ok(f.label.length > 5 && KEEP_TOKEN.test(f.id), kind);
+  }
+  // the other shapes of a few kinds: a short-term Bedrock key, Stripe's webhook secret, SSH2 and PuTTY keys
+  for (const [kind, text] of [['bedrock-api-key', `key="${fake.bedrockShort()}"`], ['stripe-key', `secret ${fake.whsec()}`], ['private-key', fake.ssh2()], ['private-key', fake.putty()]]) {
+    assert.deepEqual(scan(text).map((x) => x.kind), [kind], text.slice(0, 40));
+    assert.ok(!redactText(text).includes(text.slice(-24)), kind);
   }
 });
 
@@ -49,9 +62,12 @@ test('redaction: every finding replaced by [REDACTED:<kind>], kept ones left as 
     { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: `GH_TOKEN=${gh} gh pr list` } }] } },
     { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: `${pem}\nok` }] } },
   ];
-  const f = scanEntries(e);
-  assert.deepEqual(f.map((x) => [x.id, x.kind, x.line, x.message]), [['1.1', 'aws-key-id', 1, 1], ['2.1', 'github-token', 2, 2], ['3.1', 'private-key', 3, 3]]);
-  const r = redactEntries(e);
+  const f = scanEntries(e, { key: 'k' });
+  assert.deepEqual(f.map((x) => [x.kind, x.line, x.message, x.part]), [['aws-key-id', 1, 1, 'main'], ['github-token', 2, 2, 'main'], ['private-key', 3, 3, 'main']]);
+  // (the token that keeps one: the file it is in and a keyed hash of its kind and value — never a position)
+  assert.equal(f[1].id, keepToken('main', 'github-token', gh, 'k'));
+  assert.notEqual(f[1].id, keepToken('main', 'github-token', gh, 'another key'));
+  const r = redactEntries(e, new Set(), { key: 'k' });
   assert.equal(r.redacted, 3);
   const text = JSON.stringify(r.entries);
   for (const s of [k1, gh, 'PRIVATE KEY-----\n']) assert.ok(!text.includes(s.slice(4)), s.slice(0, 6));
@@ -60,23 +76,35 @@ test('redaction: every finding replaced by [REDACTED:<kind>], kept ones left as 
   assert.deepEqual(scanEntries(r.entries), [], 'nothing left to find');
   assert.deepEqual(redactEntries(r.entries).entries, r.entries, 'idempotent');
   // keep one: it stays, the others go
-  const k = redactEntries(e, new Set(['2.1']));
+  const k = redactEntries(e, new Set([f[1].id]), { key: 'k' });
   assert.equal(k.kept, 1);
   assert.equal(k.redacted, 2);
   assert.ok(JSON.stringify(k.entries).includes(gh));
   assert.ok(!JSON.stringify(k.entries).includes(k1));
+  // the same token in another file keeps nothing there
+  assert.equal(redactEntries(e, new Set([f[1].id]), { key: 'k', part: 'subagents/a.jsonl' }).kept, 0);
   // the input is never changed
   assert.ok(JSON.stringify(e).includes(k1));
 });
 
-test('placeholders, variables, low-entropy values and a thinking block\'s signature are not findings', () => {
+test('placeholders — only when the WHOLE value is one — variables, low-entropy values are not findings; a value that only starts like one is', () => {
   for (const s of ['password=${DB_PASSWORD}', 'token: <your-token-here>', 'api_key = "xxxxxxxxxxxxxxxx"', 'password: process.env.PASS', 'secret = [REDACTED:assignment]',
     'Authorization: Bearer [REDACTED:authorization]', 'export PATH_TO_THINGS=aaaaaaaaaaaaaaaaaaaaaaaa', 'the password field is required', 'https://user@example.com/x',
-    'TOKEN=changeme1234', 'password=aaaaaaaabbbb']) {
+    'TOKEN=changeme', 'password=aaaaaaaabbbb', 'password: string;', '{{ secrets.API_TOKEN }}', 'apiKey: os.getenv("API_KEY")', 'Cookie: [REDACTED:cookie]',
+    'postgres://user:password@localhost/db', '--password $DB_PASS']) {
     assert.deepEqual(scan(s), [], s);
   }
+  // (a real value that starts like a placeholder: found — M3)
+  for (const [s, kind] of [[`password=Test${rand(8)}`, 'assignment'], [`secret: Trueblue${rand(6)}`, 'assignment'], [`postgres://admin:testing${rand(6)}@db`, 'url-password'],
+    [`TOKEN=changeme${rand(6, '0123456789')}`, 'assignment'], [`password = "/${rand(10)}"`, 'assignment'], [`api_key: example_${rand(10)}`, 'assignment']]) {
+    assert.deepEqual(scan(s).map((x) => x.kind), [kind], s);
+  }
+  // a thinking block's signature: dealt with by the caller (skipThinking: its blocks were checked and left out or kept as they are)
   const sig = { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'x', signature: fake.github() }, { type: 'redacted_thinking', data: 'x', signature: fake.github() }] } };
-  assert.deepEqual(scanEntries([sig]), []);
+  assert.deepEqual(scanEntries([sig], { skipThinking: true }), []);
+  assert.equal(scanEntries([sig]).length, 2, 'scanned when nobody dealt with the block');
+  // (only an assistant's message: a user entry shaped like one is scanned whole)
+  assert.equal(scanEntries([{ ...sig, type: 'user' }], { skipThinking: true }).length, 2);
   assert.ok(entropy('aaaa') === 0 && entropy('abcd') === 2);
   assert.equal(masked('abcdefghijklmnop', 'github-token'), 'abcd… (16 characters)');
   assert.equal(masked('abc', 'url-password'), '… (3 characters)');
@@ -256,4 +284,105 @@ test('the counts and sizes that redact a text whole: at MAX_FINDINGS and MAX_TEX
   assert.deepEqual(scan(at).map((x) => x.kind), ['github-token']);
   assert.deepEqual(scan(`${at}y`).map((x) => [x.kind, x.start, x.end]), [['too-long', 0, MAX_TEXT + 1]]);
   assert.equal(redactEntries([`${at}y`], new Set(['1.1'])).entries[0], '[REDACTED:too-long]', 'never kept');
+});
+
+test('a value under a secret\'s name is a finding whole — in a tool\'s input, its result, structuredContent, a JSON file beside it, an environment list', () => {
+  const pw = `${rand(10)}-${rand(6)}`, sec = fake.awsSecret(), key = fake.awsKeyId(), tok = rand(40), api = rand(32), sess = rand(64);
+  const e = [
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'mcp__db__connect', input: { host: 'db', password: pw } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] }, toolUseResult: { env: { AWS_SECRET_ACCESS_KEY: sec, HOME: '/home/x' } } },
+    { type: 'user', toolUseResult: { request: { headers: { 'X-Api-Key': api, Accept: 'application/json' } } } },
+    { type: 'user', toolUseResult: { structuredContent: { Credentials: { AccessKeyId: key, SecretAccessKey: sec, SessionToken: sess, Expiration: '2026-10-22T10:00:00Z' } } } },
+    { type: 'user', toolUseResult: { Config: { Env: ['PATH=/usr/bin', `DB_PASSWORD=${pw}`, `GH_TOKEN=${tok}`, 'LANG=C.UTF-8'] } } },
+  ];
+  const f = scanEntries(e);
+  const at = (p) => f.filter((x) => x.path === p).map((x) => x.kind);
+  assert.deepEqual(at('message.content[0].input.password'), ['named']);
+  assert.deepEqual(at('toolUseResult.env.AWS_SECRET_ACCESS_KEY'), ['named']);
+  assert.deepEqual(at('toolUseResult.request.headers.X-Api-Key'), ['named']);
+  assert.deepEqual(at('toolUseResult.structuredContent.Credentials.AccessKeyId'), ['aws-key-id']);
+  assert.deepEqual(at('toolUseResult.structuredContent.Credentials.SecretAccessKey'), ['named']);
+  assert.deepEqual(at('toolUseResult.structuredContent.Credentials.SessionToken'), ['named']);
+  assert.deepEqual(at('toolUseResult.Config.Env[1]'), ['named']);
+  assert.deepEqual(at('toolUseResult.Config.Env[2]'), ['named']);
+  assert.equal(f.length, 8, f.map((x) => x.path).join(' | '));
+  const r = JSON.stringify(redactEntries(e).entries);
+  for (const v of [pw, sec, key, tok, api, sess]) assert.ok(!r.includes(v), v.slice(0, 6));
+  assert.match(r, /"DB_PASSWORD=\[REDACTED:named\]"/);
+  assert.match(r, /"PATH=\/usr\/bin"/);
+  assert.match(r, /"HOME":"\/home\/x"/);
+  // the same in a JSON file beside the transcript (tool-results/*.json): its own part, its own tokens
+  const pf = scanEntries([{ password: pw, token: tok }], { part: 'tool-results/out.json' });
+  assert.deepEqual(pf.map((x) => [x.kind, x.part]), [['named', 'tool-results/out.json'], ['named', 'tool-results/out.json']]);
+  // a value that is a placeholder, short or plain under such a name: none
+  assert.deepEqual(scanEntries([{ password: '${PASS}', token: 'abc', secret: 'aaaaaaaaaa', passwordPolicy: 'required', cookie: '[REDACTED:cookie]' }]), []);
+});
+
+test('names and formats: the name anywhere in an identifier, spaces, =>, YAML, --flag value, indented lines, JSON-escaped headers, Bedrock keys in any quoting', () => {
+  const v = () => `${rand(12)}${rand(4, '0123456789')}`;
+  const cases = [
+    `MY_SERVICE_API_KEY_PROD=${v()}`, `export  SECRET_VALUE = '${v()}'`, `'password' => '${v()}'`, `"db_password"  :  "${v()}"`, `password:\n  nested: x\nsmtp_password: ${v()}`,
+    `mysql -u root --password ${v()} db`, `mysql --password=${v()}`, `client.authToken := "${v()}"`, `{\\"Authorization\\": \\"Basic ${rand(24)}\\"}`,
+    `"authorization": "token ${rand(30)}"`, `Set-Cookie: session=${rand(30)}; Path=/; HttpOnly`, `config.sessionToken=${v()}`,
+  ];
+  for (const t of cases) {
+    const found = scan(t);
+    assert.equal(found.length, 1, `${t}: ${JSON.stringify(found)}`);
+    assert.ok(!redactText(t).includes(t.slice(found[0].start, found[0].end)), t);
+  }
+  // indented .env lines (no secret's name in them): a long random value
+  assert.deepEqual(scan(`config:\n    SERVICE_VALUE=${rand(32)}\n`).map((x) => x.kind), ['env-line']);
+  // Bedrock API keys, quoted, unquoted, URL-encoded, after an underscore
+  for (const t of [`"${fake.bedrock()}"`, `'${fake.bedrockShort()}'`, `key=${fake.bedrockShort().slice(0, 40)}%2B${rand(20)}%3D%3D&x=1`, `X_${fake.bedrock()}`]) {
+    const kinds = scan(t).map((x) => x.kind);
+    assert.ok(kinds.includes('bedrock-api-key'), `${t.slice(0, 40)}: ${kinds}`);
+  }
+  // an AWS key id right after an underscore (no word boundary there)
+  assert.deepEqual(scan(`FOO_${fake.awsKeyId()}`).map((x) => x.kind), ['aws-key-id']);
+});
+
+test('overlapping findings become one: their union, said as the most specific kind — no tail of a secret is left', () => {
+  const gh = fake.github();
+  const t = `token=${gh}!tail-${rand(6)} next`;
+  const f = scan(t);
+  assert.equal(f.length, 1);
+  assert.equal(f[0].kind, 'github-token');
+  assert.equal(t.slice(f[0].start, f[0].end), t.slice(6, t.indexOf(' next')));
+  assert.equal(redactText(t), 'token=[REDACTED:github-token] next');
+  // a JWT inside an Authorization header: one finding, the header's whole value
+  const j = fake.jwt();
+  assert.deepEqual(scan(`Authorization: Bearer ${j}`).map((x) => x.kind), ['jwt']);
+  // under a secret's name: the named value and a token in it are one finding (the token's kind)
+  const r = processEntries([{ password: `x ${gh}` }]);
+  assert.deepEqual(r.findings.map((x) => x.kind), ['github-token']);
+  assert.deepEqual(r.entries, [{ password: '[REDACTED:github-token]' }]);
+});
+
+test('the new shapes and the hand-made scan stay linear on hostile text', () => {
+  for (const s of ['token=', 'passwordpasswordtoken', '--password ', 'Cookie: ', 'Authorization: ', '"secret":"', '\\"token\\": \\"', 'SG.', 'PuTTY-User-Key-File-',
+    'hooks.slack.com/services/', 'AccountKey=', 'pypi-', 'ABSK', 'bedrock-api-key-', 'x_password=y ', 'a'.repeat(1000) + 'token']) {
+    const text = s.repeat(Math.ceil((4 << 20) / s.length));
+    const t0 = Date.now();
+    scan(text);
+    assert.ok(Date.now() - t0 < 2500, `${JSON.stringify(s.slice(0, 30))}: ${Date.now() - t0} ms`);
+  }
+});
+
+test('thinking blocks kept: a block that holds a finding or a path to rewrite is left out whole; the others stay exactly as they were', () => {
+  const key = fake.awsKeyId();
+  const e = [
+    { type: 'assistant', uuid: 'a1', parentUuid: null, message: { content: [{ type: 'thinking', thinking: `the key is ${key}`, signature: 's1' }] } },
+    { type: 'assistant', uuid: 'a2', parentUuid: 'a1', message: { content: [{ type: 'thinking', thinking: 'read /home/test/src/app/x.ts', signature: 's2' }, { type: 'text', text: 'ok' }] } },
+    { type: 'assistant', uuid: 'a3', parentUuid: 'a2', message: { content: [{ type: 'thinking', thinking: 'nothing to see', signature: 's3' }, { type: 'text', text: 'done' }] } },
+  ];
+  const pairs = [['/home/test/src/app', '/projects/app']];
+  const th = dropThinking(e, (b) => scanEntries([b]).length > 0 || rewrites(b, pairs));
+  assert.equal(th.blocks, 2);
+  assert.deepEqual(th.entries.map((x) => x.uuid), ['a2', 'a3']);
+  assert.equal(th.entries[0].parentUuid, null, 'relinked past the dropped entry');
+  const pr = processEntries(th.entries, { skipThinking: true });
+  const rw = rewritePaths(pr.entries, pairs, { skipThinking: true });
+  assert.deepEqual(rw.entries[1].message.content[0], { type: 'thinking', thinking: 'nothing to see', signature: 's3' });
+  assert.ok(!JSON.stringify(rw.entries).includes(key));
+  assert.equal(thinkingCount(rw.entries), 1);
 });

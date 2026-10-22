@@ -28,6 +28,15 @@ export const fake = {
   pem: () => `-----BEGIN ${['RSA', 'PRIVATE KEY'].join(' ')}-----\n${rand(64, `${alnum}/+`)}\n${rand(64, `${alnum}/+`)}\n-----END ${['RSA', 'PRIVATE KEY'].join(' ')}-----`,
   bearer: () => rand(32, 'abcdef0123456789'),
   password: () => rand(16, `${alnum}!#%&`),
+  bedrock: () => ['AB', 'SK'].join('') + rand(60, `${alnum}+/`),
+  bedrockShort: () => ['bedrock', 'api', 'key'].join('-') + '-' + rand(80, `${alnum}+/`),
+  slackWebhook: () => `https://${['hooks', 'slack', 'com'].join('.')}/services/T${rand(10, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')}/B${rand(10, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')}/${rand(24)}`,
+  sendgrid: () => `${['S', 'G.'].join('')}${rand(22)}.${rand(43)}`,
+  azure: () => `DefaultEndpointsProtocol=https;AccountName=acct;${['Account', 'Key='].join('')}${rand(86, `${alnum}+/`)}==;EndpointSuffix=core.windows.net`,
+  pypi: () => ['py', 'pi-'].join('') + rand(70),
+  whsec: () => ['wh', 'sec_'].join('') + rand(32),
+  putty: () => `PuTTY-User-Key-File-2: ssh-rsa\nEncryption: none\nComment: key\nPublic-Lines: 1\n${rand(60)}\nPrivate-Lines: 1\n${rand(60)}\n${['Private', 'MAC'].join('-')}: ${rand(40, '0123456789abcdef')}`,
+  ssh2: () => `---- BEGIN SSH2 ENCRYPTED ${['PRIVATE', 'KEY'].join(' ')} ----\n${rand(64)}\n---- END SSH2 ENCRYPTED ${['PRIVATE', 'KEY'].join(' ')} ----`,
 };
 
 /** session({id, cwd, prompts, title, model, thinking, tool, version}) -> the entries of a session: a first prompt, an

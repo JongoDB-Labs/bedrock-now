@@ -236,7 +236,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   };
   // sessions of this computer (the Import sheet, suggestions, Continue in this project): import-sessions.mjs, imports-api.mjs
   let importStore = imports;
-  const imp = () => (importStore ??= new Imports({ call, projects: { get: (id) => proj().get(id), list: () => proj().list() } }));
+  // (a check or a copy in a worker thread, one at a time; the stage swept every 5 minutes)
+  const imp = () => (importStore ??= new Imports({ call, projects: { get: (id) => proj().get(id), list: () => proj().list() }, worker: true }).startSweeper());
   let importsApi = null;
   const impApi = () => (importsApi ??= makeImportsApi({ imports: imp(), call, projects: { list: () => proj().list() }, cwdFor: (id) => api.cwdFor(id), rootFor }));
   // importedOf(id) -> {tool, at, forked} of a session copied from this computer (the page's CC / CB badge), else null
@@ -311,15 +312,19 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       if (isUuid(b.resume) && b.fork !== true && !mgr.get(b.resume)?.open) await api.notRunning(b.resume);
       // what of the folder's own Claude Code settings its process gets (trusted, or not applied): decided now, for it
       await mgr.prepare(base.cwd);
-      // a session copied from this computer opens in Manual the first time (its history is what a past session saw)
-      if (isUuid(b.resume) && b.fork !== true) { try { if (imp().firstOpen(b.resume)) base.mode = 'default'; } catch { /* (no record: as asked) */ } }
+      // a session copied from this computer (or a fork of one) opens in Manual the first time — its history is what a
+      // past session saw — forks of it too; it counts as opened once it did open (not when the open failed)
+      let first = false;
+      if (isUuid(b.resume)) { try { first = imp().isFirstOpen(b.resume); } catch { /* (no record: as asked) */ } }
+      if (first) base.mode = 'default';
+      const opened = (r) => { if (first && b.fork !== true) { try { imp().markOpened(b.resume); } catch { /* (next time again) */ } } return r; };
       if (b.before !== undefined && b.before !== null) {
         // a fork before one of your prompts: up to the message it answered to (its first prompt: a fresh session)
         if (b.fork !== true || !isUuid(b.resume) || !isUuid(b.before) || b.at !== undefined) throw new HttpError(400, 'before needs resume and fork, and no at');
         const at = await api.parentOf(b.resume, b.before);
         return send(res, 200, at ? mgr.open({ ...base, resume: b.resume, fork: true, at }) : { ...mgr.open(base), fresh: true });
       }
-      return send(res, 200, mgr.open({ ...base, resume: b.resume ?? undefined, fork: b.fork === true, at: b.at ?? undefined }));
+      return send(res, 200, opened(mgr.open({ ...base, resume: b.resume ?? undefined, fork: b.fork === true, at: b.at ?? undefined })));
     }
     if ((mm = /^\/api\/sessions\/([^/]+)\/messages$/.exec(p)) && m === 'GET') {
       const n = (k) => (q.has(k) && /^[0-9]{1,7}$/.test(q.get(k)) ? Number(q.get(k)) : undefined);
