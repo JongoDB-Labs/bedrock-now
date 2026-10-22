@@ -29,7 +29,7 @@ record() {
 }
 
 # --- the throwaway's environment: nothing from this shell reaches ./stack except what is listed here ---
-KEEP_VARS=" PATH HOME USER LOGNAME TMPDIR DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY
+KEEP_VARS=" PATH HOME USER LOGNAME TMPDIR DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY BN_SESSIONS_HOME
   HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy ALL_PROXY all_proxy "
 # clean_env [EXTRA...] — in a subshell: unexports every variable except KEEP_VARS and EXTRA (values stay in the
 # environment, never on a command line), then sets the throwaway's fixed ones.

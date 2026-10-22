@@ -60,6 +60,25 @@
 #                    E2E_HOST_FOLDERS_DIR=/abs/new-folder: their parent instead (for a checkout whose path ./stack
 #                    project refuses — in a temporary folder, or in a .claude folder that is not a worktree's: the run
 #                    says so at once). Either parent must not exist yet; the suite makes it and removes it after.
+#   --host-sessions  Claude Code and claude-bedrock sessions of this computer copied into the sandbox
+#                    (E2E_HOST_SESSIONS=1 does the same; needs the Code page and the browser part): a folder made
+#                    under this run's --out (or E2E_HOST_SESSIONS_DIR, a new folder: never one of yours, never under
+#                    /tmp) added with ./stack project add, and a FAKE home folder beside it whose ~/.claude and
+#                    ~/.claude-bedrock stores the suite writes (synthetic transcripts: a word to remember, a thinking
+#                    block, fake secrets made at run time — in a prompt, and in a subagent's transcript), read with
+#                    BN_SESSIONS_HOME pointing there — never your real ~/.claude. ./stack sessions scan without
+#                    consent refused; consent --always; scan (the reader container: gone afterwards), fetch --all; then
+#                    browser/code-host-sessions-a: the Import sheet's check step (2 possible secrets, the thinking
+#                    block taken out), Copy into the sandbox (the CC and CB badges), the imported session resumed on
+#                    Haiku (it answers the word from the copied history), Continue in this project (a fork in the
+#                    Workspace); then neither fake secret is anywhere in the sandbox's store, the stores on "this
+#                    computer" are unchanged, consent --revoke forgets what the code container read, and a read after
+#                    it is refused. The folder is removed at the end.
+#                    E2E_HOST_SESSIONS_REAL=/abs/one-transcript.jsonl: ALSO one real transcript of yours (the check
+#                    that a session made on a Claude subscription resumes on Bedrock) — off by default; set it only
+#                    for a transcript you picked and agreed to use: it is copied into the fake store with its folder
+#                    rewritten, imported (redacted) and resumed with one Haiku prompt; nothing of it is kept or sent
+#                    anywhere but this throwaway, which is removed afterwards
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -91,6 +110,7 @@ CODE=1; [ "${E2E_NO_CODE:-0}" != 1 ] || CODE=0   # (on by default, as on a new i
 HELPER=0; [ "${E2E_HELPER:-0}" != 1 ] || HELPER=1
 GIT_SERVER=0; [ "${E2E_GIT_SERVER:-0}" != 1 ] || GIT_SERVER=1
 HOST_FOLDERS=0; [ "${E2E_HOST_FOLDERS:-0}" != 1 ] || HOST_FOLDERS=1
+HOST_SESSIONS=0; [ "${E2E_HOST_SESSIONS:-0}" != 1 ] || HOST_SESSIONS=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -109,6 +129,7 @@ while [ $# -gt 0 ]; do
     --helper) HELPER=1; shift ;;
     --git-server) GIT_SERVER=1; shift ;;
     --host-folders) HOST_FOLDERS=1; shift ;;
+    --host-sessions) HOST_SESSIONS=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
@@ -854,6 +875,90 @@ elif [ "$HOST_FOLDERS" = 1 ]; then
     record projects host-folders-cleaned FAIL 0 "after removing both: still listed, the generated compose file left, or a folder changed"
   else record projects host-folders-cleaned PASS "$(( $(now) - t0 ))" "both removed: none listed, no generated compose file; the folders on this computer as they were"; fi
   rm -rf "$HF"   # (the suite's own folder, made above)
+fi
+
+# --- 3a2. sessions of this computer (--host-sessions): a fake home's stores, consent, a look, a read, the Import sheet ---
+# The stores are a FAKE home the suite writes (BN_SESSIONS_HOME: ./stack reads it instead of yours) with synthetic
+# transcripts in Claude Code's format; the secrets in them are made now, never written in this file.
+hs_uuid() { local h; h="$(openssl rand -hex 16)"; printf '%s-%s-4%s-8%s-%s\n' "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"; }
+hs_rand() { LC_ALL=C tr -dc "$2" < /dev/urandom | head -c "$1"; }
+# hs_line JSON-FIELDS — one entry of the session in HS_ID, run in HS_CWD (a uuid, a timestamp, the fixed fields added)
+hs_line() { printf '{"isSidechain":false,"userType":"external","cwd":"%s","sessionId":"%s","version":"2.1.296","gitBranch":"main",%s,"timestamp":"2026-10-0%sT10:00:0%s.000Z"}\n' "$HS_CWD" "$HS_ID" "$1" "$2" "$3"; }
+if [ "$HOST_SESSIONS" = 1 ] && { [ "$CODE" = 0 ] || ! part_on browser; }; then
+  record projects host-sessions SKIP 0 "--host-sessions needs the Code page and the browser part"
+elif [ "$HOST_SESSIONS" = 1 ]; then
+  say "sessions of this computer: a fake home's stores, consent, a look, a read, the Import sheet, a resume on Haiku"
+  HS_OWN="${E2E_HOST_SESSIONS_DIR:-}"
+  if [ -n "$HS_OWN" ]; then
+    case "$HS_OWN" in /*) ;; *) die "E2E_HOST_SESSIONS_DIR must be an absolute path" ;; esac
+    [ ! -e "$HS_OWN" ] || die "E2E_HOST_SESSIONS_DIR ($HS_OWN) must not exist yet: the suite makes it, and removes it at the end"
+    HS="$HS_OWN"
+  else HS="$OUT/host-sessions"; rm -rf "$HS"; fi
+  mkdir -p "$HS/app" "$HS/home"; HS="$(cd "$HS" && pwd -P)"; chmod 755 "$HS" "$HS/app"
+  printf 'an app\n' > "$HS/app/README.md"
+  HS_CWD="$HS/app"
+  enc="$(printf '%s' "$HS_CWD" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')"
+  [ "${#enc}" -le 200 ] || die "--host-sessions: $HS_CWD is longer than Claude Code's short folder names (200): use E2E_HOST_SESSIONS_DIR"
+  cc="$HS/home/.claude/projects/$enc"; cb="$HS/home/.claude-bedrock/projects/$enc"; mkdir -p "$cc" "$cb"
+  # (made now: an AWS-key-shaped and a GitHub-token-shaped fake — the prefixes split so no literal here has their shape)
+  HS_KEY="$(printf '%s%s' AK IA)$(hs_rand 16 'A-Z2-7')"; HS_TOKEN="$(printf '%s%s' gh p_)$(hs_rand 36 'A-Za-z0-9')"
+  HS_S1="$(hs_uuid)"; HS_S2="$(hs_uuid)"; u1="$(hs_uuid)"; a1="$(hs_uuid)"; a2="$(hs_uuid)"; v1="$(hs_uuid)"; w1="$(hs_uuid)"
+  HS_ID="$HS_S1"
+  { hs_line "\"parentUuid\":null,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Remember the word PELICAN for later. My key is $HS_KEY.\"},\"uuid\":\"$u1\"" 1 1
+    hs_line "\"parentUuid\":\"$u1\",\"type\":\"assistant\",\"requestId\":\"req_e2e1\",\"message\":{\"id\":\"msg_e2e1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants me to remember a word.\",\"signature\":\"$(hs_rand 64 'A-Za-z0-9')\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":20,\"output_tokens\":10}},\"uuid\":\"$a1\"" 1 2
+    hs_line "\"parentUuid\":\"$a1\",\"type\":\"assistant\",\"requestId\":\"req_e2e1\",\"message\":{\"id\":\"msg_e2e1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"OK, I will remember it.\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10}},\"uuid\":\"$a2\"" 1 3
+    printf '{"type":"custom-title","customTitle":"e2e remember a word","sessionId":"%s"}\n' "$HS_S1"; } > "$cc/$HS_S1.jsonl"
+  mkdir -p "$cc/$HS_S1/subagents"
+  HS_ID="$HS_S1" hs_line "\"parentUuid\":null,\"isSidechain\":true,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"GH_TOKEN=$HS_TOKEN gh pr list\"},\"uuid\":\"$(hs_uuid)\"" 1 4 > "$cc/$HS_S1/subagents/agent-e2e.jsonl"
+  HS_ID="$HS_S2"
+  { hs_line "\"parentUuid\":null,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Say hello.\"},\"uuid\":\"$v1\"" 2 1
+    hs_line "\"parentUuid\":\"$v1\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_e2e2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"Hello.\"}],\"stop_reason\":\"end_turn\"},\"uuid\":\"$w1\"" 2 2
+    printf '{"type":"custom-title","customTitle":"e2e claude-bedrock session","sessionId":"%s"}\n' "$HS_S2"; } > "$cb/$HS_S2.jsonl"
+  # the opt-in check of one real transcript (Q6): only when E2E_HOST_SESSIONS_REAL names one — its folder rewritten
+  # to this run's, under a new id
+  HS_REAL=0
+  if [ -n "${E2E_HOST_SESSIONS_REAL:-}" ]; then
+    [ -f "$E2E_HOST_SESSIONS_REAL" ] && [ ! -L "$E2E_HOST_SESSIONS_REAL" ] || die "E2E_HOST_SESSIONS_REAL must name one regular transcript file"
+    HS_S3="$(hs_uuid)"
+    docker run --rm -i --network none --read-only --cap-drop ALL "$PROJECT/code:local" node -e '
+      const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
+      let from = null; for (const l of lines) { try { const e = JSON.parse(l); if (typeof e.cwd === "string") { from = e.cwd; break; } } catch {} }
+      const [to, id] = process.argv.slice(1);
+      for (const l of lines) { let e; try { e = JSON.parse(l); } catch { continue; }
+        let s = JSON.stringify(e); if (from) s = s.split(JSON.stringify(from).slice(1, -1)).join(JSON.stringify(to).slice(1, -1));
+        e = JSON.parse(s); if (e.sessionId) e.sessionId = id; process.stdout.write(JSON.stringify(e) + "\n"); }' "$HS_CWD" "$HS_S3" < "$E2E_HOST_SESSIONS_REAL" > "$cc/$HS_S3.jsonl" ||
+      die "E2E_HOST_SESSIONS_REAL: the transcript could not be copied"
+    HS_REAL=1
+  fi
+  hs_sum() { (cd "$HS/home" && find . -type f | LC_ALL=C sort | xargs shasum -a 256 2>/dev/null) | shasum -a 256 | cut -c1-16; }
+  hs_before="$(hs_sum)"
+  printf '%s %s %s\n' "$HS_S1" "$HS_S2" "${HS_S3:-}" > "$OUT/browser/host-sessions-ids.txt"
+  cli sessions-project-add 0 'e2e-sessions-app: .* \(read-write\)' project add "$HS_CWD" --name e2e-sessions-app --now
+  BN_SESSIONS_HOME="$HS/home" cli sessions-scan-not-allowed 1 'not allowed yet' sessions scan --project e2e-sessions-app
+  BN_SESSIONS_HOME="$HS/home" cli sessions-consent 0 'without asking again' sessions consent --project e2e-sessions-app --always
+  BN_SESSIONS_HOME="$HS/home" cli sessions-scan 0 "$([ "$HS_REAL" = 1 ] && echo 3 || echo 2) session\\(s\\) of Claude Code and claude-bedrock listed" sessions scan --project e2e-sessions-app
+  t0="$(now)"
+  readers="$(docker ps -a --filter name=bn-reader- --format '{{.Names}}' | grep -c . || true)"
+  if [ "${readers:-0}" = 0 ]; then record projects host-sessions-reader-gone PASS "$(( $(now) - t0 ))" "the reader's throwaway container is gone after the look"
+  else record projects host-sessions-reader-gone FAIL 0 "$readers reader container(s) left"; fi
+  BN_SESSIONS_HOME="$HS/home" cli sessions-fetch 0 'read into the Code page' sessions fetch --project e2e-sessions-app --all
+  E2E_SESSIONS_PASS=a E2E_SESSIONS_REAL="$HS_REAL" browser_run "sessions of this computer: the Import sheet" 'browser/code-host-sessions-a$' sessions-a runner-sessions-a
+  t0="$(now)"; tc="$(svc_id terminal)"; cc_id="$(svc_id code)"
+  # neither fake secret anywhere in the sandbox's store; the stores on "this computer" as they were
+  leak="$(docker exec -e K="$HS_KEY" -e T="$HS_TOKEN" "$tc" sh -c 'grep -rlF -e "$K" -e "$T" /home/claude/.claude/projects 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
+  copied="$(docker exec "$tc" sh -c "ls /home/claude/.claude/projects/$enc/ 2>/dev/null" | grep -c '\.jsonl$' || true)"
+  if [ "${leak:-1}" = 0 ] && [ "${copied:-0}" -ge 2 ] && [ "$(hs_sum)" = "$hs_before" ]; then
+    record projects host-sessions-copied-redacted PASS "$(( $(now) - t0 ))" "$copied transcripts in the project's store folder in the sandbox, neither fake secret anywhere there; the fake home's stores unchanged"
+  else record projects host-sessions-copied-redacted FAIL "$(( $(now) - t0 ))" "fake secrets found in ${leak:-?} file(s) of the sandbox's store; $copied copied; stores unchanged: $([ "$(hs_sum)" = "$hs_before" ] && echo yes || echo no)"; fi
+  BN_SESSIONS_HOME="$HS/home" cli sessions-revoke 0 'no longer reads' sessions consent --project e2e-sessions-app --revoke
+  t0="$(now)"
+  if docker exec "$cc_id" sh -c 'ls /var/lib/bn-code/imports/' 2>/dev/null | grep -q '^index-'; then
+    record projects host-sessions-forgotten FAIL 0 "the code container still has a list after the consent was taken back"
+  else record projects host-sessions-forgotten PASS "$(( $(now) - t0 ))" "taken back: the code container's list is forgotten (the copies in the sandbox stay)"; fi
+  BN_SESSIONS_HOME="$HS/home" cli sessions-fetch-after-revoke 1 'no list of this project|that list is gone|not allowed' sessions fetch --project e2e-sessions-app --all
+  cli sessions-project-remove 0 'no longer in the sandbox' project remove e2e-sessions-app --now
+  [ -z "$HS_OWN" ] || rm -rf "$HS"
+  rm -f "$OUT/browser/host-sessions-ids.txt"
 fi
 
 # --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---

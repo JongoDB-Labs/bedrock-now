@@ -3317,3 +3317,90 @@ def host_folders_c(ctx):
     shot(page, "h5-code-host-folders-resumed")
     csp_clean(page, rec)
     return f"the session resumed in {app['root']} after the sandbox restarted twice"
+
+
+# --- sessions of this computer (tests/e2e/run.sh --host-sessions): run.sh wrote a fake home's stores, allowed them
+# --- with ./stack sessions consent, looked and read them in; this pass checks and copies them on the Import sheet ---
+SESSIONS_PASS = os.environ.get("E2E_SESSIONS_PASS", "")
+SESSIONS_REAL = os.environ.get("E2E_SESSIONS_REAL", "0") == "1"
+SESSIONS_IDS = Path("/out/host-sessions-ids.txt")
+SESSIONS_APP = "e2e-sessions-app"
+
+
+@check("browser", "code-host-sessions-a")
+@saved
+def host_sessions_a(ctx):
+    """run.sh added a folder (e2e-sessions-app) and read two synthetic sessions of a fake home into the Code page's
+    container (./stack sessions consent, scan, fetch). The Import sheet opens on Check and copy: the Claude Code one
+    with 2 possible secrets (one in its prompt, one in a subagent's transcript — a few characters and a length shown,
+    never the whole) and its thinking block to come out; copied (redacted), both badged (CC, CB); the CC one resumed on
+    Haiku answers the word its copied history asked it to remember; Continue in this project (filed in the Workspace)
+    makes a new session there. With E2E_HOST_SESSIONS_REAL, also the owner's one real transcript: copied and resumed."""
+    need_haiku()
+    need_on()
+    if SESSIONS_PASS != "a":
+        raise Skip("runs in a pass of its own after ./stack sessions scan and fetch (tests/e2e/run.sh --host-sessions)")
+    ids = SESSIONS_IDS.read_text(encoding="ascii").split()
+    s1, s2 = ids[0], ids[1]
+    page, rec = ui_page(ctx, "code-host-sessions-a")
+    c = Code.on(page, rec, goto=False)
+    app = _host_projects(c).get(SESSIONS_APP)
+    expect(app and not app.get("gone"), f"the project folder: {app}")
+    v = c.api("GET", f"/api/imports?project={app['id']}")["json"]
+    expect(sorted(x["id"] for x in v["staged"]) == sorted(ids), f"waiting to be copied: {v['staged']}")
+    page.get_by_test_id("side-sessions").click()
+    _unfold(page, app["id"])
+    _proj(page, app["id"]).get_by_test_id("project-import").click()
+    see(page.get_by_test_id("import-step-check")).to_be_visible(timeout=30000)
+    one = page.locator(f"[data-testid=import-staged][data-session='{s1}']")
+    see(one.get_by_test_id("import-finding")).to_have_count(2, timeout=30000)
+    kinds = sorted(one.get_by_test_id("import-finding").evaluate_all("(els) => els.map((e) => e.dataset.kind)"))
+    expect(kinds == ["aws-key-id", "github-token"], f"the findings: {kinds}")
+    see(one.get_by_test_id("import-thinking")).to_contain_text("taken out")
+    text = page.get_by_test_id("import-sheet").inner_text()
+    expect("characters)" in text and not re.search(r"A[K]IA[A-Z2-7]{16}|gh[p]_[A-Za-z0-9]{36}", text), "the sheet shows a few characters and a length, never a secret")
+    shot(page, "s1-code-host-sessions-check")
+    page.get_by_test_id("import-copy").click()
+    see(page.get_by_test_id("import-result").filter(has_text="Copied")).to_have_count(len(ids), timeout=60000)
+    page.get_by_test_id("import-sheet").get_by_role("button", name="Close").last.click()
+    rows = {x["id"]: x for x in c.api("GET", "/api/sessions")["json"]["sessions"]}
+    expect(rows.get(s1, {}).get("imported", {}).get("tool") == "claude" and rows.get(s2, {}).get("imported", {}).get("tool") == "claude-bedrock",
+           f"the copies' badges: {rows.get(s1)} {rows.get(s2)}")
+    see(_proj(page, app["id"]).locator(f"[data-testid=session-row][data-session='{s1}'] [data-testid=session-imported]")).to_have_text("CC", timeout=30000)
+    see(_proj(page, app["id"]).locator(f"[data-testid=session-row][data-session='{s2}'] [data-testid=session-imported]")).to_have_text("CB")
+    # resumed natively on Haiku: its copied history is there (the word), its first open in Manual
+    page.get_by_test_id("model-picker").click()
+    page.get_by_test_id("model-haiku").click()
+    _proj(page, app["id"]).locator(f"[data-testid=session-row][data-session='{s1}'] .sess-main").click()
+    see(page.get_by_test_id("msg-user").filter(has_text="Remember the word PELICAN")).to_be_visible(timeout=60000)
+    see(page.get_by_test_id("msg-user").filter(has_text="[REDACTED:aws-key-id]")).to_have_count(1)
+    settled(page, "msg-user")
+    ask(page, "Which word did I ask you to remember earlier in this conversation? Reply with that word only.")
+    answered(page)
+    expect("PELICAN" in last_answer(page).upper(), f"the resumed session's answer: {last_answer(page)!r}")
+    st = state_of(c, s1)
+    expect(st.get("cwd") == app["root"] and st.get("mode") == "default", f"the resumed session: {st}")
+    shot(page, "s2-code-host-sessions-resumed")
+    # Continue in this project: filed in the Workspace, it continues there as a new session (a fork, its folder rewritten)
+    r = c.api("POST", "/api/projects/ws/sessions", {"ids": [s2]})
+    expect(r["status"] == 200, f"filed in the Workspace: {r['status']} {r['text'][:200]}")
+    r = c.api("POST", f"/api/sessions/{s2}/continue", {"project": "ws"})
+    expect(r["status"] == 200 and r["json"].get("id") not in (None, s2), f"continued: {r['status']} {r['text'][:200]}")
+    nid = r["json"]["id"]
+    row = next((x for x in c.api("GET", "/api/sessions")["json"]["sessions"] if x["id"] == nid), None)
+    expect(row and row.get("cwd") == "/workspace", f"the new session in the Workspace: {row}")
+    msgs = c.api("GET", f"/api/sessions/{nid}/messages?tail=20")["json"]
+    expect(any(e.get("type") == "user" and "Say hello" in (e.get("text") or "") for e in msgs.get("messages", [])), "its history came along")
+    real = ""
+    if SESSIONS_REAL and len(ids) > 2:
+        s3 = ids[2]
+        page.get_by_test_id("side-sessions").click()
+        _unfold(page, app["id"])
+        _proj(page, app["id"]).locator(f"[data-testid=session-row][data-session='{s3}'] .sess-main").click()
+        settled(page, "msg-user")
+        ask(page, "Reply with exactly: OK")
+        answered(page)
+        expect("OK" in last_answer(page), f"the real transcript resumed on Bedrock: {last_answer(page)!r}")
+        real = "; the owner's real transcript resumed on Haiku"
+    csp_clean(page, rec)
+    return f"2 possible secrets listed (never shown whole) and redacted, the thinking block out, both copied (CC, CB); resumed on Haiku with its history (PELICAN); continued in the Workspace{real}"
