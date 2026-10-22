@@ -10,12 +10,13 @@ All notable changes to bedrock-now are documented here. The format follows
 
 - **A probe into the sandbox can no longer hold `./stack test` — or the update helper running it — for ever.** A
   `timeout` inside the sandbox binds nothing there (a process in it can stop it), so every probe `./stack test` and
-  `./stack project` make into the sandbox now also has a watchdog on this computer: after its deadline the probe and
-  all it started are ended, and the check says it could not check (timed out), never that it passed. The update
-  helper's jobs have limits too — a smoke test 10 minutes, a project folder change 45; a settings change or a restart
-  (which may build images for long) only once its log has said nothing new for 20 minutes, or after 4 hours — after
-  which the job is ended, said as failed ("no progress for 20 minutes" / "after 4 h"), and the helper goes on
-  (backups and updates keep their own handling).
+  `./stack project` make into the sandbox now also has a watchdog on this computer: after its deadline the probe and all
+  it started are ended, and the check says it could not check (timed out), never that it passed. The update helper's
+  jobs have limits too — a smoke test 10 minutes, a project folder change 45; a settings change or a restart only once
+  its log has said nothing new for 20 minutes, or after 4 hours — after which the job is ended, said as failed ("no
+  progress for 20 minutes" / "after 4 h"), and the helper goes on (backups and updates keep their own handling). An
+  image build, which says nothing until it ends, now says in such a log every 2½ minutes that it is still building, so a
+  slow first build is not taken for a stuck one; a wait that hangs still is.
 
 ### Fixed
 

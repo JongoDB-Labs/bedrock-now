@@ -59,6 +59,33 @@ test_run_phase_failure_logs_only_unhealthy_services() {
   assert_contains "$out" "./stack logs litellm"
 }
 
+test_building_says_it_is_still_at_work_only_in_a_phase_with_no_terminal() {
+  # (dc build -q says nothing until it ends: in a log, a long build says it is still at work; its status is the build's)
+  local out rc
+  _quiet_build() { sleep 2.5; echo built; return "$1"; }
+  BUILD_TICK_S=1
+  # outside run_phase: CMD alone, no line
+  rc=0; out="$(building "the x image" _quiet_build 3 2>&1)" || rc=$?
+  assert_eq "$rc" 3
+  assert_eq "$out" "built"
+  # in a phase whose stderr is no terminal (this test's: a pipe): a line a second while it builds, then "ready"
+  # (seconds as they come: a busy computer may say one late)
+  out="$(run_phase "X image (build)" x building "the x image" _quiet_build 0 2>&1)"
+  [ "$(printf '%s\n' "$out" | grep -c '^==> still building the x image ([0-9]s)$')" -ge 2 ] || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "==> X image (build) ready ("
+  assert_not_contains "$out" "built"   # (the build's own output stays hidden, as before)
+  # a failed build: its status, the failure said as before
+  dc() { case "$*" in ps*) printf 'x\texited\t\n' ;; esac; }
+  if out="$( (run_phase "X image (build)" x building "the x image" _quiet_build 1) 2>&1)"; then return 1; fi
+  assert_contains "$out" "still building the x image"
+  assert_contains "$out" "X image (build) failed after"
+  assert_contains "$out" "built"
+  # a phase that only waits says nothing while it waits
+  out="$(run_phase "X (start)" x sleep 2.5 2>&1)"
+  assert_not_contains "$out" "still"
+  unset BUILD_TICK_S
+}
+
 test_missing_images_skips_local_builds_and_present_images() {
   dc() { printf 'pgvector/pgvector:0.8.7-pg17\nghcr.io/berriai/litellm:1.105.0\nbedrock-now/shared-mcp:local\n'; }
   docker() { case "$*" in "image inspect pgvector/pgvector:0.8.7-pg17") return 0 ;; *) return 1 ;; esac; }

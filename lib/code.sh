@@ -96,7 +96,8 @@ code_preview_domain() {
   [ "$(get_env PREVIEW_DOMAIN)" = "$d" ] || set_env PREVIEW_DOMAIN "$d"
 }
 
-code_build() { fix_checkout_modes; dc build -q code; }   # (its sources must be readable: fix_checkout_modes)
+# (its sources must be readable: fix_checkout_modes)
+code_build() { fix_checkout_modes; building "the Code page image" dc build -q code; }
 # The portal (the Code tab, the unlock), the main Caddy (the code site: a changed Caddyfile is read only at start), the
 # terminal's gateway (it is recreated only when its PREVIEW_PROXY_SECRET changed: at enable — ttyd's connections then
 # drop for a moment and reconnect), then the code container. The terminal is not touched: it runs bn-coded and

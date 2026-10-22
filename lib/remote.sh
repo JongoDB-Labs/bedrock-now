@@ -485,7 +485,9 @@ remote_enable() {
   if [ "$mode" = domain ]; then remote_hosts_domain "$host"; write_ts_serve_config domain
   elif valid_tailnet "$(get_env TS_TAILNET)"; then remote_hosts_tailscale "$(get_env TS_TAILNET)"; write_ts_serve_config tailscale "$(get_env TS_TAILNET)"
   else remote_set_hosts "" "" "" ""; write_ts_serve_config off; fi
-  if [ "$mode" = domain ]; then run_phase "Caddy with the DNS plugin (build)" caddy dc build -q caddy; fi
+  if [ "$mode" = domain ]; then
+    run_phase "Caddy with the DNS plugin (build)" caddy building "Caddy with its DNS plugin" dc build -q caddy
+  fi
   run_phase "Tailscale sidecar (start)" tailscale dc up -d tailscale
   log "waiting for the sidecar to log in to your tailnet…"
   if ! st="$(ts_wait_running 90)"; then

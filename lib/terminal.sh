@@ -226,8 +226,8 @@ terminal_ids() {
 # terminal_build — the image (terminal/Dockerfile) with this week's Debian packages (the stt image's rule), and its
 # egress proxy's while that is its way out (terminal/egress: no packages, so no refresh)
 terminal_build() {
-  dc build -q --build-arg "APT_REFRESH=$(date -u +%G-%V)" terminal || return 1
-  [ "$(terminal_egress_mode)" != internet ] || dc build -q terminal-egress
+  building "the terminal image" dc build -q --build-arg "APT_REFRESH=$(date -u +%G-%V)" terminal || return 1
+  [ "$(terminal_egress_mode)" != internet ] || building "the egress proxy's image" dc build -q terminal-egress
 }
 _terminal_build_and_up() { terminal_build && _terminal_up; }
 # Portal (the tab, the unlock) and Caddy (the terminal site: a changed Caddyfile is read only at start), LiteLLM and
@@ -237,6 +237,9 @@ _terminal_up() {
   _terminal_front && dc up -d --wait --force-recreate terminal-gateway && _terminal_egress_up && dc up -d --wait terminal
 }
 # _terminal_egress_up — the egress proxy while it is the sandbox's way out; otherwise one left from before goes
+_terminal_egress_build_up() {
+  building "the egress proxy's image" dc build -q terminal-egress && dc up -d --wait --no-deps terminal-egress
+}
 _terminal_egress_up() {
   if [ "$(terminal_egress_mode)" = internet ]; then dc up -d --wait terminal-egress; else terminal_proxy_rm; fi
 }
@@ -367,7 +370,7 @@ terminal_proxy_rm() {
 terminal_egress_apply() {
   terminal_ready || return 0
   if [ "$(terminal_egress_mode)" = internet ]; then
-    run_phase "Terminal: its egress proxy" terminal-egress dc up -d --wait --build --no-deps terminal-egress || return 1
+    run_phase "Terminal: its egress proxy" terminal-egress _terminal_egress_build_up || return 1
   else
     terminal_proxy_rm
   fi

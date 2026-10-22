@@ -165,18 +165,19 @@ _failed_services() {
 
 # run_phase LABEL "SERVICES" CMD... — runs CMD (usually a dc call) with its output hidden, then prints
 # "==> LABEL ready (16s)". On failure: the last 30 output lines, the last 30 log lines of each failed
-# service, and the ./stack logs hint; then dies.
+# service, and the ./stack logs hint; then dies. CMD's fd 8 is the phase's own stderr (building, below).
 run_phase() {
-  local label="$1" svcs="$2" start rc=0 out s failed first
+  local label="$1" svcs="$2" start rc=0 out s failed first _PHASE_TICK=''
   shift 2
   start="$(_now)"
+  [ -t 2 ] || _PHASE_TICK=1   # (no terminal to show "starting…" on: an image build says it is still at work)
   if is_verbose; then
     log "$label: starting…"
-    "$@" || rc=$?
+    "$@" 8>&2 || rc=$?
   else
     out="$(mktemp)"; _cleanup_on_signal "$out"
     [ ! -t 2 ] || printf '%s==>%s %s: starting…' "$C_GRN" "$C_OFF" "$label" >&2
-    "$@" > "$out" 2>&1 || rc=$?
+    "$@" 8>&2 > "$out" 2>&1 || rc=$?
     [ ! -t 2 ] || printf '\r\033[K' >&2
   fi
   [ -z "${out:-}" ] || _signal_traps_restore
@@ -199,6 +200,40 @@ run_phase() {
   done
   first="${failed%% *}"
   die "$label did not come up — full logs: ./stack logs ${first:-<service>}   (BEDROCK_NOW_VERBOSE=1 ./stack setup shows all compose output)"
+}
+
+# building WHAT CMD... — CMD, an image build (dc build -q says nothing until it ends). In a run_phase with no terminal
+# to show "starting…" on (the update helper's jobs, a log), "==> still building WHAT (2m30s)" goes to the phase's own
+# stderr every BUILD_TICK_S seconds (150) while CMD runs: a long build on a slow computer is progress to the helper,
+# which ends a job whose log says nothing new for 20 minutes (lib/settings_helper.sh) — a build only at its 4 h
+# limit. Phases that only wait (up --wait, a restart) stay silent, so a stuck one is still ended at 20 minutes.
+# CMD runs as before (in the foreground: Ctrl-C, its status); the ticker beside it is ended with it, by its own
+# process group's PID (its sleep too), and ends by itself within a second should this shell be gone.
+BUILD_TICK_S="${BUILD_TICK_S:-150}"
+building() {
+  local what="$1" me t rc=0 jc=''
+  shift
+  [ -n "${_PHASE_TICK:-}" ] || { "$@"; return; }
+  me="$(exec sh -c 'echo "$PPID"')"   # (this shell's PID, a subshell's too: bash 3.2 has no BASHPID)
+  case "$-" in *m*) jc=1 ;; esac
+  set -m   # (the ticker in a process group of its own)
+  _build_ticker "$what" "$me" </dev/null >/dev/null 2>&1 &
+  t=$!
+  [ -n "$jc" ] || set +m
+  "$@" 8>&- || rc=$?
+  kill -TERM -- "-$t" 2>/dev/null || true
+  wait "$t" 2>/dev/null || true
+  return "$rc"
+}
+_build_ticker() {   # WHAT PID — building's: a line to fd 8 every BUILD_TICK_S seconds while PID runs
+  local start=$SECONDS next=$((SECONDS + BUILD_TICK_S))
+  trap 'exit 0' TERM
+  while kill -0 "$2" 2>/dev/null; do
+    sleep 1
+    [ "$SECONDS" -ge "$next" ] || continue
+    next=$((next + BUILD_TICK_S))
+    log "still building $1 ($(fmt_elapsed $((SECONDS - start))))" 2>&8 || true
+  done
 }
 
 image_size_mb() { # rough on-disk size of a pinned image, for the first-run download notice
@@ -655,7 +690,7 @@ setup_bringup_and_probe() {
 }
 
 _up_data_services() { dc up -d --wait postgres rustfs && dc up -d rustfs-init; }
-_build_and_up_mcp() { dc build -q shared-mcp && dc up -d --wait shared-mcp; }
+_build_and_up_mcp() { building "the shared-mcp image" dc build -q shared-mcp && dc up -d --wait shared-mcp; }
 
 # _build_and_up_portal — portal, then Caddy (recreated: with its admin API off, a changed Caddyfile is only
 # read at start). If Docker refuses to publish port 80 after all, falls back to 8800 once.
@@ -663,7 +698,7 @@ _build_and_up_portal() {
   local out rc=0
   ensure_portal_password_hash   # lib/settings.sh: the portal starts only with a hash that matches PORTAL_PASSWORD
   compose_reads_contexts || warn "Docker Compose ${_BN_COMPOSE_VERSION:-(this one)} is older than 2.17: the portal is built without its search's docs index (README and docs/ sections; everything else works) — update Docker Compose to get it"
-  dc build -q portal && dc up -d --wait portal || return 1
+  building "the portal image" dc build -q portal && dc up -d --wait portal || return 1
   out="$(dc up -d --wait --force-recreate caddy 2>&1)" || rc=$?
   printf '%s\n' "$out"
   [ "$rc" -ne 0 ] || return 0

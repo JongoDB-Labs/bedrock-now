@@ -102,8 +102,9 @@ _with_deadline() {
   local secs="$1" rc=0 dir flag
   shift
   # (the watcher says it fired by making a file — a status alone could not tell a deadline from the command's own —
-  # in a folder of this run's own: mktemp -d, mode 700, so nobody else can plant a link where it writes; removed on
-  # every way out)
+  # in a folder of this run's own: mktemp -d, mode 700, so nobody else can plant a link where it writes; removed when
+  # this returns — if ./stack itself is killed meanwhile, an empty bn-deadline.* folder, maybe with an empty marker,
+  # stays: no process outlives it)
   dir="$(mktemp -d "${TMPDIR:-/tmp}/bn-deadline.XXXXXX")" || { warn "cannot make a temporary folder for a deadline"; return 125; }
   flag="$dir/fired"
   { (

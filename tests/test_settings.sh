@@ -686,9 +686,11 @@ test_sandbox_internet_access_opens_further_only_locally_and_recreates_the_sandbo
   : > "$TMP/calls"
   _lines TERMINAL_EGRESS=internet | _apply --via portal --origin local --base "$(env_sha256)" 2>/dev/null || return 1
   c="$(cat "$TMP/calls")"
-  p="$(printf '%s\n' "$c" | grep -n 'dc up -d --wait --build --no-deps terminal-egress$' | head -n 1 | cut -d: -f1)"
+  b="$(printf '%s\n' "$c" | grep -n 'dc build -q terminal-egress$' | head -n 1 | cut -d: -f1)"
+  p="$(printf '%s\n' "$c" | grep -n 'dc up -d --wait --no-deps terminal-egress$' | head -n 1 | cut -d: -f1)"
   t="$(printf '%s\n' "$c" | grep -n 'dc up -d --no-deps --wait terminal$' | head -n 1 | cut -d: -f1)"
-  [ -n "$p" ] && [ -n "$t" ] && [ "$p" -lt "$t" ] || { echo "proxy ($p) before terminal ($t): $c" >&2; return 1; }
+  [ -n "$b" ] && [ -n "$p" ] && [ -n "$t" ] && [ "$b" -lt "$p" ] && [ "$p" -lt "$t" ] ||
+    { echo "proxy built ($b), up ($p) before terminal ($t): $c" >&2; return 1; }
 }
 
 test_remote_previews_are_opt_in_on_only_locally_and_they_restart_portal_and_caddy() {
@@ -1839,4 +1841,69 @@ test_helper_a_long_job_runs_while_it_says_something_and_ends_when_it_goes_silent
   assert_eq "$(_stopped_text restart-litellm 14400 last-diag.log)" "Stopped — after 4 h: it did not finish — something it waits on in the stack did not answer (log: .state/helper/last-diag.log)"
   assert_eq "$(_job_deadline settings)" "14400 1200"
   assert_eq "$(_job_deadline test)" "600 0"
+}
+
+test_helper_a_long_quiet_image_build_is_progress_a_stuck_wait_is_not() {
+  # (dc build -q says nothing until it ends: run_phase's "still building" lines keep a settings job's log growing, so a
+  # slow build is ended only at the ceiling; a phase that only waits stays silent and is still ended when idle. A job
+  # is ./stack: a process of its own, in a process group of its own — and its ticker is left behind in no case)
+  local log="$TMP/job.log" pid rc t0 p
+  helper_heartbeat() { :; }
+  HELPER_JOB_POLL_S=0.2
+  cat > "$TMP/job.sh" <<'JOB'
+set -euo pipefail
+. "$STACK_DIR/lib/common.sh"; . "$STACK_DIR/lib/commands.sh"
+BUILD_TICK_S=1
+_quiet_build() { sleep "$1"; }
+case "$1" in
+  build) run_phase "X image (build)" x building "the x image" _quiet_build "$2" ;;
+  wait) run_phase "X (start)" x sleep "$2" ;;
+esac
+JOB
+  # each poll: the job's processes below it, by PID and process group (the ticker: one of its own; its sleep; the build)
+  : > "$TMP/kids"
+  _kids() {
+    local all k
+    all="$(ps -A -o pid= -o ppid= -o pgid= 2>/dev/null)"
+    for k in $(printf '%s\n' "$all" | awk -v p="$pid" '$2 == p { print $1 }'); do
+      printf '%s\n' "$all" | awk -v p="$k" '$1 == p || $2 == p { print $1, $3 }' >> "$TMP/kids"
+    done
+  }
+  _ticker_seen() { awk '$1 == $2 { f = 1 } END { exit !f }' "$TMP/kids" || { echo "no ticker seen" >&2; return 1; }; }
+  _none_left() {   # within 3 s (a ticker whose phase was killed sees it gone within a second)
+    local k n=0
+    while [ "$n" -lt 15 ]; do
+      p=''; while read -r k _; do ! kill -0 "$k" 2>/dev/null || p="$p $k"; done < <(sort -u "$TMP/kids")
+      [ -n "$p" ] || return 0
+      sleep 0.2; n=$((n + 1))
+    done
+    echo "left running:$p" >&2; return 1
+  }
+  # a build that says nothing for 6 s, past an idle limit of 3 s (a line a second, read on the clock's seconds: 3 leaves
+  # room for a busy computer): its lines keep it going, it finishes
+  set -m; bash "$TMP/job.sh" build 6 > "$log" 2>&1 & pid=$!; set +m
+  rc=0; _WAIT_TICK=_kids _wait_beating "$pid" 60 "$log" 3 || rc=$?
+  assert_eq "$rc" 0
+  [ "$(grep -c '^==> still building the x image (' "$log")" -ge 2 ] || { cat "$log" >&2; return 1; }
+  assert_contains "$(cat "$log")" "==> X image (build) ready ("
+  _ticker_seen
+  _none_left
+  # one that builds past the ceiling: ended there (not as idle), and its ticker goes too
+  : > "$log"; : > "$TMP/kids"
+  set -m; bash "$TMP/job.sh" build 30 > "$log" 2>&1 & pid=$!; set +m
+  t0="$(date +%s)"; rc=0; _WAIT_TICK=_kids _wait_beating "$pid" 5 "$log" 3 || rc=$?
+  assert_eq "$rc" 124
+  [ "$(( $(date +%s) - t0 ))" -le 15 ] || return 1
+  ! kill -0 "$pid" 2>/dev/null || { echo "left running" >&2; return 1; }
+  _ticker_seen
+  _none_left
+  # a phase that only waits (up --wait) and hangs: silent, so ended after 3 s without a new line
+  : > "$log"; : > "$TMP/kids"
+  set -m; bash "$TMP/job.sh" wait 30 > "$log" 2>&1 & pid=$!; set +m
+  t0="$(date +%s)"; rc=0; _WAIT_TICK=_kids _wait_beating "$pid" 60 "$log" 3 || rc=$?
+  assert_eq "$rc" 125
+  [ "$(( $(date +%s) - t0 ))" -le 15 ] || return 1
+  assert_not_contains "$(cat "$log")" "still building"
+  ! kill -0 "$pid" 2>/dev/null || { echo "left running" >&2; return 1; }
+  _none_left
 }

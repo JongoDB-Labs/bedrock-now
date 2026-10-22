@@ -363,7 +363,8 @@ test_egress_apply_brings_the_proxy_and_the_sandbox_to_the_choice() {
   : > "$TMP/dc"; : > "$TMP/docker"
   set_env TERMINAL_EGRESS internet
   terminal_egress_apply || return 1
-  assert_eq "$(cat "$TMP/dc")" "dc up -d --wait --build --no-deps terminal-egress
+  assert_eq "$(cat "$TMP/dc")" "dc build -q terminal-egress
+dc up -d --wait --no-deps terminal-egress
 dc up -d --no-deps --wait terminal"
   : > "$TMP/dc"; set_env TERMINAL_EGRESS host
   terminal_egress_apply || return 1

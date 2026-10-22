@@ -304,10 +304,11 @@ _diag_limits() {
 # silent (0: no such limit), in seconds. Generous: a smoke test 10 minutes; a project folder change 45 (it may wait 30
 # for no turn to run, then restart the sandbox). A settings change and a restart may build images (the terminal's, the
 # Code page's — whose build runs its tests: long on a slow computer with nothing cached), so they are ended only when
-# their log has said nothing new for 20 minutes, or after 4 hours in all. A backup takes as long as the data does and
-# updates have their own handling (lib/helper.sh): not limited here. A job past a limit is ended (_end_job) and said as
-# failed: a sandbox process could otherwise keep ./stack test, and with it the helper and every update queued behind
-# it, waiting.
+# their log has said nothing new for 20 minutes, or after 4 hours in all; a build says it is still at work every 2½
+# minutes (building, lib/commands.sh), so only the 4 hours end one, while a wait that hangs is ended at 20 minutes. A
+# backup takes as long as the data does and updates have their own handling (lib/helper.sh): not limited here. A job
+# past a limit is ended (_end_job) and said as failed: a sandbox process could otherwise keep ./stack test, and with it
+# the helper and every update queued behind it, waiting.
 _job_deadline() {
   local idle="${HELPER_IDLE_S:-1200}"
   case "$1" in

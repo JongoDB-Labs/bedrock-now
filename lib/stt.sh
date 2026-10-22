@@ -392,12 +392,12 @@ stt_apk_week() { date -u +%G-%V; }
 _stt_build() {
   local week prev; week="$(stt_apk_week)"; prev="$(cat "$STATE_DIR/stt-apk-week" 2>/dev/null || true)"
   case "$prev" in *[!0-9-]* | '') prev='' ;; esac
-  if dc build -q --build-arg "APK_REFRESH=$week" stt; then
+  if building "the speech-to-text image" dc build -q --build-arg "APK_REFRESH=$week" stt; then
     mkdir -p "$STATE_DIR"; printf '%s\n' "$week" > "$STATE_DIR/stt-apk-week"; return 0
   fi
   [ -n "$prev" ] && [ "$prev" != "$week" ] || return 1
   warn "could not refresh ffmpeg in the stt image (offline?) — building it with last refresh's packages ($prev)"
-  dc build -q --build-arg "APK_REFRESH=$prev" stt
+  building "the speech-to-text image" dc build -q --build-arg "APK_REFRESH=$prev" stt
 }
 
 _stt_build_profiled() { _STT_PROFILE=1 _stt_build; }   # before .env says bedrock (./stack stt set bedrock)
