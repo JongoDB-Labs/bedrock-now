@@ -958,7 +958,8 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   else record projects host-sessions-forgotten PASS "$(( $(now) - t0 ))" "taken back: the code container's list is forgotten (the copies in the sandbox stay)"; fi
   BN_SESSIONS_HOME="$HS/home" cli sessions-fetch-after-revoke 1 'no list of this project|that list is gone|not allowed' sessions fetch --project e2e-sessions-app --all
   cli sessions-project-remove 0 'no longer in the sandbox' project remove e2e-sessions-app --now
-  [ -z "$HS_OWN" ] || rm -rf "$HS"
+  # (the fake home goes — its fake secrets with it; the folder too when it was E2E_HOST_SESSIONS_DIR)
+  rm -rf "$HS/home"; [ -z "$HS_OWN" ] || rm -rf "$HS"
   rm -f "$OUT/browser/host-sessions-ids.txt"
 fi
 
