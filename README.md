@@ -857,7 +857,9 @@ written back to those folders.
   **you, on this computer's screen**, first: *Don't allow*, *Allow once* (that look, for an hour) or *Always for this
   folder* — then lists the sessions: titles, dates, sizes. *Pick* the ones to copy. *Check and copy*: each one read in,
   then what was found in it, before anything reaches the sandbox. Without the helper (or a screen): `./stack sessions
-  import --project NAME` in a terminal there does the same, asking in the terminal.
+  import --project NAME` in a terminal there does the same, asking in the terminal. Only sessions that ran in this
+  very folder are listed: another folder whose store folder has the same name (`/a/b-c` and `/a/b/c`) is told apart by
+  the folder each session recorded.
 - **Only on this computer** is a look allowed: from a phone or another computer the sheet reads and copies sessions of
   a look already allowed here, never asks for one. What may be read is listed in Settings › Claude Code › **What
   bedrock-now may read on this computer**, where **Take back** (from any device) undoes it — and what the Code page's
