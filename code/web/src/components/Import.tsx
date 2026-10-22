@@ -205,7 +205,7 @@ export function ImportSheet({ id, onClose }: { id: string; onClose: () => void }
           <RequestLine req={read.req} />
         </div>
       )}
-      {view && step === 3 && <CheckStep project={id} view={view} onCopied={() => void load()} />}
+      {view && step === 3 && <CheckStep project={id} view={view} onCopied={() => void load(3)} />}
       <div class="dlg-actions">
         {step > 1 && <button type="button" class="btn" onClick={() => setStep(step === 3 ? 2 : 1)} data-testid="import-back">Back</button>}
         {step === 2 && view?.staged.length ? <button type="button" class="btn" onClick={() => setStep(3)} data-testid="import-to-check">Check the {view.staged.length} read</button> : null}

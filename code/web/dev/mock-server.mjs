@@ -794,7 +794,8 @@ const folderOf = (cwd) => {
   for (const p of projectsMock) if ((cwd === absOf(p.root) || cwd.startsWith(`${absOf(p.root)}/`)) && (!best || p.root.length > best.root.length)) best = p;
   return best?.id ?? 'ws';
 };
-const placeOf = (id, cwd) => (filedMock.has(id) && (filedMock.get(id) === 'ws' || projectsMock.some((p) => p.id === filedMock.get(id))) ? filedMock.get(id) : folderOf(cwd));
+const placeOf = (id, cwd) => (filedMock.has(id) && (filedMock.get(id) === 'ws' || projectsMock.some((p) => p.id === filedMock.get(id)) || hostMock.some((h) => h.id === filedMock.get(id) && !h.gone))
+  ? filedMock.get(id) : folderOf(cwd));
 const projectRoot = (url, body) => {
   const id = (url.searchParams.get('project') ?? body?.project) || 'ws';
   if (id === 'ws') return '';
@@ -2121,6 +2122,13 @@ async function api(req, res, url) {
       return json(res, 200, { ok: true, removed: { id, name: host.name, root: host.root }, trash: null });
     }
     if (host && !what && m === 'POST') return json(res, 400, { error: 'a folder of this computer keeps the name ./stack gave it' });
+    // (Add to project: a label, a folder of this computer's too)
+    if (host && !host.gone && what === 'sessions' && m === 'POST') {
+      const b = await jsonBody(req);
+      if (!Array.isArray(b.ids) || !b.ids.length || b.ids.length > 100 || !b.ids.every((x) => UUID.test(x))) return json(res, 400, { error: 'ids: 1 to 100 session ids' });
+      for (const x of b.ids) filedMock.set(x, id);
+      return json(res, 200, { ok: true, filed: b.ids.length });
+    }
     if (host && what === 'terminal' && m === 'POST') {
       projectLog.push(`terminal ${host.root}`);
       return json(res, 200, { ok: true, window: host.name });
