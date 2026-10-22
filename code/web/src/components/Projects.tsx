@@ -15,6 +15,7 @@ import {
   activate,
   addToProject,
   closeSessionById,
+  continueHere,
   connectGitRepo,
   createProject,
   currentProject,
@@ -40,11 +41,12 @@ import * as api from '../api';
 import { GROUP_LABEL, groupOf, type Group } from '../groups';
 import { needsLook, rootOk, sessionsByProject, settingsApplied, visibleWs, WORKSPACE_ID, type Project, type SettingsView } from '../projects';
 import type { SessionView } from '../session';
-import type { SessionInfo } from '../types';
+import type { ImportedFrom, SessionInfo } from '../types';
 import { ago, label } from '../text';
 import { Icon, Spinner } from './icons';
 import { SandboxSaid } from './Said';
-import { copyText, Dialog, Dropdown, MenuItem } from './ui';
+import { Cmd, Dialog, Dropdown, MenuItem } from './ui';
+import { ImportSheet, Suggestions, TOOL_BADGE, TOOL_LABEL } from './Import';
 import { modelLabel } from './Pickers';
 
 function StateDot({ v }: { v: SessionView | undefined }) {
@@ -63,7 +65,7 @@ function StateDot({ v }: { v: SessionView | undefined }) {
 }
 
 function Row(props: { id: string; title: string; sub: string; view?: SessionView; active: boolean; picking: boolean; picked: boolean; onPick: (on: boolean) => void;
-  gone?: boolean }) {
+  gone?: boolean; imported?: ImportedFrom | null; continueTo?: { id: string; name: string } | null }) {
   const [renaming, setRenaming] = useState(false);
   const [val, setVal] = useState(props.title);
   const input = useRef<HTMLInputElement>(null);
@@ -100,7 +102,13 @@ function Row(props: { id: string; title: string; sub: string; view?: SessionView
       ) : (
         <button type="button" class="sess-main" onClick={() => (props.picking ? props.onPick(!props.picked) : void (open ? activate(props.id) : resumeSession(props.id)))}
           title={props.gone ? 'Show this session (read only: its folder is no longer added)' : open ? 'Show this session' : 'Resume this session'}>
-          <span class="sess-title">{props.title || 'Untitled session'}</span>
+          <span class="sess-title">
+            {props.imported && (
+              <span class="imp-badge" title={`Copied from ${TOOL_LABEL[props.imported.tool]} on the computer running bedrock-now${props.imported.forked ? ' (as a new session)' : ''}`}
+                data-testid="session-imported">{TOOL_BADGE[props.imported.tool]}</span>
+            )}
+            {props.title || 'Untitled session'}
+          </span>
           <span class="sess-sub">{props.sub}</span>
         </button>
       )}
@@ -123,6 +131,11 @@ function Row(props: { id: string; title: string; sub: string; view?: SessionView
             <MenuItem icon="folder" onSelect={() => (close(), openProjectDialog({ kind: 'file', ids: [props.id] }))} testid="session-add-to-project">
               Add to project…
             </MenuItem>
+            {props.continueTo && (
+              <MenuItem icon="fork" disabled={busy} onSelect={() => (close(), void continueHere(props.id, props.continueTo?.id ?? ''))} testid="session-continue-here">
+                Continue in {props.continueTo.name} (a new session in its folder)
+              </MenuItem>
+            )}
             <MenuItem icon="terminal" disabled={busy} onSelect={() => (close(), void openInTerminal(props.id))} testid="session-to-terminal">
               {busy ? 'Open in the terminal (once this turn ends)' : 'Open in the terminal'}
             </MenuItem>
@@ -192,6 +205,11 @@ function ProjectMenu({ p, onRename }: { p: Project; onRename: () => void }) {
             Claude Code settings…
           </MenuItem>
           {p.host && (
+            <MenuItem icon="download" onSelect={() => (close(), openProjectDialog({ kind: 'import', id: p.id }))} testid="project-menu-import">
+              Import sessions from this computer…
+            </MenuItem>
+          )}
+          {p.host && (
             <MenuItem icon="trash" danger onSelect={() => (close(), openProjectDialog({ kind: 'remove', id: p.id }))} testid="project-menu-remove">
               Remove folder from Code…
             </MenuItem>
@@ -246,9 +264,14 @@ export function ProjectsPanel() {
     modelLabel(models, v.model)].filter(Boolean).join(' · ');
   const isOpen = (p: Project) => expanded[p.id] ?? (!p.gone && (p.id === current || by[p.id].open.some((id) => groupOf(views[id]) !== 'done')));
   const pick = (id: string, on: boolean) => setPicked((x) => (on ? [...new Set([...x, id])] : x.filter((y) => y !== id)));
-  const row = (id: string, title: string, sub: string, v?: SessionView, gone = false) => (
+  // (a session shown in a project whose folder does not hold its own: Continue in that project forks it there)
+  const continueTo = (id: string, p: Project) => {
+    const cwd = where[id]?.cwd ?? info.get(id)?.cwd;
+    return !p.gone && cwd && cwd !== p.path && !cwd.startsWith(`${p.path}/`) ? { id: p.id, name: label(p.name, 60) } : null;
+  };
+  const row = (id: string, title: string, sub: string, v?: SessionView, gone = false, p?: Project) => (
     <Row key={id} id={id} view={v} active={id === active} title={title} sub={sub} picking={picking && !gone} picked={picked.includes(id)} onPick={(on) => pick(id, on)}
-      gone={gone} />
+      gone={gone} imported={info.get(id)?.imported ?? null} continueTo={p && !gone ? continueTo(id, p) : null} />
   );
   const live = projects.filter((p) => !p.gone);
   const gone = projects.filter((p) => p.gone);
@@ -325,7 +348,7 @@ export function ProjectsPanel() {
                     {GROUP_LABEL[g]}
                     {g === 'needs' && <span class="badge warn">{groups[g].length}</span>}
                   </div>
-                  <ul class="sess-list">{groups[g].map((id) => row(id, titleOf(id, views[id]), subOf(views[id]), views[id], p.gone))}</ul>
+                  <ul class="sess-list">{groups[g].map((id) => row(id, titleOf(id, views[id]), subOf(views[id]), views[id], p.gone, p))}</ul>
                 </div>
               ) : null,
             )}
@@ -338,7 +361,7 @@ export function ProjectsPanel() {
                   </button>
                 </div>
                 <ul class="sess-list">
-                  {mine.recent.map((x: SessionInfo) => row(x.id, x.title || x.firstPrompt, [ago(x.modified), x.branch].filter(Boolean).join(' · '), undefined, p.gone))}
+                  {mine.recent.map((x: SessionInfo) => row(x.id, x.title || x.firstPrompt, [ago(x.modified), x.branch].filter(Boolean).join(' · '), undefined, p.gone, p))}
                 </ul>
               </>
             )}
@@ -350,9 +373,16 @@ export function ProjectsPanel() {
                 Read only: add {p.path} again on this computer (Settings › Claude Code › Project folders, or ./stack project add) to go on with these sessions.
               </div>
             ) : (
-              <button type="button" class="proj-new linkish" disabled={opening} onClick={() => void newSession({ project: p.id })} data-testid="project-new-session">
-                <Icon name="plus" size={13} /> New session
-              </button>
+              <>
+                <button type="button" class="proj-new linkish" disabled={opening} onClick={() => void newSession({ project: p.id })} data-testid="project-new-session">
+                  <Icon name="plus" size={13} /> New session
+                </button>
+                {p.host && (
+                  <button type="button" class="proj-new linkish" onClick={() => openProjectDialog({ kind: 'import', id: p.id })} data-testid="project-import">
+                    <Icon name="download" size={13} /> Import sessions from this computer…
+                  </button>
+                )}
+              </>
             )}
           </div>
         )}
@@ -406,6 +436,7 @@ export function ProjectsPanel() {
         <button type="button" class="proj-add" onClick={() => openProjectDialog({ kind: 'new', tab: 'empty' })} data-testid="new-project">
           <Icon name="plus" size={14} /> New project
         </button>
+        <Suggestions />
       </div>
       {picking && (
         <div class="proj-pickbar" data-testid="sessions-picked">
@@ -484,6 +515,7 @@ export function ProjectDialogs() {
   if (d.kind === 'new') return <NewProjectDialog tab={d.tab} onClose={close} />;
   if (d.kind === 'remove') return <RemoveProjectDialog id={d.id} onClose={close} />;
   if (d.kind === 'settings') return <SettingsDialog id={d.id} start={d.start} onClose={close} />;
+  if (d.kind === 'import') return <ImportSheet id={d.id} onClose={close} />;
   return <FileDialog ids={d.ids} onClose={close} />;
 }
 
@@ -621,19 +653,6 @@ function NewProjectDialog({ tab, onClose }: { tab: Extract<ProjectDialog, { kind
         )}
       </div>
     </Dialog>
-  );
-}
-
-/** A command line, with Copy (it says Copied once the browser took it). */
-function Cmd({ text, testid }: { text: string; testid: string }) {
-  const [copied, setCopied] = useState<boolean | null>(null);
-  return (
-    <span class="np-cmd">
-      <code data-testid={testid}>{text}</code>
-      <button type="button" class="linkish small" onClick={() => void copyText(text).then(setCopied)} data-testid={`${testid}-copy`}>
-        {copied === null ? 'Copy' : copied ? 'Copied' : 'Copy it by hand'}
-      </button>
-    </span>
   );
 }
 

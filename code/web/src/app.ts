@@ -234,7 +234,9 @@ export type ProjectDialog =
   | { kind: 'remove'; id: string }
   | { kind: 'file'; ids: string[] }
   /** a project's own Claude Code settings: what they set, Trust / Stop trusting (start: then a new session there) */
-  | { kind: 'settings'; id: string; start?: NewSessionOptions };
+  | { kind: 'settings'; id: string; start?: NewSessionOptions }
+  /** your Claude Code and claude-bedrock sessions of a folder of this computer, copied into the sandbox (Import.tsx) */
+  | { kind: 'import'; id: string };
 
 /** A draft that came from a link (?prompt=): never focused, never sent by Enter until you said you read it, and always
  *  sent into a NEW session in Manual mode — never into the session shown, never in your remembered mode. */
@@ -2015,6 +2017,21 @@ export async function addToProject(ids: string[], pid: string): Promise<boolean>
   } catch (e) {
     toast(`Not moved: ${errText(e)}`, 'error');
     return false;
+  }
+}
+
+/** Continue in this project: a session shown in a project whose folder does not hold its own is forked into that
+ *  project's folder (a new session; the backend rewrites its folder's path in the copy), then opened. */
+export async function continueHere(id: string, pid: string): Promise<void> {
+  const p = get().projects.find((x) => x.id === pid);
+  if (!p || p.gone) return;
+  try {
+    const nid = await api.continueSession(id, pid);
+    toast(`A new session in ${p.name}, from that conversation.`, 'ok');
+    await refreshSessions();
+    await resumeSession(nid);
+  } catch (e) {
+    failed(e, 'Not continued');
   }
 }
 

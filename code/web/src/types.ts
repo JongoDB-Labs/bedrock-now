@@ -266,7 +266,75 @@ export interface SessionInfo {
   cwd: string;
   /** the project it is shown in, as the backend says (projects.ts: only one of the list counts) */
   project: string;
+  /** copied from Claude Code (CC) or claude-bedrock (CB) on the computer running bedrock-now; forked: as a new
+   *  session (its copy here had been continued) */
+  imported?: ImportedFrom | null;
 }
+
+// ---------------------------------------------------------------- sessions of this computer (the Import sheet)
+
+export type ImportTool = 'claude' | 'claude-bedrock';
+export interface ImportedFrom { tool: ImportTool; at: number; forked: boolean }
+/** A session of the last look at a project's folder on the computer (the reader's list, checked by the backend). */
+export interface ImportRow {
+  n: number;
+  tool: ImportTool;
+  id: string;
+  title: string;
+  first: string;
+  started: number | null;
+  last: number;
+  messages: number | null;
+  size: number;
+  parts: number;
+  models: string[];
+  version: string | null;
+  /** the Claude Code version that wrote it: one these imports were tested with, another, or none said */
+  format: 'tested' | 'other' | 'unknown';
+  /** where its model calls went: bedrock-now (claude-bedrock), Bedrock, Anthropic (its thinking blocks come out) */
+  source: 'bedrock-now' | 'bedrock' | 'anthropic' | 'unknown';
+  thinking: number | null;
+  branch: string | null;
+  tooLarge: boolean;
+  /** copied into the sandbox before (as that id) */
+  copied: { id: string; at: number | null } | null;
+}
+export interface ImportCounts { folders: number; listed: number; older: number; otherFolder: number; noCwd: number; unreadable: number; sidechain: number }
+export interface ImportRequest { id: string; action: string; state: 'sent' | 'asking' | 'reading' | 'done' | 'refused' | 'cancelled' | 'failed'; why: string | null; at: number }
+export interface ImportView {
+  project: string;
+  /** on the computer running bedrock-now (a look can be asked only there) */
+  local: boolean;
+  helper: { running: boolean; actions: string[]; screen: boolean };
+  index: { scan: string; at: number; consent: 'once' | 'always'; fetchable: boolean; rows: ImportRow[]; counts: Partial<Record<ImportTool, ImportCounts>> } | null;
+  staged: { id: string; tool: ImportTool; at: number; size: number; parts: number }[];
+  requests: ImportRequest[];
+}
+export interface ImportFinding { id: string; kind: string; label: string; message: number; part: string | null; preview: string; context: string; keepable: boolean }
+export interface ImportPreview {
+  id: string;
+  tool: ImportTool;
+  title: string;
+  messages: number | null;
+  size: number | null;
+  findings: ImportFinding[];
+  findingsTotal: number;
+  thinking: { blocks: number; removed: number; strip: boolean; source: string };
+  outside: { count: number; sample: string[] };
+  bad: number;
+  rewritten: number;
+  hidden: boolean;
+  parts: number;
+  left: { part: string; why: string }[];
+  format: string;
+  version: string | null;
+  again: { at: number } | null;
+  events: Ev[];
+  total: number;
+}
+export interface ImportResult { id: string; ok: boolean; as: string | null; forked: boolean; redacted: number; kept: number; thinkingRemoved: number; left: number; why: string; said: SandboxWords | null }
+/** A folder your coding tools kept sessions for (its store folder's name, turned into a folder that is there). */
+export interface ProjectSuggestion { path: string; claude: number; claudeBedrock: number; last: number }
 
 export interface OpenSession {
   id: string;

@@ -90,3 +90,37 @@
 .np-cmd { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .np-cmd code { min-width: 0; overflow-wrap: anywhere; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }
 .proj-ro.pending { border-style: dashed; color: var(--warn); }
+
+/* sessions of this computer: the Import sheet (Import.tsx), the CC / CB badge, Suggested from your computer */
+.imp-badge { display: inline-grid; place-items: center; margin-right: 5px; padding: 0 4px; height: 15px; border: 1px solid var(--line); border-radius: 4px; font-size: 10px; font-weight: 600; color: var(--muted); vertical-align: 1px; }
+.imp-steps { display: flex; gap: 14px; margin: 0 0 10px; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.imp-steps li.on { color: var(--fg); font-weight: 600; }
+.imp-step p { margin: 0 0 8px; }
+.imp-step code { overflow-wrap: anywhere; }
+.imp-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.imp-pw { display: inline-flex; align-items: center; gap: 6px; }
+.imp-pw input { width: 14em; }
+.imp-req { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.imp-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+.imp-rows { max-height: 46vh; overflow: auto; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 6px; }
+.imp-row label { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 4px 6px; padding: 5px 8px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.imp-row .imp-meta { grid-column: 3; }
+.imp-row.off { opacity: .6; }
+.imp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imp-staged { margin: 8px 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.imp-staged.off { opacity: .55; }
+.imp-staged-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.imp-staged-head .imp-title { flex: 1; }
+.imp-checks { display: grid; gap: 6px; margin-top: 6px; }
+.imp-findings { margin: 4px 0; padding: 0 0 0 4px; list-style: none; max-height: 30vh; overflow: auto; }
+.imp-findings li { padding: 3px 0; border-bottom: 1px dashed var(--line); font-size: 12px; overflow-wrap: anywhere; }
+.imp-context { white-space: pre-wrap; overflow-wrap: anywhere; }
+.imp-transcript { max-height: 40vh; overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); }
+.imp-transcript > div { margin: 4px 0; }
+.imp-user .imp-who { font-weight: 600; margin-right: 6px; }
+.imp-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.imp-tool, .imp-result, .imp-local, .imp-thinking { overflow-wrap: anywhere; }
+.imp-results { margin: 0 0 8px; padding-left: 18px; }
+.proj-suggest { margin-top: 6px; }
+.imp-suggestion { display: grid; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.imp-suggestion summary { cursor: pointer; }

@@ -5080,6 +5080,180 @@ def projects_host(browser):
     p.close()
 
 
+def host_ids(base=NORMAL):
+    post(base + "/__mock/projects?host=1")
+    return {x["name"]: x["id"] for x in mock_get(base, "/api/projects")["projects"]}
+
+
+@check("import: a folder of this computer's sessions — look (asked on the computer), pick, check (secrets masked, redacted unless kept; thinking out), copy; the CC badge; first open")
+def import_sheet(browser):
+    post(NORMAL + "/__mock/reset")
+    tools = host_ids()["tools"]
+    p = Page(browser, NORMAL, "import", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("side-sessions").click()
+    proj(page, tools).locator(".proj-head").hover()
+    proj(page, tools).get_by_test_id("project-menu").click()
+    page.get_by_test_id("project-menu-import").click()
+    sheet = page.get_by_test_id("import-sheet")
+    expect(sheet).to_be_visible()
+    expect(page.get_by_test_id("import-folder")).to_have_text("/home/you/src/tools")
+    expect(page.get_by_test_id("import-look")).to_be_disabled()   # (the portal password first)
+    # a wrong password: the helper refuses it, said in our words
+    page.get_by_test_id("import-password").fill("wrong")
+    page.get_by_test_id("import-look").click()
+    expect(page.get_by_test_id("import-request")).to_have_attribute("data-state", "refused", timeout=15_000)
+    expect(page.get_by_test_id("import-request")).to_contain_text("The portal password was not right")
+    # the look: the dialog on the computer's screen, then the list
+    page.get_by_test_id("import-password").fill("correct horse")
+    page.get_by_test_id("import-look").click()
+    expect(page.get_by_test_id("import-request")).to_contain_text("Answer the dialog on the computer's screen", timeout=10_000)
+    expect(page.get_by_test_id("import-step-pick")).to_be_visible(timeout=15_000)
+    rows = page.get_by_test_id("import-row")
+    expect(rows).to_have_count(3)
+    expect(rows.nth(0).get_by_test_id("import-badge")).to_have_text("CC")
+    expect(rows.nth(1).get_by_test_id("import-badge")).to_have_text("CB")
+    expect(rows.nth(2).get_by_test_id("import-pick")).to_be_disabled()   # too large to copy
+    expect(rows.nth(2)).to_contain_text("not a version these imports were tested with")
+    p.shot("import-pick.png")
+    page.get_by_test_id("import-search").fill("login")
+    expect(rows).to_have_count(1)
+    page.get_by_test_id("import-search").fill("")
+    rows.nth(0).get_by_test_id("import-pick").check()
+    rows.nth(1).get_by_test_id("import-pick").check()
+    page.get_by_test_id("import-password-2").fill("correct horse")
+    page.get_by_test_id("import-read").click()
+    expect(page.get_by_test_id("import-step-check")).to_be_visible(timeout=15_000)
+    staged = page.get_by_test_id("import-staged")
+    expect(staged).to_have_count(2)
+    cc = staged.filter(has_text="Fix the login bug")
+    expect(cc.get_by_test_id("import-finding")).to_have_count(2, timeout=10_000)
+    expect(cc.get_by_test_id("import-findings")).to_contain_text("2 possible secrets: redacted unless you keep one")
+    expect(cc.get_by_test_id("import-finding").first).to_contain_text("(20 characters)")
+    expect(cc.get_by_test_id("import-finding").nth(1)).to_contain_text("in subagents/agent-1.jsonl")
+    expect(cc.get_by_test_id("import-thinking")).to_contain_text("taken out")
+    expect(cc.get_by_test_id("import-outside")).to_contain_text("2 paths outside the project")
+    expect(cc.get_by_test_id("import-left")).to_contain_text("tool-results/image.bin")
+    cc.get_by_test_id("import-preview-toggle").click()
+    expect(cc.get_by_test_id("import-transcript")).to_contain_text("[REDACTED:aws-key-id]")
+    p.shot("import-check.png")
+    # keep one finding, keep the thinking blocks: what the copy is told
+    cc.get_by_test_id("import-redact").nth(1).uncheck()
+    cc.get_by_test_id("import-thinking-toggle").click()
+    expect(cc.get_by_test_id("import-thinking")).to_contain_text("kept", timeout=10_000)
+    page.get_by_test_id("import-copy").click()
+    expect(page.get_by_test_id("import-result")).to_have_count(2, timeout=15_000)
+    log = mock_get(NORMAL, "/__mock/import-log")["log"]
+    assert any(x.startswith("copy ") and "keep=1 thinking=keep" in x for x in log), log
+    assert any(x.startswith("copy ") and "keep=0 thinking=default" in x for x in log), log
+    # in the project, badged; open it
+    page.get_by_test_id("import-sheet").get_by_role("button", name="Close").last.click()
+    unfold(page, tools)
+    row = proj(page, tools).get_by_test_id("session-row").filter(has_text="Fix the login bug")
+    expect(row.get_by_test_id("session-imported")).to_have_text("CC", timeout=10_000)
+    expect(proj(page, tools).get_by_test_id("session-row").filter(has_text="Release notes").get_by_test_id("session-imported")).to_have_text("CB")
+    p.shot("import-badges.png")
+    # nothing about a session was ever sent anywhere but the code host
+    assert all(u.startswith(NORMAL) or u.startswith("data:") or u.startswith("blob:") for u in p.requests), [u for u in p.requests if not u.startswith(NORMAL)][:3]
+    p.assert_clean()
+    p.close()
+
+
+@check("import: over remote access no look is asked; without the helper, the terminal's way")
+def import_remote(browser):
+    post(NORMAL + "/__mock/reset")
+    tools = host_ids()["tools"]
+    post(NORMAL + "/__mock/bypass?remote=1")
+    p = Page(browser, NORMAL, "import-remote", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("side-sessions").click()
+    unfold(page, tools)
+    proj(page, tools).get_by_test_id("project-import").click()
+    expect(page.get_by_test_id("import-remote")).to_contain_text("Only on the computer running bedrock-now")
+    expect(page.get_by_test_id("import-look")).to_have_count(0)
+    page.get_by_test_id("import-sheet").get_by_role("button", name="Close").last.click()
+    p.close()
+    post(NORMAL + "/__mock/bypass?remote=0")
+    post(NORMAL + "/__mock/imports?helper=0")
+    p = Page(browser, NORMAL, "import-no-helper", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("side-sessions").click()
+    unfold(page, tools)
+    proj(page, tools).get_by_test_id("project-import").click()
+    expect(page.get_by_test_id("import-no-helper")).to_contain_text("./stack helper install")
+    expect(page.get_by_test_id("import-cmd")).to_have_text("./stack sessions import --project tools")
+    p.assert_clean()
+    p.close()
+
+
+@check("import: a hostile index (10,000 rows; markup and direction marks in titles, findings and the transcript) shown as text, capped")
+def import_hostile(browser):
+    post(HOSTILE + "/__mock/reset")
+    tools = host_ids(HOSTILE)["tools"]
+    p = Page(browser, HOSTILE, "import-hostile", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("side-sessions").click()
+    unfold(page, tools)
+    proj(page, tools).get_by_test_id("project-import").click()
+    page.get_by_test_id("import-password").fill("correct horse")
+    page.get_by_test_id("import-look").click()
+    expect(page.get_by_test_id("import-step-pick")).to_be_visible(timeout=20_000)
+    expect(page.get_by_test_id("import-row")).to_have_count(500, timeout=20_000)
+    expect(page.get_by_test_id("import-more")).to_contain_text("3500 more")
+    first = page.get_by_test_id("import-row").first
+    expect(first).to_contain_text("<img src=x")
+    expect(first).to_contain_text("⟨U+202E⟩")
+    page.get_by_test_id("import-row").nth(1).get_by_test_id("import-pick").check()
+    page.get_by_test_id("import-password-2").fill("correct horse")
+    page.get_by_test_id("import-read").click()
+    st = page.get_by_test_id("import-staged").first
+    expect(st.get_by_test_id("import-finding").first).to_contain_text("⟨U+202E⟩", timeout=20_000)
+    st.get_by_test_id("import-preview-toggle").click()
+    expect(st.get_by_test_id("import-transcript")).to_be_visible()
+    p.shot("import-hostile.png")
+    title = page.evaluate("document.title")
+    assert "pwned" not in title, title
+    assert page.locator("[data-testid=import-sheet] img, [data-testid=import-sheet] script, [data-testid=import-sheet] iframe").count() == 0
+    p.assert_clean()
+    p.close()
+
+
+@check("import: Suggested from your computer (asked on the computer; added there, never from here) and Continue in this project")
+def import_suggest_continue(browser):
+    post(NORMAL + "/__mock/reset")
+    ids = host_ids()
+    tools = ids["tools"]
+    p = Page(browser, NORMAL, "import-suggest", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("side-sessions").click()
+    page.get_by_test_id("suggestions-toggle").click()
+    page.get_by_test_id("suggest-password").fill("correct horse")
+    page.get_by_test_id("suggest-look").click()
+    sug = page.get_by_test_id("suggestion")
+    expect(sug).to_have_count(1, timeout=15_000)   # (tools is a project already)
+    expect(sug).to_contain_text("/home/you/src/it's-mine")
+    sug.get_by_test_id("suggestion-add").click()
+    expect(sug.get_by_test_id("suggestion-cmd")).to_have_text("./stack project add '/home/you/src/it'\\''s-mine'")
+    # Continue in this project: a session of the workspace filed in tools, forked into its folder
+    ws_sid = mock_get(NORMAL, "/api/sessions")["sessions"][0]["id"]
+    urllib.request.urlopen(urllib.request.Request(NORMAL + f"/api/projects/{tools}/sessions", method="POST", data=json.dumps({"ids": [ws_sid]}).encode(),
+                                                  headers={"content-type": "application/json", "origin": NORMAL}), timeout=5).read()
+    page.reload()
+    expect(page.get_by_test_id("conn")).to_have_text("Connected", timeout=10_000)
+    page.get_by_test_id("side-sessions").click()
+    unfold(page, tools)
+    row = proj(page, tools).locator(f"[data-testid=session-row][data-session='{ws_sid}']")
+    expect(row).to_have_count(1, timeout=10_000)
+    row.locator(".sess-main").hover()
+    row.get_by_test_id("session-menu").click()
+    page.get_by_test_id("session-continue-here").click()
+    expect(page.locator(".toast").filter(has_text="A new session in tools")).to_be_visible(timeout=10_000)
+    log = mock_get(NORMAL, "/__mock/import-log")["log"]
+    assert any(x.startswith(f"continue {ws_sid} -> /home/you/src/tools") for x in log), log
+    p.assert_clean()
+    p.close()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     procs = start_mocks()

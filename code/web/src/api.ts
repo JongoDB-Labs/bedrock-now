@@ -20,7 +20,8 @@ import {
   readOnlyTopOf,
   safe,
 } from './text';
-import type { AvailablePlugin, BnModel, Compat, Catalog, KeyBudget, RuleLine, CliModel, Command, ContextUsage, EditInfo, Ev, FileData, FsEntry, GitBranch, GitCommit, GitEntry, GitEvent, GitFile, GitFileDiff, GitHostRef, GitHostView, GitImported, GitOAuthView, GitSignInConfig, GitSignInFlow, GitIdentity, GitPlan, GitRemote, GitRemoteState, GitRemoteUrl, GitReview, GitRunResult, GitScope, GitStatus, GrepResult, Hunk, ImageBlock, InitInfo, InstalledPlugin, LoadedPlugin, Marketplace, McpServer, Mode, LaunchEntry, LaunchList, OpenSession, Outcome, PermissionReq, PortInfo, PreviewInfo, PreviewLink, RunList, RunResult, RunSource, RunSourceInfo, RunTask, ServerMsg, ServerState, SessionInfo, SessionState, SpendRow, Suggestion, WatchChange, SandboxWords } from './types';
+import type { AvailablePlugin, BnModel, Compat, Catalog, KeyBudget, RuleLine, CliModel, Command, ContextUsage, EditInfo, Ev, FileData, FsEntry, GitBranch, GitCommit, GitEntry, GitEvent, GitFile, GitFileDiff, GitHostRef, GitHostView, GitImported, GitOAuthView, GitSignInConfig, GitSignInFlow, GitIdentity, GitPlan, GitRemote, GitRemoteState, GitRemoteUrl, GitReview, GitRunResult, GitScope, GitStatus, GrepResult, Hunk, ImageBlock, InitInfo, InstalledPlugin, LoadedPlugin, Marketplace, McpServer, Mode, LaunchEntry, LaunchList, OpenSession, Outcome, PermissionReq, PortInfo, PreviewInfo, PreviewLink, RunList, RunResult, RunSource, RunSourceInfo, RunTask, ServerMsg, ServerState, SessionInfo, SessionState, SpendRow, Suggestion, WatchChange, SandboxWords, ImportTool, ImportedFrom, ImportRow, ImportView, ImportFinding,
+  ImportPreview, ImportResult, ImportRequest, ImportCounts, ProjectSuggestion } from './types';
 import { MODES, COMPATS } from './types';
 import { normBudget, type Budget as SessionBudget } from './budget';
 import { promptTitle } from './mentions';
@@ -654,7 +655,15 @@ export function normSessionInfo(v: unknown): SessionInfo | null {
     size: nonneg(o.size ?? o.fileSize),
     cwd,
     project: projectIdOk(o.project) ? o.project : WORKSPACE_ID,
+    imported: importedFrom(o.imported),
   };
+}
+const IMPORT_TOOLS: readonly ImportTool[] = ['claude', 'claude-bedrock'];
+const importTool = (v: unknown): ImportTool | null => (IMPORT_TOOLS.includes(v as ImportTool) ? (v as ImportTool) : null);
+function importedFrom(v: unknown): ImportedFrom | null {
+  const o = obj(v);
+  const tool = importTool(o?.tool);
+  return o && tool ? { tool, at: time(o.at), forked: o.forked === true } : null;
 }
 
 export async function listSessions(query = ''): Promise<SessionInfo[]> {
@@ -2145,4 +2154,128 @@ export class Socket {
       this.open();
     }, delay);
   }
+}
+
+// ---------------------------------------------------------------- sessions of this computer (the Import sheet)
+// What the backend says of them is what the computer's stores held — titles, prompts, transcripts of past sessions:
+// untrusted text, shown as text (label, normEvent), never as anything else. Paths are yours (folders of this computer).
+
+const N = (x: unknown, max = 1e12): number | null => (typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= max ? Math.floor(x) : null);
+function importRow(v: unknown): ImportRow | null {
+  const o = obj(v);
+  const tool = importTool(o?.tool);
+  if (!o || !tool || !isUuid(o.id) || N(o.n, 1e6) === null) return null;
+  const copied = obj(o.copied);
+  return {
+    n: N(o.n, 1e6) as number, tool, id: o.id.toLowerCase(), title: label(o.title, 200), first: label(o.first, 200), started: o.started ? time(o.started) || null : null,
+    last: time(o.last), messages: N(o.messages, 1e7), size: N(o.size, 1e13) ?? 0, parts: N(o.parts, 1e6) ?? 0,
+    models: arr(o.models, 6).map((m) => label(m, 80)).filter(Boolean), version: o.version ? label(o.version, 40) : null,
+    format: o.format === 'tested' || o.format === 'other' ? o.format : 'unknown',
+    source: o.source === 'bedrock-now' || o.source === 'bedrock' || o.source === 'anthropic' ? o.source : 'unknown',
+    thinking: N(o.thinking, 1e7), branch: o.branch ? label(o.branch, 80) : null, tooLarge: o.tooLarge === true,
+    copied: copied && isUuid(copied.id) ? { id: copied.id.toLowerCase(), at: copied.at ? time(copied.at) : null } : null,
+  };
+}
+const REQUEST_STATES = ['sent', 'asking', 'reading', 'done', 'refused', 'cancelled', 'failed'] as const;
+function importRequest(v: unknown): ImportRequest | null {
+  const o = obj(v);
+  if (!o || typeof o.id !== 'string' || !/^[0-9a-f]{32}$/.test(o.id) || !REQUEST_STATES.includes(o.state as ImportRequest['state'])) return null;
+  return { id: o.id, action: label(o.action, 40), state: o.state as ImportRequest['state'], why: typeof o.why === 'string' && /^[a-z-]{1,20}$/.test(o.why) ? o.why : null, at: time(o.at) };
+}
+const COUNT_KEYS = ['folders', 'listed', 'older', 'otherFolder', 'noCwd', 'unreadable', 'sidechain'] as const;
+/** The Import sheet's state for a project: its last list (at most 4,000 rows), the sessions waiting, the helper. */
+export async function getImports(project: string): Promise<ImportView> {
+  if (!projectIdOk(project) || project === WORKSPACE_ID) throw new ApiError(400, 'bad project id');
+  const o = await request('GET', '/api/imports' + q({ project }));
+  const ix = obj(o.index), h = obj(o.helper), head = obj(ix?.head), tools = obj(head?.tools);
+  const counts: Partial<Record<ImportTool, ImportCounts>> = {};
+  for (const t of IMPORT_TOOLS) {
+    const c = obj(tools?.[t]);
+    if (c) counts[t] = Object.fromEntries(COUNT_KEYS.map((k) => [k, N(c[k], 1e7) ?? 0])) as unknown as ImportCounts;
+  }
+  return {
+    project, local: o.local === true,
+    helper: { running: h?.running === true, actions: arr(h?.actions, 10).filter((a): a is string => typeof a === 'string' && /^sessions-[a-z]{1,10}$/.test(a)), screen: h?.screen === true },
+    index: ix && typeof ix.scan === 'string' && /^[0-9a-f]{32}$/.test(ix.scan) ? {
+      scan: ix.scan, at: time(ix.at), consent: ix.consent === 'always' ? 'always' : 'once', fetchable: ix.fetchable === true,
+      rows: arr(ix.rows, 4000).map(importRow).filter((r): r is ImportRow => r !== null), counts,
+    } : null,
+    staged: arr(o.staged, 200).map(obj).filter((x): x is Obj => x !== null && isUuid(x.id) && importTool(x.tool) !== null)
+      .map((x) => ({ id: (x.id as string).toLowerCase(), tool: importTool(x.tool) as ImportTool, at: time(x.at), size: N(x.size, 1e13) ?? 0, parts: N(x.parts, 1e6) ?? 0 })),
+    requests: arr(o.requests, 20).map(importRequest).filter((r): r is ImportRequest => r !== null),
+  };
+}
+/** A look at the project's sessions on the computer: the update helper asks there first (its screen). -> the request */
+export async function importScan(project: string, tool: ImportTool | 'both', password: string): Promise<string> {
+  const o = await request('POST', '/api/imports/scan', { project, tool, password });
+  if (typeof o.request !== 'string' || !/^[0-9a-f]{32}$/.test(o.request)) throw new ApiError(502, 'no request id');
+  return o.request;
+}
+/** Read these sessions of the last look into the backend (to check, then copy). -> the request */
+export async function importFetch(project: string, ids: string[], password: string): Promise<string> {
+  const o = await request('POST', '/api/imports/fetch', { project, ids: ids.filter(isUuid), password });
+  if (typeof o.request !== 'string' || !/^[0-9a-f]{32}$/.test(o.request)) throw new ApiError(502, 'no request id');
+  return o.request;
+}
+export async function importRequestState(id: string): Promise<ImportRequest | null> {
+  if (!/^[0-9a-f]{32}$/.test(id)) return null;
+  return importRequest(await request('GET', `/api/imports/request/${id}`));
+}
+function importFinding(v: unknown): ImportFinding | null {
+  const o = obj(v);
+  if (!o || typeof o.id !== 'string' || !/^(p[0-9]{1,4}:)?[0-9]{1,7}\.[0-9]{1,5}$/.test(o.id)) return null;
+  return { id: o.id, kind: label(o.kind, 40), label: label(o.label, 120), message: N(o.message, 1e7) ?? 0, part: o.part ? label(o.part, 220) : null,
+    preview: label(o.preview, 80), context: label(o.context, 200), keepable: o.keepable === true };
+}
+/** A waiting session as it would be copied (thinking: as the backend decides, or as asked). */
+export async function importPreview(project: string, id: string, thinking: 'strip' | 'keep' | null = null): Promise<ImportPreview> {
+  if (!isUuid(id)) throw new ApiError(400, 'bad session id');
+  const o = await request('GET', '/api/imports/preview' + q({ project, id, thinking: thinking ?? undefined }));
+  const th = obj(o.thinking), out = obj(o.outside);
+  return {
+    id: id.toLowerCase(), tool: importTool(o.tool) ?? 'claude', title: label(o.title, 200), messages: N(o.messages, 1e7), size: N(o.size, 1e13),
+    findings: arr(o.findings, 500).map(importFinding).filter((f): f is ImportFinding => f !== null), findingsTotal: N(o.findingsTotal, 1e7) ?? 0,
+    thinking: { blocks: N(th?.blocks, 1e7) ?? 0, removed: N(th?.removed, 1e7) ?? 0, strip: th?.strip === true, source: label(th?.source, 20) },
+    outside: { count: N(out?.count, 1e7) ?? 0, sample: arr(out?.sample, 30).map((p) => label(p, 300)).filter(Boolean) },
+    bad: N(o.bad, 1e7) ?? 0, rewritten: N(o.rewritten, 1e9) ?? 0, hidden: o.hidden === true, parts: N(o.parts, 1e6) ?? 0,
+    left: arr(o.left, 600).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ part: label(x.part, 220), why: label(x.why, 120) })),
+    format: label(o.format, 20), version: o.version ? label(o.version, 40) : null, again: obj(o.again) ? { at: time(obj(o.again)?.at) } : null,
+    events: arr(o.events, 3000).map(normEvent).filter((e): e is Ev => e !== null), total: N(o.total, 1e7) ?? 0,
+  };
+}
+/** Copy waiting sessions into the sandbox: each with the findings kept (ids) and what becomes of its thinking. */
+export async function importCopy(project: string, items: { id: string; keep: string[]; thinking: 'strip' | 'keep' | null }[]): Promise<ImportResult[]> {
+  const o = await request('POST', '/api/imports/copy', { project, items: items.map((i) => ({ id: i.id, keep: i.keep, ...(i.thinking ? { thinking: i.thinking } : {}) })) });
+  return arr(o.results, 100).map(obj).filter((x): x is Obj => x !== null).map((x) => ({
+    id: isUuid(x.id) ? x.id.toLowerCase() : '', ok: x.ok === true, as: isUuid(x.as) ? x.as.toLowerCase() : null, forked: x.forked === true,
+    redacted: N(x.redacted, 1e7) ?? 0, kept: N(x.kept, 1e7) ?? 0, thinkingRemoved: N(x.thinkingRemoved, 1e7) ?? 0, left: N(x.left, 1e6) ?? 0,
+    // (a refusal of the sandbox's: its words apart, never in a sentence of ours)
+    why: x.ok === true ? '' : x.sandbox === true ? 'the sandbox refused the copy' : label(x.why, 300),
+    said: x.ok !== true && x.sandbox === true ? { by: 'sandbox', said: label(x.why, 300) } as SandboxWords : null,
+  })).filter((r) => r.id);
+}
+export async function importDrop(project: string, id: string): Promise<void> {
+  if (!isUuid(id)) throw new ApiError(400, 'bad session id');
+  await request('DELETE', '/api/imports/staged' + q({ project, id }));
+}
+/** The folders your coding tools kept sessions for, not projects yet (their names, after you allowed it). */
+export async function getSuggestions(): Promise<{ at: number | null; rows: ProjectSuggestion[] }> {
+  const o = await request('GET', '/api/imports/suggestions');
+  return {
+    at: o.at ? time(o.at) : null,
+    rows: arr(o.rows, 500).map(obj).filter((x): x is Obj => x !== null && typeof x.path === 'string' && x.path.startsWith('/'))
+      .map((x) => ({ path: label(x.path, 1000), claude: N(x.claude, 1e6) ?? 0, claudeBedrock: N(x['claude-bedrock'], 1e6) ?? 0, last: time(x.last) })),
+  };
+}
+export async function suggestProjects(password: string): Promise<string> {
+  const o = await request('POST', '/api/imports/suggest', { password });
+  if (typeof o.request !== 'string' || !/^[0-9a-f]{32}$/.test(o.request)) throw new ApiError(502, 'no request id');
+  return o.request;
+}
+/** Continue in this project: a fork of the session written into the project's folder. -> the new session's id */
+export async function continueSession(id: string, project: string): Promise<string> {
+  if (!isUuid(id)) throw new ApiError(400, 'bad session id');
+  const o = await request('POST', `/api/sessions/${id}/continue`, { project });
+  if (!isUuid(o.id)) throw new ApiError(502, 'no new session');
+  return o.id.toLowerCase();
 }

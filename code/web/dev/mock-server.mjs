@@ -139,6 +139,15 @@ const MOCK_COMMITS = () => [
 // listing. hostForgotten: the folders no longer added whose record was forgotten (their sessions not listed).
 let hostMock = [];
 const hostForgotten = new Set();
+// sessions of this computer (the Import sheet; the backend's import-sessions.mjs and the update helper, in memory): a
+// look and a read are requests the "helper" answers over three polls (asking, reading, done). /__mock/imports?helper=0
+// stops the helper; GET /__mock/import-log lists the looks, reads, copies and continues. Hostile mode: 10,000 rows with
+// markup and direction marks in their titles, findings with hostile words around them.
+const importMock = new Map();   // project id -> {index, staged: Map(id -> preview)}
+const importRequests = new Map();
+let importHelper = true;
+let suggestionsMock = null;
+const importLog = [];
 const hostOf = (p) => hostMock.find((h) => !h.gone && h.folder !== 'unmounted' && (p === h.root || p.startsWith(`${h.root}/`))) ?? null;
 resetFs();
 // the backend's text test (code/server/api.mjs isText): no NUL in the first 8 KiB, and UTF-8 (a cut-off last
@@ -1756,7 +1765,140 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function sessionInfo(x) {
   const cwd = x.cwd ?? WS;
-  return { id: x.id, title: x.title, first_prompt: x.firstPrompt, branch: x.branch, modified: x.modified, cwd, project: placeOf(x.id, cwd) };
+  return { id: x.id, title: x.title, first_prompt: x.firstPrompt, branch: x.branch, modified: x.modified, cwd, project: placeOf(x.id, cwd), ...(x.imported ? { imported: x.imported } : {}) };
+}
+
+// --- the Import sheet ---
+const KEY = ['AK', 'IA'].join('');
+function importRowsFor(host) {
+  const now = Date.now();
+  if (HOSTILE_MODE) {
+    return Array.from({ length: 10000 }, (_, i) => ({ n: i + 1, tool: i % 3 ? 'claude' : 'claude-bedrock', id: crypto.randomUUID(), title: `${HOSTILE.img}${HOSTILE.bidi} ${i}`,
+      first: HOSTILE.script, last: now - i * 60e3, messages: i, size: 1000 + i, format: 'tested', source: 'anthropic', copied: null }));
+  }
+  return [
+    { n: 1, tool: 'claude', id: crypto.randomUUID(), title: 'Fix the login bug', first: 'Fix the login bug', last: now - 2 * 3600e3, messages: 42, size: 120_000, format: 'tested', source: 'anthropic', thinking: 3 },
+    { n: 2, tool: 'claude-bedrock', id: crypto.randomUUID(), title: 'Release notes', first: 'Write the release notes', last: now - 86400e3, messages: 12, size: 30_000, format: 'tested', source: 'bedrock-now' },
+    { n: 3, tool: 'claude', id: crypto.randomUUID(), title: 'A huge one', first: 'x', last: now - 5 * 86400e3, messages: 9000, size: 40 << 20, format: 'other', version: '1.0.3', tooLarge: true },
+  ].map((r) => ({ ...r, cwd: host }));
+}
+function importPreviewOf(r, host, thinking) {
+  const strip = thinking === null ? r.source !== 'bedrock-now' : thinking === 'strip';
+  const findings = r.tool === 'claude' ? [
+    { id: '3.1', kind: 'aws-key-id', label: 'an AWS access key ID', message: 2, part: null, preview: `${KEY}… (20 characters)`, context: HOSTILE_MODE ? `${HOSTILE.img}••• ${HOSTILE.bidi}` : 'export AWS_ACCESS_KEY_ID=•••', keepable: true },
+    { id: 'p1:4.1', kind: 'github-token', label: 'a GitHub token', message: 4, part: 'subagents/agent-1.jsonl', preview: 'ghp_… (40 characters)', context: 'GH_TOKEN=••• gh pr list', keepable: true },
+  ] : [];
+  return { id: r.id, tool: r.tool, title: r.title, messages: r.messages, size: r.size, findings, findingsTotal: findings.length,
+    thinking: { blocks: r.thinking ?? 0, removed: strip ? r.thinking ?? 0 : 0, strip, source: r.source }, outside: { count: r.tool === 'claude' ? 2 : 0, sample: ['/Users/you/.zshrc', '/etc/hosts'] },
+    bad: 0, rewritten: 0, hidden: host.startsWith('/projects/'), parts: 1, left: r.tool === 'claude' ? [{ part: 'tool-results/image.bin', why: 'not text (not UTF-8)' }] : [], format: r.format, version: r.version ?? null, again: null,
+    events: [{ type: 'user', text: `${r.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'tool_use', id: 'toolu_01', name: 'Read', input: { file_path: `${host}/src/login.ts` } },
+      { type: 'tool_result', id: 'toolu_01', text: 'export const login = () => true;', isError: false }, { type: 'text', text: HOSTILE_MODE ? hostileMarkdown().slice(0, 2000) : 'Fixed: **login** works again.', model: 'claude-sonnet-4-5' }],
+    total: 4, _row: r };
+}
+function importRequest(action, project, then) {
+  const id = crypto.randomBytes(16).toString('hex');
+  importRequests.set(id, { id, action, project, state: 'sent', why: null, polls: 0, then, at: Date.now() });
+  importLog.push(`${action} ${project ?? ''}`.trim());
+  return id;
+}
+async function importsApi(req, res, url, p, m) {
+  const hostOf = (id) => hostMock.find((x) => x.id === id && !x.gone);
+  const st = (id) => { if (!importMock.has(id)) importMock.set(id, { index: null, staged: new Map() }); return importMock.get(id); };
+  const pw = (b) => typeof b.password === 'string' && b.password !== '';
+  if (p === '/api/imports' && m === 'GET') {
+    const id = url.searchParams.get('project');
+    const h = hostOf(id);
+    if (!h) return json(res, id === 'ws' ? 400 : 404, { error: id === 'ws' ? 'bad project id' : 'only a folder of this computer added as a project has sessions on this computer to import' });
+    const x = st(id);
+    return json(res, 200, { project: id, local: !remote, helper: { running: importHelper, actions: ['sessions-scan', 'sessions-fetch', 'sessions-suggest'], screen: true },
+      index: x.index ? { ...x.index, head: { tools: { claude: { folders: 1, listed: x.index.rows.length, older: 0, otherFolder: 1, noCwd: 0, unreadable: 0, sidechain: 0 } } } } : null,
+      staged: [...x.staged.values()].map((v) => ({ id: v.id, tool: v.tool, at: Date.now(), size: v.size, parts: 1 })), requests: [] });
+  }
+  if (p === '/api/imports/scan' && m === 'POST') {
+    const b = await jsonBody(req);
+    if (remote) return json(res, 403, { error: 'Only on the computer running bedrock-now: a look at its sessions is allowed in a dialog on its screen (or ./stack sessions in a terminal there).' });
+    const h = hostOf(b.project);
+    if (!h) return json(res, 404, { error: 'no such project' });
+    if (!pw(b)) return json(res, 400, { error: 'the portal password, please' });
+    if (!importHelper) return json(res, 409, { error: 'The update helper is not running on the computer: in a terminal there, ./stack sessions (./stack helper install keeps it running).' });
+    if (b.password === 'wrong') return json(res, 200, { request: importRequest('sessions-scan', b.project, 'refuse:password') });
+    return json(res, 200, { request: importRequest('sessions-scan', b.project, () => { st(b.project).index = { scan: crypto.randomBytes(16).toString('hex'), at: Date.now(), consent: 'once', fetchable: true, rows: importRowsFor(h.root) }; }) });
+  }
+  if (p === '/api/imports/fetch' && m === 'POST') {
+    const b = await jsonBody(req);
+    const h = hostOf(b.project), x = h && st(b.project);
+    if (!x?.index) return json(res, 409, { error: 'no list of this project\'s sessions yet: look first' });
+    if (!pw(b)) return json(res, 400, { error: 'the portal password, please' });
+    const rows = (b.ids || []).map((id) => x.index.rows.find((r) => r.id === id));
+    if (!rows.length || rows.some((r) => !r)) return json(res, 409, { error: 'a session that is not in the last list: look again' });
+    return json(res, 200, { request: importRequest('sessions-fetch', b.project, () => { for (const r of rows) x.staged.set(r.id, importPreviewOf(r, h.root, null)); }) });
+  }
+  let mm;
+  if ((mm = /^\/api\/imports\/request\/([0-9a-f]{32})$/.exec(p)) && m === 'GET') {
+    const r = importRequests.get(mm[1]);
+    if (!r) return json(res, 404, { error: 'no such request' });
+    r.polls++;
+    if (r.state !== 'done' && r.state !== 'refused') {
+      if (r.polls === 1) r.state = r.action === 'sessions-fetch' ? 'reading' : 'asking';
+      else if (r.polls === 2) r.state = 'reading';
+      else if (typeof r.then === 'string') { r.state = 'refused'; r.why = r.then.split(':')[1]; }
+      else { r.state = 'done'; r.then(); }
+    }
+    return json(res, 200, { id: r.id, action: r.action, project: r.project, state: r.state, why: r.why, at: r.at });
+  }
+  if (p === '/api/imports/preview' && m === 'GET') {
+    const x = st(url.searchParams.get('project')), id = url.searchParams.get('id'), v = x.staged.get(id);
+    if (!v) return json(res, 404, { error: 'that session is not waiting to be copied (read it again)' });
+    const h = hostOf(url.searchParams.get('project'));
+    const th = url.searchParams.get('thinking');
+    const { _row, ...out } = importPreviewOf(v._row, h.root, th === 'keep' || th === 'strip' ? th : null);
+    return json(res, 200, out);
+  }
+  if (p === '/api/imports/copy' && m === 'POST') {
+    const b = await jsonBody(req);
+    const h = hostOf(b.project), x = h && st(b.project);
+    if (!x) return json(res, 404, { error: 'no such project' });
+    const results = [];
+    for (const it of b.items || []) {
+      const v = x.staged.get(it.id);
+      if (!v) { results.push({ id: it.id, ok: false, why: 'that session is not waiting to be copied (read it again)' }); continue; }
+      const kept = (it.keep || []).length;
+      saved.set(v.id, { id: v.id, title: v.title, firstPrompt: v._row.first, branch: 'main', modified: Date.now(), cwd: h.root, imported: { tool: v.tool, at: Date.now(), forked: false },
+        transcript: [{ type: 'user', text: `${v._row.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'text', text: 'Fixed: **login** works again.' },
+          { type: 'result', subtype: 'success', turns: 1, duration: 2000, usage: { input_tokens: 400, output_tokens: 50 } }] });
+      x.staged.delete(it.id);
+      importLog.push(`copy ${v.id} keep=${kept} thinking=${it.thinking ?? 'default'}`);
+      results.push({ id: v.id, ok: true, as: v.id, forked: false, redacted: v.findingsTotal - kept, kept, thinkingRemoved: v.thinking.removed, left: v.left.length });
+    }
+    return json(res, 200, { results });
+  }
+  if (p === '/api/imports/staged' && m === 'DELETE') {
+    st(url.searchParams.get('project')).staged.delete(url.searchParams.get('id'));
+    return json(res, 200, { ok: true });
+  }
+  if (p === '/api/imports/suggestions' && m === 'GET') {
+    const rows = (suggestionsMock ?? []).filter((r) => !hostMock.some((h) => h.root === r.path));
+    return json(res, 200, { at: suggestionsMock ? Date.now() : null, consent: 'once', rows });
+  }
+  if (p === '/api/imports/suggest' && m === 'POST') {
+    const b = await jsonBody(req);
+    if (remote) return json(res, 403, { error: 'Only on the computer running bedrock-now.' });
+    if (!pw(b)) return json(res, 400, { error: 'the portal password, please' });
+    return json(res, 200, { request: importRequest('sessions-suggest', null, () => { suggestionsMock = [{ path: HOSTILE_MODE ? `/home/you/src/${HOSTILE.bidi}` : "/home/you/src/it's-mine", claude: 4, 'claude-bedrock': 1, last: Date.now() - 3600e3 },
+      { path: '/home/you/src/tools', claude: 2, 'claude-bedrock': 0, last: Date.now() }]; }) });
+  }
+  if ((mm = /^\/api\/sessions\/([0-9a-f-]{36})\/continue$/.exec(p)) && m === 'POST') {
+    const b = await jsonBody(req);
+    const src = saved.get(mm[1]);
+    if (!src) return json(res, 400, { error: 'no such session' });
+    const to = b.project === 'ws' ? WS : hostOf(b.project)?.root ?? (projectsMock.find((x) => x.id === b.project) ? absOf(projectsMock.find((x) => x.id === b.project).root) : null);
+    if (!to) return json(res, 404, { error: 'no such project (it was removed?)' });
+    const nid = crypto.randomUUID();
+    saved.set(nid, { ...src, id: nid, title: `${src.title} (fork)`, cwd: to, modified: Date.now(), imported: undefined });
+    importLog.push(`continue ${mm[1]} -> ${to}`);
+    return json(res, 200, { id: nid, rewritten: 3 });
+  }
+  return false;
 }
 
 // the backend's download: the bytes (≤ 25 MiB) as an attachment, never anything a browser would render
@@ -1931,6 +2073,11 @@ async function api(req, res, url) {
     const paths = r.paths.filter((x) => !root || x.startsWith(`${root}/`)).filter((x) => x !== `${root}/`);
     const lim = Math.min(200, Number(url.searchParams.get('limit')) || 50);
     return json(res, 200, { paths: paths.slice(0, lim), truncated: paths.length > lim });
+  }
+  // sessions of this computer: the Import sheet, suggestions, Continue in this project
+  if (p.startsWith('/api/imports') || /^\/api\/sessions\/[^/]+\/continue$/.test(p)) {
+    const r = await importsApi(req, res, url, p, m);
+    if (r !== false) return r;
   }
   // projects (the backend's projects.mjs, in memory)
   if (p === '/api/projects' && m === 'GET') return json(res, 200, projectsView());
@@ -2608,6 +2755,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/__mock/answers' && req.method === 'GET') return json(res, 200, { answers: answerLog });
     if (url.pathname === '/__mock/run-shown' && req.method === 'GET') return json(res, 200, { shown: runShown });
     if (url.pathname === '/__mock/project-log' && req.method === 'GET') return json(res, 200, { log: projectLog, filed: Object.fromEntries(filedMock) });
+    if (url.pathname === '/__mock/import-log' && req.method === 'GET') return json(res, 200, { log: importLog, requests: [...importRequests.values()].map(({ then, ...r }) => r) });
     if (url.pathname.startsWith('/__mock/') && req.method === 'POST') {
       if (url.pathname === '/__mock/drop') {
         for (const ws of wss.clients) ws.terminate();
@@ -2786,7 +2934,12 @@ const server = http.createServer(async (req, res) => {
         if (st && url.searchParams.get('settings') === 'unverifiable') st.unverifiable = true;
         return json(res, 200, { ok: true, project: pr ? projectView(pr) : null });
       }
+      if (url.pathname === '/__mock/imports') {
+        if (url.searchParams.has('helper')) importHelper = url.searchParams.get('helper') === '1';
+        return json(res, 200, { ok: true });
+      }
       if (url.pathname === '/__mock/reset') {
+        importMock.clear(); importRequests.clear(); importLog.length = 0; importHelper = true; suggestionsMock = null;
         projectsMock = [];
         for (const k of [...fsState.keys()]) if (k.startsWith('/')) fsState.delete(k);
         for (const h of hostMock) for (const [k, v] of [...saved]) if (v.cwd === h.root || v.cwd?.startsWith(`${h.root}/`)) saved.delete(k);

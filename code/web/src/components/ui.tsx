@@ -375,3 +375,16 @@ export function memo<P extends object>(C: FunctionComponent<P>): FunctionCompone
   }
   return Memo as unknown as FunctionComponent<P>;
 }
+
+/** A command line, with Copy (it says Copied once the browser took it). */
+export function Cmd({ text, testid }: { text: string; testid: string }) {
+  const [copied, setCopied] = useState<boolean | null>(null);
+  return (
+    <span class="np-cmd">
+      <code data-testid={testid}>{text}</code>
+      <button type="button" class="linkish small" onClick={() => void copyText(text).then(setCopied)} data-testid={`${testid}-copy`}>
+        {copied === null ? 'Copy' : copied ? 'Copied' : 'Copy it by hand'}
+      </button>
+    </span>
+  );
+}
