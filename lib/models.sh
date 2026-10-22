@@ -342,7 +342,7 @@ reason_footnote() {
   case "$1" in
     ok | "ok (free check)") ;;
     "no Marketplace access" | "no model access" | "access denied") printf '%s: %s (see README › Asking your AWS admin for model access)\n' "$1" "$2" ;;
-    "no audio (AWS)") printf '%s: %s — voice uses browser speech, or your own OpenAI/Groq key (docs/voice.md)\n' "$1" "$2" ;;
+    "no audio (AWS)") printf '%s: %s — voice uses browser speech, or your own OpenAI/Groq key (docs/voice.md)\n' "$1" "${2#no audio: }" ;;
     *) printf '%s: %s\n' "$1" "$2" ;;
   esac
 }
