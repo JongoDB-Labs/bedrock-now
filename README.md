@@ -845,6 +845,45 @@ sandbox, so the Code page's sessions (and the terminal) work in it directly, wit
 Every project is in the one sandbox, a folder of this computer too: a session in one can read and change the others.
 Details: [docs/security.md](docs/security.md#folders-of-this-computer).
 
+##### Your Claude Code and claude-bedrock sessions from this computer
+
+The sessions you had in a project folder with Claude Code (`~/.claude`) or `claude-bedrock` (`~/.claude-bedrock`) on
+this computer can be copied into the sandbox and go on there, on any model of the catalog — one way: nothing is ever
+written back to those folders.
+
+- **Where**: a folder of this computer's ⋯ › **Import sessions from this computer…** (or the line under its sessions),
+  three steps. *Look on this computer* (the portal password again) asks the [update helper](#updating), which asks
+  **you, on this computer's screen**, first: *Don't allow*, *Allow once* (that look, for an hour) or *Always for this
+  folder* — then lists the sessions: titles, dates, sizes. *Pick* the ones to copy. *Check and copy*: each one read in,
+  then what was found in it, before anything reaches the sandbox. Without the helper (or a screen): `./stack sessions
+  import --project NAME` in a terminal there does the same, asking in the terminal.
+- **Only on this computer** is a look allowed: from a phone or another computer the sheet reads and copies sessions of
+  a look already allowed here, never asks for one. What may be read is listed in Settings › Claude Code › **What
+  bedrock-now may read on this computer**, where **Take back** (from any device) undoes it — and what the Code page's
+  container read under it (the list, sessions waiting) is forgotten; `./stack sessions consent --project NAME --revoke`
+  (or `--revoke-all`) in a terminal.
+- **Possible secrets** (AWS keys, GitHub, GitLab, Slack, Anthropic, OpenAI, Google, Stripe, npm and Hugging Face tokens,
+  private keys, JSON web tokens, `Authorization` headers, passwords in URLs, `password=`/`token=`-style values and
+  `.env`-style lines with a random value) are listed per session — what kind, where, a few characters and its length,
+  never the whole — and **redacted by default** (`[REDACTED:<kind>]`); untick one to keep it. The transcript, its
+  subagents' transcripts and large tool results alike; a file beside it that cannot be read so stays behind. A secret
+  in a shape the scan does not know, or in prose, can still go along: the sheet shows the transcript as it would be
+  copied.
+- **Thinking blocks** of a session that ran elsewhere than Bedrock (Anthropic's API, a Claude subscription) are taken out
+  by default (Bedrock may refuse their signatures on resume; the text stays); *Keep them* if you like.
+- **The copy** keeps the session's id (the same conversation; badged **CC** or **CB** in the project), its subagents'
+  transcripts and large tool results; it opens in Manual the first time. Copying again later replaces the copy while it
+  is as it was copied; once continued here, a later copy comes in as a new session. A folder whose path is hidden
+  (`/projects/<name>`) gets its path rewritten in the copy; paths outside the project (`~/.zshrc` …) are listed — they
+  are not in the sandbox.
+- **Continue in this project** (a session's ⋯, when it is shown in a project whose folder does not hold it — added
+  there by hand, say): a new session forked from it in that project's folder, its folder's path rewritten.
+- **Suggested from your computer** (under the projects): the folders your tools kept sessions for — their names only,
+  after you allow that on this computer — each with how to add it there (`./stack project add …`, or Settings ›
+  Project folders); never added from the page.
+
+How it is read: [docs/security.md](docs/security.md#your-coding-tools-sessions-from-this-computer).
+
 #### Models for Claude Code
 
 The model picker (top bar; on a phone ⋯ → *Model*; the status bar's model opens it) lists **every enabled chat model
@@ -1370,7 +1409,7 @@ by what you came to do — a list on the left (on a phone, a section picker at t
 | **AWS & models** | the AWS key (with *Check*), region, **Re-check models** |
 | **Spending & budgets** | the budgets of Chat, `claude-bedrock` and the Terminal/Code page (with this period's spend), alert threshold and webhook; *More*: the setup key's budget, daily price updates |
 | **Chat & voice** | Chat's default model, models hidden from its picker, speech-to-text, OpenRouter; *More*: the title/tag model, OpenRouter's cap and aliases |
-| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code*, the *Default model for new sessions* and *Project folders* ([folders of this computer](#folders-of-this-computer)); *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
+| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code*, the *Default model for new sessions*, *Project folders* ([folders of this computer](#folders-of-this-computer)) and *What bedrock-now may read on this computer* ([your sessions](#your-claude-code-and-claude-bedrock-sessions-from-this-computer): Take back); *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
 | **Files & sharing** | the Files (RustFS) key pair and the shared MCP token (**Regenerate**) |
 | **Remote access** | status, allowed Tailscale login, remote admin actions, the Terminal and Code page remotely, previews remotely; *More*: Tailscale and own-domain details |
 | **Updates & backups** | daily release check (when it last checked, and **Check for updates**), automatic updates and their window, nightly backups (window, how many), **Back up now** and the list of backups; *More*: signed releases only, the helper's switches |
@@ -1780,6 +1819,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack terminal status\|enable [--workspace DIR]\|disable` | Claude Code in the browser, a sandbox that sees one folder; on by default with the Code page ([above](#claude-code-in-the-browser)) | none (its sessions: per token) |
 | `./stack code status\|enable [--workspace DIR]\|disable` | The Code tab, Claude Code with a chat, permission prompts and your files, in the terminal's sandbox; on by default, `disable` keeps it off ([above](#the-code-page)) | none (its sessions: per token) |
 | `./stack project add DIR [--read-only] [--hide-path] [--name N]\|remove N\|mode N ro\|rw\|list` | A folder of this computer as a Code page project, mounted into the sandbox (it restarts; [above](#folders-of-this-computer)) | none |
+| `./stack sessions [list\|import --project N\|scan\|fetch\|consent\|suggest]` | Your Claude Code and `claude-bedrock` sessions of a project folder copied into the sandbox, after you allowed it here (secrets redacted by default; nothing written back; [above](#your-claude-code-and-claude-bedrock-sessions-from-this-computer)) | none (a resume: per token) |
 | `./stack git-host import gh\|glab [--host HOST]` | A login of the GitHub CLI or the GitLab CLI on this computer as a Git host of the Code page ([above](#remote-repositories-git-hosts-clone-push-and-pull)): the token goes to the code container on stdin (never a command line, a file or the browser); what it reaches is shown and confirmed first. glab: a personal access token only (an OAuth login of glab's is refused) | none |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |

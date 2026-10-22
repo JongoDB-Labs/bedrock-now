@@ -2654,6 +2654,114 @@ A folder of this computer can be a Code page project: `./stack project add DIR` 
   it back and checks it again as at `./stack up`. `./stack uninstall` removes the generated files, never a folder of
   yours.
 
+### Your coding tools' sessions from this computer
+
+The sessions you had with Claude Code (`~/.claude`) or `claude-bedrock` (`~/.claude-bedrock`) in a folder of this
+computer can be copied into the sandbox and resumed there (README: [Your Claude Code and claude-bedrock sessions from
+this computer](../README.md#your-claude-code-and-claude-bedrock-sessions-from-this-computer)). Two things make this
+sensitive. Those stores are **read by a Claude Code that runs on this computer with your full access** — so nothing
+may ever be written back to them: text the sandbox wrote would steer it. And a transcript holds **whatever a past
+session saw**: secrets that passed through a tool call, and text from files and web pages that may be written to
+steer whoever reads it next. So the stores are read on this computer only after you allowed it there, by a reader
+that trusts nothing in them, and what it read is untrusted data all the way to the sandbox.
+
+- [x] **One way: nothing is written to `~/.claude` or `~/.claude-bedrock`.** The reader's container mounts the
+  store folders it reads read-only; nothing else of bedrock-now opens them. A copy goes into the sandbox's own Claude
+  Code configuration (`/home/claude/.claude/projects/…`), written by bn-coded inside the sandbox; a later import reads
+  the computer's store again (a later change on the computer comes along); nothing of the sandbox's goes back.
+- [x] **Allowed on this computer, per tool and folder, and taken back from anywhere.** A store is read only after you
+  allowed that tool (Claude Code, claude-bedrock or both) for that project folder: in a terminal here (`./stack
+  sessions consent --project NAME --always`, or the question `./stack sessions import` asks), or in the dialog the
+  update helper shows **on this computer's screen** (fixed text naming the tool and your folder: *Don't allow* — the
+  default, also after 2 minutes —, *Allow once*, *Always for this folder*). *Once* holds for that look and the reads
+  that follow it for an hour. A request over remote access never asks (refused: 403 at the code container, and again
+  by the helper); it may only read and copy sessions of a look already allowed here. At most one dialog a minute and
+  10 a day. The grants are in `.state/sessions/consent.tsv` (mode 600 in a folder of 700, no container mounts it;
+  not in backups: allow again after a restore); a folder removed, or added again under another id, loses its grant.
+  **Take back** (Settings › Claude Code › *What bedrock-now may read on this computer*, from any device — it only
+  narrows; or `./stack sessions consent --revoke`) removes the grant and has the code container forget what it read
+  under it (the list, the sessions waiting to be copied); copies already in the sandbox stay there.
+- [x] **Only that folder's sessions, of those two stores.** The reader is given the store folders Claude Code names
+  after the project's path (its own naming, checked against the Agent SDK's function: every character but a letter
+  or digit a `-`, a path longer than 200 characters cut and given a hash) — each a real folder, never a link, its path
+  one Docker can mount as it is — and keeps only the transcripts whose recorded folder is that path. Nothing else of
+  `~/.claude` (credentials, settings, plugins, history, other projects) is mounted or read. Suggestions (*Suggested
+  from your computer*) read only the names of the store folders — never a transcript — after their own consent, and
+  never turn into a project from the page: they say how to add one on this computer.
+- [x] **The reader trusts nothing in a store.** It is the code image's `server/harness/claude.mjs`, in a throwaway
+  container: no network, read-only root, every capability dropped, `no-new-privileges`, 64 processes, 768 MB, an 8 MB
+  `/tmp`, as you (never root), ended after a time limit and removed by its name. Each file is opened with `O_NOFOLLOW |
+  O_NONBLOCK` and checked on the opened descriptor (`fstat`: a regular file) — so a link in the store is not followed
+  and a FIFO or device is not read (and cannot hang it); folders are listed, never entered through a link. Every count
+  and size is bounded (a transcript 32 MiB, a line 1 MiB, 20,000 files, 2,000 rows, 512 files beside a session, 50
+  sessions and 128 MiB per read); invalid UTF-8 is read as text with replacement characters; a title or first prompt
+  is cut to 120 characters with control, invisible and direction-changing characters taken out. Its output is fixed
+  JSON lines: `./stack` takes from the list only the fields it knows (each against a pattern) and prints store text
+  only as printable ASCII (`plain_text`; your paths through `owner_text`); its errors are fixed sentences.
+- [x] **Read by row, never by a path.** A read (`sessions-fetch`) names a look (its nonce) and row numbers of that
+  look's list, which `./stack` kept itself (`.state/sessions/scans/`, host-only, a day at most): the reader is given
+  only those sessions' ids and the folders of that look. Each file it sends comes with its size and SHA-256; the code
+  container stages it only if it is one of the listed sessions' files (the transcript, `subagents/*.jsonl`,
+  `tool-results/*`, plain names), whole, matching, and within the budget (a 160 MB tmpfs, at most 128 MiB staged,
+  gone after an hour or when copied).
+- [x] **Possible secrets redacted by default, and shown.** Before anything reaches the sandbox, the code container
+  scans every string of the transcript — values *and* keys, every message, the subagents' transcripts and tool results
+  beside it — for AWS key ids and secrets, GitHub/GitLab/Slack/Anthropic/OpenAI/Google/Stripe/npm/Hugging Face tokens,
+  private keys (PEM blocks), JSON web tokens, `Authorization` headers, passwords in URLs, `password=`/`token=`-style
+  assignments and `.env`-style lines with a high-entropy value (placeholders such as `${VAR}` or `changeme` skipped).
+  Each finding is listed with its kind, where, a few characters and its length — never the whole — and replaced by
+  `[REDACTED:<kind>]` unless you untick it; redaction is idempotent (a copy redacted twice is the same). The scan is
+  linear on hostile text (each pattern takes a whole run at once; PEM blocks paired by their markers; JWTs scanned by
+  hand) and every bound **fails closed**: a string longer than 8 MiB is replaced whole (`[REDACTED:too-long]`), a
+  string with more than 1,000 findings likewise (`too-many`) — neither can be kept. A file beside the transcript that
+  cannot be parsed and scanned is not copied, and the sheet says so. Only `signature` fields of thinking blocks are not
+  scanned (Bedrock checks them as they are). Not detectable, and so said in the sheet: a secret in a shape the scan
+  does not know, or written in prose.
+- [x] **Shown as data, never as instructions.** Nothing in a transcript is acted on by bedrock-now: titles, prompts,
+  findings' context and tool calls reach the page as text only (the page's client keeps one line, shows control and
+  direction-changing characters as `⟨U+202E⟩`, caps lengths and counts — 4,000 rows); Claude's words go through the
+  page's own Markdown renderer and its sanitizing; a refusal of the sandbox's is shown apart, as the sandbox's words.
+  The copied session is resumed by you; its first open is in **Manual** (Claude asks before each change), since its
+  history is what a past session saw.
+- [x] **Thinking blocks from elsewhere.** A session that ran on Anthropic's API or a subscription has thinking blocks
+  signed there; they are taken out by default (the chain of messages kept whole) so a resume on Bedrock does not fail,
+  and can be kept.
+- [x] **Written into the sandbox by bn-coded, checked again there.** `sessions.import` takes the session's id (a UUID),
+  the project's folder in the sandbox (one of its tops: the workspace, a project of it, a folder of this computer)
+  and its files (the transcript first, then `subagents/` and `tool-results/` with plain names; 32 MiB in all); it
+  writes into a temporary folder in the store and links or renames each file into place — never through a link, never
+  over a transcript of the same id in another folder; a copy already there is replaced only if it is as it was copied
+  (its SHA-256), else the copy comes in as a new session (a fork: new ids). *Continue in this project* forks the same
+  way (the Agent SDK's `forkSession`) and rewrites the old folder's path to the new one only where it stands as a
+  path (bounded by separators: `/a/app` never turns `/a/apple` into something else).
+- [x] **The helper and the code container: three kinds of folders, one direction each.** The code container asks the
+  helper with a request file in a folder of its own; the helper never writes there, and what the helper offers goes
+  through a folder ./stack writes and the code container mounts read-only:
+
+  | Folder (on this computer) | Written by | Read by | Mounted | Shape |
+  |---|---|---|---|---|
+  | `.state/code-requests/` (700, the code container's user) | the code container (`sx-<nonce>.json`: fixed fields, never a path, the password again, ≤ 768 bytes) | the helper: each file moved into its private inbox, then checked (not a link, a regular file, owned by you or the code container's user, a bounded read, one line against fixed patterns, the password against the helper's own hash, limits); anything else there removed with `rm -f --` | rw into the code container only (`/run/bn-code-requests`) | a container writes, the host reads (as `.state/requests` of the portal) |
+  | `.state/projects/public/` (755): `roots.json`, `helper.json` | ./stack and the helper (a temporary file in that folder, then renamed; never followed) | the code container | `:ro` into the code container (`/etc/bn-code/projects`) | the host writes, a container reads |
+  | `.state/status/sessions.json` | ./stack (likewise) | the portal (Settings' list) | `:ro` into the portal, with the other status files | the host writes, a container reads |
+  | `.state/requests/` (`sessions-revoke`) | the portal | the helper (as every Settings request) | rw into the portal only | a container writes, the host reads |
+  | `.state/sessions/` (`consent.tsv`, `scans/`), `.state/helper/` | ./stack and the helper | them only | none | host-only |
+  | `~/.claude/projects/<folder>`, `~/.claude-bedrock/projects/<folder>` | your tools on this computer | the reader | read-only into the reader's throwaway container, for one look or read | yours: never written |
+  | code-state volume `imports/`, tmpfs `/run/bn-import-stage` | the code container (from ./stack's stdin) | the code container | the code container only | the container's own |
+  | the sandbox's `/home/claude/.claude/projects/` | bn-coded (`sessions.import`) | the sandbox | the terminal container only | the sandbox's own |
+
+  The folders of the projects (P1, P2) are as they were: `.state/projects/` stays 700 with `folders.tsv` host-only,
+  its `public/` folder read-only in the code container, `.state/status` read-only in the portal. Tests: a link
+  planted in the code container's folder at the names the helper uses is never followed, its target and mode unchanged
+  (`tests/test_sessions.sh`); the code container's compose file mounts `public/` read-only and the requests folder
+  without creating it (`tests/test_code.sh`).
+- [x] **Over remote access.** The Import sheet works from a phone or another computer for what was allowed here: it
+  shows a look's list, reads picked rows of it (while its *once* holds, or *always*), checks and copies. It never
+  starts a look or a suggestion from there, and never allows one.
+- [ ] **Not covered.** A transcript that tells the model something when resumed (it is history the model reads: the
+  first open in Manual is the guard, and the sheet shows it first); a secret the scan does not know; Claude Code
+  changing its store format (the reader marks a version it was not tested with, and the sheet says so). Linux dialogs
+  (`zenity`, `kdialog`) are written but were tested with a stub only.
+
 ## Code provenance
 
 `./stack update` runs the code it downloads: on a release install, the newest `vX.Y.Z` tag of the `origin`

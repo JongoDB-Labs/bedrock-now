@@ -6,6 +6,41 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Your Claude Code and claude-bedrock sessions from this computer, in the Code page.** A folder of this computer's
+  ⋯ › **Import sessions from this computer…**: *Look on this computer* (the update helper asks you on this computer's
+  screen first — *Don't allow*, *Allow once*, *Always for this folder*), pick sessions from the list (titles, dates,
+  sizes), then *Check and copy*: each one's possible secrets (AWS keys, GitHub/GitLab/Slack/Anthropic/OpenAI and other
+  tokens, private keys, JWTs, `Authorization` headers, passwords in URLs, `.env`-style lines) listed with a few
+  characters and their length and **redacted by default**, its thinking blocks taken out when it ran elsewhere than
+  Bedrock, the transcript shown as it would be copied; *Copy into the sandbox* keeps the session's id, its subagents'
+  transcripts and large tool results, and it resumes on any model of the catalog (first open in Manual). Badged CC or
+  CB in the project. Copy one way: nothing is ever written to `~/.claude` or `~/.claude-bedrock`; copying again
+  replaces a copy not continued since, else comes in as a new session. **Continue in this project** forks a session
+  into another project's folder, its path rewritten. **Suggested from your computer**: the folders your tools kept
+  sessions for, with how to add them here. In a terminal: `./stack sessions import --project NAME` (asks there),
+  `scan`, `fetch`, `list`, `consent` (`--always`, `--once`, `--revoke`), `suggest`. Settings › Claude Code › **What
+  bedrock-now may read on this computer** lists what you allowed; *Take back* works from any device.
+
+### Security
+
+- Reading your session stores is allowed only on this computer, per tool and folder, and taken back from anywhere
+  (the code container then forgets what it read); a request over remote access never asks or allows. The stores are
+  read by a throwaway container of the code image (no network, read-only, no capabilities, as you, a time limit) that
+  mounts only that folder's store folders read-only, opens each file without following a link and only if it is a
+  regular file (no FIFO can hang it), bounds every size and count, and prints its findings in fixed JSON lines;
+  `./stack` prints store text as printable ASCII only. A read names rows of the helper's own last look, never a path;
+  every file staged in the code container is checked against its SHA-256 and the look's list.
+- The secret scan runs in linear time on hostile text and every bound fails closed (an over-long string, or one with
+  too many findings, is redacted whole); keys and values, subagents' transcripts and tool results are scanned alike;
+  a file that cannot be scanned is not copied. Store text reaches the page as text only (direction-changing and
+  invisible characters shown, lengths and counts capped).
+- The code container asks the update helper through a folder of its own (request files with fixed fields, never a
+  path, the password again); the helper moves each into its private folder before checking it and never writes
+  there. What the helper offers the code container is written where ./stack writes for containers, mounted read-only.
+  The folders, who writes and who reads each: docs/security.md (*Your coding tools' sessions from this computer*).
+
 ## [0.20.2] - 2026-10-23
 
 ### Fixed
