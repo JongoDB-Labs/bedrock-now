@@ -422,8 +422,10 @@ export class Imports {
       const pid = f.slice(6, -5);
       if (project !== 'all' && pid !== project) continue;
       const ix = this.index(pid);
-      if (!ix || tool === 'both') fs.rmSync(path.join(this.dir, f), { force: true });
-      else writeJson(this.dir, f, { ...ix, rows: ix.rows.filter((r) => r.tool !== tool) });
+      const rows = ix && tool !== 'both' ? ix.rows.filter((r) => r.tool !== tool) : [];
+      // (a list with no row left is forgotten whole: ./stack takes a folder back one tool after the other)
+      if (!rows.length) fs.rmSync(path.join(this.dir, f), { force: true });
+      else writeJson(this.dir, f, { ...ix, rows });
       for (const s of this.staged(pid)) if (tool === 'both' || s.tool === tool) this.drop(pid, s.id);
     }
     return { ok: true };

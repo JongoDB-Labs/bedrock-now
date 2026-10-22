@@ -363,7 +363,8 @@ test('taken back: a tool\'s rows and waiting sessions forgotten (the copies in t
   imports.forget('p_00000001', 'claude-bedrock');
   assert.equal(imports.index('p_00000001').rows.length, 1);
   imports.forget('p_00000001', 'claude');
-  assert.equal(imports.index('p_00000001').rows.length, 0);
+  assert.equal(imports.index('p_00000001'), null);   // (no row left: the list is gone, not kept empty)
+  assert.ok(!fs.existsSync(path.join(imports.dir, 'index-p_00000001.json')));
   assert.deepEqual(imports.staged('p_00000001'), []);
   imports.forget('all', 'both');
   assert.equal(imports.index('p_00000001'), null);

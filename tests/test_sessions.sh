@@ -32,6 +32,8 @@ _stubs() {
       "exec -T code node server/import-sessions.mjs suggest "*) cat > "$TMP/suggest.in"; echo '{"ok":true,"rows":1}' ;;
       "exec -T code node server/import-sessions.mjs forget "*) echo '{"ok":true}' ;;
       "exec -T code node server/import-sessions.mjs list "*) printf '%s\n' "${LIST_TSV:-}" ;;
+      "exec -T code node server/import-sessions.mjs findings "*) printf '%s\n' "${FINDINGS_TSV:-}" ;;
+      "exec -T code node server/import-sessions.mjs copy "*) printf '%s\n' "${COPY_TSV:-}" ;;
       "exec -T code node server/import-sessions.mjs request "*) ;;
     esac
     return 0
@@ -156,6 +158,10 @@ test_a_read_names_rows_of_its_own_look_and_holds_only_while_allowed() {
   assert_not_contains "$run" "$UUID_A"
   assert_not_contains "$run" "/in/claude-0"
   assert_contains "$(cat "$TMP/dc")" "exec -T code node server/import-sessions.mjs stage --project p_0000aaaa --scan $s --store-claude-bedrock $(_ss_b64 "$BN_SESSIONS_HOME/.claude-bedrock/projects")"
+  # as ./stack runs it (set -e, pipefail): a read with nothing skipped says so and ends well (no silent exit 1)
+  local out
+  out="$( (set -euo pipefail; sessions_fetch --project app --scan "$s" --rows 2) 2>&1 )" || { echo "a read under set -e ended: $out" >&2; return 1; }
+  assert_contains "$out" "app: 1 session(s) read into the Code page's container"
   # rows that are not the look's, odd shapes, too many: refused before anything is read
   : > "$TMP/docker"
   for r in 3 0 '1;rm' '../x' "$(seq -s, 1 51)" '2-1'; do
@@ -329,6 +335,23 @@ test_what_a_store_said_is_printed_as_plain_ascii() {
   ! LC_ALL=C grep -q "$(printf '\033')" "$TMP/out"
   ! LC_ALL=C grep -q "$(printf '\342\200\256')" "$TMP/out"
   assert_contains "$(cat "$TMP/out")" "evil ??? title"
+}
+
+test_the_whole_import_in_a_terminal_as_stack_runs_it() {
+  _stubs
+  export LIST_TSV="$(printf '1\tclaude\t4\t1790000000000\t100\t-\tfirst\n2\tclaude-bedrock\t2\t1790000000000\t50\t-\tsecond')"
+  export FINDINGS_TSV="$(printf '%s\t2\taws-key-id,github-token\t1\t0\t0\tfirst' "$UUID_A")"
+  export COPY_TSV="$(printf '%s\tok\t%s\t2\t0\t0\t' "$UUID_A" "$UUID_A")"
+  sessions_consent --project app --always 2>/dev/null
+  _store claude >/dev/null; _store claude-bedrock >/dev/null
+  # (set -e and pipefail, as ./stack: no step of the happy path may end it early)
+  local out
+  out="$( (set -euo pipefail; ASSUME_YES=1; sessions_import --project app --rows 1) 2>&1 )" || { echo "the import under set -e ended: $out" >&2; return 1; }
+  assert_contains "$out" "2 possible secret(s) (aws-key-id,github-token): redacted"
+  assert_contains "$out" "1 thinking block(s) taken out"
+  assert_contains "$out" "copied: $UUID_A — 2 redaction(s)"
+  assert_contains "$(cat "$TMP/dc")" "copy --project p_0000aaaa --ids $UUID_A --tsv"
+  assert_not_contains "$(cat "$TMP/dc")" "--keep-secrets"
 }
 
 test_cli_wiring() {

@@ -108,6 +108,8 @@ _ss_badge() { case "$1" in claude) echo CC ;; claude-bedrock) echo CB ;; esac; }
 _ss_tools() {
   case "${1:-both}" in claude) echo claude ;; claude-bedrock) echo claude-bedrock ;; both) echo "$SESSIONS_TOOLS" ;; *) return 1 ;; esac
 }
+# _ss_labels claude|claude-bedrock|both -> their names in a sentence ("Claude Code and claude-bedrock")
+_ss_labels() { local t out=''; for t in $(_ss_tools "$1"); do out="$out${out:+ and }$(_ss_label "$t")"; done; printf '%s\n' "$out"; }
 # the stores: in your home folder (BN_SESSIONS_HOME: a fake home of the tests' — only this computer's environment sets it)
 _ss_home() { printf '%s\n' "${BN_SESSIONS_HOME:-$HOME}"; }
 _ss_store_root() { case "$1" in claude) printf '%s/.claude/projects\n' "$(_ss_home)" ;; claude-bedrock) printf '%s/.claude-bedrock/projects\n' "$(_ss_home)" ;; esac; }
@@ -533,13 +535,14 @@ sessions_fetch() {
   # the reader's files straight into the code container (a pipe: nothing of them is kept on this computer)
   local tmp; tmp="$(mktemp "$(sessions_dir)/.fetch.XXXXXX")" || _ss_fail reader "cannot write in $(sessions_dir)"
   if ! _ss_fetch_pipe "$tmp" "${stores[@]}" -- fetch --path "$(_ss_b64 "$SS_HOST")" "${ins[@]}" "${wants[@]}"; then
-    res="$(grep '^{"ok":' "$tmp" | tail -n 1)"; rm -f "$tmp" "$tmp.err"
+    res="$(grep '^{"ok":' "$tmp" | tail -n 1)" || true; rm -f "$tmp" "$tmp.err"
     _ss_fail reader "the sessions could not be read ($(plain_text "$(printf '%s' "$res" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p' | head -c 200)"))"
   fi
-  res="$(grep '^{"ok":' "$tmp" | tail -n 1)"; rm -f "$tmp" "$tmp.err"
+  res="$(grep '^{"ok":' "$tmp" | tail -n 1)" || true; rm -f "$tmp" "$tmp.err"
   case "$res" in '{"ok":true'*) ;; *) _ss_fail code "the Code page's container did not take the sessions" ;; esac
   got="$(printf '%s' "$res" | sed -n 's/.*"sessions":\([0-9]*\).*/\1/p')"
-  skipped="$(printf '%s' "$res" | grep -o '"why":"[a-z-]*"' | wc -l | tr -d ' ')"
+  # (|| true: under ./stack's set -e and pipefail, a read with nothing skipped — grep finding nothing — must not end here)
+  skipped="$(printf '%s' "$res" | grep -o '"why":"[a-z-]*"' | wc -l | tr -d ' ')" || true
   _ss_tell done
   log "$SS_NAME: ${got:-0} session(s) read into the Code page's container, to check and copy there$([ "${skipped:-0}" = 0 ] || echo "; $skipped not read (changed since the look, too large, or gone)")"
 }
@@ -662,14 +665,14 @@ sessions_consent() {
       if [ "$what" = revoke ]; then _ss_consent_take suggest "$t" all; else _ss_consent_grant suggest "$t" - - "$what"; fi
     done
     sessions_status_sync
-    log "the names of the folders $(_ss_tools "$tool" | sed 's/ / and /') keep sessions for: $([ "$what" = revoke ] && echo 'no longer read (the suggestions are forgotten)' || echo "may be read $([ "$what" = always ] && echo always || echo once, within the hour)")"
+    log "the names of the folders $(_ss_labels "$tool") keep sessions for: $([ "$what" = revoke ] && echo 'no longer read (the suggestions are forgotten)' || echo "may be read $([ "$what" = always ] && echo always || echo once, within the hour)")"
     return 0
   fi
   [ -n "$ref" ] || die "usage: ./stack sessions consent --project NAME [--tool T] --always|--once|--revoke"
   # (every project's, taken back: Settings' Take back all, by the helper)
   if [ "$ref" = all ] && [ "$what" = revoke ]; then
     for t in $(_ss_tools "$tool"); do _ss_consent_take folder "$t" all; done
-    log "taken back: bedrock-now no longer reads $(_ss_tools "$tool" | sed 's/ / and /')'s sessions of any folder here (sessions already copied into the sandbox stay there)"
+    log "taken back: bedrock-now no longer reads $(_ss_labels "$tool")'s sessions of any folder here (sessions already copied into the sandbox stay there)"
     return 0
   fi
   # (taking back works for a folder removed since too: by its id)
@@ -683,9 +686,9 @@ sessions_consent() {
   done
   sessions_status_sync
   case "$what" in
-    revoke) log "$SS_NAME: bedrock-now no longer reads $(_ss_tools "$tool" | sed 's/claude-bedrock/claude-bedrock/; s/ / and /')'s sessions of $(owner_text "$SS_HOST") (what the Code page's container read is forgotten; sessions already copied into the sandbox stay there)" ;;
-    always) log "$SS_NAME: the Code page may list and read $(_ss_tools "$tool" | sed 's/ / and /')'s sessions of $(owner_text "$SS_HOST") without asking again (./stack sessions consent --project $SS_NAME --revoke takes it back)" ;;
-    once) log "$SS_NAME: one look at $(_ss_tools "$tool" | sed 's/ / and /')'s sessions of $(owner_text "$SS_HOST") allowed (within the hour)" ;;
+    revoke) log "$SS_NAME: bedrock-now no longer reads $(_ss_labels "$tool")'s sessions of $(owner_text "$SS_HOST") (what the Code page's container read is forgotten; sessions already copied into the sandbox stay there)" ;;
+    always) log "$SS_NAME: the Code page may list and read $(_ss_labels "$tool")'s sessions of $(owner_text "$SS_HOST") without asking again (./stack sessions consent --project $SS_NAME --revoke takes it back)" ;;
+    once) log "$SS_NAME: one look at $(_ss_labels "$tool")'s sessions of $(owner_text "$SS_HOST") allowed (within the hour)" ;;
   esac
 }
 
