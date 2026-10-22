@@ -932,6 +932,7 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   fi
   hs_sum() { (cd "$HS/home" && find . -type f | LC_ALL=C sort | xargs shasum -a 256 2>/dev/null) | shasum -a 256 | cut -c1-16; }
   hs_before="$(hs_sum)"
+  mkdir -p "$OUT/browser"
   printf '%s %s %s\n' "$HS_S1" "$HS_S2" "${HS_S3:-}" > "$OUT/browser/host-sessions-ids.txt"
   cli sessions-project-add 0 'e2e-sessions-app: .* \(read-write\)' project add "$HS_CWD" --name e2e-sessions-app --now
   BN_SESSIONS_HOME="$HS/home" cli sessions-scan-not-allowed 1 'not allowed yet' sessions scan --project e2e-sessions-app
