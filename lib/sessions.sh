@@ -29,7 +29,10 @@
 #   scans/<nonce>.tsv  the helper's own record of a look: the project, its folder, the store folders it read, and each
 #                   row's tool and session id — a read names rows of it, never a path or an id
 #   forget.tsv      what the code container must still forget (consent taken back while it did not run)
-# and .state/status/sessions.json (for Settings › Claude Code › What bedrock-now may read on this computer).
+# and .state/status/sessions.json (for Settings › Claude Code › What bedrock-now may read on this computer), and
+# .state/projects/public/helper.json (what the helper offers the Code page: read-only there). Each folder has one
+# direction (docs/security.md): the code container writes only .state/code-requests (the helper reads it and never
+# writes there), ./stack and the helper write only folders no container can write.
 
 SESSIONS_TOOLS="claude claude-bedrock"
 SESSIONS_ONCE_S=3600              # an "Allow once" holds for the look it was given for, an hour at most
@@ -895,26 +898,35 @@ sessions_poll_once() {
   done
   return 1
 }
-# sessions_helper_tick — every loop of the helper: what it offers the Code page (helper.json in the shared folder, a
-# minute old at most), junk out of that folder, and what the code container must still forget
+# sessions_helper_tick — every loop of the helper: what it offers the Code page, and what the code container must still
+# forget. What it offers is a file the host writes for the code container to read, so it goes where the host writes
+# such files: the project folders' public folder (lib/projects.sh — yours, 755, mounted read-only into the code
+# container; a temporary file there, renamed: _pj_write_file), never the folder the code container writes its requests
+# in. That folder the helper only reads (each request moved into its own private inbox first, then checked) and empties
+# of anything else with rm -f (a link goes, never what it points to; a folder there is left alone).
 sessions_helper_tick() {
-  local d f e
+  local d f e pub
   code_on || return 0
-  d="$(code_requests_dir)"
-  [ -d "$d" ] && [ ! -L "$d" ] || return 0
-  f="$d/helper.json"
-  if [ ! -f "$f" ] || [ -n "$(find "$f" -mmin +1 2>/dev/null)" ]; then
-    printf '{"sessions": ["sessions-scan", "sessions-fetch", "sessions-suggest"], "screen": %s, "written_at": %s}\n' \
-      "$(helper_screen && echo true || echo false)" "$(date +%s)" > "$f.tmp" 2>/dev/null && chmod 644 "$f.tmp" && mv -f "$f.tmp" "$f"
+  pub="$(projects_public_dir)"
+  if mkdir -p "$pub" 2>/dev/null && chmod 700 "$(projects_dir)" 2>/dev/null && chmod 755 "$pub" 2>/dev/null; then
+    f="$pub/helper.json"
+    if [ ! -f "$f" ] || [ -L "$f" ] || [ -n "$(find "$f" -mmin +1 2>/dev/null)" ]; then
+      _pj_write_file "$f" "{\"sessions\": [\"sessions-scan\", \"sessions-fetch\", \"sessions-suggest\"], \"screen\": $(helper_screen && echo true || echo false), \"written_at\": $(date +%s)}" 644 || true
+    fi
   fi
-  for e in "$d"/* "$d"/.[!.]*; do
-    [ -e "$e" ] || [ -L "$e" ] || continue
-    case "${e##*/}" in sx-*.json | helper.json) ;; .sx-*) [ -n "$(find "$e" -maxdepth 0 -mmin -1 2>/dev/null)" ] || rm -rf "$e" ;; *) rm -rf "$e" 2>/dev/null || true ;; esac
-  done
+  d="$(code_requests_dir)"
+  if [ -d "$d" ] && [ ! -L "$d" ]; then
+    for e in "$d"/* "$d"/.[!.]*; do
+      [ -e "$e" ] || [ -L "$e" ] || continue
+      case "${e##*/}" in sx-*.json) continue ;; .sx-*) [ -z "$(find "$e" -maxdepth 0 -mmin -1 2>/dev/null)" ] || continue ;; esac
+      if [ -d "$e" ] && [ ! -L "$e" ]; then rmdir -- "$e" 2>/dev/null || true; else rm -f -- "$e" 2>/dev/null || true; fi
+    done
+  fi
   _ss_forget_pending 2>/dev/null || true
 }
 # sessions_uninstall_cleanup — ./stack uninstall: the shared folder and the status file go (consent.tsv stays, like .env)
 sessions_uninstall_cleanup() {
+  rm -f "$(projects_public_dir)/helper.json" 2>/dev/null || true; rmdir "$(projects_public_dir)" 2>/dev/null || true
   rm -rf "$(code_requests_dir)" "$(_ss_scans_dir)" 2>/dev/null || true
   rm -f "$(sessions_status_file)" "$(_ss_forget_file)" 2>/dev/null || true
 }

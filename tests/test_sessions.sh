@@ -262,11 +262,36 @@ test_the_helper_takes_the_code_pages_requests_only_in_their_fixed_shapes() {
   _sx 11111111111111111111111111111111 '"sessions-scan"' ',"project":"p_0000aaaa","tool":"both"'
   sessions_poll_once 2>/dev/null || true
   [ ! -s "$CALLS" ]
-  # what it offers the Code page: written in the shared folder; junk there goes
-  touch "$(code_requests_dir)/stray" "$(code_requests_dir)/sx-x.txt"
+  # what it offers the Code page: in ./stack's folder for the code container (read-only there), never the requests' one
   sessions_helper_tick
-  assert_contains "$(cat "$(code_requests_dir)/helper.json")" '"sessions": ["sessions-scan", "sessions-fetch", "sessions-suggest"]'
-  [ ! -e "$(code_requests_dir)/stray" ] && [ ! -e "$(code_requests_dir)/sx-x.txt" ]
+  assert_contains "$(cat "$(projects_public_dir)/helper.json")" '"sessions": ["sessions-scan", "sessions-fetch", "sessions-suggest"]'
+  [ ! -e "$(code_requests_dir)/helper.json" ]
+}
+
+test_the_helper_never_writes_where_the_code_container_can_and_follows_no_link_there() {
+  _stubs
+  local d secret; d="$(code_requests_dir)"
+  ensure_code_requests_dir
+  # (what a container could plant in the folder it writes: links to a file of yours, at every name the helper might use)
+  secret="$TMP/home/.ssh/id_ed25519"; mkdir -p "$(dirname "$secret")"; printf 'KEY\n' > "$secret"; chmod 600 "$secret"
+  for n in helper.json helper.json.tmp .helper.json.tmp stray sx-x.txt; do ln -s "$secret" "$d/$n"; done
+  mkdir -p "$d/a-folder" "$d/full-folder"; touch "$d/full-folder/x"
+  sessions_helper_tick
+  assert_eq "$(cat "$secret")" "KEY"
+  [ "$(stat -c %a "$secret" 2>/dev/null || stat -f %Lp "$secret")" = 600 ] || return 1
+  for n in helper.json helper.json.tmp .helper.json.tmp stray sx-x.txt; do [ ! -e "$d/$n" ] && [ ! -L "$d/$n" ] || { echo "$n left" >&2; return 1; }; done
+  [ ! -e "$d/a-folder" ] && [ -f "$d/full-folder/x" ]   # (an empty folder goes; another one is left alone, never walked)
+  # its own file: written as a temporary file renamed — a link there is replaced, never followed
+  ln -sf "$secret" "$(projects_public_dir)/helper.json"
+  sessions_helper_tick
+  [ -f "$(projects_public_dir)/helper.json" ] && [ ! -L "$(projects_public_dir)/helper.json" ]
+  assert_eq "$(cat "$secret")" "KEY"
+  [ "$(stat -c %a "$(projects_public_dir)" 2>/dev/null || stat -f %Lp "$(projects_public_dir)")" = 755 ] || return 1
+  # a request that is a link: moved into the helper's own inbox as a link, refused, never read through
+  ln -s "$secret" "$d/sx-77777777777777777777777777777777.json"
+  sessions_poll_once 2>/dev/null || true
+  assert_eq "$(cat "$secret")" "KEY"
+  assert_contains "$(cat "$TMP/dc")" "request --id 77777777777777777777777777777777 --state refused --why bad-request"
 }
 
 test_settings_takes_back_through_the_helper_by_id_never_a_path() {

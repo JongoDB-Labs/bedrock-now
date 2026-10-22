@@ -40,7 +40,7 @@ const PROJECTS = {
   p_00000002: { id: 'p_00000002', name: 'notes', root: NOTES_SBX, host: true, mode: 'rw', hidden: true },
   p_00000003: { id: 'p_00000003', name: 'gone', root: '/gone', host: true, gone: true },
 };
-const imports = new Imports({ dir: path.join(ROOT, 'state', 'imports'), stage: path.join(ROOT, 'stage'), requests: path.join(ROOT, 'req'),
+const imports = new Imports({ dir: path.join(ROOT, 'state', 'imports'), stage: path.join(ROOT, 'stage'), requests: path.join(ROOT, 'req'), helperFile: path.join(ROOT, 'public', 'helper.json'),
   projects: { get: (id) => PROJECTS[id] ?? null } });
 const storeOf = (cwd) => path.join(CONF, 'projects', coded.encodeCwd(cwd));
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
@@ -332,7 +332,8 @@ test('requests to the update helper: one fixed line in the shared folder, only w
   const dir = path.join(ROOT, 'req');
   assert.throws(() => imports.request('sessions-scan', { project: 'p_00000001', tool: 'both' }, 'pw', 'local'), /not running/);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'helper.json'), JSON.stringify({ sessions: ['sessions-scan'], screen: true, written_at: Math.floor(Date.now() / 1000) }));
+  fs.mkdirSync(path.join(ROOT, 'public'), { recursive: true });
+  fs.writeFileSync(path.join(ROOT, 'public', 'helper.json'), JSON.stringify({ sessions: ['sessions-scan'], screen: true, written_at: Math.floor(Date.now() / 1000) }));
   assert.throws(() => imports.request('sessions-fetch', { project: 'p_00000001', scan: nonce(), rows: '1' }, 'pw', 'local'), /does not read sessions yet/);
   for (const pw of ['', 'a\nb', 'x'.repeat(301), 7]) assert.throws(() => imports.request('sessions-scan', { project: 'p_00000001', tool: 'both' }, pw, 'local'), /password/);
   const n = imports.request('sessions-scan', { project: 'p_00000001', tool: 'both' }, 'pässword', 'local');
@@ -346,7 +347,8 @@ test('requests to the update helper: one fixed line in the shared folder, only w
   assert.deepEqual([imports.requests()[0].state, imports.requests()[0].why], ['refused', 'password']);
   assert.throws(() => imports.noteRequest(n, { state: 'refused', why: 'free text from somewhere' }), /bad request state/);
   // a stale helper: not running
-  fs.writeFileSync(path.join(dir, 'helper.json'), JSON.stringify({ sessions: ['sessions-scan'], written_at: 1000 }));
+  fs.mkdirSync(path.join(ROOT, 'public'), { recursive: true });
+  fs.writeFileSync(path.join(ROOT, 'public', 'helper.json'), JSON.stringify({ sessions: ['sessions-scan'], written_at: 1000 }));
   assert.equal(imports.helper().running, false);
 });
 

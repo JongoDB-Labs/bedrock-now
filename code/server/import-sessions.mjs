@@ -6,9 +6,9 @@
 // kept sessions for (suggest). Then this container — never the sandbox — scans each picked transcript for secrets
 // (secrets.mjs: redacted by default), shows it (the page's own renderer, as sandbox text), and on Copy into the
 // sandbox writes it into the sandbox's own store through bn-coded (sessions.import). Nothing ever goes back to the
-// computer. The Code page asks for a look or a read through the update helper (a request file in a folder only this
-// container and the helper share: sx-<nonce>.json, every field fixed, never a path), which asks you on the computer's
-// screen first.
+// computer. The Code page asks for a look or a read through the update helper (a request file in the one folder this
+// container writes for the helper: sx-<nonce>.json, every field fixed, never a path — the helper only reads it), which
+// asks you on the computer's screen first; what the helper offers it reads from ./stack's read-only folder (helper.json).
 //
 //   /var/lib/bn-code/imports/   (code-state; mode 700, files 600)
 //     index-<project>.json      the last list of a project's sessions (replaced by the next look; forgotten on revoke)
@@ -30,6 +30,8 @@ import { Projects } from './projects.mjs';
 export const IMPORTS_DIR = process.env.BN_IMPORTS_DIR || path.join(STATE_DIR, 'imports');
 export const STAGE_DIR = process.env.BN_IMPORT_STAGE || '/run/bn-import-stage';
 export const REQUESTS_DIR = process.env.BN_CODE_REQUESTS || '/run/bn-code-requests';
+// what the update helper offers (lib/sessions.sh writes it in the folder ./stack writes for this container: read-only here)
+export const HELPER_FILE = process.env.BN_CODE_HELPER_FILE || '/etc/bn-code/projects/helper.json';
 // the sandbox's own store (its home: terminal/Dockerfile; Claude Code's default config folder there)
 export const SANDBOX_STORE = process.env.BN_SANDBOX_STORE || '/home/claude/.claude/projects';
 export const LIMITS = Object.freeze({
@@ -137,8 +139,8 @@ export function readPart({ part, data }, k) {
 
 /** The imports of this container: the lists, the picked sessions, the requests to the helper, what was copied. */
 export class Imports {
-  constructor({ dir = IMPORTS_DIR, stage = STAGE_DIR, requests = REQUESTS_DIR, now = () => Date.now(), call = null, projects = null, log = () => {} } = {}) {
-    Object.assign(this, { dir, stageDir: stage, requestsDir: requests, now, call, projects, log });
+  constructor({ dir = IMPORTS_DIR, stage = STAGE_DIR, requests = REQUESTS_DIR, helperFile = HELPER_FILE, now = () => Date.now(), call = null, projects = null, log = () => {} } = {}) {
+    Object.assign(this, { dir, stageDir: stage, requestsDir: requests, helperFile, now, call, projects, log });
     this.lastRequest = 0;
   }
 
@@ -327,7 +329,7 @@ export class Imports {
 
   // --- requests to the update helper (a file it reads from the folder only it and this container share) ---
   helper() {
-    const v = readJson(path.join(this.requestsDir, 'helper.json'), 4096);
+    const v = readJson(this.helperFile, 4096);
     const at = int(v?.written_at, 0, 1e11);
     const actions = Array.isArray(v?.sessions) ? v.sessions.filter((a) => ['sessions-scan', 'sessions-fetch', 'sessions-suggest'].includes(a)) : [];
     return { running: at !== null && Math.abs(this.now() / 1000 - at) < 180, actions, screen: v?.screen === true };

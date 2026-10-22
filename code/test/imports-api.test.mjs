@@ -57,7 +57,8 @@ let srv, base, imports;
 before(async () => {
   const dist = tmp('bnimdist');
   const store = new Projects({ dir: tmp('bnimstate') });
-  imports = new Imports({ dir: path.join(DIR, 'imports'), stage: path.join(DIR, 'stage'), requests: REQS, projects: { get: (id) => store.get(id) } });
+  imports = new Imports({ dir: path.join(DIR, 'imports'), stage: path.join(DIR, 'stage'), requests: REQS, helperFile: path.join(DIR, 'public', 'helper.json'),
+    projects: { get: (id) => store.get(id) } });
   srv = createServer({ secret: SECRET, query: (a) => { const q = fq(a); queries.push(a); return q; }, spawn: () => {}, call, distDir: dist,
     plainDir: path.resolve(import.meta.dirname, '../plain'), logger: () => {}, projects: store, imports });
   await new Promise((r) => srv.server.listen(0, '127.0.0.1', r));
@@ -78,8 +79,8 @@ async function req(method, p, body, { remote = false } = {}) {
   return { status: r.status, json };
 }
 const helperUp = (actions = ['sessions-scan', 'sessions-fetch', 'sessions-suggest']) => {
-  fs.mkdirSync(REQS, { recursive: true });
-  fs.writeFileSync(path.join(REQS, 'helper.json'), JSON.stringify({ sessions: actions, screen: true, written_at: Math.floor(Date.now() / 1000) }));
+  fs.mkdirSync(path.join(DIR, 'public'), { recursive: true });
+  fs.writeFileSync(path.join(DIR, 'public', 'helper.json'), JSON.stringify({ sessions: actions, screen: true, written_at: Math.floor(Date.now() / 1000) }));
 };
 const sxFiles = () => (fs.existsSync(REQS) ? fs.readdirSync(REQS).filter((n) => n.startsWith('sx-')) : []);
 const nonce = () => crypto.randomBytes(16).toString('hex');
