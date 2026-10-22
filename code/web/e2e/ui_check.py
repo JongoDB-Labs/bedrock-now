@@ -5152,7 +5152,9 @@ def import_sheet(browser):
     assert any(x.startswith("copy ") and "keep=1 thinking=keep" in x for x in log), log
     assert any(x.startswith("copy ") and "keep=0 thinking=default" in x for x in log), log
     assert "sessions-copy " + tools in log and "password-at-backend" not in log, log
-    assert any(u.endswith("/.bn/sessions") for u in p.requests), "asked of the portal" 
+    assert any(u.endswith("/.bn/sessions") for u in p.requests), "asked of the portal"
+    # (expected: the portal's 403 for the wrong password, logged by the browser as a failed load)
+    p.errors = [e for e in p.errors if "status of 403" not in e]
     # in the project, badged; open it
     page.get_by_test_id("import-sheet").get_by_role("button", name="Close").last.click()
     unfold(page, tools)
