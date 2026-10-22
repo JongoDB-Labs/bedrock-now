@@ -18,7 +18,7 @@ import { session, jsonl, fake, uuid, rand } from './transcripts.mjs';
 const ROOT = tmp('bnim');
 const WS = path.join(ROOT, 'ws'), SOCKDIR = path.join(ROOT, 'sock'), HOME = path.join(ROOT, 'sbxhome'), CONF = path.join(HOME, '.claude');
 // a folder of this computer at the same path in the sandbox (APP), and one with its path hidden (NOTES at /projects/notes)
-const APP = path.join(ROOT, 'src', 'app'), NOTES_SBX = path.join(ROOT, 'projects-notes'), NOTES_HOST = '/Users/test/src/notes';
+const APP = path.join(ROOT, 'src', 'app'), NOTES_SBX = path.join(ROOT, 'projects-notes'), NOTES_HOST = '/home/test/src/notes';
 const FAKEHOME = path.join(ROOT, 'fakehome');
 for (const d of [WS, APP, NOTES_SBX, CONF, FAKEHOME]) fs.mkdirSync(d, { recursive: true });
 Object.assign(process.env, { BN_CODE_WORKSPACE: WS, BN_CODE_SOCK_DIR: SOCKDIR, BN_CODE_CHILDREN: path.join(ROOT, 'children'), HOME, CLAUDE_CONFIG_DIR: CONF,
@@ -358,8 +358,8 @@ test('taken back: a tool\'s rows and waiting sessions forgotten (the copies in t
   const scan = nonce();
   imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'always', host: APP });
   await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
-  imports.saveSuggestions(`${JSON.stringify({ path_b64: Buffer.from('/Users/test/src/x').toString('base64'), claude: 2, last: 5 })}\n{"path_b64":"${Buffer.from('relative').toString('base64')}"}\n`, { consent: 'once' });
-  assert.deepEqual(imports.suggestions().rows, [{ path: '/Users/test/src/x', claude: 2, 'claude-bedrock': 0, last: 5 }]);
+  imports.saveSuggestions(`${JSON.stringify({ path_b64: Buffer.from('/home/test/src/x').toString('base64'), claude: 2, last: 5 })}\n{"path_b64":"${Buffer.from('relative').toString('base64')}"}\n`, { consent: 'once' });
+  assert.deepEqual(imports.suggestions().rows, [{ path: '/home/test/src/x', claude: 2, 'claude-bedrock': 0, last: 5 }]);
   imports.forget('p_00000001', 'claude-bedrock');
   assert.equal(imports.index('p_00000001').rows.length, 1);
   imports.forget('p_00000001', 'claude');

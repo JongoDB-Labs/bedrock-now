@@ -116,7 +116,7 @@ test('thinking blocks out: an entry left with nothing goes, and what pointed to 
 });
 
 test('a folder\'s path rewritten only where it stands as a path of its own (bounded by the start, a slash, a quote or the end)', () => {
-  const F = '/Users/test/src/app', T = '/projects/app';
+  const F = '/home/test/src/app', T = '/projects/app';
   const cases = [
     [F, T], [`${F}/x.ts`, `${T}/x.ts`], [`"${F}"`, `"${T}"`], [`cd ${F} && ls`, `cd ${T} && ls`], [`${F}:12:3`, `${T}:12:3`], [`file://${F}/a`, `file://${T}/a`],
     [`${F}bar`, `${F}bar`], [`${F}-old/x`, `${F}-old/x`], [`${F}.bak`, `${F}.bak`], [`/x${F}`, `/x${F}`], [`a${F}`, `a${F}`], [`${F} ${F}/b`, `${T} ${T}/b`],
@@ -125,7 +125,7 @@ test('a folder\'s path rewritten only where it stands as a path of its own (boun
   for (const [s, want] of cases) assert.equal(rewriteString(s, F, T).s, want, s);
   assert.equal(rewriteString(`${F} ${F}`, F, T).n, 2);
   const e = session({ cwd: F });
-  const r = rewritePaths(e, [[F, T], ['/Users/test/.claude/projects/-Users-test-src-app', '/home/claude/.claude/projects/-projects-app']]);
+  const r = rewritePaths(e, [[F, T], ['/home/test/.claude/projects/-home-test-src-app', '/home/claude/.claude/projects/-projects-app']]);
   assert.ok(r.n >= e.length);
   assert.ok(r.entries.every((x) => x.cwd === undefined || x.cwd === T));
   assert.ok(!JSON.stringify(r.entries).includes(F));
@@ -145,12 +145,12 @@ test('lines: one JSON object each; anything else dropped and counted; invalid UT
 
 test('paths outside the project the session\'s tool calls named: counted and listed, never acted on', () => {
   const e = [{ type: 'assistant', message: { content: [
-    { type: 'tool_use', name: 'Read', input: { file_path: '/Users/test/.zshrc' } },
-    { type: 'tool_use', name: 'Read', input: { file_path: '/Users/test/src/app/x' } },
+    { type: 'tool_use', name: 'Read', input: { file_path: '/home/test/.zshrc' } },
+    { type: 'tool_use', name: 'Read', input: { file_path: '/home/test/src/app/x' } },
     { type: 'tool_use', name: 'Glob', input: { path: '/etc' } },
     { type: 'tool_use', name: 'Read', input: { file_path: 'relative' } },
   ] } }];
-  assert.deepEqual(outsidePaths(e, ['/Users/test/src/app']), { count: 2, sample: ['/Users/test/.zshrc', '/etc'] });
+  assert.deepEqual(outsidePaths(e, ['/home/test/src/app']), { count: 2, sample: ['/etc', '/home/test/.zshrc'] });
 });
 
 test('nothing hides a secret: a "signature" anywhere but on a thinking block, an image\'s data, an object\'s key are scanned too', () => {

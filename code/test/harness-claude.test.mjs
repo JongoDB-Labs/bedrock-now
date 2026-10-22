@@ -17,7 +17,7 @@ import { encodeCwd, storeName, javaHash, index, fetchSessions, main, args, clean
 const ROOT = tmp('bnhc');
 after(() => fs.rmSync(ROOT, { recursive: true, force: true }));
 const HOME = path.join(ROOT, 'home');
-const CWD = '/Users/test/src/app';
+const CWD = '/home/test/src/app';
 const store = (tool, name = encodeCwd(CWD)) => path.join(HOME, tool === 'claude' ? '.claude' : '.claude-bedrock', 'projects', name);
 const put = (dir, id, entries, mtime) => {
   fs.mkdirSync(dir, { recursive: true });
@@ -29,17 +29,17 @@ const put = (dir, id, entries, mtime) => {
 const b64 = (s) => Buffer.from(s).toString('base64');
 
 test('the store folder: every character but ASCII letters and digits a "-"; past 200 characters the first 200, "-" and the SDK\'s hash', () => {
-  assert.equal(encodeCwd('/Users/test/src/app'), '-Users-test-src-app');
+  assert.equal(encodeCwd('/home/test/src/app'), '-home-test-src-app');
   assert.equal(encodeCwd('/home/u/my.project_x'), '-home-u-my-project-x');
   assert.equal(encodeCwd('/a/é/😀'), '-a-----');   // (a UTF-16 code unit each: 😀 is two)
   // (vectors from Agent SDK 0.3.296's own function — the same Claude Code 2.1.296 uses)
-  const long1 = `/Users/alex/${'a'.repeat(240)}/proj`, long2 = `/projects/${'Long-Name.'.repeat(25)}`, long3 = `/Users/a/\u{1F600}/${'b'.repeat(198)}`;
-  assert.ok(encodeCwd(long1).endsWith('aaaaa-is66pb') && encodeCwd(long1).length === 207);
+  const long1 = `/home/alex/${'a'.repeat(240)}/proj`, long2 = `/projects/${'Long-Name.'.repeat(25)}`, long3 = `/home/a/\u{1F600}/${'b'.repeat(198)}`;
+  assert.ok(encodeCwd(long1).endsWith('aaaaa-fftszo') && encodeCwd(long1).length === 207);
   assert.ok(encodeCwd(long2).endsWith('Name--db6s3c'));
-  assert.ok(encodeCwd(long3).endsWith('bbbbb-1vkibs'));
+  assert.ok(encodeCwd(long3).endsWith('bbbbb-md6th9'));
   assert.equal(encodeCwd(long1).slice(0, 200), long1.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 200));
   assert.equal(javaHash('hello'), 99162322);   // (Java's "hello".hashCode())
-  assert.deepEqual(storeName(CWD), { name: '-Users-test-src-app', prefix: null });
+  assert.deepEqual(storeName(CWD), { name: '-home-test-src-app', prefix: null });
   assert.equal(storeName(long1).prefix, `${encodeCwd(long1).slice(0, 200)}-`);
   // a path of exactly 200 characters keeps its name; 201 gets the hash
   const p200 = `/${'x'.repeat(199)}`, p201 = `/${'x'.repeat(200)}`;
@@ -53,8 +53,8 @@ test('the list: the project\'s sessions newest first, numbered; titles, first pr
   put(dir, a, session({ id: a, cwd: CWD, prompts: ['Fix the login bug', 'And the tests'], title: 'Login fix' }), Date.parse('2026-10-03'));
   put(dir, b, session({ id: b, cwd: CWD, prompts: ['Write the README'], thinking: true }), Date.parse('2026-10-05'));
   put(dir, c, [...session({ id: c, cwd: CWD, prompts: ['<command-name>/clear</command-name>', 'Real prompt'] }), { type: 'ai-title', aiTitle: 'Clear then work', sessionId: c }], Date.parse('2026-10-04'));
-  // (/Users/test/src-app shares the store folder's name with /Users/test/src/app: told apart by the cwd it records)
-  put(dir, other, session({ id: other, cwd: '/Users/test/src-app' }), Date.parse('2026-10-06'));
+  // (/home/test/src-app shares the store folder's name with /home/test/src/app: told apart by the cwd it records)
+  put(dir, other, session({ id: other, cwd: '/home/test/src-app' }), Date.parse('2026-10-06'));
   put(dir, nocwd, [{ type: 'summary', summary: 'x', leafUuid: uuid() }], Date.parse('2026-10-06'));
   put(dir, side, session({ id: side, cwd: CWD, sidechain: true }), Date.parse('2026-10-06'));
   fs.writeFileSync(path.join(dir, 'notes.txt'), 'not a transcript');
@@ -179,7 +179,7 @@ test('fetch: a session\'s files (transcript, subagents, tool results) with their
   fs.writeFileSync(path.join(dir, a, 'subagents', 'agent-x.jsonl'), 'sub\n');
   fs.writeFileSync(path.join(dir, a, 'subagents', 'bad name!'), 'never');
   fs.symlinkSync('/etc/hosts', path.join(dir, a, 'subagents', 'agent-link.jsonl'));
-  put(dir, other, session({ id: other, cwd: '/Users/test/src-app' }));
+  put(dir, other, session({ id: other, cwd: '/home/test/src-app' }));
   const bf = put(dir, big, session({ id: big, cwd: CWD }));
   fs.truncateSync(bf, LIMITS.sessionBytes + 1);
   const got = [];
@@ -213,7 +213,7 @@ test('the command line: argv only, in fixed shapes (folders under /in, ids as UU
   }
   const out = [];
   main(['encode', b64(CWD)], { write: (b) => out.push(b) });
-  assert.deepEqual(JSON.parse(Buffer.concat(out).toString()), { ok: true, name: '-Users-test-src-app', prefix: null });
+  assert.deepEqual(JSON.parse(Buffer.concat(out).toString()), { ok: true, name: '-home-test-src-app', prefix: null });
   // index through main: the mounted folder's stand-in
   const dir = store('claude');
   const lines = [];

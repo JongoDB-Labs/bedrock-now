@@ -178,14 +178,14 @@ test_a_read_names_rows_of_its_own_look_and_holds_only_while_allowed() {
 test_a_long_paths_store_folder_and_its_candidates() {
   _stubs
   local long="$TMP/f/$(printf 'x%.0s' $(seq 1 250))" root
-  assert_eq "$(_ss_store_name "/Users/a/src/app")" "-Users-a-src-app -"
+  assert_eq "$(_ss_store_name "/home/a/src/app")" "-home-a-src-app -"
   # long or not plain ASCII: the reader's own function, in its container with nothing mounted
   export ENCODE_OUT="{\"ok\":true,\"name\":\"$(printf 'a%.0s' $(seq 1 200))-abc123\",\"prefix\":\"$(printf 'a%.0s' $(seq 1 200))-\"}"
   assert_eq "$(_ss_store_name "$long")" "$(printf 'a%.0s' $(seq 1 200))-abc123 $(printf 'a%.0s' $(seq 1 200))-"
   assert_contains "$(grep '^docker run' "$TMP/docker")" "--network none --read-only"
   assert_not_contains "$(grep '^docker run' "$TMP/docker")" "--mount"
-  export ENCODE_OUT='{"ok":true,"name":"-Users-a--","prefix":null}'
-  assert_eq "$(_ss_store_name "/Users/a/é")" "-Users-a-- -"
+  export ENCODE_OUT='{"ok":true,"name":"-home-a--","prefix":null}'
+  assert_eq "$(_ss_store_name "/home/a/é")" "-home-a-- -"
   # candidates of a long one: real folders with its first 200 characters (a link never; at most 8)
   root="$BN_SESSIONS_HOME/.claude/projects"; mkdir -p "$root"
   local p; p="$(printf 'a%.0s' $(seq 1 200))-"
@@ -246,7 +246,7 @@ test_the_helper_takes_the_code_pages_requests_only_in_their_fixed_shapes() {
   # never a path, an extra field, another action, a range of rows, a wrong password; a request used once
   : > "$CALLS"; : > "$TMP/dc"
   local n=44444444444444444444444444444440 t
-  for t in '"sessions-scan"|,"project":"p_0000aaaa","tool":"both","path":"/Users/x"' '"sessions-scan"|,"project":"/Users/x/src","tool":"both"' \
+  for t in '"sessions-scan"|,"project":"p_0000aaaa","tool":"both","path":"/home/x"' '"sessions-scan"|,"project":"/home/x/src","tool":"both"' \
            '"sessions-scan"|,"project":"p_0000aaaa","tool":"codex"' '"sessions-fetch"|,"project":"p_0000aaaa","scan":"'"$NONCE"'","rows":"1-5"' \
            '"sessions-fetch"|,"project":"p_0000aaaa","scan":"../x","rows":"1"' '"sessions-fetch"|,"project":"p_0000aaaa","scan":"'"$NONCE"'","id":"'"$UUID_A"'","rows":"1"' \
            '"sessions-import"|,"project":"p_0000aaaa"' '"project-pick"|,"project":"p_0000aaaa","tool":"both"'; do
@@ -310,7 +310,7 @@ test_settings_takes_back_through_the_helper_by_id_never_a_path() {
 sessions consent --revoke --project all --tool both
 sessions consent --suggest --revoke"
   assert_contains "$(cat "$(helper_status_file)")" '"message": "Taken back: bedrock-now no longer reads those sessions on this computer'
-  _ra 44444444444444444444444444444444 '"project":"/Users/x","tool":"both"'
+  _ra 44444444444444444444444444444444 '"project":"/home/x","tool":"both"'
   if settings_poll_once 2>/dev/null; then return 1; fi
   _ra 55555555555555555555555555555555 '"project":"p_0000aaaa","tool":"both","path":"/x"'
   if settings_poll_once 2>/dev/null; then return 1; fi

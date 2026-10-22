@@ -33,7 +33,7 @@ export const fake = {
 /** session({id, cwd, prompts, title, model, thinking, tool, version}) -> the entries of a session: a first prompt, an
  *  assistant answer per prompt (a thinking block when asked, a tool call reading a file in cwd and its result, a text),
  *  a custom title */
-export function session({ id = uuid(), cwd = '/Users/test/src/app', prompts = ['Fix the failing test'], title = null, model = 'claude-sonnet-4-5',
+export function session({ id = uuid(), cwd = '/home/test/src/app', prompts = ['Fix the failing test'], title = null, model = 'claude-sonnet-4-5',
   thinking = false, version = '2.1.296', branch = 'main', sidechain = false, extra = [] } = {}) {
   const base = { isSidechain: sidechain, userType: 'external', cwd, sessionId: id, version, gitBranch: branch };
   const out = [];

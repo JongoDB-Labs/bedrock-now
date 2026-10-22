@@ -34,7 +34,7 @@ test('the list of a look: rows checked one by one; markup and direction marks sh
 test('a preview: findings by their own ids, their words as text; events through the page\'s own checks', async () => {
   answer({ tool: 'claude', title: 'Deploy\u{2066}', findings: [{ id: '3.1', kind: 'aws-key-id', label: 'an AWS access key ID', message: 2, preview: 'AKIA… (20 characters)', context: 'id=••• \u{202e}x', keepable: true },
     { id: 'p2:1.4', kind: 'github-token', part: 'subagents/agent-1.jsonl', keepable: false }, { id: '../x', kind: 'x' }, { id: '1.1<b>' }], findingsTotal: 2,
-  thinking: { blocks: 2, removed: 2, strip: true, source: 'anthropic' }, outside: { count: 1, sample: ['/Users/x/.zshrc'] }, left: [{ part: 'tool-results/a.bin', why: 'not text (not UTF-8)' }],
+  thinking: { blocks: 2, removed: 2, strip: true, source: 'anthropic' }, outside: { count: 1, sample: ['/home/x/.zshrc'] }, left: [{ part: 'tool-results/a.bin', why: 'not text (not UTF-8)' }],
   events: [{ type: 'user', text: 'hi <script>', uuid: S }, { type: 'tool_use', id: '../../etc', name: 'Bash', input: {} }, { type: 'text', text: '**ok**', model: 'm' }], total: 3 });
   const pv = await importPreview(P, S);
   assert.deepEqual(pv.findings.map((f) => [f.id, f.part, f.keepable]), [['3.1', null, true], ['p2:1.4', 'subagents/agent-1.jsonl', false]]);
@@ -56,9 +56,9 @@ test('a copy\'s results: a refusal of the sandbox\'s is its words apart, never i
 });
 
 test('suggestions: folders (absolute paths) as text; the CC / CB badge from its own two tools only', async () => {
-  answer({ at: 5, rows: [{ path: '/Users/x/src/a\u{202e}b', claude: 2, 'claude-bedrock': 1, last: 1_700_000_000_000 }, { path: 'relative' }, { path: 7 }] });
+  answer({ at: 5, rows: [{ path: '/home/x/src/a\u{202e}b', claude: 2, 'claude-bedrock': 1, last: 1_700_000_000_000 }, { path: 'relative' }, { path: 7 }] });
   const s = await getSuggestions();
-  assert.deepEqual(s.rows, [{ path: '/Users/x/src/a⟨U+202E⟩b', claude: 2, claudeBedrock: 1, last: 1_700_000_000_000 }]);
+  assert.deepEqual(s.rows, [{ path: '/home/x/src/a⟨U+202E⟩b', claude: 2, claudeBedrock: 1, last: 1_700_000_000_000 }]);
   assert.deepEqual(normSessionInfo({ id: S, cwd: '/workspace', imported: { tool: 'claude-bedrock', at: 1_700_000_000_000, forked: true } })?.imported, { tool: 'claude-bedrock', at: 1_700_000_000_000, forked: true });
   assert.equal(normSessionInfo({ id: S, cwd: '/workspace', imported: { tool: 'codex' } })?.imported, null);
 });

@@ -1790,7 +1790,7 @@ function importPreviewOf(r, host, thinking) {
     { id: 'p1:4.1', kind: 'github-token', label: 'a GitHub token', message: 4, part: 'subagents/agent-1.jsonl', preview: 'ghp_… (40 characters)', context: 'GH_TOKEN=••• gh pr list', keepable: true },
   ] : [];
   return { id: r.id, tool: r.tool, title: r.title, messages: r.messages, size: r.size, findings, findingsTotal: findings.length,
-    thinking: { blocks: r.thinking ?? 0, removed: strip ? r.thinking ?? 0 : 0, strip, source: r.source }, outside: { count: r.tool === 'claude' ? 2 : 0, sample: ['/Users/you/.zshrc', '/etc/hosts'] },
+    thinking: { blocks: r.thinking ?? 0, removed: strip ? r.thinking ?? 0 : 0, strip, source: r.source }, outside: { count: r.tool === 'claude' ? 2 : 0, sample: ['/home/you/.zshrc', '/etc/hosts'] },
     bad: 0, rewritten: 0, hidden: host.startsWith('/projects/'), parts: 1, left: r.tool === 'claude' ? [{ part: 'tool-results/image.bin', why: 'not text (not UTF-8)' }] : [], format: r.format, version: r.version ?? null, again: null,
     events: [{ type: 'user', text: `${r.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'tool_use', id: 'toolu_01', name: 'Read', input: { file_path: `${host}/src/login.ts` } },
       { type: 'tool_result', id: 'toolu_01', text: 'export const login = () => true;', isError: false }, { type: 'text', text: HOSTILE_MODE ? hostileMarkdown().slice(0, 2000) : 'Fixed: **login** works again.', model: 'claude-sonnet-4-5' }],

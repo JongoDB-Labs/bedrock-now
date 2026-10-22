@@ -23,7 +23,7 @@ const { Imports } = await import('../server/import-sessions.mjs');
 const reader = await import('../server/harness/claude.mjs');
 const { fakeQuery } = await import('./fake-sdk.mjs');
 
-const APP = '/Users/test/src/app', ID = 'p_0a0a0a0a';
+const APP = '/home/test/src/app', ID = 'p_0a0a0a0a';
 fs.writeFileSync(ROOTS, JSON.stringify({ version: 1, roots: [{ id: ID, name: 'app', path: APP, mode: 'rw', hidden: false }] }));
 const SECRET = 'ab'.repeat(16);
 const calls = [];
@@ -100,7 +100,7 @@ test('a look: only on the computer running bedrock-now, through the helper, with
   assert.equal(r.status, 403);
   assert.match(r.json.error, /Only on the computer running bedrock-now/);
   assert.equal((await req('GET', `/api/imports?project=${ID}`, undefined, { remote: true })).json.local, false);
-  for (const b of [{ project: ID, password: '' }, { project: ID, password: 'pw', tool: 'codex' }, { project: '/Users/test/src/app', password: 'pw' }]) {
+  for (const b of [{ project: ID, password: '' }, { project: ID, password: 'pw', tool: 'codex' }, { project: '/home/test/src/app', password: 'pw' }]) {
     assert.equal((await req('POST', '/api/imports/scan', b)).status, 400, JSON.stringify(b));
   }
   assert.deepEqual(sxFiles(), []);
@@ -200,10 +200,10 @@ test('Continue in this project: the session read whole, forked, written into the
 
 test('suggestions: the folders your tools kept sessions for, but those that are projects already', async () => {
   const b64 = (s) => Buffer.from(s).toString('base64');
-  imports.saveSuggestions([{ path_b64: b64(APP), claude: 3 }, { path_b64: b64('/Users/test/src/other'), 'claude-bedrock': 1, last: 5 }, { path_b64: b64('relative') }]
+  imports.saveSuggestions([{ path_b64: b64(APP), claude: 3 }, { path_b64: b64('/home/test/src/other'), 'claude-bedrock': 1, last: 5 }, { path_b64: b64('relative') }]
     .map((x) => JSON.stringify(x)).join('\n'), { consent: 'always' });
   const r = await req('GET', '/api/imports/suggestions');
-  assert.deepEqual(r.json.rows, [{ path: '/Users/test/src/other', claude: 0, 'claude-bedrock': 1, last: 5 }]);
+  assert.deepEqual(r.json.rows, [{ path: '/home/test/src/other', claude: 0, 'claude-bedrock': 1, last: 5 }]);
   helperUp();
   imports.lastRequest = 0;
   const s = await req('POST', '/api/imports/suggest', { password: 'pw' });
