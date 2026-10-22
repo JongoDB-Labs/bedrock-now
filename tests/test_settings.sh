@@ -1153,7 +1153,7 @@ test_helper_without_a_screen_says_so_and_tells_the_portal() {
   assert_contains "$(cat "$(helper_status_file)")" "No dialog can be shown on this computer (no screen, or no folder chooser): in a terminal there, ./stack project add DIR"
   [ ! -e "$CALLS" ]
   rm -f "$(settings_capability_file)"; settings_helper_tick || true
-  assert_contains "$(cat "$(settings_capability_file)")" '"projects": ["project-pick","project-remove","project-mode-ro"], "sessions": ["sessions-revoke"], "screen": false'
+  assert_contains "$(cat "$(settings_capability_file)")" '"projects": ["project-pick","project-remove","project-mode-ro"], "sessions": ["sessions-revoke","sessions-scan","sessions-fetch","sessions-suggest","sessions-copy"], "screen": false'
 }
 
 test_helper_rechecks_models_at_most_hourly() {

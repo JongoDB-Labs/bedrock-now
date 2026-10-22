@@ -17,12 +17,13 @@
 #   consent [--project NAME] [--tool T] --always|--once|--revoke | --suggest --always|--once|--revoke | --revoke-all
 #   suggest                                   the folders your tools kept sessions for, as suggested projects
 #
-# The Code page asks for a look, a read or suggestions through the update helper (lib/settings_helper.sh calls
-# sessions_poll_once): a request file the code container writes in the one folder it shares with the helper,
-# .state/code-requests/sx-<nonce>.json — every field fixed (a project's id, a tool, a look's nonce, row numbers), never
-# a path — with the portal password, which the helper checks against its own hash. Without an Always, the helper asks
-# in a dialog on this computer's screen (never for a request over remote access: those may only read sessions of a
-# look already allowed).
+# The Code page asks for a look, a read, suggestions or a copy that keeps a possible secret through the PORTAL (POST
+# /.bn/sessions on its host: the portal checks the password, says whether the request came over remote access, and
+# writes .state/requests/ses-<nonce>.json for the update helper — every field fixed: a project's id, a tool, a look's
+# nonce, row numbers, a session's id, a digest, the tokens of findings to keep; never a path), as it does for Settings
+# (lib/settings_helper.sh calls sessions_poll_once). The helper checks it all again and the password against its own
+# hash; the code container never sees the password. Without an Always, the helper asks in a dialog on this computer's
+# screen (never for a request over remote access: those may only read and copy sessions of a look already allowed).
 #
 # The files (.state/sessions/, mode 700; mounted into no container):
 #   consent.tsv     kind (folder|suggest), tool, project id, always|once, when, the look a once was used for, the folder
@@ -31,8 +32,8 @@
 #   forget.tsv      what the code container must still forget (consent taken back while it did not run)
 # and .state/status/sessions.json (for Settings › Claude Code › What bedrock-now may read on this computer), and
 # .state/projects/public/helper.json (what the helper offers the Code page: read-only there). Each folder has one
-# direction (docs/security.md): the code container writes only .state/code-requests (the helper reads it and never
-# writes there), ./stack and the helper write only folders no container can write.
+# direction (docs/security.md): the portal writes the requests (the helper reads them and never writes there), ./stack
+# and the helper write only folders no container can write.
 
 SESSIONS_TOOLS="claude claude-bedrock"
 SESSIONS_ONCE_S=3600              # an "Allow once" holds for the look it was given for, an hour at most
@@ -41,7 +42,8 @@ SESSIONS_READER_TIMEOUT_S="${SESSIONS_READER_TIMEOUT_S:-180}"
 SESSIONS_ROWS_MAX=50              # sessions one read may name
 SESSIONS_SUGGEST_MAX=500          # store folders looked at for suggestions, per tool
 SESSIONS_WALK_MAX=400             # folders listed to turn store folder names into paths, per suggest
-SESSIONS_ACTIONS="sessions-scan sessions-fetch sessions-suggest"   # what the Code page may ask the helper for
+SESSIONS_ACTIONS="sessions-scan sessions-fetch sessions-suggest sessions-copy"   # what the Code page may ask the helper for
+SESSIONS_REQ_MAX_BYTES=8192       # a ses- request (the portal's limit: portal/portal/settings.py SESSIONS_REQ_MAX)
 SESSIONS_JOB_MIN_INTERVAL_S="${SESSIONS_JOB_MIN_INTERVAL_S:-5}"; SESSIONS_JOB_MAX_PER_DAY="${SESSIONS_JOB_MAX_PER_DAY:-200}"
 SESSIONS_DIALOG_MIN_INTERVAL_S="${SESSIONS_DIALOG_MIN_INTERVAL_S:-60}"; SESSIONS_DIALOG_MAX_PER_DAY="${SESSIONS_DIALOG_MAX_PER_DAY:-10}"
 
@@ -50,8 +52,6 @@ _ss_consent_file()    { printf '%s/consent.tsv\n' "$(sessions_dir)"; }
 _ss_scans_dir()       { printf '%s/scans\n' "$(sessions_dir)"; }
 _ss_forget_file()     { printf '%s/forget.tsv\n' "$(sessions_dir)"; }
 sessions_status_file() { printf '%s/sessions.json\n' "$(status_dir)"; }
-# the folder only the code container and the helper share (compose.code.yaml mounts it at /run/bn-code-requests)
-code_requests_dir()   { printf '%s/code-requests\n' "$STATE_DIR"; }
 
 sessions_usage() {
   cat <<'EOF'
@@ -93,6 +93,7 @@ cmd_sessions() {
     scan) sessions_scan "$@" ;;
     fetch) sessions_fetch "$@" ;;
     import) sessions_import "$@" ;;
+    copy) sessions_copy "$@" ;;
     consent) sessions_consent "$@" ;;
     suggest) sessions_suggest "$@" ;;
     help | -h | --help) sessions_usage ;;
@@ -133,7 +134,10 @@ SS_REQ=''
 # _ss_tell STATE [WHY] — this request's state (and why it did not go through) for the Code page; nothing without one
 _ss_tell() {
   [ -n "$SS_REQ" ] || return 0
-  dc exec -T code node server/import-sessions.mjs request --id "$SS_REQ" --state "$1" ${2:+--why "$2"} </dev/null >/dev/null 2>&1 || true
+  local act="${SS_REQ_ACTION:-}" pid="${SS_REQ_PROJECT:-${SS_ID:-}}"
+  case "$act" in sessions-scan | sessions-fetch | sessions-suggest | sessions-copy) ;; *) act='' ;; esac
+  case "$pid" in p_[0-9a-f]*) ;; *) pid='' ;; esac
+  dc exec -T code node server/import-sessions.mjs request --id "$SS_REQ" --state "$1" ${2:+--why "$2"} ${act:+--action "$act"} ${pid:+--project "$pid"} </dev/null >/dev/null 2>&1 || true
   case "$1" in done | refused | cancelled | failed) printf 'sessions-result: %s\n' "$1" >&2 ;; esac
 }
 # _ss_fail WHY MESSAGE — told (refused, cancelled or failed by its kind), then the command ends saying why
@@ -380,6 +384,7 @@ sessions_scan() {
     esac
   done
   case "$SS_REQ" in '') ;; *[!0-9a-f]* | ?????????????????????????????????*) SS_REQ='' ;; esac
+  SS_REQ_ACTION=sessions-scan
   case "$origin" in local | remote) ;; *) _ss_fail bad-request "--origin: local or remote" ;; esac
   [ -n "$ref" ] || die "usage: ./stack sessions scan --project NAME (./stack project list)"
   tools="$(_ss_tools "$tool")" || _ss_fail bad-request "--tool: claude, claude-bedrock or both"
@@ -487,6 +492,7 @@ sessions_fetch() {
     esac
   done
   case "$SS_REQ" in '') ;; *[!0-9a-f]* | ?????????????????????????????????*) SS_REQ='' ;; esac
+  SS_REQ_ACTION=sessions-fetch
   case "$origin" in local | remote) ;; *) _ss_fail bad-request "--origin: local or remote" ;; esac
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   _ss_forget_pending
@@ -570,6 +576,49 @@ _ss_fetch_pipe() {
 }
 
 # --- the whole way in a terminal ---
+# sessions_copy — a copy the Code page asked for that keeps some possible secrets (the helper runs it, once the portal
+# and the helper checked the password): the waiting session copied with its findings redacted but those --keep names
+# (their tokens: a file's name and a hash), only if it is still what was checked (--digest); the results are kept
+# with the request in the code container, for the page
+sessions_copy() {
+  local ref='' session='' digest='' thinking=default keep='' origin=local res line th='' t
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) ref="${2:-}"; shift 2 || true ;;
+      --session) session="${2:-}"; shift 2 || true ;;
+      --digest) digest="${2:-}"; shift 2 || true ;;
+      --thinking) thinking="${2:-}"; shift 2 || true ;;
+      --keep) keep="${2:-}"; shift 2 || true ;;
+      --origin) origin="${2:-}"; shift 2 || true ;;
+      --request) SS_REQ="${2:-}"; shift 2 || true ;;
+      *) die "usage: ./stack sessions copy --project NAME --session ID --digest HEX --keep TOKENS (the Code page's Import sheet asks for it)" ;;
+    esac
+  done
+  case "$SS_REQ" in '') ;; *[!0-9a-f]* | ?????????????????????????????????*) SS_REQ='' ;; esac
+  SS_REQ_ACTION=sessions-copy
+  case "$origin" in local | remote) ;; *) _ss_fail bad-request "--origin: local or remote" ;; esac
+  [ -f "$ENV_FILE" ] || die "run ./stack setup first"
+  local uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' hex64='^[0-9a-f]{64}$' tokre='^(main|(subagents|tool-results)/[A-Za-z0-9][A-Za-z0-9._-]{0,199})#[0-9a-f]{16}$'
+  [[ $session =~ $uuid ]] || _ss_fail bad-request "bad session id"
+  [[ $digest =~ $hex64 ]] || _ss_fail bad-request "bad digest"
+  case "$thinking" in default) ;; strip) th=--strip-thinking ;; keep) th=--keep-thinking ;; *) _ss_fail bad-request "--thinking: default, strip or keep" ;; esac
+  [ -n "$keep" ] || _ss_fail bad-request "--keep: the findings to keep"
+  local IFS=,
+  for t in $keep; do [[ $t =~ $tokre ]] || { IFS=$' \t\n'; _ss_fail bad-request "bad keep"; }; done
+  IFS=$' \t\n'
+  _ss_project "$ref"
+  _ss_need_code
+  _ss_tell copying
+  res="$(dc exec -T code node server/import-sessions.mjs copy --project "$SS_ID" --ids "$session" --digest "$digest" --keep "$keep" ${th:+"$th"} --request "${SS_REQ:-}" --tsv </dev/null 2>/dev/null)" || true
+  line="$(printf '%s\n' "$res" | grep -E "^$session"$'\t' | head -n 1)" || true
+  [ -n "$line" ] || _ss_fail code "the Code page's container did not copy it"
+  _ss_tell done
+  case "$(printf '%s' "$line" | cut -f2)" in
+    ok) log "$SS_NAME: copied into the sandbox, the possible secrets you chose kept as they were" ;;
+    *) log "$SS_NAME: not copied (the Code page says why)" ;;
+  esac
+}
+
 sessions_import() {
   local ref='' tool=both rows='' all=0 keep=0 think_keep=0 rescan=0 last at now n t ids='' k title flag msgs size id
   while [ $# -gt 0 ]; do
@@ -598,11 +647,15 @@ sessions_import() {
   # the list, as the code container keeps it (titles are what the sessions said: printed as plain ASCII)
   printf '\n'
   n=0
+  local note
   while IFS=$'\t' read -r k t msgs at size flag title; do
     case "$k" in '' | *[!0-9]*) continue ;; esac
     n=$((n + 1))
-    printf '  %3s  %s  %-60s  %6s msgs  %s%s\n' "$k" "$(_ss_badge "$t")" "$(plain_text "$title" | cut -c1-60)" "${msgs:--}" "$(date -r "$((at / 1000))" '+%Y-%m-%d' 2>/dev/null || date -d "@$((at / 1000))" '+%Y-%m-%d' 2>/dev/null || echo '?')" \
-      "$(case "$flag" in *copied*) echo '  (copied before)' ;; esac)$(case "$flag" in *too-large*) echo '  (too large to copy)' ;; esac)"
+    # (no case inside $( ): bash 3.2, a Mac's, reads its patterns' ")" as the end of the substitution)
+    note=''
+    case "$flag" in *copied*) note='  (copied before)' ;; esac
+    case "$flag" in *too-large*) note="$note  (too large to copy)" ;; esac
+    printf '  %3s  %s  %-60s  %6s msgs  %s%s\n' "$k" "$(_ss_badge "$t")" "$(plain_text "$title" | cut -c1-60)" "${msgs:--}" "$(date -r "$((at / 1000))" '+%Y-%m-%d' 2>/dev/null || date -d "@$((at / 1000))" '+%Y-%m-%d' 2>/dev/null || echo '?')" "$note"
   done < <(dc exec -T code node server/import-sessions.mjs list --project "$SS_ID" --tsv </dev/null 2>/dev/null)
   [ "$n" -gt 0 ] || { log "no sessions of $SS_NAME to import"; return 0; }
   printf '\n'
@@ -614,13 +667,16 @@ sessions_import() {
   local list nf kinds think outside left
   list="$(for k in $(if [ "$rows" = all ]; then seq 1 "$n"; else _ss_rows "$rows" "$n"; fi); do awk -F'\t' -v k="$k" '$1 == "row" && $2 == k { print $4 }' "$(_ss_scans_dir)/$last.tsv"; done | paste -sd, -)"
   printf '\n'
-  while IFS=$'\t' read -r id nf kinds think outside left title; do
+  while IFS=$'\t' read -r id nf kinds think thmode outside left title; do
     case "$id" in [0-9a-f]*-*) ;; *) continue ;; esac
     ids="${ids:+$ids,}$id"
     printf '  %s\n' "$(plain_text "$title" | cut -c1-70)"
     if [ "${nf:-0}" = 0 ]; then printf '      no possible secret found\n'
     else printf '      %s possible secret(s) (%s): %s\n' "$nf" "$(plain_text "$kinds")" "$([ "$keep" = 1 ] && echo 'kept as they are (--keep-secrets)' || echo 'redacted')"; fi
-    [ "${think:-0}" = 0 ] || printf '      %s thinking block(s) %s\n' "$think" "$([ "$think_keep" = 1 ] && echo 'kept (--keep-thinking)' || echo 'taken out (written elsewhere than Bedrock: their signatures may not be accepted there)')"
+    if [ "${think:-0}" != 0 ]; then
+      if [ "$thmode" = out ]; then printf '      %s thinking block(s) taken out (written elsewhere than Bedrock: their signatures may not be accepted there)\n' "$think"
+      else printf '      %s thinking block(s) left out (each held a possible secret or a path to rewrite: a block is copied as it was, or not at all)\n' "$think"; fi
+    fi
     [ "${outside:-0}" = 0 ] || printf '      %s path(s) outside the project named in its tool calls (not in the sandbox)\n' "$outside"
     [ "${left:-0}" = 0 ] || printf '      %s file(s) beside it that cannot be checked: not copied\n' "$left"
   done < <(dc exec -T code node server/import-sessions.mjs findings --project "$SS_ID" --ids "$list" --tsv </dev/null 2>/dev/null)
@@ -628,9 +684,11 @@ sessions_import() {
   printf '\n'
   confirm "Copy $(printf '%s' "$ids" | tr ',' '\n' | grep -c .) session(s) into the sandbox (the project $SS_NAME)?" || { log "not copied: they wait on the Code page's Import sheet for an hour"; return 0; }
   local okv as red kept why
-  while IFS=$'\t' read -r id okv as red kept left why; do
+  while IFS=$'\t' read -r id okv as red kept left by why; do
     case "$id" in [0-9a-f]*-*) ;; *) continue ;; esac
     if [ "$okv" = ok ]; then log "copied: $id$([ "$as" = "$id" ] || echo " as a new session $as (the copy in the sandbox was continued since)") — ${red:-0} redaction(s)$([ "${kept:-0}" = 0 ] || echo ", $kept kept")$([ "${left:-0}" = 0 ] || echo ", $left file(s) beside it not copied")"
+    # (the sandbox's own words are shown apart, labelled as the sandbox's — never as a sentence of bedrock-now's)
+    elif [ "$by" = sandbox ]; then warn "not copied: $id — the sandbox refused it. What it said:"; printf '      | %s\n' "$(plain_text "$why" | head -c 300)" >&2
     else warn "not copied: $id — $(plain_text "$why" | head -c 300)"; fi
   done < <(dc exec -T code node server/import-sessions.mjs copy --project "$SS_ID" --ids "$ids" --tsv $([ "$keep" = 1 ] && echo --keep-secrets) $([ "$think_keep" = 1 ] && echo --keep-thinking) </dev/null 2>/dev/null)
   log "on the Code page: $SS_NAME › its sessions (badged CC or CB) resume on any model there"
@@ -750,6 +808,7 @@ sessions_suggest() {
     esac
   done
   case "$SS_REQ" in '') ;; *[!0-9a-f]* | ?????????????????????????????????*) SS_REQ='' ;; esac
+  SS_REQ_ACTION=sessions-suggest
   case "$origin" in local | remote) ;; *) _ss_fail bad-request "--origin: local or remote" ;; esac
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   _ss_secure_dir "$(sessions_dir)" || die "cannot create $(sessions_dir)"
@@ -797,81 +856,66 @@ sessions_suggest() {
   log "$(printf '%s' "$res" | sed -n 's/.*"rows":\([0-9]*\).*/\1/p') folder(s) suggested on the Code page (each becomes a project only once you add it: ./stack project add DIR)"
 }
 
-# --- the update helper: the Code page's requests (lib/settings_helper.sh calls these) ---
-# ensure_code_requests_dir — the folder the code container writes its requests in (compose.code.yaml: rw there): yours,
-# mode 700 (./stack as root: the code container's user's)
-ensure_code_requests_dir() {
-  local d u g; d="$(code_requests_dir)"
-  mkdir -p "$d" 2>/dev/null && chmod 700 "$d" 2>/dev/null || return 0
-  if [ "$(id -u)" = 0 ]; then
-    u="$(get_env TERMINAL_UID)"; g="$(get_env TERMINAL_GID)"
-    case "$u:$g" in *[!0-9:]* | :* | *:) ;; *) chown "$u:$g" "$d" 2>/dev/null || true ;; esac
-  fi
-}
-# _ss_request_uids -> who may own a request file there: you, and the code container's user (TERMINAL_UID; under rootless
-# Docker the host uid it maps to)
-_ss_request_uids() {
-  local u me f
-  id -u
-  u="$(get_env TERMINAL_UID)"
-  case "$u" in '' | *[!0-9]*) return 0 ;; esac
-  printf '%s\n' "$u"
-  case "$(_helper_os)" in Darwin) return 0 ;; esac
-  me="$(id -un)"; f="${HELPER_SUBUID_FILE:-/etc/subuid}"
-  [ -f "$f" ] && [ -r "$f" ] && head -c 65536 "$f" | awk -F: -v n="$me" -v i="$(id -u)" -v t="$u" '!f && ($1 == n || $1 == i) && $2 ~ /^[0-9]+$/ { print $2 + t - 1; f = 1 }'
-  return 0
-}
-# _ss_check_request FILE NAME -> "ACTION NONCE AUTH ORIGIN PROJECT TOOL SCAN ROWS" ("-" for a field it has not) of a
-# valid request (one line, every field fixed — never a path), the reason on stderr otherwise
+# --- the update helper: the Code page's requests, written by the portal (lib/settings_helper.sh calls these) ---
+# _ss_check_request FILE NAME -> "ACTION NONCE AUTH ORIGIN PROJECT TOOL SCAN ROWS SESSION DIGEST THINKING KEEP" ("-" for
+# a field it has not) of a valid request (one line, every field fixed — never a path), the reason on stderr otherwise.
+# The file is read as Settings' requests are (_req_read: not a link, a regular file, owned by you or the portal's user,
+# a bounded read), after it was moved into the helper's private inbox.
 _ss_check_request() {
-  local f="$1" name="$2" nonce body uid ok=0 u action ts n auth origin project=- tool=- scan=- rows=- now
-  case "$name" in sx-*.json) ;; *) echo "unexpected file name" >&2; return 1 ;; esac
-  nonce="${name#sx-}"; nonce="${nonce%.json}"
+  local f="$1" name="$2" nonce body action ts n auth origin project=- tool=- scan=- rows=- session=- digest=- thinking=- keep=- now
+  case "$name" in ses-*.json) ;; *) echo "unexpected file name" >&2; return 1 ;; esac
+  nonce="${name#ses-}"; nonce="${nonce%.json}"
   case "$nonce" in *[!0-9a-f]*) echo "bad nonce in the file name" >&2; return 1 ;; esac
   [ "${#nonce}" = 32 ] || { echo "bad nonce in the file name" >&2; return 1; }
-  [ ! -L "$f" ] && [ -f "$f" ] || { echo "not a regular file" >&2; return 1; }
-  uid="$(_file_uid "$f")"
-  for u in $(_ss_request_uids); do [ "$uid" != "$u" ] || ok=1; done
-  [ "$ok" = 1 ] || { echo "owned by uid $uid, not by you or the code container" >&2; return 1; }
-  body="$(read_portal_file "$f" 769 && echo x)" || { echo "unreadable" >&2; return 1; }
+  body="$(_req_read "$f" "$SESSIONS_REQ_MAX_BYTES" && echo x)" || return 1
   body="${body%x}"; body="${body%$'\n'}"
-  [ "${#body}" -le 768 ] || { echo "larger than 768 bytes" >&2; return 1; }
+  case "$body" in *$'\n'* | *$'\r'*) echo "more than one line" >&2; return 1 ;; esac
   # (each whole line one pattern, held in a variable: a quoted part of =~ would be taken literally)
-  local head='^\{"action":"(sessions-scan|sessions-fetch|sessions-suggest)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","origin":"(local|remote)"'
+  local head='^\{"action":"(sessions-scan|sessions-fetch|sessions-suggest|sessions-copy)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","origin":"(local|remote)"'
   local re_scan="$head"',"project":"(p_[0-9a-f]{8})","tool":"(claude|claude-bedrock|both)"\}$'
   local re_fetch="$head"',"project":"(p_[0-9a-f]{8})","scan":"([0-9a-f]{32})","rows":"([0-9]{1,5}(,[0-9]{1,5}){0,49})"\}$'
   local re_suggest="$head"'\}$'
+  local tokre='(main|(subagents|tool-results)/[A-Za-z0-9][A-Za-z0-9._-]*)#[0-9a-f]{16}'
+  local re_copy="$head"',"project":"(p_[0-9a-f]{8})","session":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})","digest":"([0-9a-f]{64})","thinking":"(default|strip|keep)","keep":"('"$tokre"'(,'"$tokre"')*)"\}$'
   if [[ $body =~ $re_scan ]] && [ "${BASH_REMATCH[1]}" = sessions-scan ]; then
     project="${BASH_REMATCH[6]}"; tool="${BASH_REMATCH[7]}"
   elif [[ $body =~ $re_fetch ]] && [ "${BASH_REMATCH[1]}" = sessions-fetch ]; then
     project="${BASH_REMATCH[6]}"; scan="${BASH_REMATCH[7]}"; rows="${BASH_REMATCH[8]}"
   elif [[ $body =~ $re_suggest ]] && [ "${BASH_REMATCH[1]}" = sessions-suggest ]; then :
+  elif [[ $body =~ $re_copy ]] && [ "${BASH_REMATCH[1]}" = sessions-copy ]; then
+    project="${BASH_REMATCH[6]}"; session="${BASH_REMATCH[7]}"; digest="${BASH_REMATCH[8]}"; thinking="${BASH_REMATCH[9]}"; keep="${BASH_REMATCH[10]}"
   else echo "not a valid request" >&2; return 1; fi
   action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"; origin="${BASH_REMATCH[5]}"
   [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }
+  # (a part's name 200 characters at most, 64 tokens at most — the portal's limits, checked again)
+  if [ "$keep" != - ]; then
+    local t k=0 IFS=,
+    for t in $keep; do k=$((k + 1)); [ "${#t}" -le 220 ] || { echo "a keep too long" >&2; return 1; }; done
+    [ "$k" -le 64 ] || { echo "more than 64 findings kept at once" >&2; return 1; }
+  fi
   [ "$n" = "$nonce" ] || { echo "nonce does not match the file name" >&2; return 1; }
   now="$(date +%s)"
   [ "$ts" -le $((now + 30)) ] || { echo "dated in the future" >&2; return 1; }
   [ $((now - ts)) -le "$HELPER_MAX_AGE_S" ] || { echo "stale (older than ${HELPER_MAX_AGE_S}s)" >&2; return 1; }
   ! grep -qx "$nonce" "$(helper_dir)/nonces" 2>/dev/null || { echo "replayed (this request was already used)" >&2; return 1; }
-  printf '%s %s %s %s %s %s %s %s\n' "$action" "$nonce" "$auth" "$origin" "$project" "$tool" "$scan" "$rows"
+  printf '%s %s %s %s %s %s %s %s %s %s %s %s\n' "$action" "$nonce" "$auth" "$origin" "$project" "$tool" "$scan" "$rows" "$session" "$digest" "$thinking" "$keep"
 }
 # _ss_tell_req NONCE STATE [WHY] — a request's state, told by the helper itself (before or instead of ./stack sessions)
 _ss_tell_req() { SS_REQ="$1" _ss_tell "$2" "${3:-}" 2>/dev/null; }
-# sessions_poll_once — one request of the Code page's, if any: moved into the helper's private inbox, checked, the
-# password (the helper's own hash, with its lock-out), the limits; then ./stack sessions as a child of the helper (its
-# dialog on this screen when one is needed). 0 when one ran.
+# sessions_poll_once — one request of the Code page's (ses-<nonce>.json in the portal's request folder), if any: moved
+# into the helper's private inbox, checked, the password (the helper's own hash, with its lock-out), the limits; then
+# ./stack sessions as a child of the helper (its dialog on this screen when one is needed). 0 when one ran.
 sessions_poll_once() {
-  local dir inbox f name box res reason action nonce auth origin project tool scan rows logf rc
-  dir="$(code_requests_dir)"
+  local dir inbox f name box res reason action nonce auth origin project tool scan rows session digest thinking keep logf rc
+  dir="$(request_dir)"
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   inbox="$(helper_dir)/inbox"
   [ -d "$inbox" ] || { mkdir -p "$inbox" && chmod 700 "$(helper_dir)" "$inbox"; } 2>/dev/null || return 1
-  for f in "$dir"/sx-*.json; do
+  for f in "$dir"/ses-*.json; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     name="${f##*/}"
     box="$(mktemp -d "$inbox/x.XXXXXX")" || return 1
-    mv -f "$f" "$box/$name" 2>/dev/null || { rm -rf "$box" "$f"; continue; }
+    mv -f "$f" "$box/$name" 2>/dev/null || { rm -rf "$box"; continue; }
     if ! res="$(_ss_check_request "$box/$name" "$name" 2>"$box/.reason")"; then
       reason="$(head -c 300 "$box/.reason" | head -n 1)"; rm -rf "$box"
       printf '%s refused a Code page request: %s\n' "$(date '+%F %T')" "$reason" >&2
@@ -879,8 +923,9 @@ sessions_poll_once() {
       continue
     fi
     rm -rf "$box"
-    read -r action nonce auth origin project tool scan rows <<< "$res"
+    read -r action nonce auth origin project tool scan rows session digest thinking keep <<< "$res"
     _remember_nonce "$nonce"
+    SS_REQ_ACTION="$action"; SS_REQ_PROJECT="$([ "$project" = - ] || echo "$project")"
     if ! reason="$(_auth_ok "$auth" 2>&1)"; then auth=''; _ss_tell_req "$nonce" refused password; continue; fi
     auth=''
     if [ -n "$(stack_lock_holder)" ]; then _ss_tell_req "$nonce" refused busy; continue; fi
@@ -890,6 +935,7 @@ sessions_poll_once() {
       sessions-scan) set -- sessions scan --project "$project" --tool "$tool" --origin "$origin" --request "$nonce" --screen ;;
       sessions-fetch) set -- sessions fetch --project "$project" --scan "$scan" --rows "$rows" --origin "$origin" --request "$nonce" ;;
       sessions-suggest) set -- sessions suggest --origin "$origin" --request "$nonce" --screen ;;
+      sessions-copy) set -- sessions copy --project "$project" --session "$session" --digest "$digest" --thinking "$thinking" --keep "$keep" --origin "$origin" --request "$nonce" ;;
     esac
     logf="$(helper_dir)/last-sessions.log"
     : > "$logf"; chmod 600 "$logf"
@@ -901,35 +947,24 @@ sessions_poll_once() {
   done
   return 1
 }
-# sessions_helper_tick — every loop of the helper: what it offers the Code page, and what the code container must still
-# forget. What it offers is a file the host writes for the code container to read, so it goes where the host writes
-# such files: the project folders' public folder (lib/projects.sh — yours, 755, mounted read-only into the code
-# container; a temporary file there, renamed: _pj_write_file), never the folder the code container writes its requests
-# in. That folder the helper only reads (each request moved into its own private inbox first, then checked) and empties
-# of anything else with rm -f (a link goes, never what it points to; a folder there is left alone).
+# sessions_helper_tick — every loop of the helper: what it offers the Code page (a file the host writes for the code
+# container to read: in the project folders' public folder — lib/projects.sh: yours, 755, mounted read-only into the
+# code container; a temporary file there, renamed: _pj_write_file), and what the code container must still forget
 sessions_helper_tick() {
-  local d f e pub
+  local f pub
   code_on || return 0
   pub="$(projects_public_dir)"
   if mkdir -p "$pub" 2>/dev/null && chmod 700 "$(projects_dir)" 2>/dev/null && chmod 755 "$pub" 2>/dev/null; then
     f="$pub/helper.json"
     if [ ! -f "$f" ] || [ -L "$f" ] || [ -n "$(find "$f" -mmin +1 2>/dev/null)" ]; then
-      _pj_write_file "$f" "{\"sessions\": [\"sessions-scan\", \"sessions-fetch\", \"sessions-suggest\"], \"screen\": $(helper_screen && echo true || echo false), \"written_at\": $(date +%s)}" 644 || true
+      _pj_write_file "$f" "{\"sessions\": [\"sessions-scan\", \"sessions-fetch\", \"sessions-suggest\", \"sessions-copy\"], \"screen\": $(helper_screen && echo true || echo false), \"written_at\": $(date +%s)}" 644 || true
     fi
-  fi
-  d="$(code_requests_dir)"
-  if [ -d "$d" ] && [ ! -L "$d" ]; then
-    for e in "$d"/* "$d"/.[!.]*; do
-      [ -e "$e" ] || [ -L "$e" ] || continue
-      case "${e##*/}" in sx-*.json) continue ;; .sx-*) [ -z "$(find "$e" -maxdepth 0 -mmin -1 2>/dev/null)" ] || continue ;; esac
-      if [ -d "$e" ] && [ ! -L "$e" ]; then rmdir -- "$e" 2>/dev/null || true; else rm -f -- "$e" 2>/dev/null || true; fi
-    done
   fi
   _ss_forget_pending 2>/dev/null || true
 }
 # sessions_uninstall_cleanup — ./stack uninstall: the shared folder and the status file go (consent.tsv stays, like .env)
 sessions_uninstall_cleanup() {
   rm -f "$(projects_public_dir)/helper.json" 2>/dev/null || true; rmdir "$(projects_public_dir)" 2>/dev/null || true
-  rm -rf "$(code_requests_dir)" "$(_ss_scans_dir)" 2>/dev/null || true
+  rm -rf "$(_ss_scans_dir)" 2>/dev/null || true
   rm -f "$(sessions_status_file)" "$(_ss_forget_file)" 2>/dev/null || true
 }

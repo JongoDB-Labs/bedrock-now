@@ -300,26 +300,34 @@ export interface ImportRow {
   copied: { id: string; at: number | null } | null;
 }
 export interface ImportCounts { folders: number; listed: number; older: number; otherFolder: number; noCwd: number; unreadable: number; sidechain: number }
-export interface ImportRequest { id: string; action: string; state: 'sent' | 'asking' | 'reading' | 'done' | 'refused' | 'cancelled' | 'failed'; why: string | null; at: number }
+export interface ImportRequest {
+  id: string; action: string; state: 'unknown' | 'sent' | 'asking' | 'reading' | 'copying' | 'done' | 'refused' | 'cancelled' | 'failed'; why: string | null; at: number;
+  /** a copy's (one that kept findings, done by the helper) */
+  results: ImportResult[] | null;
+}
 export interface ImportView {
   project: string;
   /** on the computer running bedrock-now (a look can be asked only there) */
   local: boolean;
   helper: { running: boolean; actions: string[]; screen: boolean };
   index: { scan: string; at: number; consent: 'once' | 'always'; fetchable: boolean; rows: ImportRow[]; counts: Partial<Record<ImportTool, ImportCounts>> } | null;
-  staged: { id: string; tool: ImportTool; at: number; size: number; parts: number }[];
+  staged: { id: string; tool: ImportTool; at: number; size: number; parts: number; digest: string | null }[];
   requests: ImportRequest[];
 }
-export interface ImportFinding { id: string; kind: string; label: string; message: number; part: string | null; preview: string; context: string; keepable: boolean }
+/** id: what keeps it (the file it is in and a hash); n: its place in the list */
+export interface ImportFinding { id: string; n: number; kind: string; label: string; message: number; part: string | null; preview: string; context: string; keepable: boolean }
 export interface ImportPreview {
   id: string;
   tool: ImportTool;
   title: string;
   messages: number | null;
   size: number | null;
+  /** what is waiting, as checked: a copy names it (refused when the session was read again since) */
+  digest: string | null;
   findings: ImportFinding[];
   findingsTotal: number;
-  thinking: { blocks: number; removed: number; strip: boolean; source: string };
+  /** removed: taken out (ran elsewhere than Bedrock); left: kept blocks that held a finding or a path, left out whole */
+  thinking: { blocks: number; removed: number; left: number; strip: boolean; source: string };
   outside: { count: number; sample: string[] };
   bad: number;
   rewritten: number;
@@ -332,7 +340,7 @@ export interface ImportPreview {
   events: Ev[];
   total: number;
 }
-export interface ImportResult { id: string; ok: boolean; as: string | null; forked: boolean; redacted: number; kept: number; thinkingRemoved: number; left: number; why: string; said: SandboxWords | null }
+export interface ImportResult { id: string; ok: boolean; as: string | null; forked: boolean; redacted: number; kept: number; thinkingRemoved: number; thinkingLeft: number; left: number; why: string; said: SandboxWords | null }
 /** A folder your coding tools kept sessions for (its store folder's name, turned into a folder that is there). */
 export interface ProjectSuggestion { path: string; claude: number; claudeBedrock: number; last: number }
 

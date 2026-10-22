@@ -5099,11 +5099,10 @@ def import_sheet(browser):
     expect(sheet).to_be_visible()
     expect(page.get_by_test_id("import-folder")).to_have_text("/home/you/src/tools")
     expect(page.get_by_test_id("import-look")).to_be_disabled()   # (the portal password first)
-    # a wrong password: the helper refuses it, said in our words
+    # a wrong password: the portal refuses it (it checks the password: the Code page's backend never sees it)
     page.get_by_test_id("import-password").fill("wrong")
     page.get_by_test_id("import-look").click()
-    expect(page.get_by_test_id("import-request")).to_have_attribute("data-state", "refused", timeout=15_000)
-    expect(page.get_by_test_id("import-request")).to_contain_text("The portal password was not right")
+    expect(page.get_by_test_id("import-error")).to_contain_text("password is not right", timeout=15_000)
     # the look: the dialog on the computer's screen, then the list
     page.get_by_test_id("import-password").fill("correct horse")
     page.get_by_test_id("import-look").click()
@@ -5137,15 +5136,23 @@ def import_sheet(browser):
     cc.get_by_test_id("import-preview-toggle").click()
     expect(cc.get_by_test_id("import-transcript")).to_contain_text("[REDACTED:aws-key-id]")
     p.shot("import-check.png")
-    # keep one finding, keep the thinking blocks: what the copy is told
+    # keep one finding, keep the thinking blocks: what the copy is told — keeping needs the password (the portal, then
+    # the helper copies it); the other one is copied by the backend, everything redacted
     cc.get_by_test_id("import-redact").nth(1).uncheck()
     cc.get_by_test_id("import-thinking-toggle").click()
     expect(cc.get_by_test_id("import-thinking")).to_contain_text("kept", timeout=10_000)
+    expect(cc.get_by_test_id("import-thinking-left")).to_contain_text("left out whole")
+    expect(page.get_by_test_id("import-keep-note")).to_contain_text("needs the portal password")
+    expect(page.get_by_test_id("import-copy")).to_be_disabled()
+    page.get_by_test_id("import-password-3").fill("correct horse")
     page.get_by_test_id("import-copy").click()
-    expect(page.get_by_test_id("import-result")).to_have_count(2, timeout=15_000)
+    expect(page.get_by_test_id("import-result")).to_have_count(2, timeout=20_000)
+    expect(page.get_by_test_id("import-result").filter(has_text="1 kept as they were")).to_have_count(1)
     log = mock_get(NORMAL, "/__mock/import-log")["log"]
     assert any(x.startswith("copy ") and "keep=1 thinking=keep" in x for x in log), log
     assert any(x.startswith("copy ") and "keep=0 thinking=default" in x for x in log), log
+    assert "sessions-copy " + tools in log and "password-at-backend" not in log, log
+    assert any(u.endswith("/.bn/sessions") for u in p.requests), "asked of the portal" 
     # in the project, badged; open it
     page.get_by_test_id("import-sheet").get_by_role("button", name="Close").last.click()
     unfold(page, tools)

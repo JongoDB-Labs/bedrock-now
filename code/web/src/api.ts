@@ -2176,11 +2176,12 @@ function importRow(v: unknown): ImportRow | null {
     copied: copied && isUuid(copied.id) ? { id: copied.id.toLowerCase(), at: copied.at ? time(copied.at) : null } : null,
   };
 }
-const REQUEST_STATES = ['sent', 'asking', 'reading', 'done', 'refused', 'cancelled', 'failed'] as const;
+const REQUEST_STATES = ['unknown', 'sent', 'asking', 'reading', 'copying', 'done', 'refused', 'cancelled', 'failed'] as const;
 function importRequest(v: unknown): ImportRequest | null {
   const o = obj(v);
   if (!o || typeof o.id !== 'string' || !/^[0-9a-f]{32}$/.test(o.id) || !REQUEST_STATES.includes(o.state as ImportRequest['state'])) return null;
-  return { id: o.id, action: label(o.action, 40), state: o.state as ImportRequest['state'], why: typeof o.why === 'string' && /^[a-z-]{1,20}$/.test(o.why) ? o.why : null, at: time(o.at) };
+  return { id: o.id, action: label(o.action, 40), state: o.state as ImportRequest['state'], why: typeof o.why === 'string' && /^[a-z-]{1,20}$/.test(o.why) ? o.why : null, at: time(o.at),
+    results: Array.isArray(o.results) ? importResults(o.results) : null };
 }
 const COUNT_KEYS = ['folders', 'listed', 'older', 'otherFolder', 'noCwd', 'unreadable', 'sidechain'] as const;
 /** The Import sheet's state for a project: its last list (at most 4,000 rows), the sessions waiting, the helper. */
@@ -2201,30 +2202,42 @@ export async function getImports(project: string): Promise<ImportView> {
       rows: arr(ix.rows, 4000).map(importRow).filter((r): r is ImportRow => r !== null), counts,
     } : null,
     staged: arr(o.staged, 200).map(obj).filter((x): x is Obj => x !== null && isUuid(x.id) && importTool(x.tool) !== null)
-      .map((x) => ({ id: (x.id as string).toLowerCase(), tool: importTool(x.tool) as ImportTool, at: time(x.at), size: N(x.size, 1e13) ?? 0, parts: N(x.parts, 1e6) ?? 0 })),
+      .map((x) => ({ id: (x.id as string).toLowerCase(), tool: importTool(x.tool) as ImportTool, at: time(x.at), size: N(x.size, 1e13) ?? 0, parts: N(x.parts, 1e6) ?? 0,
+        digest: typeof x.digest === 'string' && /^[0-9a-f]{64}$/.test(x.digest) ? x.digest : null })),
     requests: arr(o.requests, 20).map(importRequest).filter((r): r is ImportRequest => r !== null),
   };
 }
+// What needs the portal password goes to the PORTAL, on this same host (POST /.bn/sessions: Caddy hands it to the
+// portal, which checks the password, says whether this is remote access, and writes the update helper's request): the
+// Code page's backend never sees the password, and follows the request by its id (importRequestState).
+async function askComputer(body: Record<string, unknown>): Promise<string> {
+  const o = await request('POST', '/.bn/sessions', body);
+  if (typeof o.request !== 'string' || !/^[0-9a-f]{32}$/.test(o.request)) throw new ApiError(502, 'no request id');
+  return o.request;
+}
 /** A look at the project's sessions on the computer: the update helper asks there first (its screen). -> the request */
 export async function importScan(project: string, tool: ImportTool | 'both', password: string): Promise<string> {
-  const o = await request('POST', '/api/imports/scan', { project, tool, password });
-  if (typeof o.request !== 'string' || !/^[0-9a-f]{32}$/.test(o.request)) throw new ApiError(502, 'no request id');
-  return o.request;
+  if (!projectIdOk(project) || project === WORKSPACE_ID) throw new ApiError(400, 'bad project id');
+  return askComputer({ action: 'sessions-scan', project, tool, password });
 }
-/** Read these sessions of the last look into the backend (to check, then copy). -> the request */
-export async function importFetch(project: string, ids: string[], password: string): Promise<string> {
-  const o = await request('POST', '/api/imports/fetch', { project, ids: ids.filter(isUuid), password });
-  if (typeof o.request !== 'string' || !/^[0-9a-f]{32}$/.test(o.request)) throw new ApiError(502, 'no request id');
-  return o.request;
+/** Read these rows of a look into the backend (to check, then copy) — the look's id and its row numbers. -> the request */
+export async function importFetch(project: string, scan: string, rows: number[], password: string): Promise<string> {
+  if (!projectIdOk(project) || project === WORKSPACE_ID || !/^[0-9a-f]{32}$/.test(scan)) throw new ApiError(400, 'bad request');
+  const ns = [...new Set(rows.filter((n) => Number.isInteger(n) && n >= 1 && n <= 4000))].slice(0, 50);
+  if (!ns.length) throw new ApiError(400, 'pick sessions of the list');
+  return askComputer({ action: 'sessions-fetch', project, scan, rows: ns, password });
 }
+export type ImportRequestState = ImportRequest;
 export async function importRequestState(id: string): Promise<ImportRequest | null> {
   if (!/^[0-9a-f]{32}$/.test(id)) return null;
   return importRequest(await request('GET', `/api/imports/request/${id}`));
 }
+// a finding's id is what keeps it: the file it is in and a hash (never a position) — main#<16 hex>, subagents/x#…
+const KEEP_TOKEN = /^(main|(subagents|tool-results)\/[A-Za-z0-9][A-Za-z0-9._-]{0,199})#[0-9a-f]{16}$/;
 function importFinding(v: unknown): ImportFinding | null {
   const o = obj(v);
-  if (!o || typeof o.id !== 'string' || !/^(p[0-9]{1,4}:)?[0-9]{1,7}\.[0-9]{1,5}$/.test(o.id)) return null;
-  return { id: o.id, kind: label(o.kind, 40), label: label(o.label, 120), message: N(o.message, 1e7) ?? 0, part: o.part ? label(o.part, 220) : null,
+  if (!o || typeof o.id !== 'string' || !KEEP_TOKEN.test(o.id)) return null;
+  return { id: o.id, n: N(o.n, 1e7) ?? 0, kind: label(o.kind, 40), label: label(o.label, 120), message: N(o.message, 1e7) ?? 0, part: o.part ? label(o.part, 220) : null,
     preview: label(o.preview, 80), context: label(o.context, 200), keepable: o.keepable === true };
 }
 /** A waiting session as it would be copied (thinking: as the backend decides, or as asked). */
@@ -2234,8 +2247,9 @@ export async function importPreview(project: string, id: string, thinking: 'stri
   const th = obj(o.thinking), out = obj(o.outside);
   return {
     id: id.toLowerCase(), tool: importTool(o.tool) ?? 'claude', title: label(o.title, 200), messages: N(o.messages, 1e7), size: N(o.size, 1e13),
+    digest: typeof o.digest === 'string' && /^[0-9a-f]{64}$/.test(o.digest) ? o.digest : null,
     findings: arr(o.findings, 500).map(importFinding).filter((f): f is ImportFinding => f !== null), findingsTotal: N(o.findingsTotal, 1e7) ?? 0,
-    thinking: { blocks: N(th?.blocks, 1e7) ?? 0, removed: N(th?.removed, 1e7) ?? 0, strip: th?.strip === true, source: label(th?.source, 20) },
+    thinking: { blocks: N(th?.blocks, 1e7) ?? 0, removed: N(th?.removed, 1e7) ?? 0, left: N(th?.left, 1e7) ?? 0, strip: th?.strip === true, source: label(th?.source, 20) },
     outside: { count: N(out?.count, 1e7) ?? 0, sample: arr(out?.sample, 30).map((p) => label(p, 300)).filter(Boolean) },
     bad: N(o.bad, 1e7) ?? 0, rewritten: N(o.rewritten, 1e9) ?? 0, hidden: o.hidden === true, parts: N(o.parts, 1e6) ?? 0,
     left: arr(o.left, 600).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ part: label(x.part, 220), why: label(x.why, 120) })),
@@ -2243,16 +2257,28 @@ export async function importPreview(project: string, id: string, thinking: 'stri
     events: arr(o.events, 3000).map(normEvent).filter((e): e is Ev => e !== null), total: N(o.total, 1e7) ?? 0,
   };
 }
-/** Copy waiting sessions into the sandbox: each with the findings kept (ids) and what becomes of its thinking. */
-export async function importCopy(project: string, items: { id: string; keep: string[]; thinking: 'strip' | 'keep' | null }[]): Promise<ImportResult[]> {
-  const o = await request('POST', '/api/imports/copy', { project, items: items.map((i) => ({ id: i.id, keep: i.keep, ...(i.thinking ? { thinking: i.thinking } : {}) })) });
-  return arr(o.results, 100).map(obj).filter((x): x is Obj => x !== null).map((x) => ({
+function importResults(list: unknown[]): ImportResult[] {
+  return arr(list, 100).map(obj).filter((x): x is Obj => x !== null).map((x) => ({
     id: isUuid(x.id) ? x.id.toLowerCase() : '', ok: x.ok === true, as: isUuid(x.as) ? x.as.toLowerCase() : null, forked: x.forked === true,
-    redacted: N(x.redacted, 1e7) ?? 0, kept: N(x.kept, 1e7) ?? 0, thinkingRemoved: N(x.thinkingRemoved, 1e7) ?? 0, left: N(x.left, 1e6) ?? 0,
+    redacted: N(x.redacted, 1e7) ?? 0, kept: N(x.kept, 1e7) ?? 0, thinkingRemoved: N(x.thinkingRemoved, 1e7) ?? 0, thinkingLeft: N(x.thinkingLeft, 1e7) ?? 0, left: N(x.left, 1e6) ?? 0,
     // (a refusal of the sandbox's: its words apart, never in a sentence of ours)
     why: x.ok === true ? '' : x.sandbox === true ? 'the sandbox refused the copy' : label(x.why, 300),
     said: x.ok !== true && x.sandbox === true ? { by: 'sandbox', said: label(x.why, 300) } as SandboxWords : null,
   })).filter((r) => r.id);
+}
+/** Copy waiting sessions into the sandbox, every finding redacted: each with what becomes of its thinking and the digest
+ *  its check showed (refused when it was read again since). */
+export async function importCopy(project: string, items: { id: string; thinking: 'strip' | 'keep' | null; digest: string | null }[]): Promise<ImportResult[]> {
+  const o = await request('POST', '/api/imports/copy', { project, items: items.map((i) => ({ id: i.id, ...(i.thinking ? { thinking: i.thinking } : {}), ...(i.digest ? { digest: i.digest } : {}) })) });
+  return importResults(arr(o.results, 100));
+}
+/** A copy that keeps some findings (their ids): it needs the portal password — asked of the portal, done by the helper.
+ *  -> the request (its results come with its state) */
+export async function importCopyKept(project: string, item: { id: string; keep: string[]; thinking: 'strip' | 'keep' | null; digest: string }, password: string): Promise<string> {
+  if (!isUuid(item.id) || !/^[0-9a-f]{64}$/.test(item.digest)) throw new ApiError(400, 'bad request');
+  const keep = [...new Set(item.keep.filter((k) => KEEP_TOKEN.test(k)))].slice(0, 64);
+  if (!keep.length) throw new ApiError(400, 'nothing to keep');
+  return askComputer({ action: 'sessions-copy', project, session: item.id.toLowerCase(), digest: item.digest, thinking: item.thinking ?? 'default', keep, password });
 }
 export async function importDrop(project: string, id: string): Promise<void> {
   if (!isUuid(id)) throw new ApiError(400, 'bad session id');
@@ -2268,9 +2294,7 @@ export async function getSuggestions(): Promise<{ at: number | null; rows: Proje
   };
 }
 export async function suggestProjects(password: string): Promise<string> {
-  const o = await request('POST', '/api/imports/suggest', { password });
-  if (typeof o.request !== 'string' || !/^[0-9a-f]{32}$/.test(o.request)) throw new ApiError(502, 'no request id');
-  return o.request;
+  return askComputer({ action: 'sessions-suggest', password });
 }
 /** Continue in this project: a fork of the session written into the project's folder. -> the new session's id */
 export async function continueSession(id: string, project: string): Promise<string> {

@@ -6,6 +6,8 @@
 // redacted unless you keep one, its thinking blocks taken out when it ran elsewhere than Bedrock, then copied into the
 // sandbox. Nothing is written back to the computer. And Suggested from your computer: the folders your tools kept
 // sessions for, which you add as projects on the computer (the page names no folder to it).
+// A look, a read, suggestions and a copy that keeps a possible secret need the portal password: asked of the PORTAL
+// (POST /.bn/sessions on this host), which writes the update helper's request; the page follows it by its id only.
 // Everything a session says — titles, prompts, the transcript — is what a past session saw: shown as text (label, the
 // page's Markdown view for Claude's words), never followed.
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -40,7 +42,9 @@ const WHY: Record<string, string> = {
   'bad-request': 'The helper refused the request.',
 };
 const STATE: Record<string, string> = {
+  unknown: 'Waiting for the update helper on the computer…',
   sent: 'Waiting for the update helper on the computer…',
+  copying: 'Copying on the computer…',
   asking: 'Answer the dialog on the computer\'s screen (Allow once, or Always for this folder).',
   reading: 'Reading on the computer…',
 };
@@ -127,7 +131,10 @@ export function ImportSheet({ id, onClose }: { id: string; onClose: () => void }
   };
   const fetchPicked = async () => {
     setBusy(true);
-    try { read.start(await api.importFetch(id, picked, pw)); setPw(''); } catch (e) { setErr(e instanceof Error ? e.message : 'Not asked.'); }
+    // (a read names the look and its row numbers: the helper reads only rows of its own look, never a path)
+    const ix = view?.index;
+    const rows = ix ? picked.map((x) => ix.rows.find((r) => r.id === x)?.n).filter((n): n is number => typeof n === 'number') : [];
+    try { if (!ix) throw new Error('No list yet: look first.'); read.start(await api.importFetch(id, ix.scan, rows, pw)); setPw(''); } catch (e) { setErr(e instanceof Error ? e.message : 'Not asked.'); }
     setBusy(false);
   };
   return (
@@ -264,24 +271,62 @@ function PickRow({ r, picked, onPick }: { r: ImportRow; picked: boolean; onPick:
   );
 }
 
-/** Step 3: each session read into the container — what was found, what becomes of it, and Copy into the sandbox. */
+type Choice = { keep: string[]; thinking: 'strip' | 'keep' | null; skip: boolean; digest: string | null };
+const TERMINAL_STATES = ['done', 'refused', 'cancelled', 'failed'];
+/** followRequest(id) -> the request once it is over (at most ~10 minutes) */
+async function followRequest(id: string): Promise<api.ImportRequestState | null> {
+  for (let n = 0; n < 400; n++) {
+    await new Promise((r) => setTimeout(r, n < 10 ? 700 : 1500));
+    let r = null;
+    try { r = await api.importRequestState(id); } catch { /* next time */ }
+    if (r && TERMINAL_STATES.includes(r.state)) return r;
+  }
+  return null;
+}
+
+/** Step 3: each session read into the container — what was found, what becomes of it, and Copy into the sandbox. A
+ *  choice holds for the session as it was checked (its digest): read again, it starts anew. */
 function CheckStep({ project, view, onCopied }: { project: string; view: ImportView; onCopied: () => void }) {
-  const [choices, setChoices] = useState<Record<string, { keep: string[]; thinking: 'strip' | 'keep' | null; skip: boolean }>>({});
+  const [choices, setChoices] = useState<Record<string, Choice>>({});
   const [results, setResults] = useState<ImportResult[] | null>(null);
   const [busy, setBusy] = useState(false);
-  const ch = (id: string) => choices[id] ?? { keep: [], thinking: null, skip: false };
-  const set = (id: string, v: Partial<{ keep: string[]; thinking: 'strip' | 'keep' | null; skip: boolean }>) => setChoices((c) => ({ ...c, [id]: { ...ch(id), ...v } }));
+  const [pw, setPw] = useState('');
+  const [phase, setPhase] = useState<string | null>(null);
+  const digestOf = (id: string) => view.staged.find((s) => s.id === id)?.digest ?? null;
+  const fresh = (id: string): Choice => ({ keep: [], thinking: null, skip: false, digest: digestOf(id) });
+  const ch = (id: string) => { const c = choices[id]; return c && c.digest === digestOf(id) ? c : fresh(id); };
+  const set = (id: string, v: Partial<Choice>) => setChoices((c) => ({ ...c, [id]: { ...ch(id), ...v, digest: digestOf(id) } }));
   const todo = view.staged.filter((s) => !ch(s.id).skip);
+  const kept = todo.filter((s) => ch(s.id).keep.length > 0);
   const go = async () => {
     setBusy(true);
+    const out: ImportResult[] = [];
     try {
-      const r = await api.importCopy(project, todo.map((s) => ({ id: s.id, keep: ch(s.id).keep, thinking: ch(s.id).thinking })));
-      setResults(r);
+      // (nothing kept: here, at once; some kept: through the portal and the helper, with the password, one at a time)
+      const plain = todo.filter((s) => !ch(s.id).keep.length);
+      if (plain.length) out.push(...await api.importCopy(project, plain.map((s) => ({ id: s.id, thinking: ch(s.id).thinking, digest: ch(s.id).digest }))));
+      for (const s of kept) {
+        const c = ch(s.id);
+        if (!c.digest) { out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, why: 'check it again first', said: null }); continue; }
+        setPhase('Copying on the computer, with the possible secrets you chose kept…');
+        try {
+          const req = await api.importCopyKept(project, { id: s.id, keep: c.keep, thinking: c.thinking, digest: c.digest }, pw);
+          const r = await followRequest(req);
+          if (r?.results?.length) out.push(...r.results);
+          else out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, said: null,
+            why: (r?.why && WHY[r.why]) || 'it did not go through on the computer (./stack sessions in a terminal there says why)' });
+        } catch (e) {
+          out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, said: null, why: e instanceof Error ? label(e.message, 300) : 'not asked' });
+        }
+      }
+      setPw('');
+      setResults(out);
       void refreshSessions();
       onCopied();
     } catch (e) {
       toast(`Not copied: ${e instanceof Error ? e.message : 'the copy failed'}`, 'error');
     }
+    setPhase(null);
     setBusy(false);
   };
   return (
@@ -294,6 +339,7 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
                 <>
                   Copied{r.forked ? ' as a new session (the copy here had been continued since)' : ''} — {r.redacted} redaction{r.redacted === 1 ? '' : 's'}
                   {r.kept ? `, ${r.kept} kept as they were` : ''}{r.thinkingRemoved ? `, ${r.thinkingRemoved} thinking block${r.thinkingRemoved === 1 ? '' : 's'} out` : ''}
+                  {r.thinkingLeft ? `, ${r.thinkingLeft} thinking block${r.thinkingLeft === 1 ? '' : 's'} left out` : ''}
                   {r.left ? `, ${r.left} file${r.left === 1 ? '' : 's'} beside it left behind` : ''}.{' '}
                   {r.as && <button type="button" class="linkish" onClick={() => void resumeSession(r.as as string)} data-testid="import-open">Open it</button>}
                 </>
@@ -305,26 +351,32 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
         </ul>
       )}
       {!view.staged.length && !results && <div class="side-note">Nothing read yet: pick sessions first.</div>}
-      {view.staged.map((s) => <Staged key={s.id} project={project} id={s.id} tool={s.tool} choice={ch(s.id)} set={(v) => set(s.id, v)} />)}
+      {view.staged.map((s) => <Staged key={`${s.id}:${s.digest ?? ''}`} project={project} id={s.id} tool={s.tool} choice={ch(s.id)} set={(v) => set(s.id, v)} />)}
       {view.staged.length > 0 && (
         <>
           <p class="muted small">
             Copied sessions resume on any model of the catalog, and open in Manual the first time (their history is what a past session saw: Claude asks
             before each change). Copying again later replaces the copy while it is as it was copied; once continued here, a later copy comes in as a new session.
           </p>
+          {kept.length > 0 && (
+            <p class="small warn-text" data-testid="import-keep-note">
+              Keeping a possible secret as it is needs the portal password: the update helper on the computer makes that copy ({kept.length} session{kept.length === 1 ? '' : 's'}).
+            </p>
+          )}
           <div class="imp-ask">
-            <button type="button" class="btn primary" disabled={busy || !todo.length} onClick={() => void go()} data-testid="import-copy">
+            {kept.length > 0 && <Password value={pw} onInput={setPw} testid="import-password-3" />}
+            <button type="button" class="btn primary" disabled={busy || !todo.length || (kept.length > 0 && !pw)} onClick={() => void go()} data-testid="import-copy">
               {busy ? <Spinner size={12} /> : null} Copy {todo.length} into the sandbox
             </button>
           </div>
+          {phase && <div class="imp-req small" data-testid="import-copy-phase"><Spinner size={12} /> {phase}</div>}
         </>
       )}
     </div>
   );
 }
 
-function Staged({ project, id, tool, choice, set }: { project: string; id: string; tool: ImportTool; choice: { keep: string[]; thinking: 'strip' | 'keep' | null; skip: boolean };
-  set: (v: Partial<{ keep: string[]; thinking: 'strip' | 'keep' | null; skip: boolean }>) => void }) {
+function Staged({ project, id, tool, choice, set }: { project: string; id: string; tool: ImportTool; choice: Choice; set: (v: Partial<Choice>) => void }) {
   const [pv, setPv] = useState<ImportPreview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -358,7 +410,7 @@ function Staged({ project, id, tool, choice, set }: { project: string; id: strin
               </div>
               <ul class="imp-findings">
                 {pv.findings.map((f) => (
-                  <li key={f.id} data-testid="import-finding" data-kind={f.kind}>
+                  <li key={f.n} data-testid="import-finding" data-kind={f.kind}>
                     <label>
                       <input type="checkbox" checked={!choice.keep.includes(f.id)} disabled={!f.keepable}
                         onChange={(e) => set({ keep: (e.currentTarget as HTMLInputElement).checked ? choice.keep.filter((k) => k !== f.id) : [...choice.keep, f.id] })}
@@ -376,6 +428,9 @@ function Staged({ project, id, tool, choice, set }: { project: string; id: strin
             <div class="small" data-testid="import-thinking">
               {pv.thinking.blocks} thinking block{pv.thinking.blocks === 1 ? '' : 's'}:{' '}
               {pv.thinking.strip ? 'taken out (the text stays)' : 'kept'}{pv.thinking.source === 'anthropic' ? ' — it ran elsewhere than Bedrock, whose signatures Bedrock may refuse on resume' : ''}.{' '}
+              {!pv.thinking.strip && pv.thinking.left > 0 && (
+                <span data-testid="import-thinking-left">{pv.thinking.left} of them left out whole: each held a possible secret or a path to rewrite (a block is copied as it was, or not at all). </span>
+              )}
               <button type="button" class="linkish" onClick={() => set({ thinking: pv.thinking.strip ? 'keep' : 'strip' })} data-testid="import-thinking-toggle">
                 {pv.thinking.strip ? 'Keep them' : 'Take them out'}
               </button>

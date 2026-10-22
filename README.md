@@ -852,7 +852,8 @@ this computer can be copied into the sandbox and go on there, on any model of th
 written back to those folders.
 
 - **Where**: a folder of this computer's ⋯ › **Import sessions from this computer…** (or the line under its sessions),
-  three steps. *Look on this computer* (the portal password again) asks the [update helper](#updating), which asks
+  three steps. *Look on this computer* (the portal password again: the portal checks it and hands the request to the
+  [update helper](#updating) — the Code page's own server never sees it) asks the helper, which asks
   **you, on this computer's screen**, first: *Don't allow*, *Allow once* (that look, for an hour) or *Always for this
   folder* — then lists the sessions: titles, dates, sizes. *Pick* the ones to copy. *Check and copy*: each one read in,
   then what was found in it, before anything reaches the sandbox. Without the helper (or a screen): `./stack sessions
@@ -862,18 +863,23 @@ written back to those folders.
   bedrock-now may read on this computer**, where **Take back** (from any device) undoes it — and what the Code page's
   container read under it (the list, sessions waiting) is forgotten; `./stack sessions consent --project NAME --revoke`
   (or `--revoke-all`) in a terminal.
-- **Possible secrets** (AWS keys, GitHub, GitLab, Slack, Anthropic, OpenAI, Google, Stripe, npm and Hugging Face tokens,
-  private keys, JSON web tokens, `Authorization` headers, passwords in URLs, `password=`/`token=`-style values and
+- **Possible secrets** (AWS keys, Amazon Bedrock API keys, GitHub, GitLab, Slack, Anthropic, OpenAI, Google, Stripe,
+  SendGrid, npm, PyPI and Hugging Face tokens, Slack webhooks, Azure account keys, private keys, JSON web tokens,
+  `Authorization` and cookie headers, passwords in URLs, values set to a secret's name — `db_password: …`, `GH_TOKEN=…`,
+  `--password …`, a JSON field named `password`, `token`, `api_key`, `X-Api-Key`, `SecretAccessKey` … — and
   `.env`-style lines with a random value) are listed per session — what kind, where, a few characters and its length,
-  never the whole — and **redacted by default** (`[REDACTED:<kind>]`); untick one to keep it. The transcript, its
-  subagents' transcripts and large tool results alike; a file beside it that cannot be read so stays behind. A secret
-  in a shape the scan does not know, or in prose, can still go along: the sheet shows the transcript as it would be
-  copied.
+  never the whole — and **redacted by default** (`[REDACTED:<kind>]`). Untick one to keep it as it is: that copy needs
+  the portal password (the update helper makes it). The transcript, its subagents' transcripts and the tool results and
+  JSON files beside it alike; a file beside it that cannot be read so stays behind. What you chose holds for the session
+  as it was checked: read again, it is checked again. A secret in a shape the scan does not know, or in prose, can
+  still go along: the sheet shows the transcript as it would be copied.
 - **Thinking blocks** of a session that ran elsewhere than Bedrock (Anthropic's API, a Claude subscription) are taken out
-  by default (Bedrock may refuse their signatures on resume; the text stays); *Keep them* if you like.
+  by default (Bedrock may refuse their signatures on resume; the text stays); *Keep them* if you like — a block is
+  copied as it was or not at all, so one that holds a possible secret or a path to rewrite is left out.
 - **The copy** keeps the session's id (the same conversation; badged **CC** or **CB** in the project), its subagents'
   transcripts and large tool results; it opens in Manual the first time. Copying again later replaces the copy while it
-  is as it was copied; once continued here, a later copy comes in as a new session. A folder whose path is hidden
+  is as it was copied; once continued here, a later copy comes in as a new session. A fork of a copy opens in Manual
+  the first time too. A folder whose path is hidden
   (`/projects/<name>`) gets its path rewritten in the copy; paths outside the project (`~/.zshrc` …) are listed — they
   are not in the sandbox.
 - **Continue in this project** (a session's ⋯, when it is shown in a project whose folder does not hold it — added

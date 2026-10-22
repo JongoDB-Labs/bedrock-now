@@ -611,6 +611,11 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   assert_contains "$pt" "rewrite /auth/code-terminal"
   assert_contains "$pt" "rewrite /auth/code-models"
   assert_contains "$pt" "rewrite /auth/code-spend?{query}"
+  # (the Import sheet's requests to the computer: the portal checks the password and writes the helper's request)
+  assert_contains "$pt" "request_body /.bn/sessions {
+		max_size 16KB
+	}"
+  assert_contains "$pt" "rewrite /auth/code-sessions"
   assert_contains "$pt" "respond /.bn/* 404"
   assert_contains "$(awk '/^\(code_unlock\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")" "rewrite /auth/code-unlock"
   pg="$(awk '/^\(code_page\)/,/^}/' "$STACK_DIR/caddy/Caddyfile")"
@@ -632,7 +637,8 @@ test_caddy_code_site_snippets_and_remote_blocks() {
   # the portal's routes and cookie names agree with Caddy's
   a="$(cat "$STACK_DIR/portal/portal/app.py")"
   for r in 'Route("/auth/code-unlock", code_unlock, methods=["POST"])' 'Route("/auth/code-models", code_models, methods=["GET"])' \
-           'Route("/auth/code-spend", code_spend, methods=["GET"])' 'Route("/auth/code-terminal", code_terminal, methods=["GET"])'; do
+           'Route("/auth/code-spend", code_spend, methods=["GET"])' 'Route("/auth/code-terminal", code_terminal, methods=["GET"])' \
+           'Route("/auth/code-sessions", code_sessions, methods=["POST"])'; do
     assert_contains "$a" "$r"
   done
   assert_contains "$(cat "$STACK_DIR/portal/portal/security.py")" 'REMOTE_CODE_COOKIE = "__Host-bn_code"'

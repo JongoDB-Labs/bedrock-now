@@ -65,14 +65,6 @@ services:
         target: /etc/bn-code/projects
         read_only: true
         bind: { create_host_path: false, selinux: z }
-      # Its requests to the update helper (code/server/import-sessions.mjs, lib/sessions.sh): a look at, or a read of,
-      # Claude Code's and claude-bedrock's sessions on this computer, or suggestions — sx-<nonce>.json, every field fixed,
-      # never a path — and the helper's word on what it offers (helper.json). A folder of .state only this container and
-      # the helper share: never the sandbox's or the portal's; never created by Docker (./stack makes it: yours, mode 700).
-      - type: bind
-        source: ${BN_HELPER_CODE_REQUESTS:?run ./stack up}
-        target: /run/bn-code-requests
-        bind: { create_host_path: false, selinux: z }
     networks:
       code-link:
         aliases: [code-upstream]

@@ -575,7 +575,7 @@ if [ "$CODE" = 1 ]; then
              terminal-upstream:7681 1.1.1.1:443 host.docker.internal:80; do
       printf '%s\n' "$probe" | grep -q "^$k	closed" || bad="$bad $k-reachable"
     done
-    for kv in caddy:8080=open secrets-in-env=CODE_PROXY_SECRET workspace=absent mounts=/etc/bn-code/projects,/run/bn-code,/run/bn-code-requests,/run/bn-import-stage,/tmp,/usr/sbin/docker-init,/var/lib/bn-code rootfs-writable=no \
+    for kv in caddy:8080=open secrets-in-env=CODE_PROXY_SECRET workspace=absent mounts=/etc/bn-code/projects,/run/bn-code,/run/bn-import-stage,/tmp,/usr/sbin/docker-init,/var/lib/bn-code rootfs-writable=no \
               socket-dir-writable=no claude-binary=absent; do
       printf '%s\n' "$probe" | grep -q "^${kv%%=*}	${kv#*=}\$" || bad="$bad ${kv%%=*}:$(printf '%s\n' "$probe" | awk -F'\t' -v k="${kv%%=*}" '$1 == k { print $2 }')"
     done

@@ -25,6 +25,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import activity, admin, appicons, appsso, chatsearch, icons, prices, searchindex, settings_api, summary, updates, webapp
 from . import code as codepage
+from . import settings as settings_mod
 from .config import CODE, TERMINAL, Settings
 from .security import (
     PREVIEW_COOKIE, TERMINAL_MAX_AGE, Handoff, LoginThrottle, PreviewCaps, PreviewCookies, Sessions, TerminalUnlocks,
@@ -37,6 +38,7 @@ log = logging.getLogger("portal")
 STATIC = Path(__file__).parent / "static"
 MAX_FORM = 8192
 MAX_UNLOCK_FORM = 32768   # the Code page's unlock form: the password and a deep link (portal/code.py DEEP_LINK_MAX)
+MAX_SESSIONS_BODY = 12 * 1024   # the Import sheet's request (Caddy caps /.bn/sessions at 16 KB)
 
 
 def _security_headers(resp: Response, s: Settings) -> Response:
@@ -455,6 +457,80 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         resp = RedirectResponse(f"{settings.origin(TERMINAL, rem)}/.bn/unlock-callback?t={quote(token, safe='')}", status_code=303)
         resp.headers["Referrer-Policy"] = "no-referrer"
         return _no_store(resp)
+
+    # --- the Code page's Import sheet asks the computer: POST /.bn/sessions on the code host (Caddy → here, after the
+    # --- code host's check) — a look, a read of rows of a look, suggestions, a copy that keeps a possible secret — with
+    # --- the portal password again (counted by the login throttle). The portal writes the update helper's request
+    # --- (ses-<nonce>.json in its request folder: fixed fields, never a path; lib/sessions.sh checks it all again) and
+    # --- gives the page its id: the code container never sees the password and follows the request by its id. Over
+    # --- remote access a look and suggestions are refused (each opens a dialog on the computer's screen).
+    sessions_rate = settings_api.RateLimit(2, 200)
+
+    def sessions_err(status: int, msg: str, retry: int = 0) -> Response:
+        r = JSONResponse({"error": msg}, status_code=status)
+        if retry:
+            r.headers["Retry-After"] = str(retry)
+        return _no_store(r)
+
+    async def code_sessions(request: Request) -> Response:
+        if (deny := code_guard(request)) is not None:
+            return deny
+        if request.headers.get("origin") is None or request.headers.get("sec-fetch-site") not in (None, "same-origin"):
+            return sessions_err(403, "cross-site request refused")
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or not length.isascii():
+            return sessions_err(411, "Content-Length required")
+        if int(length) > MAX_SESSIONS_BODY:
+            return sessions_err(413, "request too large")
+        body = await request.body()
+        if len(body) > MAX_SESSIONS_BODY:
+            return sessions_err(413, "request too large")
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return sessions_err(400, "not JSON")
+        if not isinstance(data, dict):
+            return sessions_err(400, "not a JSON object")
+        if wait := throttle.retry_after():
+            return sessions_err(429, f"Too many wrong passwords. Try again in {wait} s.", wait)
+        password = data.get("password")
+        if not isinstance(password, str) or not await asyncio.to_thread(verify_password, password, settings.password_hash):
+            throttle.failure()
+            log.warning("code: sessions request with a wrong password (%d in a row)", throttle.failures)
+            return sessions_err(403, "That password is not right. It is the portal password (PORTAL_PASSWORD in .env).")
+        throttle.success()
+        rem = remote(request)
+        act = data.get("action")
+        if act not in settings_mod.SESSIONS_REQUESTS:
+            return sessions_err(400, "unknown action")
+        if act in ("sessions-scan", "sessions-suggest") and rem:
+            return sessions_err(403, "Only on the computer running bedrock-now: a look at its sessions is allowed in a dialog on its screen "
+                                     "(or ./stack sessions in a terminal there).")
+        state = admin.helper_state(settings.status_dir)
+        if not state["running"]:
+            return sessions_err(503, "The update helper is not running on the computer: in a terminal there, ./stack sessions "
+                                     "(./stack helper install keeps it running).")
+        cap = settings_mod.capability(settings.status_dir)
+        if act not in cap["sessions"]:
+            return sessions_err(409, "This update helper does not read sessions yet: ./stack helper install refreshes it.")
+        if act in ("sessions-scan", "sessions-suggest") and not cap["screen"]:
+            return sessions_err(409, "The update helper cannot show a dialog on this computer's screen: in a terminal there, "
+                                     "./stack sessions import --project NAME.")
+        if wait := sessions_rate.retry_after():
+            return sessions_err(429, f"Please wait {wait} s before the next request.", wait)
+        try:
+            nonce = settings_mod.write_sessions_request(
+                settings.request_dir, act, password, rem, project=data.get("project"), tool=data.get("tool", "both"), scan=data.get("scan"),
+                rows=data.get("rows"), session=data.get("session"), digest=data.get("digest"), thinking=data.get("thinking") or "default",
+                keep=data.get("keep"))
+        except ValueError:
+            return sessions_err(400, "bad request")
+        except OSError as e:
+            log.warning("cannot write the %s request to %s (%s)", act, settings.request_dir, e)
+            return sessions_err(500, "Could not hand the request to the update helper (see ./stack logs portal).")
+        sessions_rate.hit()
+        log.warning("code: %s requested%s", act, " (remote)" if rem else "")
+        return _no_store(JSONResponse({"request": nonce, "action": act}, status_code=202))
 
     async def terminal_unlock_callback(request: Request) -> Response:
         rem = remote(request)
@@ -1177,6 +1253,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/code-models", code_models, methods=["GET"]),
             Route("/auth/code-spend", code_spend, methods=["GET"]),
             Route("/auth/code-terminal", code_terminal, methods=["GET"]),
+            Route("/auth/code-sessions", code_sessions, methods=["POST"]),
             Route("/auth/code-preview", code_preview, methods=["GET"]),
             Route("/auth/preview-callback", preview_callback, methods=["GET"]),
             Route("/auth/code-artifact", code_artifact, methods=["GET"]),

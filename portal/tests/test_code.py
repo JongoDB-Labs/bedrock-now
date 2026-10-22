@@ -734,3 +734,122 @@ def test_an_update_nobody_watched_is_said_once_in_activity(tmp_path):
     assert 'act("Keep", () => dismiss(it), "action")' in act and 'act("Turn off", () => go("#settings/CODE_ENABLED"), "action")' in act
     assert 'const NOTICE_SEEN = "bn.code.defaultNotice"' in act and "localStorage.setItem(NOTICE_SEEN, String(it.data.at))" in act
     assert "localStorage.getItem(NOTICE_SEEN) === String(it.data.at)" in act and "innerHTML" not in act
+
+
+# --- /.bn/sessions (Caddy → /auth/code-sessions): what the Import sheet asks of the computer — the password checked
+# --- here, the helper's request written here (ses-<nonce>.json: fixed fields, never a path); the code container never
+# --- sees the password ---
+
+def _sessions_dirs(s, tmp_path, actions=("sessions-scan", "sessions-fetch", "sessions-suggest", "sessions-copy"), screen=True, running=True):
+    import time
+    sd, rd = tmp_path / "status", tmp_path / "requests"
+    sd.mkdir(parents=True, exist_ok=True)
+    rd.mkdir(parents=True, exist_ok=True)
+    if running:
+        (sd / "helper.json").write_text(json.dumps({"heartbeat": int(time.time()), "pid": 1, "version": "v0.21.0", "rollback": {"available": False}}))
+    (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": [], "sessions": list(actions), "screen": screen,
+                                                        "written_at": int(time.time())}))
+    return replace(s, status_dir=sd, request_dir=rd)
+
+
+def _ses(c, body, tok, ut, host=CODE_HOST, origin=CODE, cookie=CODE_COOKIE, extra=None):
+    h = {"Host": host, "Cookie": f"{COOKIE}={tok}; {cookie}={ut}", "Content-Type": "application/json", **SAME, **(extra or {})}
+    if origin:
+        h["Origin"] = origin
+    return c.post("/auth/code-sessions", content=json.dumps(body), headers=h)
+
+
+def _ses_files(s):
+    return sorted(p.name for p in s.request_dir.iterdir() if p.name.startswith("ses-"))
+
+
+def test_sessions_requests_need_the_code_host_its_unlock_its_origin_and_the_password(cs, tmp_path):
+    s = _sessions_dirs(cs, tmp_path)
+    with _client(s) as c:
+        tok, ut = unlocked(c)
+        body = {"action": "sessions-scan", "project": "p_0000aaaa", "tool": "both", "password": PW}
+        r = c.post("/auth/code-sessions", content=json.dumps(body), headers={"Host": CODE_HOST, "Cookie": f"{COOKIE}={tok}", "Origin": CODE})
+        assert r.status_code == 401
+        assert _ses(c, body, tok, ut, host="bedrock-now.localhost").status_code == 404
+        assert _ses(c, body, tok, ut, origin="http://evil.example").status_code == 403
+        assert _ses(c, body, tok, ut, origin=None).status_code == 403
+        assert _ses(c, body, tok, ut, extra={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+        r = _ses(c, {**body, "password": "wrong"}, tok, ut)
+        assert r.status_code == 403 and "not right" in r.json()["error"]
+        assert _ses_files(s) == []
+        r = _ses(c, {**body, "path": "/etc"}, tok, ut)
+        assert r.status_code == 202, r.text
+        n = r.json()["request"]
+        assert _ses_files(s) == [f"ses-{n}.json"]
+        line = (s.request_dir / f"ses-{n}.json").read_text()
+        assert re.fullmatch(r'\{"action":"sessions-scan","requested_at":[0-9]+,"nonce":"' + n + r'","auth":"[A-Za-z0-9+/]+=*","origin":"local","project":"p_0000aaaa","tool":"both"\}\n', line), line
+        assert "/etc" not in line
+        assert (s.request_dir / f"ses-{n}.json").stat().st_mode & 0o777 == 0o640
+
+
+def test_sessions_requests_each_field_checked_never_a_path(cs, tmp_path):
+    s = _sessions_dirs(cs, tmp_path)
+    with _client(s) as c:
+        tok, ut = unlocked(c)
+        sid, dig, scan = "3f2a7c1e-9b4d-4e8a-a1c2-0d9e8f7a6b5c", "d" * 64, "a" * 32
+        good = [
+            ({"action": "sessions-fetch", "project": "p_0000aaaa", "scan": scan, "rows": [1, 3]}, '"scan":"' + scan + '","rows":"1,3"}'),
+            ({"action": "sessions-suggest"}, '"origin":"local"}'),
+            ({"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "thinking": "keep",
+              "keep": ["main#0123456789abcdef", "subagents/agent-1.jsonl#fedcba9876543210"]},
+             f'"session":"{sid}","digest":"{dig}","thinking":"keep","keep":"main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210"}}'),
+        ]
+        for body, tail in good:
+            import time
+            time.sleep(2.1)   # (one request every 2 s)
+            r = _ses(c, {**body, "password": PW}, tok, ut)
+            assert r.status_code == 202, (body, r.text)
+            assert (s.request_dir / f"ses-{r.json()['request']}.json").read_text().endswith(tail + "\n")
+        bad = [
+            {"action": "rm"}, {"action": "sessions-scan", "project": "../x"}, {"action": "sessions-scan", "project": "p_0000aaaa", "tool": "codex"},
+            {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": scan, "rows": []}, {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": scan, "rows": ["1;rm"]},
+            {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": scan, "rows": list(range(1, 52))}, {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": "/etc", "rows": [1]},
+            {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "keep": []},
+            {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "keep": ["../../etc#0123456789abcdef"]},
+            {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": "x", "keep": ["main#0123456789abcdef"]},
+            {"action": "sessions-copy", "project": "p_0000aaaa", "session": "x", "digest": dig, "keep": ["main#0123456789abcdef"]},
+        ]
+        before = _ses_files(s)
+        for body in bad:
+            time.sleep(0.01)
+            r = _ses(c, {**body, "password": PW}, tok, ut)
+            assert r.status_code in (400, 429), (body, r.status_code)
+        assert _ses_files(s) == before
+
+
+def test_sessions_requests_need_the_helper_and_over_remote_access_never_a_look(cs, tmp_path, settings):
+    with _client(_sessions_dirs(cs, tmp_path, running=False)) as c:
+        tok, ut = unlocked(c)
+        r = _ses(c, {"action": "sessions-suggest", "password": PW}, tok, ut)
+        assert r.status_code == 503 and "not running" in r.json()["error"]
+    with _client(_sessions_dirs(cs, tmp_path / "old", actions=("sessions-revoke",))) as c:
+        tok, ut = unlocked(c)
+        r = _ses(c, {"action": "sessions-suggest", "password": PW}, tok, ut)
+        assert r.status_code == 409 and "refreshes it" in r.json()["error"]
+    with _client(_sessions_dirs(cs, tmp_path / "noscreen", screen=False)) as c:
+        tok, ut = unlocked(c)
+        assert _ses(c, {"action": "sessions-suggest", "password": PW}, tok, ut).status_code == 409
+    # over remote access: a look and suggestions refused; a read of a look allowed on the computer goes, said remote
+    rs = replace(settings, terminal=True, code=True, remote_mode="tailscale", remote_host=R_PORTAL, proxy_secret=PROXY,
+                 remote_app_hosts={"terminal": f"bn-terminal.{TN}", "code": R_CODE_HOST}, remote_terminal=True)
+    rs = _sessions_dirs(rs, tmp_path / "remote")
+    with _client(rs) as c:
+        r = c.post("/login", data={"password": PW, "next": "/"}, headers={"Origin": f"https://{R_PORTAL}", "Host": R_PORTAL, **REMOTE})
+        tok = _cookie(r, "__Host-bn_session").split(";", 1)[0].split("=", 1)[1]
+        c.cookies.clear()
+        r = c.post("/auth/code-unlock", data={"password": PW}, headers={"Host": R_CODE_HOST, "Origin": f"https://{R_CODE_HOST}",
+                                                                      "Cookie": f"__Host-bn_session={tok}", **REMOTE})
+        c.cookies.clear()
+        ut = _cookie(r, REMOTE_CODE_COOKIE).split(";", 1)[0].split("=", 1)[1]
+        kw = {"host": R_CODE_HOST, "origin": f"https://{R_CODE_HOST}", "extra": {**REMOTE, "Cookie": f"__Host-bn_session={tok}; {REMOTE_CODE_COOKIE}={ut}"}}
+        for act in ("sessions-scan", "sessions-suggest"):
+            r = _ses(c, {"action": act, "project": "p_0000aaaa", "password": PW}, tok, ut, **kw)
+            assert r.status_code == 403 and "Only on the computer" in r.json()["error"], r.text
+        r = _ses(c, {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": "a" * 32, "rows": [2], "password": PW}, tok, ut, **kw)
+        assert r.status_code == 202, r.text
+        assert '"origin":"remote"' in (rs.request_dir / f"ses-{r.json()['request']}.json").read_text()

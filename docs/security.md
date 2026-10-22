@@ -2669,25 +2669,40 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   store folders it reads read-only; nothing else of bedrock-now opens them. A copy goes into the sandbox's own Claude
   Code configuration (`/home/claude/.claude/projects/…`), written by bn-coded inside the sandbox; a later import reads
   the computer's store again (a later change on the computer comes along); nothing of the sandbox's goes back.
+- [x] **Asked through the portal, which checks the password; the Code page's backend never sees it.** A look, a read,
+  suggestions and a copy that keeps a possible secret need the portal password again. The Import sheet sends them to
+  the portal (`POST /.bn/sessions` on the code host: Caddy hands only that path to the portal, its body capped at
+  16 KB), which checks the code host, your session and its unlock, the request's Origin, and the password (counted by
+  the login throttle with the login form), decides itself whether the request came over remote access, and writes the
+  update helper's request into its request folder: `ses-<nonce>.json`, one line, every field fixed — the action, a
+  project's id, a tool, a look's nonce and row numbers, a session's id, a digest, the tokens of findings to keep —
+  never a path, at most 8 KB. The helper takes it as it takes Settings' requests (moved into its private inbox, then:
+  not a link, a regular file, owned by you or the portal's user, a bounded read, the line against fixed patterns, the
+  password against the helper's own hash with its own lock-out, single use, an age limit, its own rate limits). The page
+  follows the request by its id only: the helper says how it went in fixed words (`./stack sessions` → `docker compose
+  exec code … request --id … --state …`), and the code container keeps that, a copy's results with it.
 - [x] **Allowed on this computer, per tool and folder, and taken back from anywhere.** A store is read only after you
   allowed that tool (Claude Code, claude-bedrock or both) for that project folder: in a terminal here (`./stack
   sessions consent --project NAME --always`, or the question `./stack sessions import` asks), or in the dialog the
   update helper shows **on this computer's screen** (fixed text naming the tool and your folder: *Don't allow* — the
-  default, also after 2 minutes —, *Allow once*, *Always for this folder*). *Once* holds for that look and the reads
-  that follow it for an hour. A request over remote access never asks (refused: 403 at the code container, and again
-  by the helper); it may only read and copy sessions of a look already allowed here. At most one dialog a minute and
-  10 a day. The grants are in `.state/sessions/consent.tsv` (mode 600 in a folder of 700, no container mounts it;
-  not in backups: allow again after a restore); a folder removed, or added again under another id, loses its grant.
-  **Take back** (Settings › Claude Code › *What bedrock-now may read on this computer*, from any device — it only
-  narrows; or `./stack sessions consent --revoke`) removes the grant and has the code container forget what it read
-  under it (the list, the sessions waiting to be copied); copies already in the sandbox stay there.
+  default, and what an unanswered dialog means after 2 minutes, whatever shows it —, *Allow once*, *Always for this
+  folder*). *Once* holds for that look and the reads that follow it for an hour. Over remote access the portal refuses
+  a look and suggestions (403), and the helper never shows a dialog for a request it was told is remote: from there
+  you may only read and copy sessions of a look already allowed here. At most one dialog a minute and 10 a day. The
+  grants are in `.state/sessions/consent.tsv` (mode 600 in a folder of 700, no container mounts it; not in backups:
+  allow again after a restore); a folder removed, or added again under another id, loses its grant. **Take back**
+  (Settings › Claude Code › *What bedrock-now may read on this computer*, from any device — it only narrows; or
+  `./stack sessions consent --revoke`) removes the grant and has the code container forget what it read under it (the
+  list, the sessions waiting to be copied); copies already in the sandbox stay there.
 - [x] **Only that folder's sessions, of those two stores.** The reader is given the store folders Claude Code names
   after the project's path (its own naming, checked against the Agent SDK's function: every character but a letter
   or digit a `-`, a path longer than 200 characters cut and given a hash) — each a real folder, never a link, its path
-  one Docker can mount as it is — and keeps only the transcripts whose recorded folder is that path. Nothing else of
-  `~/.claude` (credentials, settings, plugins, history, other projects) is mounted or read. Suggestions (*Suggested
-  from your computer*) read only the names of the store folders — never a transcript — after their own consent, and
-  never turn into a project from the page: they say how to add one on this computer.
+  one Docker can mount as it is — and keeps only the transcripts whose recorded folder is that path: another folder
+  whose name comes out the same (`/a/b-c` and `/a/b/c`) shares the store folder, and its sessions are left out by
+  their recorded folder. Nothing else of `~/.claude` (credentials, settings, plugins, history, other projects) is
+  mounted or read. Suggestions (*Suggested from your computer*) read only the names of the store folders — never a
+  transcript — after their own consent, and never turn into a project from the page: they say how to add one on this
+  computer.
 - [x] **The reader trusts nothing in a store.** It is the code image's `server/harness/claude.mjs`, in a throwaway
   container: no network, read-only root, every capability dropped, `no-new-privileges`, 64 processes, 768 MB, an 8 MB
   `/tmp`, as you (never root), ended after a time limit and removed by its name. Each file is opened with `O_NOFOLLOW |
@@ -2697,66 +2712,83 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   sessions and 128 MiB per read); invalid UTF-8 is read as text with replacement characters; a title or first prompt
   is cut to 120 characters with control, invisible and direction-changing characters taken out. Its output is fixed
   JSON lines: `./stack` takes from the list only the fields it knows (each against a pattern) and prints store text
-  only as printable ASCII (`plain_text`; your paths through `owner_text`); its errors are fixed sentences.
+  only as printable ASCII (`plain_text`; your paths through `owner_text`); its errors are fixed sentences, and a refusal
+  in the sandbox's words is printed apart, labelled as the sandbox's.
 - [x] **Read by row, never by a path.** A read (`sessions-fetch`) names a look (its nonce) and row numbers of that
   look's list, which `./stack` kept itself (`.state/sessions/scans/`, host-only, a day at most): the reader is given
   only those sessions' ids and the folders of that look. Each file it sends comes with its size and SHA-256; the code
   container stages it only if it is one of the listed sessions' files (the transcript, `subagents/*.jsonl`,
-  `tool-results/*`, plain names), whole, matching, and within the budget (a 160 MB tmpfs, at most 128 MiB staged,
-  gone after an hour or when copied).
+  `tool-results/*`, plain names), whole, matching, and within the budget (a 160 MB tmpfs, at most 128 MiB staged).
+  The stage is swept every 5 minutes: a waiting session goes an hour after it was read (or once copied or dropped); a
+  read still coming in (`.<id>`) is never swept, unless it was left behind more than an hour ago.
 - [x] **Possible secrets redacted by default, and shown.** Before anything reaches the sandbox, the code container
-  scans every string of the transcript — values *and* keys, every message, the subagents' transcripts and tool results
-  beside it — for AWS key ids and secrets, GitHub/GitLab/Slack/Anthropic/OpenAI/Google/Stripe/npm/Hugging Face tokens,
-  private keys (PEM blocks), JSON web tokens, `Authorization` headers, passwords in URLs, `password=`/`token=`-style
-  assignments and `.env`-style lines with a high-entropy value (placeholders such as `${VAR}` or `changeme` skipped).
-  Each finding is listed with its kind, where, a few characters and its length — never the whole — and replaced by
-  `[REDACTED:<kind>]` unless you untick it; redaction is idempotent (a copy redacted twice is the same). The scan is
-  linear on hostile text (each pattern takes a whole run at once; PEM blocks paired by their markers; JWTs scanned by
-  hand) and every bound **fails closed**: a string longer than 8 MiB is replaced whole (`[REDACTED:too-long]`), a
-  string with more than 1,000 findings likewise (`too-many`) — neither can be kept. A file beside the transcript that
-  cannot be parsed and scanned is not copied, and the sheet says so. Only `signature` fields of thinking blocks are not
-  scanned (Bedrock checks them as they are). Not detectable, and so said in the sheet: a secret in a shape the scan
-  does not know, or written in prose.
+  scans every string of the transcript — values *and* keys, every message, the subagents' transcripts and the tool
+  results and JSON files beside it — for AWS key ids and secrets, Amazon Bedrock API keys, GitHub, GitLab, Slack,
+  Anthropic, OpenAI, Google, Stripe (and its webhook secrets), SendGrid, npm, PyPI and Hugging Face tokens, Slack
+  webhooks, Azure account keys, private keys (PEM, SSH2, PuTTY), JSON web tokens, `Authorization` and cookie headers
+  (any scheme, JSON-escaped too), passwords in URLs, assignments to a secret's name (the name anywhere in an
+  identifier, any case: `db_password: …`, `GH_TOKEN=…`, `'secret' => …`, YAML, `--password …`) and `.env`-style lines
+  with a high-entropy value. A string whose own JSON key names a secret (`password`, `token`, `api_key`, `X-Api-Key`,
+  `SecretAccessKey`, `Cookie` …) is a finding whole, and so is the value of a `NAME=value` item of a list whose NAME
+  does (an environment, as in a tool's result). A value counts as a placeholder (`${VAR}`, `<your-token>`,
+  `changeme`, `string`) only when the WHOLE value is one; findings that overlap become one, their union. Each finding
+  is listed with its kind, where, a few characters and its length — never the whole — and replaced by
+  `[REDACTED:<kind>]`; redaction is idempotent. **Keeping one** needs the portal password (the sheet asks; the portal
+  hands the copy to the helper): a keep names the file the finding is in and a keyed hash of its kind and value (the
+  key is the waiting session's own, never shown — so the page holds no hash anyone could test guesses against), never
+  a position; the check shows a digest of what is waiting, and a copy is refused when the session was read again since.
+  The scan is linear on hostile text and never backtracks: each pattern finds only where a token starts and its least
+  length, and loops take the rest (assignments, headers, URLs, `.env` lines, private keys and JWTs are found by hand) —
+  timed on 7 MiB inputs built to be slow for each shape. It runs once per check or copy, in a worker thread, one job
+  at a time, each within 2 minutes: past that, the worker is ended and the session is not copied (fail closed). Every
+  bound **fails closed**: a string longer than 8 MiB is replaced whole (`[REDACTED:too-long]`), a string with more than
+  1,000 findings likewise (`too-many`) — neither can be kept; a file beside the transcript that cannot be parsed and
+  scanned is not copied, and the sheet says so. Titles, first prompts, branches and paths are scanned too before they
+  are shown. Not detectable, and so said in the sheet: a secret in a shape the scan does not know, or written in prose.
 - [x] **Shown as data, never as instructions.** Nothing in a transcript is acted on by bedrock-now: titles, prompts,
   findings' context and tool calls reach the page as text only (the page's client keeps one line, shows control and
   direction-changing characters as `⟨U+202E⟩`, caps lengths and counts — 4,000 rows); Claude's words go through the
   page's own Markdown renderer and its sanitizing; a refusal of the sandbox's is shown apart, as the sandbox's words.
   The copied session is resumed by you; its first open is in **Manual** (Claude asks before each change), since its
-  history is what a past session saw.
-- [x] **Thinking blocks from elsewhere.** A session that ran on Anthropic's API or a subscription has thinking blocks
-  signed there; they are taken out by default (the chain of messages kept whole) so a resume on Bedrock does not fail,
-  and can be kept.
+  history is what a past session saw — and so is a fork of it (Continue in this project, a fork from the page); it
+  counts as opened only once the open succeeded.
+- [x] **Thinking blocks are copied as they were, or not at all.** A session that ran on Anthropic's API or a
+  subscription has thinking blocks signed there; they are taken out by default (the chain of messages kept whole) so a
+  resume on Bedrock does not fail. Kept, a block is never changed (its signature covers it): one that holds a possible
+  secret or a path that would be rewritten is left out whole, and the sheet counts them.
 - [x] **Written into the sandbox by bn-coded, checked again there.** `sessions.import` takes the session's id (a UUID),
   the project's folder in the sandbox (one of its tops: the workspace, a project of it, a folder of this computer)
   and its files (the transcript first, then `subagents/` and `tool-results/` with plain names; 32 MiB in all); it
-  writes into a temporary folder in the store and links or renames each file into place — never through a link, never
-  over a transcript of the same id in another folder; a copy already there is replaced only if it is as it was copied
-  (its SHA-256), else the copy comes in as a new session (a fork: new ids). *Continue in this project* forks the same
-  way (the Agent SDK's `forkSession`) and rewrites the old folder's path to the new one only where it stands as a
-  path (bounded by separators: `/a/app` never turns `/a/apple` into something else).
-- [x] **The helper and the code container: three kinds of folders, one direction each.** The code container asks the
-  helper with a request file in a folder of its own; the helper never writes there, and what the helper offers goes
-  through a folder ./stack writes and the code container mounts read-only:
+  writes them into a temporary folder in the store, checks where the files beside the transcript go (no link, no
+  folder where a file goes), puts the transcript in — linked (never over one that came meanwhile) or, replacing an
+  earlier copy, only if it is still as it was copied (its SHA-256) — and only then the files beside it: a refused
+  transcript changes nothing. Never through a link, never over a transcript of the same id in another folder; a copy
+  continued here since comes in as a new session (a fork: new ids). *Continue in this project* forks the same way (the
+  Agent SDK's `forkSession`) and rewrites the old folder's path to the new one only where it stands as a path (bounded
+  by separators: `/a/app` never turns `/a/apple` into something else).
+- [x] **The folders, one direction each.** The portal writes the helper's requests; ./stack and the helper write only
+  folders no container can write, or folders a container gets read-only:
 
   | Folder (on this computer) | Written by | Read by | Mounted | Shape |
   |---|---|---|---|---|
-  | `.state/code-requests/` (700, the code container's user) | the code container (`sx-<nonce>.json`: fixed fields, never a path, the password again, ≤ 768 bytes) | the helper: each file moved into its private inbox, then checked (not a link, a regular file, owned by you or the code container's user, a bounded read, one line against fixed patterns, the password against the helper's own hash, limits); anything else there removed with `rm -f --` | rw into the code container only (`/run/bn-code-requests`) | a container writes, the host reads (as `.state/requests` of the portal) |
+  | `.state/requests/` (`ses-<nonce>.json`, `act-<nonce>.json` with `sessions-revoke`) | the portal (after it checked the password) | the helper: each file moved into its private inbox, then checked (not a link, a regular file, owned by you or the portal's user, a bounded read, one line against fixed patterns, the password against the helper's own hash, limits) | rw into the portal only | a container writes, the host reads |
   | `.state/projects/public/` (755): `roots.json`, `helper.json` | ./stack and the helper (a temporary file in that folder, then renamed; never followed) | the code container | `:ro` into the code container (`/etc/bn-code/projects`) | the host writes, a container reads |
-  | `.state/status/sessions.json` | ./stack (likewise) | the portal (Settings' list) | `:ro` into the portal, with the other status files | the host writes, a container reads |
-  | `.state/requests/` (`sessions-revoke`) | the portal | the helper (as every Settings request) | rw into the portal only | a container writes, the host reads |
+  | `.state/status/sessions.json`, `helper-settings.json` | ./stack and the helper (likewise) | the portal (Settings' list; what the helper takes) | `:ro` into the portal, with the other status files | the host writes, a container reads |
   | `.state/sessions/` (`consent.tsv`, `scans/`), `.state/helper/` | ./stack and the helper | them only | none | host-only |
   | `~/.claude/projects/<folder>`, `~/.claude-bedrock/projects/<folder>` | your tools on this computer | the reader | read-only into the reader's throwaway container, for one look or read | yours: never written |
   | code-state volume `imports/`, tmpfs `/run/bn-import-stage` | the code container (from ./stack's stdin) | the code container | the code container only | the container's own |
   | the sandbox's `/home/claude/.claude/projects/` | bn-coded (`sessions.import`) | the sandbox | the terminal container only | the sandbox's own |
 
-  The folders of the projects (P1, P2) are as they were: `.state/projects/` stays 700 with `folders.tsv` host-only,
-  its `public/` folder read-only in the code container, `.state/status` read-only in the portal. Tests: a link
-  planted in the code container's folder at the names the helper uses is never followed, its target and mode unchanged
-  (`tests/test_sessions.sh`); the code container's compose file mounts `public/` read-only and the requests folder
-  without creating it (`tests/test_code.sh`).
+  The code container has no folder to write the helper's requests in, and never sees the password. The folders of the
+  projects (P1, P2) are as they were: `.state/projects/` stays 700 with `folders.tsv` host-only, its `public/` folder
+  read-only in the code container, `.state/status` read-only in the portal. Tests: a request that is a link is never
+  read through, and a link planted at the name of the helper's file for the code container is replaced, never
+  followed, its target and mode unchanged (`tests/test_sessions.sh`); the code container's compose file mounts
+  `public/` read-only and nothing else of the stack's (`tests/test_code.sh`); the portal's route, its checks and the
+  request it writes (`portal/tests/test_code.py`).
 - [x] **Over remote access.** The Import sheet works from a phone or another computer for what was allowed here: it
-  shows a look's list, reads picked rows of it (while its *once* holds, or *always*), checks and copies. It never
-  starts a look or a suggestion from there, and never allows one.
+  shows a look's list, reads picked rows of it (while its *once* holds, or *always*), checks and copies. The portal
+  never starts a look or a suggestion from there, and nothing allows one from there.
 - [ ] **Not covered.** A transcript that tells the model something when resumed (it is history the model reads: the
   first open in Manual is the guard, and the sheet shows it first); a secret the scan does not know; Claude Code
   changing its store format (the reader marks a version it was not tested with, and the sheet says so). Linux dialogs

@@ -226,78 +226,82 @@ $BN_SESSIONS_WALK_ROOT/plain"
   # (app is a project already; via-link a link; gone not there; elsewhere outside the walk's root)
 }
 
-test_the_helper_takes_the_code_pages_requests_only_in_their_fixed_shapes() {
+test_the_helper_takes_the_code_pages_requests_from_the_portal_only_in_their_fixed_shapes() {
   _stubs
   STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"
   printf '#!/bin/sh\necho "$*" >> "$CALLS"\necho "sessions-result: done" >&2\n' > "$STACK_DIR/stack"; chmod +x "$STACK_DIR/stack"
   export CALLS="$TMP/calls" HELPER_JOB_POLL_S=0 SESSIONS_JOB_MIN_INTERVAL_S=0
   set_env_batch PORTAL_PASSWORD 'correct horse battery'
-  mkdir -p "$(helper_dir)"; chmod 700 "$(helper_dir)"
+  mkdir -p "$(helper_dir)" "$(request_dir)"; chmod 700 "$(helper_dir)"
   ensure_portal_password_hash
-  ensure_code_requests_dir
-  [ "$(stat -c %a "$(code_requests_dir)" 2>/dev/null || stat -f %Lp "$(code_requests_dir)")" = 700 ] || return 1
-  _sx() {   # _sx NONCE TAIL [PASSWORD] — a request as the code container writes it
-    printf '{"action":%s,"requested_at":%s,"nonce":"%s","auth":"%s","origin":"local"%s}\n' "$2" "$(date +%s)" "$1" "$(printf '%s' "${4-correct horse battery}" | openssl base64 -A)" "$3" \
-      > "$(code_requests_dir)/sx-$1.json"
+  _ses() {   # _ses NONCE ACTION TAIL [PASSWORD] [ORIGIN] — a request as the portal writes it (portal/portal/settings.py)
+    printf '{"action":%s,"requested_at":%s,"nonce":"%s","auth":"%s","origin":"%s"%s}\n' "$2" "$(date +%s)" "$1" "$(printf '%s' "${4-correct horse battery}" | openssl base64 -A)" "${5:-local}" "$3" \
+      > "$(request_dir)/ses-$1.json"
   }
-  _sx 11111111111111111111111111111111 '"sessions-scan"' ',"project":"p_0000aaaa","tool":"both"'
+  _ses 11111111111111111111111111111111 '"sessions-scan"' ',"project":"p_0000aaaa","tool":"both"'
   sessions_poll_once 2>/dev/null
   assert_eq "$(cat "$CALLS")" "sessions scan --project p_0000aaaa --tool both --origin local --request 11111111111111111111111111111111 --screen"
-  _sx 22222222222222222222222222222222 '"sessions-fetch"' ",\"project\":\"p_0000aaaa\",\"scan\":\"$NONCE\",\"rows\":\"1,2\""
+  _ses 22222222222222222222222222222222 '"sessions-fetch"' ",\"project\":\"p_0000aaaa\",\"scan\":\"$NONCE\",\"rows\":\"1,2\"" 'correct horse battery' remote
   sessions_poll_once 2>/dev/null
-  assert_contains "$(cat "$CALLS")" "sessions fetch --project p_0000aaaa --scan $NONCE --rows 1,2 --origin local --request 22222222222222222222222222222222"
-  _sx 33333333333333333333333333333333 '"sessions-suggest"' ''
+  assert_contains "$(cat "$CALLS")" "sessions fetch --project p_0000aaaa --scan $NONCE --rows 1,2 --origin remote --request 22222222222222222222222222222222"
+  _ses 33333333333333333333333333333333 '"sessions-suggest"' ''
   sessions_poll_once 2>/dev/null
   assert_contains "$(cat "$CALLS")" "sessions suggest --origin local --request 33333333333333333333333333333333 --screen"
-  # never a path, an extra field, another action, a range of rows, a wrong password; a request used once
+  local dig; dig="$(printf 'd%.0s' $(seq 1 64))"
+  _ses 66666666666666666666666666666666 '"sessions-copy"' ",\"project\":\"p_0000aaaa\",\"session\":\"$UUID_A\",\"digest\":\"$dig\",\"thinking\":\"keep\",\"keep\":\"main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210\""
+  sessions_poll_once 2>/dev/null
+  assert_contains "$(cat "$CALLS")" "sessions copy --project p_0000aaaa --session $UUID_A --digest $dig --thinking keep --keep main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210 --origin local --request 66666666666666666666666666666666"
+  [ -z "$(ls "$(request_dir)")" ] || { echo "left in the requests folder: $(ls "$(request_dir)")" >&2; return 1; }   # (each request moved out, then gone)
+  # never a path, an extra field, another action, a range of rows, a keep that is not a token, a wrong password; a
+  # request used once
   : > "$CALLS"; : > "$TMP/dc"
   local n=44444444444444444444444444444440 t
   for t in '"sessions-scan"|,"project":"p_0000aaaa","tool":"both","path":"/home/x"' '"sessions-scan"|,"project":"/home/x/src","tool":"both"' \
            '"sessions-scan"|,"project":"p_0000aaaa","tool":"codex"' '"sessions-fetch"|,"project":"p_0000aaaa","scan":"'"$NONCE"'","rows":"1-5"' \
            '"sessions-fetch"|,"project":"p_0000aaaa","scan":"../x","rows":"1"' '"sessions-fetch"|,"project":"p_0000aaaa","scan":"'"$NONCE"'","id":"'"$UUID_A"'","rows":"1"' \
-           '"sessions-import"|,"project":"p_0000aaaa"' '"project-pick"|,"project":"p_0000aaaa","tool":"both"'; do
+           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","keep":"../../etc#0123456789abcdef"' \
+           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","keep":""' \
+           '"sessions-import"|,"project":"p_0000aaaa"'; do
     n="${n%?}$(( ${n: -1} + 1 ))"
-    _sx "$n" "${t%%|*}" "${t#*|}"
+    _ses "$n" "${t%%|*}" "${t#*|}"
     sessions_poll_once 2>/dev/null || true
   done
-  [ ! -s "$CALLS" ]
+  [ ! -s "$CALLS" ] || { echo "ran: $(cat "$CALLS")" >&2; return 1; }
   assert_contains "$(cat "$TMP/dc")" "--state refused --why bad-request"
-  _sx 55555555555555555555555555555555 '"sessions-scan"' ',"project":"p_0000aaaa","tool":"both"' 'wrong password'
+  _ses 55555555555555555555555555555555 '"sessions-scan"' ',"project":"p_0000aaaa","tool":"both"' 'wrong password'
   sessions_poll_once 2>/dev/null || true
   assert_contains "$(cat "$TMP/dc")" "request --id 55555555555555555555555555555555 --state refused --why password"
-  _sx 11111111111111111111111111111111 '"sessions-scan"' ',"project":"p_0000aaaa","tool":"both"'
+  _ses 11111111111111111111111111111111 '"sessions-scan"' ',"project":"p_0000aaaa","tool":"both"'
   sessions_poll_once 2>/dev/null || true
-  [ ! -s "$CALLS" ]
-  # what it offers the Code page: in ./stack's folder for the code container (read-only there), never the requests' one
+  [ ! -s "$CALLS" ] || { echo "replayed: $(cat "$CALLS")" >&2; return 1; }
+  # what it offers the Code page: in ./stack's folder for the code container (read-only there)
   sessions_helper_tick
-  assert_contains "$(cat "$(projects_public_dir)/helper.json")" '"sessions": ["sessions-scan", "sessions-fetch", "sessions-suggest"]'
-  [ ! -e "$(code_requests_dir)/helper.json" ]
+  assert_contains "$(cat "$(projects_public_dir)/helper.json")" '"sessions": ["sessions-scan", "sessions-fetch", "sessions-suggest", "sessions-copy"]'
+  # and in the capability file the portal reads (it refuses a request the helper does not take)
+  settings_helper_tick 2>/dev/null || true
+  assert_contains "$(cat "$(settings_capability_file)")" '"sessions": ["sessions-revoke","sessions-scan","sessions-fetch","sessions-suggest","sessions-copy"]'
 }
 
-test_the_helper_never_writes_where_the_code_container_can_and_follows_no_link_there() {
+test_the_helper_follows_no_link_and_writes_only_its_own_folders() {
   _stubs
-  local d secret; d="$(code_requests_dir)"
-  ensure_code_requests_dir
-  # (what a container could plant in the folder it writes: links to a file of yours, at every name the helper might use)
+  local secret
+  mkdir -p "$(helper_dir)" "$(request_dir)"; chmod 700 "$(helper_dir)"
   secret="$TMP/home/.ssh/id_ed25519"; mkdir -p "$(dirname "$secret")"; printf 'KEY\n' > "$secret"; chmod 600 "$secret"
-  for n in helper.json helper.json.tmp .helper.json.tmp stray sx-x.txt; do ln -s "$secret" "$d/$n"; done
-  mkdir -p "$d/a-folder" "$d/full-folder"; touch "$d/full-folder/x"
+  # its own file for the code container: written as a temporary file renamed — a link there is replaced, never followed
   sessions_helper_tick
-  assert_eq "$(cat "$secret")" "KEY"
-  [ "$(stat -c %a "$secret" 2>/dev/null || stat -f %Lp "$secret")" = 600 ] || return 1
-  for n in helper.json helper.json.tmp .helper.json.tmp stray sx-x.txt; do [ ! -e "$d/$n" ] && [ ! -L "$d/$n" ] || { echo "$n left" >&2; return 1; }; done
-  [ ! -e "$d/a-folder" ] && [ -f "$d/full-folder/x" ]   # (an empty folder goes; another one is left alone, never walked)
-  # its own file: written as a temporary file renamed — a link there is replaced, never followed
   ln -sf "$secret" "$(projects_public_dir)/helper.json"
   sessions_helper_tick
   [ -f "$(projects_public_dir)/helper.json" ] && [ ! -L "$(projects_public_dir)/helper.json" ]
   assert_eq "$(cat "$secret")" "KEY"
+  [ "$(stat -c %a "$secret" 2>/dev/null || stat -f %Lp "$secret")" = 600 ] || return 1
   [ "$(stat -c %a "$(projects_public_dir)" 2>/dev/null || stat -f %Lp "$(projects_public_dir)")" = 755 ] || return 1
   # a request that is a link: moved into the helper's own inbox as a link, refused, never read through
-  ln -s "$secret" "$d/sx-77777777777777777777777777777777.json"
+  ln -s "$secret" "$(request_dir)/ses-77777777777777777777777777777777.json"
   sessions_poll_once 2>/dev/null || true
   assert_eq "$(cat "$secret")" "KEY"
   assert_contains "$(cat "$TMP/dc")" "request --id 77777777777777777777777777777777 --state refused --why bad-request"
+  # the code container has no folder to write the helper's requests in any more
+  assert_not_contains "$(cat "$STACK_DIR/compose.code.yaml")" "code-requests"
 }
 
 test_settings_takes_back_through_the_helper_by_id_never_a_path() {
@@ -322,7 +326,7 @@ sessions consent --suggest --revoke"
   if settings_poll_once 2>/dev/null; then return 1; fi
   assert_eq "$(cat "$CALLS" | wc -l | tr -d ' ')" 3
   settings_helper_tick 2>/dev/null || true
-  assert_contains "$(cat "$(settings_capability_file)")" '"sessions": ["sessions-revoke"]'
+  assert_contains "$(cat "$(settings_capability_file)")" '"sessions": ["sessions-revoke","sessions-scan","sessions-fetch","sessions-suggest","sessions-copy"]'
 }
 
 test_what_a_store_said_is_printed_as_plain_ascii() {
@@ -340,8 +344,8 @@ test_what_a_store_said_is_printed_as_plain_ascii() {
 test_the_whole_import_in_a_terminal_as_stack_runs_it() {
   _stubs
   export LIST_TSV="$(printf '1\tclaude\t4\t1790000000000\t100\t-\tfirst\n2\tclaude-bedrock\t2\t1790000000000\t50\t-\tsecond')"
-  export FINDINGS_TSV="$(printf '%s\t2\taws-key-id,github-token\t1\t0\t0\tfirst' "$UUID_A")"
-  export COPY_TSV="$(printf '%s\tok\t%s\t2\t0\t0\t' "$UUID_A" "$UUID_A")"
+  export FINDINGS_TSV="$(printf '%s\t2\taws-key-id,github-token\t1\tout\t0\t0\tfirst' "$UUID_A")"
+  export COPY_TSV="$(printf '%s\tok\t%s\t2\t0\t0\t-\t\n%s\tno\t-\t0\t0\t0\tsandbox\tGitHub says: \033]0;run this\007 now' "$UUID_A" "$UUID_A" "$UUID_B")"
   sessions_consent --project app --always 2>/dev/null
   _store claude >/dev/null; _store claude-bedrock >/dev/null
   # (set -e and pipefail, as ./stack: no step of the happy path may end it early)
@@ -350,6 +354,10 @@ test_the_whole_import_in_a_terminal_as_stack_runs_it() {
   assert_contains "$out" "2 possible secret(s) (aws-key-id,github-token): redacted"
   assert_contains "$out" "1 thinking block(s) taken out"
   assert_contains "$out" "copied: $UUID_A — 2 redaction(s)"
+  # (a refusal in the sandbox's words: shown apart, labelled as the sandbox's, as printable text)
+  assert_contains "$out" "not copied: $UUID_B — the sandbox refused it. What it said:"
+  assert_contains "$out" "      | GitHub says: ?]0;run this? now"
+  ! printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\033')"
   assert_contains "$(cat "$TMP/dc")" "copy --project p_0000aaaa --ids $UUID_A --tsv"
   assert_not_contains "$(cat "$TMP/dc")" "--keep-secrets"
 }

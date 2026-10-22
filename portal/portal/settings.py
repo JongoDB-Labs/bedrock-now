@@ -65,6 +65,14 @@ DIAG_ACTIONS = ("check-aws", "models-recheck", "backup", "test", "report", "rest
 PROJECT_ACTIONS = ("project-pick", "project-remove", "project-mode-ro")
 PROJECTS = "projects.json"                     # ./stack's list of project folders (lib/projects.sh)
 SESSIONS_ACTIONS = ("sessions-revoke",)
+# what the Code page's Import sheet asks of the computer through the portal (ses-<nonce>.json: lib/sessions.sh)
+SESSIONS_REQUESTS = ("sessions-scan", "sessions-fetch", "sessions-suggest", "sessions-copy")
+SESSIONS_REQ_MAX = 8192                # bytes of a ses- request (lib/sessions.sh SESSIONS_REQ_MAX_BYTES)
+SESSIONS_KEEP_MAX = 64                 # findings one copy may keep
+NONCE32 = re.compile(r"[0-9a-f]{32}")
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+KEEP_RE = re.compile(r"(main|(subagents|tool-results)/[A-Za-z0-9][A-Za-z0-9._-]{0,199})#[0-9a-f]{16}")
 SESSIONS = "sessions.json"                     # what bedrock-now may read of your sessions here (lib/sessions.sh)
 SESSIONS_TOOLS = ("claude", "claude-bedrock")
 MAX_PROJECTS_FILE = 64 * 1024
@@ -200,7 +208,7 @@ def capability(status_dir: Path, now: float | None = None) -> dict:
     ok = d.get("settings") == 1 and at is not None and now - at <= CAPABILITY_MAX_AGE_S
     acts = [a for a in d.get("diagnostics") or [] if a in DIAG_ACTIONS] if ok else []
     projects = [a for a in d.get("projects") or [] if a in PROJECT_ACTIONS] if ok else []
-    sessions = [a for a in d.get("sessions") or [] if a in SESSIONS_ACTIONS] if ok else []
+    sessions = [a for a in d.get("sessions") or [] if a in SESSIONS_ACTIONS + SESSIONS_REQUESTS] if ok else []
     return {"settings": ok, "diagnostics": acts, "projects": projects, "sessions": sessions, "screen": ok and d.get("screen") is True}
 
 
@@ -588,7 +596,7 @@ def sweep_requests(request_dir: Path, now: float | None = None) -> int:
     except OSError:
         return 0
     for p in entries:
-        if not (re.fullmatch(r"cfg-[0-9a-f]{32}\.req|act-[0-9a-f]{32}\.json|\.(cfg|act)-.*\.tmp", p.name)):
+        if not (re.fullmatch(r"cfg-[0-9a-f]{32}\.req|(act|ses)-[0-9a-f]{32}\.json|\.(cfg|act|ses)-.*\.tmp", p.name)):
             continue
         try:
             st_ = p.lstat()
@@ -683,6 +691,48 @@ def write_sessions_action(request_dir: Path, password: str, project: str, tool: 
     if len(raw) > 768:   # (the helper's limit: lib/settings_helper.sh ACT_MAX_BYTES)
         raise ValueError("too large")
     _write_atomic(request_dir, "act", f"act-{nonce}.json", raw)
+    return nonce
+
+
+def write_sessions_request(request_dir: Path, action: str, password: str, remote: bool, *, project: str | None = None,
+                           tool: str = "both", scan: str | None = None, rows: list | None = None, session: str | None = None,
+                           digest: str | None = None, thinking: str = "default", keep: list | None = None,
+                           now: float | None = None) -> str:
+    """REQUEST_DIR/ses-<nonce>.json: what the Code page's Import sheet asks of the computer, for the helper — one line,
+    its fields in a fixed order, every one checked here and again by the helper (lib/sessions.sh), never a path:
+      sessions-scan     {…,"origin","project","tool"}               a look (asks on the computer's screen)
+      sessions-fetch    {…,"origin","project","scan","rows"}        rows of that look read in
+      sessions-suggest  {…,"origin"}                                the folders your tools kept sessions for
+      sessions-copy     {…,"origin","project","session","digest","thinking","keep"}
+                                                                    a copy that keeps the findings named by keep
+    origin: remote when the portal says the request came over remote access. -> nonce"""
+    if action not in SESSIONS_REQUESTS:
+        raise ValueError("action not allowed")
+    if len(password.encode("utf-8", "surrogatepass")) > MAX_AUTH:
+        raise ValueError("password too long")
+    nonce = secrets.token_hex(16)
+    body = {"action": action, "requested_at": int(time.time() if now is None else now), "nonce": nonce, "auth": _b64(password),
+            "origin": "remote" if remote else "local"}
+    pid_ok = isinstance(project, str) and PROJECT_ID.fullmatch(project)
+    if action == "sessions-scan":
+        if not pid_ok or tool not in ("claude", "claude-bedrock", "both"):
+            raise ValueError("bad request")
+        body.update({"project": project, "tool": tool})
+    elif action == "sessions-fetch":
+        if not pid_ok or not isinstance(scan, str) or not NONCE32.fullmatch(scan) or not isinstance(rows, list) or not 1 <= len(rows) <= 50 \
+                or not all(isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 4000 for n in rows) or len(set(rows)) != len(rows):
+            raise ValueError("bad request")
+        body.update({"project": project, "scan": scan, "rows": ",".join(str(n) for n in rows)})
+    elif action == "sessions-copy":
+        if not pid_ok or not isinstance(session, str) or not UUID_RE.fullmatch(session) or not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest) \
+                or thinking not in ("default", "strip", "keep") or not isinstance(keep, list) or not 1 <= len(keep) <= SESSIONS_KEEP_MAX \
+                or not all(isinstance(k, str) and KEEP_RE.fullmatch(k) for k in keep) or len(set(keep)) != len(keep):
+            raise ValueError("bad request")
+        body.update({"project": project, "session": session, "digest": digest, "thinking": thinking, "keep": ",".join(keep)})
+    raw = json.dumps(body, separators=(",", ":")).encode("ascii")
+    if len(raw) > SESSIONS_REQ_MAX:
+        raise ValueError("too large")
+    _write_atomic(request_dir, "ses", f"ses-{nonce}.json", raw + b"\n")
     return nonce
 
 

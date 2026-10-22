@@ -782,8 +782,8 @@ def test_capability_file_must_be_recent(dirs):
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": int(time.time())}))
     assert st.capability(sd) == {"settings": True, "diagnostics": ["test"], "projects": [], "sessions": [], "screen": False}
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": [], "projects": ["project-pick", "project-add"], "screen": "yes",
-                                                        "sessions": ["sessions-revoke", "sessions-scan"], "written_at": int(time.time())}))
-    assert st.capability(sd) == {"settings": True, "diagnostics": [], "projects": ["project-pick"], "sessions": ["sessions-revoke"], "screen": False}
+                                                        "sessions": ["sessions-revoke", "sessions-scan", "sessions-rm"], "written_at": int(time.time())}))
+    assert st.capability(sd) == {"settings": True, "diagnostics": [], "projects": ["project-pick"], "sessions": ["sessions-revoke", "sessions-scan"], "screen": False}
 
 
 # --- Part 2: regenerate, pins, the backup list, the session length, the alert threshold ---

@@ -20,6 +20,8 @@
 #                                        sessions-revoke {…,"project":"p_<8 hex>|all","tool":"claude|claude-bedrock|both|suggest"}
 #                                                        what bedrock-now may read of your sessions here, taken back
 #                                                        (narrowing: from anywhere; lib/sessions.sh)
+#   .state/requests/ses-<nonce>.json   the Code page's Import sheet: a look, a read, suggestions, a copy that keeps a
+#                                      possible secret (lib/sessions.sh sessions_poll_once; the portal checked the password)
 # Each kind has its own rate limits (state in .state/helper/), separate from update/rollback/clean.
 
 SETTINGS_REQ_MAX_BYTES=8192
@@ -31,7 +33,7 @@ DIAG_MAX_PER_DAY="${DIAG_MAX_PER_DAY:-60}"
 RECHECK_MIN_INTERVAL_S=3600   # ./stack models --recheck (< $0.01 each): at most once an hour
 # Project folders (lib/projects.sh): the folder chooser on this computer's screen at most once a minute, 10 a day
 PROJECT_ACTIONS="project-pick project-remove project-mode-ro"
-SESSIONS_REVOKE_ACTIONS="sessions-revoke"   # (lib/sessions.sh: the Code page's own requests come another way)
+SESSIONS_REVOKE_ACTIONS="sessions-revoke"   # (the Code page's own requests: ses-<nonce>.json, lib/sessions.sh SESSIONS_ACTIONS)
 PICK_MIN_INTERVAL_S="${PICK_MIN_INTERVAL_S:-60}"
 PICK_MAX_PER_DAY="${PICK_MAX_PER_DAY:-10}"
 ACT_MAX_BYTES=768   # (a project action carries a few more fields than a diagnostic)
@@ -634,7 +636,7 @@ settings_helper_tick() {
     printf '{"settings": 1, "diagnostics": [%s], "projects": [%s], "sessions": [%s], "screen": %s, "written_at": %s}\n' \
       "$(for a in $DIAG_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" \
       "$(for a in $PROJECT_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" \
-      "$(for a in $SESSIONS_REVOKE_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(helper_screen && echo true || echo false)" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
+      "$(for a in $SESSIONS_REVOKE_ACTIONS ${SESSIONS_ACTIONS:-}; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(helper_screen && echo true || echo false)" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
       chmod 644 "$f.tmp" && mv "$f.tmp" "$f"
   fi
   return "$ran"

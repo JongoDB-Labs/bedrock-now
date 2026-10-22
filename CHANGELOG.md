@@ -11,17 +11,19 @@ All notable changes to bedrock-now are documented here. The format follows
 - **Your Claude Code and claude-bedrock sessions from this computer, in the Code page.** A folder of this computer's
   ⋯ › **Import sessions from this computer…**: *Look on this computer* (the update helper asks you on this computer's
   screen first — *Don't allow*, *Allow once*, *Always for this folder*), pick sessions from the list (titles, dates,
-  sizes), then *Check and copy*: each one's possible secrets (AWS keys, GitHub/GitLab/Slack/Anthropic/OpenAI and other
-  tokens, private keys, JWTs, `Authorization` headers, passwords in URLs, `.env`-style lines) listed with a few
-  characters and their length and **redacted by default**, its thinking blocks taken out when it ran elsewhere than
-  Bedrock, the transcript shown as it would be copied; *Copy into the sandbox* keeps the session's id, its subagents'
-  transcripts and large tool results, and it resumes on any model of the catalog (first open in Manual). Badged CC or
-  CB in the project. Copy one way: nothing is ever written to `~/.claude` or `~/.claude-bedrock`; copying again
-  replaces a copy not continued since, else comes in as a new session. **Continue in this project** forks a session
-  into another project's folder, its path rewritten. **Suggested from your computer**: the folders your tools kept
-  sessions for, with how to add them here. In a terminal: `./stack sessions import --project NAME` (asks there),
-  `scan`, `fetch`, `list`, `consent` (`--always`, `--once`, `--revoke`), `suggest`. Settings › Claude Code › **What
-  bedrock-now may read on this computer** lists what you allowed; *Take back* works from any device.
+  sizes), then *Check and copy*: each one's possible secrets (AWS and Amazon Bedrock keys, GitHub/GitLab/Slack/
+  Anthropic/OpenAI and other tokens, private keys, JWTs, `Authorization` and cookie headers, passwords in URLs, values
+  set to a secret's name — in text or as a JSON field named `password`, `token`, `api_key` … — and `.env`-style lines)
+  listed with a few characters and their length and **redacted by default**, its thinking blocks taken out when it ran
+  elsewhere than Bedrock, the transcript shown as it would be copied; *Copy into the sandbox* keeps the session's id,
+  its subagents' transcripts and large tool results, and it resumes on any model of the catalog (first open in Manual).
+  Badged CC or CB in the project. Keeping a finding needs the portal password (the update helper makes that copy).
+  Copy one way: nothing is ever written to `~/.claude` or `~/.claude-bedrock`; copying again replaces a copy not
+  continued since, else comes in as a new session. **Continue in this project** forks a session into another
+  project's folder, its path rewritten. **Suggested from your computer**: the folders your tools kept sessions for,
+  with how to add them here. In a terminal: `./stack sessions import --project NAME` (asks there), `scan`, `fetch`,
+  `list`, `consent` (`--always`, `--once`, `--revoke`), `suggest`. Settings › Claude Code › **What bedrock-now may read
+  on this computer** lists what you allowed; *Take back* works from any device.
 
 ### Security
 
@@ -30,16 +32,21 @@ All notable changes to bedrock-now are documented here. The format follows
   read by a throwaway container of the code image (no network, read-only, no capabilities, as you, a time limit) that
   mounts only that folder's store folders read-only, opens each file without following a link and only if it is a
   regular file (no FIFO can hang it), bounds every size and count, and prints its findings in fixed JSON lines;
-  `./stack` prints store text as printable ASCII only. A read names rows of the helper's own last look, never a path;
-  every file staged in the code container is checked against its SHA-256 and the look's list.
-- The secret scan runs in linear time on hostile text and every bound fails closed (an over-long string, or one with
-  too many findings, is redacted whole); keys and values, subagents' transcripts and tool results are scanned alike;
-  a file that cannot be scanned is not copied. Store text reaches the page as text only (direction-changing and
-  invisible characters shown, lengths and counts capped).
-- The code container asks the update helper through a folder of its own (request files with fixed fields, never a
-  path, the password again); the helper moves each into its private folder before checking it and never writes
-  there. What the helper offers the code container is written where ./stack writes for containers, mounted read-only.
-  The folders, who writes and who reads each: docs/security.md (*Your coding tools' sessions from this computer*).
+  `./stack` prints store text as printable ASCII only, a refusal in the sandbox's words apart and labelled. A read
+  names rows of the helper's own last look, never a path; every file staged in the code container is checked against
+  its SHA-256 and the look's list.
+- What needs the portal password (a look, a read, suggestions, a copy that keeps a possible secret) goes to the
+  portal (`POST /.bn/sessions` on the code host), which checks it and writes the update helper's request in its own
+  request folder (fixed fields, never a path); the Code page's backend never sees the password and has no folder to
+  write requests in. Every dialog on the computer's screen ends after 2 minutes.
+- The secret scan finds names and values together (a JSON field or a list item named like a secret, assignments with
+  the name anywhere in an identifier), treats a value as a placeholder only when all of it is one, merges overlapping
+  findings, never backtracks (patterns only find where a token starts; loops take the rest — timed on hostile 7 MiB
+  inputs for every shape), and runs once per check or copy in a worker thread with a deadline (past it: not copied).
+  Every bound fails closed. A kept finding is named by its file and a keyed hash of what it is, never a position; a
+  copy names the digest of what was checked. A kept thinking block is never changed: one that would change is left out.
+  bn-coded puts the files beside a transcript in only after the transcript went in. Store text reaches the page as text
+  only (direction-changing and invisible characters shown, lengths and counts capped), titles and paths scanned too.
 
 ## [0.20.2] - 2026-10-23
 

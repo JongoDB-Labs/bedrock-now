@@ -140,9 +140,12 @@ const MOCK_COMMITS = () => [
 let hostMock = [];
 const hostForgotten = new Set();
 // sessions of this computer (the Import sheet; the backend's import-sessions.mjs and the update helper, in memory): a
-// look and a read are requests the "helper" answers over three polls (asking, reading, done). /__mock/imports?helper=0
-// stops the helper; GET /__mock/import-log lists the looks, reads, copies and continues. Hostile mode: 10,000 rows with
-// markup and direction marks in their titles, findings with hostile words around them.
+// look, a read, suggestions and a copy that keeps findings are asked of the "portal" (POST /.bn/sessions: the password
+// checked there — "wrong" is refused — and a request made for the "helper"), which answers over three polls (asking,
+// reading, done); the backend's own routes never take a password. /__mock/imports?helper=0 stops the helper; GET
+// /__mock/import-log lists the looks, reads, copies and continues (and "password-at-backend" if a password ever reached
+// the backend's routes). Hostile mode: 10,000 rows with markup and direction marks in their titles, findings with
+// hostile words around them.
 const importMock = new Map();   // project id -> {index, staged: Map(id -> preview)}
 const importRequests = new Map();
 let importHelper = true;
@@ -1786,11 +1789,11 @@ function importRowsFor(host) {
 function importPreviewOf(r, host, thinking) {
   const strip = thinking === null ? r.source !== 'bedrock-now' : thinking === 'strip';
   const findings = r.tool === 'claude' ? [
-    { id: '3.1', kind: 'aws-key-id', label: 'an AWS access key ID', message: 2, part: null, preview: `${KEY}… (20 characters)`, context: HOSTILE_MODE ? `${HOSTILE.img}••• ${HOSTILE.bidi}` : 'export AWS_ACCESS_KEY_ID=•••', keepable: true },
-    { id: 'p1:4.1', kind: 'github-token', label: 'a GitHub token', message: 4, part: 'subagents/agent-1.jsonl', preview: 'ghp_… (40 characters)', context: 'GH_TOKEN=••• gh pr list', keepable: true },
+    { id: 'main#0123456789abcdef', n: 1, kind: 'aws-key-id', label: 'an AWS access key ID', message: 2, part: null, preview: `${KEY}… (20 characters)`, context: HOSTILE_MODE ? `${HOSTILE.img}••• ${HOSTILE.bidi}` : 'export AWS_ACCESS_KEY_ID=•••', keepable: true },
+    { id: 'subagents/agent-1.jsonl#fedcba9876543210', n: 2, kind: 'github-token', label: 'a GitHub token', message: 4, part: 'subagents/agent-1.jsonl', preview: 'ghp_… (40 characters)', context: 'GH_TOKEN=••• gh pr list', keepable: true },
   ] : [];
-  return { id: r.id, tool: r.tool, title: r.title, messages: r.messages, size: r.size, findings, findingsTotal: findings.length,
-    thinking: { blocks: r.thinking ?? 0, removed: strip ? r.thinking ?? 0 : 0, strip, source: r.source }, outside: { count: r.tool === 'claude' ? 2 : 0, sample: ['/home/you/.zshrc', '/etc/hosts'] },
+  return { id: r.id, tool: r.tool, title: r.title, messages: r.messages, size: r.size, digest: r.digest, findings, findingsTotal: findings.length,
+    thinking: { blocks: r.thinking ?? 0, removed: strip ? r.thinking ?? 0 : 0, left: !strip && r.thinking ? 1 : 0, strip, source: r.source }, outside: { count: r.tool === 'claude' ? 2 : 0, sample: ['/home/you/.zshrc', '/etc/hosts'] },
     bad: 0, rewritten: 0, hidden: host.startsWith('/projects/'), parts: 1, left: r.tool === 'claude' ? [{ part: 'tool-results/image.bin', why: 'not text (not UTF-8)' }] : [], format: r.format, version: r.version ?? null, again: null,
     events: [{ type: 'user', text: `${r.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'tool_use', id: 'toolu_01', name: 'Read', input: { file_path: `${host}/src/login.ts` } },
       { type: 'tool_result', id: 'toolu_01', text: 'export const login = () => true;', isError: false }, { type: 'text', text: HOSTILE_MODE ? hostileMarkdown().slice(0, 2000) : 'Fixed: **login** works again.', model: 'claude-sonnet-4-5' }],
@@ -1798,14 +1801,62 @@ function importPreviewOf(r, host, thinking) {
 }
 function importRequest(action, project, then) {
   const id = crypto.randomBytes(16).toString('hex');
-  importRequests.set(id, { id, action, project, state: 'sent', why: null, polls: 0, then, at: Date.now() });
+  importRequests.set(id, { id, action, project, state: 'sent', why: null, polls: 0, then, at: Date.now(), results: null });
   importLog.push(`${action} ${project ?? ''}`.trim());
   return id;
+}
+// the copy of one staged session (the backend's, or the helper's for one that keeps findings)
+function importCopyOne(h, x, it, keep) {
+  const v = x.staged.get(it.id);
+  if (!v) return { id: it.id, ok: false, why: 'that session is not waiting to be copied (read it again)' };
+  if (it.digest && it.digest !== v.digest) return { id: it.id, ok: false, why: 'that session was read again since you checked it: check it again' };
+  const kept = keep.length;
+  saved.set(v.id, { id: v.id, title: v.title, firstPrompt: v._row.first, branch: 'main', modified: Date.now(), cwd: h.root, imported: { tool: v.tool, at: Date.now(), forked: false },
+    transcript: [{ type: 'user', text: `${v._row.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'text', text: 'Fixed: **login** works again.' },
+      { type: 'result', subtype: 'success', turns: 1, duration: 2000, usage: { input_tokens: 400, output_tokens: 50 } }] });
+  x.staged.delete(it.id);
+  importLog.push(`copy ${v.id} keep=${kept} thinking=${it.thinking ?? 'default'}`);
+  return { id: v.id, ok: true, as: v.id, forked: false, redacted: v.findingsTotal - kept, kept, thinkingRemoved: v.thinking.removed, left: v.left.length };
+}
+// POST /.bn/sessions: the portal's side — the password checked here (never by the backend), the request made for the helper
+async function bnSessions(req, res) {
+  const b = await jsonBody(req);
+  const hostOf = (id) => hostMock.find((x) => x.id === id && !x.gone);
+  const st = (id) => { if (!importMock.has(id)) importMock.set(id, { index: null, staged: new Map() }); return importMock.get(id); };
+  if (typeof b.password !== 'string' || b.password !== 'correct horse') return json(res, 403, { error: 'That password is not right. It is the portal password (PORTAL_PASSWORD in .env).' });
+  if ((b.action === 'sessions-scan' || b.action === 'sessions-suggest') && remote) return json(res, 403, { error: 'Only on the computer running bedrock-now: a look at its sessions is allowed in a dialog on its screen (or ./stack sessions in a terminal there).' });
+  if (!importHelper) return json(res, 503, { error: 'The update helper is not running on the computer: in a terminal there, ./stack sessions (./stack helper install keeps it running).' });
+  if (b.action === 'sessions-scan') {
+    const h = hostOf(b.project);
+    if (!h) return json(res, 400, { error: 'bad request' });
+    return json(res, 202, { request: importRequest('sessions-scan', b.project, () => { st(b.project).index = { scan: crypto.randomBytes(16).toString('hex'), at: Date.now(), consent: 'once', fetchable: true, rows: importRowsFor(h.root) }; }) });
+  }
+  if (b.action === 'sessions-fetch') {
+    const h = hostOf(b.project), x = h && st(b.project);
+    if (!x?.index || b.scan !== x.index.scan || !Array.isArray(b.rows)) return json(res, 400, { error: 'bad request' });
+    const rows = b.rows.map((n) => x.index.rows.find((r) => r.n === n));
+    if (!rows.length || rows.some((r) => !r)) return json(res, 400, { error: 'bad request' });
+    return json(res, 202, { request: importRequest('sessions-fetch', b.project, () => { for (const r of rows) { r.digest = crypto.randomBytes(32).toString('hex'); x.staged.set(r.id, importPreviewOf(r, h.root, null)); } }) });
+  }
+  if (b.action === 'sessions-suggest') {
+    return json(res, 202, { request: importRequest('sessions-suggest', null, () => { suggestionsMock = [{ path: HOSTILE_MODE ? `/home/you/src/${HOSTILE.bidi}` : "/home/you/src/it's-mine", claude: 4, 'claude-bedrock': 1, last: Date.now() - 3600e3 },
+      { path: '/home/you/src/tools', claude: 2, 'claude-bedrock': 0, last: Date.now() }]; }) });
+  }
+  if (b.action === 'sessions-copy') {
+    const h = hostOf(b.project), x = h && st(b.project);
+    if (!x || !UUID.test(String(b.session)) || !/^[0-9a-f]{64}$/.test(String(b.digest)) || !Array.isArray(b.keep) || !b.keep.length) return json(res, 400, { error: 'bad request' });
+    const id = importRequest('sessions-copy', b.project, () => {
+      const r = importRequests.get(id);
+      r.results = [importCopyOne(h, x, { id: b.session, digest: b.digest, thinking: b.thinking === 'default' ? null : b.thinking }, b.keep)];
+    });
+    return json(res, 202, { request: id });
+  }
+  return json(res, 400, { error: 'unknown action' });
 }
 async function importsApi(req, res, url, p, m) {
   const hostOf = (id) => hostMock.find((x) => x.id === id && !x.gone);
   const st = (id) => { if (!importMock.has(id)) importMock.set(id, { index: null, staged: new Map() }); return importMock.get(id); };
-  const pw = (b) => typeof b.password === 'string' && b.password !== '';
+  if (m !== 'GET') { const b = await jsonBody(req); if (b && 'password' in b) importLog.push('password-at-backend'); }
   if (p === '/api/imports' && m === 'GET') {
     const id = url.searchParams.get('project');
     const h = hostOf(id);
@@ -1813,39 +1864,20 @@ async function importsApi(req, res, url, p, m) {
     const x = st(id);
     return json(res, 200, { project: id, local: !remote, helper: { running: importHelper, actions: ['sessions-scan', 'sessions-fetch', 'sessions-suggest'], screen: true },
       index: x.index ? { ...x.index, head: { tools: { claude: { folders: 1, listed: x.index.rows.length, older: 0, otherFolder: 1, noCwd: 0, unreadable: 0, sidechain: 0 } } } } : null,
-      staged: [...x.staged.values()].map((v) => ({ id: v.id, tool: v.tool, at: Date.now(), size: v.size, parts: 1 })), requests: [] });
-  }
-  if (p === '/api/imports/scan' && m === 'POST') {
-    const b = await jsonBody(req);
-    if (remote) return json(res, 403, { error: 'Only on the computer running bedrock-now: a look at its sessions is allowed in a dialog on its screen (or ./stack sessions in a terminal there).' });
-    const h = hostOf(b.project);
-    if (!h) return json(res, 404, { error: 'no such project' });
-    if (!pw(b)) return json(res, 400, { error: 'the portal password, please' });
-    if (!importHelper) return json(res, 409, { error: 'The update helper is not running on the computer: in a terminal there, ./stack sessions (./stack helper install keeps it running).' });
-    if (b.password === 'wrong') return json(res, 200, { request: importRequest('sessions-scan', b.project, 'refuse:password') });
-    return json(res, 200, { request: importRequest('sessions-scan', b.project, () => { st(b.project).index = { scan: crypto.randomBytes(16).toString('hex'), at: Date.now(), consent: 'once', fetchable: true, rows: importRowsFor(h.root) }; }) });
-  }
-  if (p === '/api/imports/fetch' && m === 'POST') {
-    const b = await jsonBody(req);
-    const h = hostOf(b.project), x = h && st(b.project);
-    if (!x?.index) return json(res, 409, { error: 'no list of this project\'s sessions yet: look first' });
-    if (!pw(b)) return json(res, 400, { error: 'the portal password, please' });
-    const rows = (b.ids || []).map((id) => x.index.rows.find((r) => r.id === id));
-    if (!rows.length || rows.some((r) => !r)) return json(res, 409, { error: 'a session that is not in the last list: look again' });
-    return json(res, 200, { request: importRequest('sessions-fetch', b.project, () => { for (const r of rows) x.staged.set(r.id, importPreviewOf(r, h.root, null)); }) });
+      staged: [...x.staged.values()].map((v) => ({ id: v.id, tool: v.tool, at: Date.now(), size: v.size, parts: 1, digest: v.digest })), requests: [] });
   }
   let mm;
   if ((mm = /^\/api\/imports\/request\/([0-9a-f]{32})$/.exec(p)) && m === 'GET') {
     const r = importRequests.get(mm[1]);
-    if (!r) return json(res, 404, { error: 'no such request' });
+    if (!r) return json(res, 200, { id: mm[1], state: 'unknown' });
     r.polls++;
     if (r.state !== 'done' && r.state !== 'refused') {
-      if (r.polls === 1) r.state = r.action === 'sessions-fetch' ? 'reading' : 'asking';
+      if (r.polls === 1) r.state = r.action === 'sessions-fetch' ? 'reading' : r.action === 'sessions-copy' ? 'copying' : 'asking';
       else if (r.polls === 2) r.state = 'reading';
       else if (typeof r.then === 'string') { r.state = 'refused'; r.why = r.then.split(':')[1]; }
       else { r.state = 'done'; r.then(); }
     }
-    return json(res, 200, { id: r.id, action: r.action, project: r.project, state: r.state, why: r.why, at: r.at });
+    return json(res, 200, { id: r.id, action: r.action, project: r.project, state: r.state, why: r.why, at: r.at, ...(r.results ? { results: r.results } : {}) });
   }
   if (p === '/api/imports/preview' && m === 'GET') {
     const x = st(url.searchParams.get('project')), id = url.searchParams.get('id'), v = x.staged.get(id);
@@ -1859,19 +1891,8 @@ async function importsApi(req, res, url, p, m) {
     const b = await jsonBody(req);
     const h = hostOf(b.project), x = h && st(b.project);
     if (!x) return json(res, 404, { error: 'no such project' });
-    const results = [];
-    for (const it of b.items || []) {
-      const v = x.staged.get(it.id);
-      if (!v) { results.push({ id: it.id, ok: false, why: 'that session is not waiting to be copied (read it again)' }); continue; }
-      const kept = (it.keep || []).length;
-      saved.set(v.id, { id: v.id, title: v.title, firstPrompt: v._row.first, branch: 'main', modified: Date.now(), cwd: h.root, imported: { tool: v.tool, at: Date.now(), forked: false },
-        transcript: [{ type: 'user', text: `${v._row.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'text', text: 'Fixed: **login** works again.' },
-          { type: 'result', subtype: 'success', turns: 1, duration: 2000, usage: { input_tokens: 400, output_tokens: 50 } }] });
-      x.staged.delete(it.id);
-      importLog.push(`copy ${v.id} keep=${kept} thinking=${it.thinking ?? 'default'}`);
-      results.push({ id: v.id, ok: true, as: v.id, forked: false, redacted: v.findingsTotal - kept, kept, thinkingRemoved: v.thinking.removed, left: v.left.length });
-    }
-    return json(res, 200, { results });
+    if ((b.items || []).some((it) => Array.isArray(it.keep) && it.keep.length)) return json(res, 403, { error: 'Keeping a possible secret needs the portal password: the sheet asks for it.' });
+    return json(res, 200, { results: (b.items || []).map((it) => importCopyOne(h, x, it, [])) });
   }
   if (p === '/api/imports/staged' && m === 'DELETE') {
     st(url.searchParams.get('project')).staged.delete(url.searchParams.get('id'));
@@ -1880,13 +1901,6 @@ async function importsApi(req, res, url, p, m) {
   if (p === '/api/imports/suggestions' && m === 'GET') {
     const rows = (suggestionsMock ?? []).filter((r) => !hostMock.some((h) => h.root === r.path));
     return json(res, 200, { at: suggestionsMock ? Date.now() : null, consent: 'once', rows });
-  }
-  if (p === '/api/imports/suggest' && m === 'POST') {
-    const b = await jsonBody(req);
-    if (remote) return json(res, 403, { error: 'Only on the computer running bedrock-now.' });
-    if (!pw(b)) return json(res, 400, { error: 'the portal password, please' });
-    return json(res, 200, { request: importRequest('sessions-suggest', null, () => { suggestionsMock = [{ path: HOSTILE_MODE ? `/home/you/src/${HOSTILE.bidi}` : "/home/you/src/it's-mine", claude: 4, 'claude-bedrock': 1, last: Date.now() - 3600e3 },
-      { path: '/home/you/src/tools', claude: 2, 'claude-bedrock': 0, last: Date.now() }]; }) });
   }
   if ((mm = /^\/api\/sessions\/([0-9a-f-]{36})\/continue$/.exec(p)) && m === 'POST') {
     const b = await jsonBody(req);
@@ -2704,6 +2718,7 @@ previewServer.listen(PREVIEW_PORT, HOST);
 
 function bn(req, res, url) {
   if (url.pathname === '/.bn/preview') return previewLink(res, url);
+  if (url.pathname === '/.bn/sessions' && req.method === 'POST') return bnSessions(req, res);
   if (url.pathname === '/.bn/artifact') {
     if (remote) return json(res, 200, { available: false, reason: 'HTML files, diagrams and notebooks\' HTML outputs are drawn on a sandboxed site that is not available over remote access yet (mock).' });
     return json(res, 200, { available: true, origin: ARTIFACT_ORIGIN, expires: Math.floor(Date.now() / 1000) + 43200 });

@@ -355,6 +355,14 @@ http://{$FILES_HOST} {
 	reverse_proxy @bn_code_spend portal:8000 {
 		rewrite /auth/code-spend?{query}
 	}
+	# (the Import sheet's requests to the computer: the portal checks the password and writes the helper's request)
+	request_body /.bn/sessions {
+		max_size 16KB
+	}
+	@bn_code_sessions path /.bn/sessions
+	reverse_proxy @bn_code_sessions portal:8000 {
+		rewrite /auth/code-sessions
+	}
 	respond /.bn/* 404
 }
 
