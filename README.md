@@ -24,7 +24,7 @@ disable` the Code page alone; either stays off across updates).
 | [**Terminal**](#claude-code-in-the-browser) | Claude Code in the browser, in a sandbox that sees one folder of yours (`~/bedrock-now-workspace`) and reaches public internet addresses through an egress proxy of its own — not this computer's services or your network | on, as the Code page's sandbox (internet: public addresses only) | `./stack terminal disable` / `enable` (disable turns the Code page off too); its internet: Settings › Claude Code › Sandbox internet access |
 | [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat with any chat model of the catalog, @-mentions of the terminal, the changes, failed runs and file lines, permission modes, comments on a plan's lines, editor, file and dev-server previews, review changes, Git with remotes (Git hosts: clone, fetch, pull, push), Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings › Claude Code; the Code tab stays and says how while it is off |
 | [**Remote access**](#remote-access) | the portal from your phone or laptop over HTTPS ([on a phone](#using-it-on-your-phone)) | off | `./stack remote enable tailscale` / `disable` |
-| [**Voice**](#voice-speech-to-text) | speech-to-text for Chat's microphone and voice calls (Mistral Voxtral on Bedrock) | on when your key can use Voxtral | `./stack stt set bedrock` / `remove` |
+| [**Voice**](#voice-speech-to-text) | speech-to-text for Chat's microphone and voice calls (Mistral Voxtral on Bedrock: AWS no longer accepts its audio since October 2026; your own OpenAI/Groq key, or the browser) | browser speech (Bedrock: on when your key can use Voxtral and AWS takes its audio) | `./stack stt set openai\|groq` / `bedrock` / `remove` |
 | [**OpenRouter**](#optional-openrouter) | hundreds of other models, some free | off | `./stack openrouter set` / `remove` |
 | [**Costs & budgets**](#costs--budgets) | a monthly budget per key, prices updated daily, `./stack costs` | on | Settings → Spending & budgets |
 | [**Updates**](#updating) | `./stack update` with a backup and `./stack rollback`; one-click on Home; automatic at night | one-click: setup asks; automatic: off | `./stack helper install`; `./stack helper auto on` / `off` |
@@ -362,7 +362,8 @@ so a phone needs remote access (HTTPS) turned on first; a tablet or a small brow
   attach one.
 - **Voice:** read-aloud uses your system's voices. The microphone and voice **calls** (the sound-wave button)
   use [server speech-to-text](#voice-speech-to-text): Mistral Voxtral on Bedrock, on by default when your AWS
-  key can use it. Without server speech-to-text (`./stack stt remove`, or Voxtral not available) the microphone
+  key can use it (AWS no longer accepts its audio since October 2026), or your own OpenAI or Groq key. Without
+  server speech-to-text (`./stack stt remove`, or Voxtral not available) the microphone
   uses your **browser's** speech recognition — Chrome and Edge send dictated audio to Google or Microsoft
   (Safari can work on-device) — and Call is unavailable.
 
@@ -1683,6 +1684,14 @@ key, and your recorded speech stays in your AWS account. Setup turns it on by de
 finds Voxtral usable with your AWS key, and says so in one line (an interactive setup asks once: Bedrock,
 OpenAI, Groq or browser only).
 
+**Since October 2026 AWS no longer accepts audio for the Voxtral models** (Bedrock answers *"Model does not
+support audio modality"*; text still works). bedrock-now recognises that: an install with Bedrock
+speech-to-text on switches to your **browser's speech recognition** once, at `./stack up`, `./stack update` or
+`./stack setup`, and says so on Home and in `./stack status`; `./stack stt set bedrock` and Settings › Voice
+refuse Bedrock with the reason. For the microphone *and* calls now, use your own **OpenAI or Groq** key
+(`./stack stt set openai|groq`); a Bedrock replacement is being looked at. Details:
+[docs/voice.md](docs/voice.md#october-2026-aws-no-longer-accepts-audio-for-voxtral).
+
 ```bash
 ./stack stt status
 ./stack stt set bedrock                # Mistral Voxtral Small (default); `set bedrock mini` = cheaper, less reliable
@@ -1710,10 +1719,10 @@ troubleshooting: [docs/voice.md](docs/voice.md).
   capability, it is off and setup says why.
 - **OpenRouter, only if you add a key:** the `or/…` models go to OpenRouter. Without a key nothing contacts
   openrouter.ai.
-- **Your voice:** with Bedrock speech-to-text (the default when Voxtral is usable), audio from the microphone
-  and voice calls goes only to Bedrock in your AWS account, through the local `stt` container and LiteLLM.
-  Read-aloud uses your system's voices. Without server speech-to-text, the microphone uses your browser's
-  speech service (see [Chat](#chat-open-webui)).
+- **Your voice:** with Bedrock speech-to-text (the default when Voxtral is usable and AWS takes its audio),
+  audio from the microphone and voice calls goes only to Bedrock in your AWS account, through the local `stt`
+  container and LiteLLM. Read-aloud uses your system's voices. Without server speech-to-text, the microphone uses
+  your browser's speech service (see [Chat](#chat-open-webui)).
 - **Speech-to-text, only if you add a key:** with `./stack stt set openai|groq`, audio from the microphone and
   voice calls goes to OpenAI (`api.openai.com`) or Groq (`api.groq.com`) instead. Without a key nothing
   contacts them.

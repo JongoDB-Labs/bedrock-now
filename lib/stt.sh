@@ -90,8 +90,9 @@ stt_model() {
 }
 
 # stt_model_ready MODEL -> 0 when the last model check found that Bedrock model usable (before the first check:
-# assumed usable). stt_model_reason MODEL -> the check's reason when it is not.
-stt_model_ready() { is_enabled "$1" "$(_enabled_or_all)"; }
+# assumed usable) and Bedrock takes audio for it (stt_model_refused). stt_model_reason MODEL -> the check's reason when
+# it is not.
+stt_model_ready() { is_enabled "$1" "$(_enabled_or_all)" && ! stt_model_refused "$1"; }
 # stt_model_ok MODEL -> 0 only when the model check's real request succeeded (reason "ok"); "kept" verdicts
 # (throttled, timeout, budget…) do not turn Bedrock speech-to-text on by default.
 stt_model_ok() { stt_model_ready "$1" && [ "$(stt_model_reason "$1")" = ok ]; }
@@ -99,6 +100,145 @@ stt_model_reason() {
   local f="$STACK_DIR/litellm/probe-results.tsv" r=''
   [ ! -r "$f" ] || r="$(M="$1" awk -F'\t' '$1 == ENVIRON["M"] { print $4; exit }' "$f")"
   printf '%s\n' "${r:-not enabled by the last model check}"
+}
+
+# --- Bedrock refusing audio (since October 2026) ---
+# Bedrock now answers every audio request to both Voxtral models with HTTP 400 "The model returned the following
+# errors: Model does not support audio modality" (Converse and Invoke, in every region tried); text still works, so
+# the model check's 1-token text request alone says ok. AWS lists both as Legacy (end of life 2027-03-30), without
+# audio. That answer is a state of its own: Bedrock speech-to-text goes off once, said plainly (the notice: Home,
+# ./stack status, ./stack stt status), and is refused while a check gets that answer. Its code stays: when a check
+# gets audio through again (AWS re-enabling it, or another Bedrock model), it works again. Other failures (network,
+# permissions, throttling) keep their own handling — they never switch anything off here.
+#   checks: the model check (stt_probe_audio), ./stack up (stt_up_check), ./stack test (stt_test_checks), ./stack stt
+#   set bedrock and Settings › Voice (stt_audio_check); the stt container says it to Chat in its own words.
+STT_AUDIO_GONE="AWS no longer accepts audio for the Voxtral models (since October 2026)"
+STT_REFUSED_NOTICE="Bedrock speech-to-text was turned off: $STT_AUDIO_GONE. Voice uses your browser's speech recognition; or use your own OpenAI/Groq key: ./stack stt set openai|groq."
+STT_REFUSED_ERR="Bedrock speech-to-text is unavailable: $STT_AUDIO_GONE. Use browser speech, or your own OpenAI/Groq key: ./stack stt set openai|groq."
+# the model check's reason for such a model (litellm/probe-results.tsv; the table's WHY: "no audio (AWS)")
+STT_REFUSED_REASON="no audio: Bedrock no longer accepts audio for this model (AWS: Model does not support audio modality)"
+
+# stt_refusal_in TEXT -> 0 when TEXT is that answer: AWS's words (through LiteLLM, or passed on by an stt container
+# from before this release) or the stt container's own (code audio_not_supported, "no longer accepts audio")
+stt_refusal_in() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    *"does not support audio modality"* | *audio_not_supported* | *"no longer accepts audio"*) return 0 ;;
+  esac
+  return 1
+}
+
+# stt_model_refused MODEL -> 0 when the last check got that answer for this Bedrock model (its recorded reason)
+stt_model_refused() { case "$(stt_model_reason "$1")" in "no audio:"*) return 0 ;; esac; return 1; }
+# stt_bedrock_refused -> 0 when every Bedrock speech-to-text model got that answer
+stt_bedrock_refused() {
+  local m
+  for m in $(stt_catalog | awk -F'\t' '$1 == "bedrock" { print $2 }'); do stt_model_refused "$m" || return 1; done
+}
+
+# stt_audio_check MODEL -> STT_AUDIO: ok (Bedrock took the audio), refused (that answer) or other (anything else:
+# not this state), STT_AUDIO_CODE: the HTTP status. Half a second of a tone (stt/check-tone.mp3: 16 kHz MP3, as the stt
+# container sends) through LiteLLM's Bedrock pass-through with the setup key, at most 8 output tokens: well under
+# $0.0001 when it works, nothing when refused.
+stt_audio_check() {
+  local tmp body code tone="$STACK_DIR/stt/check-tone.mp3"
+  STT_AUDIO=other
+  # shellcheck disable=SC2034  # for the caller (and the tests)
+  STT_AUDIO_CODE=''
+  case "$1" in '' | *[!a-z0-9.-]*) return 0 ;; esac
+  [ -r "$tone" ] || return 0
+  body="$(printf '{"messages":[{"role":"user","content":[{"text":"Transcribe the recording."},{"audio":{"format":"mp3","source":{"bytes":"%s"}}}]}],"inferenceConfig":{"temperature":0,"maxTokens":8}}' \
+    "$(base64 < "$tone" | tr -d '\n')")"
+  tmp="$(mktemp)"
+  code="$(litellm_call "$(setup_key)" POST "/bedrock/model/$1/converse" "$body" "$tmp")"
+  # shellcheck disable=SC2034
+  STT_AUDIO_CODE="$code"
+  if [ "$code" = 200 ]; then STT_AUDIO=ok
+  elif stt_refusal_in "$(head -c 4000 "$tmp" 2>/dev/null)"; then STT_AUDIO=refused; fi
+  rm -f "$tmp"
+}
+
+# stt_probe_audio NAME REASON -> the reason the model check records for a Bedrock speech-to-text model whose 1-token
+# text request said REASON: the refusal when Bedrock refuses its audio, else REASON (any other audio answer changes
+# nothing). For ok only: a model the text request already found unusable is not asked again.
+stt_probe_audio() {
+  [ "$2" = ok ] || { printf '%s\n' "$2"; return 0; }
+  stt_audio_check "$1"
+  if [ "$STT_AUDIO" = refused ]; then printf '%s\n' "$STT_REFUSED_REASON"; else printf '%s\n' "$2"; fi
+}
+
+# _stt_mark_audio MODEL refused|ok — the model check's record (litellm/probe-results.tsv) follows what a check found
+# later: refused = the model's reason becomes the refusal; ok = a refusal recorded before goes back to ok. Its verdict
+# stays: LiteLLM keeps serving the model, so a later check still reaches it.
+_stt_mark_audio() {
+  local f="$STACK_DIR/litellm/probe-results.tsv" tmp
+  [ -f "$f" ] || return 0
+  tmp="$(mktemp "$f.XXXXXX")" || return 0
+  if M="$1" W="$2" R="$STT_REFUSED_REASON" awk -F'\t' -v OFS='\t' '
+      $1 == ENVIRON["M"] && $3 == "ENABLED" {
+        if (ENVIRON["W"] == "refused") $4 = ENVIRON["R"]
+        else if (index($4, "no audio:") == 1) $4 = "ok"
+      } { print }' "$f" > "$tmp"; then
+    chmod 644 "$tmp" && mv "$tmp" "$f" || rm -f "$tmp"
+  else rm -f "$tmp"; fi
+}
+
+# The notice: .state/status/stt-notice.json for the portal (Home: its voice line and one notification) and the
+# ./stack status lines. Recorded once (the first time; its "at" names the event), when Bedrock speech-to-text was on
+# or would have been turned on by default; cleared by a voice choice (./stack stt set / remove, Settings) or when
+# Bedrock speech-to-text is on again.
+stt_notice_file() { printf '%s/stt-notice.json\n' "$(status_dir)"; }
+stt_notice_record() {
+  local d f tmp
+  d="$(status_dir)"; f="$(stt_notice_file)"
+  [ ! -e "$f" ] || return 0
+  mkdir -p "$d" 2>/dev/null || return 0
+  tmp="$(mktemp "$d/.stt-notice.XXXXXX")" 2>/dev/null || return 0
+  printf '{"at": %s, "reason": "audio-refused"}\n' "$(date +%s)" > "$tmp" && chmod 644 "$tmp" && mv "$tmp" "$f" || rm -f "$tmp"
+}
+stt_notice_clear() { rm -f "$(stt_notice_file)" 2>/dev/null || true; }
+stt_notice_on() { [ -e "$(stt_notice_file)" ] && ! stt_enabled; }
+
+# stt_turn_off_refused — Bedrock speech-to-text off because Bedrock refused its audio: .env back to browser speech
+# (STT_PROVIDER blank, as setup's fallback), the stt container removed, the notice recorded and said. The recorded
+# choice stays, so a later check that gets audio through turns it on again. The caller restarts Chat and the portal.
+stt_turn_off_refused() {
+  unset_env STT_PROVIDER; unset_env STT_MODEL
+  stt_sync_env
+  rm -f "$STATE_DIR/stt-start-failed"
+  stt_notice_record
+  stt_service_down
+  warn "Voice: $STT_REFUSED_NOTICE"
+}
+
+# stt_up_check — ./stack up, once the services run, while Bedrock speech-to-text is on: half a second of audio
+# (stt_audio_check). Refused: the other Voxtral model if Bedrock takes its audio, else browser speech
+# (stt_turn_off_refused) with Chat and the portal restarted. Any other answer changes nothing.
+stt_up_check() {
+  local m alt
+  [ "$(stt_provider)" = bedrock ] || return 0
+  m="$(stt_model 2>/dev/null)"
+  stt_audio_check "$m"
+  case "$STT_AUDIO" in
+    ok) _stt_mark_audio "$m" ok; stt_notice_clear; return 0 ;;
+    refused) _stt_mark_audio "$m" refused ;;
+    *) return 0 ;;
+  esac
+  alt=voxtral-small; [ "$m" != voxtral-small ] || alt=voxtral-mini
+  if is_enabled "$alt" "$(_enabled_or_all)"; then
+    stt_audio_check "$alt"
+    if [ "$STT_AUDIO" = ok ]; then
+      _stt_mark_audio "$alt" ok
+      _stt_store_bedrock "$alt" 2>/dev/null
+      log "Voice: Bedrock no longer accepts audio for $(stt_model_label "$m") — using $(stt_model_label "$alt")"
+      dc up -d --no-deps --wait stt >/dev/null 2>&1 || warn "could not restart the stt container — ./stack up retries"
+      _stt_refresh_portal
+      return 0
+    fi
+    [ "$STT_AUDIO" != refused ] || _stt_mark_audio "$alt" refused
+  fi
+  stt_turn_off_refused
+  dc up -d --no-deps --wait open-webui >/dev/null 2>&1 || warn "could not restart Open WebUI — ./stack up applies browser speech"
+  _stt_refresh_portal
 }
 
 # stt_choice -> what the user chose: bedrock|openai|groq|browser, "legacy" for an install that answered the
@@ -109,7 +249,7 @@ stt_choice() {
   case "$c" in bedrock | openai | groq | browser) printf '%s\n' "$c"; return 0 ;; esac
   [ ! -e "$STATE_DIR/stt-asked" ] || echo legacy
 }
-stt_set_choice() { mkdir -p "$STATE_DIR"; printf '%s\n' "$1" > "$STATE_DIR/stt-choice"; }
+stt_set_choice() { mkdir -p "$STATE_DIR"; printf '%s\n' "$1" > "$STATE_DIR/stt-choice"; stt_notice_clear; }   # (a choice: no notice)
 
 # stt_enabled -> 0 when .env holds a usable choice: openai/groq with a valid key, or bedrock with a Voxtral model
 # the model check enabled. Anything malformed counts as off (stt_key_problem says why) and is never sent anywhere.
@@ -128,6 +268,7 @@ stt_key_problem() { # warns about STT_* settings in .env that keep speech-to-tex
   if ! valid_stt_provider "$p"; then warn "STT_PROVIDER in .env must be bedrock, openai or groq — speech-to-text stays off; fix it with ./stack stt set"; return 0; fi
   if [ "$p" = bedrock ]; then
     [ -z "$m" ] || stt_row bedrock "$m" >/dev/null || warn "STT_MODEL=$m in .env is not a Bedrock speech-to-text model ($(stt_models_of bedrock)) — using voxtral-small"
+    if stt_model_refused "$(stt_model)"; then warn "STT_PROVIDER=bedrock in .env: $STT_AUDIO_GONE — speech-to-text stays off (./stack stt status)"; return 0; fi
     stt_model_ready "$(stt_model)" ||
       warn "$(stt_model) (Mistral Voxtral) is not usable with your AWS key ($(stt_model_reason "$(stt_model)")) — speech-to-text stays off; ./stack models --recheck after your AWS admin enables it"
     return 0
@@ -251,11 +392,12 @@ _stt_store() {
   stt_sync_env
 }
 
-# _stt_store_bedrock MODEL — Bedrock needs no key; a key left from openai/groq is removed from .env.
+# _stt_store_bedrock MODEL — Bedrock needs no key; a key left from openai/groq is removed from .env. (On again: no notice.)
 _stt_store_bedrock() {
   set_env STT_PROVIDER bedrock; unset_env STT_API_KEY
   if [ "$1" = voxtral-small ]; then unset_env STT_MODEL; else set_env STT_MODEL "$1"; fi
   stt_sync_env
+  stt_notice_clear
 }
 
 # _stt_env_wanted -> 0 if setup may adopt STT_PROVIDER/STT_API_KEY from the shell: interactively only after a "y";
@@ -352,7 +494,10 @@ stt_after_probe() {
       alt=voxtral-small; [ "$m" != voxtral-small ] || alt=voxtral-mini
       if stt_model_ready "$alt"; then
         _stt_store_bedrock "$alt" 2>/dev/null
-        log "speech-to-text: $(stt_model_label "$m") is not usable with your AWS key — using $(stt_model_label "$alt")"
+        if stt_model_refused "$m"; then log "Voice: Bedrock no longer accepts audio for $(stt_model_label "$m") — using $(stt_model_label "$alt")"
+        else log "speech-to-text: $(stt_model_label "$m") is not usable with your AWS key — using $(stt_model_label "$alt")"; fi
+      elif stt_model_refused "$m"; then
+        stt_turn_off_refused   # (once: the notice; the choice stays, so audio taken again turns it back on)
       else
         unset_env STT_PROVIDER; unset_env STT_MODEL
         _stt_unusable_warning "$m"
@@ -371,7 +516,11 @@ stt_after_probe() {
           break
         done
         if [ "$(stt_provider)" != bedrock ]; then
-          if [ "$choice" = bedrock ]; then _stt_unusable_warning voxtral-small
+          if stt_model_refused voxtral-small || stt_model_refused voxtral-mini; then
+            # chosen, or the default it would have been: said once on Home and in ./stack status too
+            stt_notice_record
+            warn "Voice: Bedrock speech-to-text is unavailable: $STT_AUDIO_GONE. Voice uses your browser's speech recognition; or use your own OpenAI/Groq key: ./stack stt set openai|groq."
+          elif [ "$choice" = bedrock ]; then _stt_unusable_warning voxtral-small
           else log "Voice: Mistral Voxtral is not usable with your AWS key, so the microphone uses your browser (./stack stt status)"; fi
         fi ;;
     esac
@@ -589,7 +738,7 @@ _stt_on_message() {
 }
 
 cmd_stt() {
-  local p m key url STT_PREVIOUS=''   # STT_PREVIOUS: what _stt_apply restores if set bedrock's container fails
+  local p m key url running STT_PREVIOUS=''   # STT_PREVIOUS: what _stt_apply restores if set bedrock's container fails
   [ -f "$ENV_FILE" ] || die "run ./stack setup first"
   case "${1:-status}" in
     set)
@@ -602,10 +751,21 @@ cmd_stt() {
       if [ "$p" = bedrock ]; then
         if [ -z "$m" ]; then m=voxtral-small
         else m="$(stt_bedrock_model_arg "$m")" || die "'${3:-${STT_MODEL:-}}' is not a Bedrock speech-to-text model: small (voxtral-small) or mini (voxtral-mini)"; fi
+        running=''; [ -z "$(get_env LITELLM_MASTER_KEY)" ] || [ -z "$(dc ps -q litellm 2>/dev/null)" ] || running=1
+        # Bedrock refusing audio: the check decides (half a second of audio, while LiteLLM runs; else what the last
+        # check found) — refused, nothing changes; audio taken again clears what an earlier check recorded.
+        if [ -n "$running" ] && { stt_model_ready "$m" || stt_model_refused "$m"; }; then
+          stt_audio_check "$m"
+          case "$STT_AUDIO" in
+            refused) _stt_mark_audio "$m" refused ;;
+            ok) _stt_mark_audio "$m" ok ;;
+          esac
+        fi
+        ! stt_model_refused "$m" || die "$STT_REFUSED_ERR Nothing changed."
         stt_model_ready "$m" ||
           die "$(stt_model_label "$m") is not usable with your AWS key ($(stt_model_reason "$m")) — nothing changed; ./stack models --recheck after your AWS admin enables it"
         # Build first, while nothing has changed: a failed build leaves the current speech-to-text as it is.
-        if [ -n "$(get_env LITELLM_MASTER_KEY)" ] && [ -n "$(dc ps -q litellm 2>/dev/null)" ]; then
+        if [ -n "$running" ]; then
           (run_phase "Speech-to-text image" stt _stt_build_profiled) || die "could not build the stt container — nothing changed (./stack stt status)"
         fi
         STT_PREVIOUS="$(get_env STT_PROVIDER)|$(get_env STT_API_KEY)|$(get_env STT_MODEL)|$(stt_choice)"
@@ -636,7 +796,13 @@ cmd_stt() {
     status)
       stt_key_problem
       if ! stt_enabled; then
-        printf 'Speech-to-text: browser (Web Speech) — voice calls are unavailable. ./stack stt set bedrock turns them on (no key; or openai|groq; see docs/voice.md).\n'
+        if stt_notice_on; then
+          printf 'Speech-to-text: browser (Web Speech) — voice calls are unavailable.\n  %s\n' "$STT_REFUSED_NOTICE"
+        elif stt_bedrock_refused; then
+          printf 'Speech-to-text: browser (Web Speech) — voice calls are unavailable. ./stack stt set openai|groq turns them on with your own key (Bedrock: %s; docs/voice.md).\n' "$STT_AUDIO_GONE"
+        else
+          printf 'Speech-to-text: browser (Web Speech) — voice calls are unavailable. ./stack stt set bedrock turns them on (no key; or openai|groq; see docs/voice.md).\n'
+        fi
         return 0
       fi
       printf 'Speech-to-text: on — %s\n' "$(stt_describe)"
@@ -687,6 +853,16 @@ stt_test_checks() {
   if [ "$health" = 200 ] && [ "$hop" = 200 ] && [ -n "$sk" ]; then
     tone="$(printf '%s\n' "$sk" | dc exec -T open-webui python3 -c "$STT_TEST_PY" 2>/dev/null || true)"
   fi
+  if [ -n "$tone" ] && [ "$tone" != 200 ] && stt_refusal_in "$tone"; then
+    # Bedrock refusing audio: off, said once (whatever was chosen: nothing else would work), not a failure
+    _check "speech-to-text health (stt container)" 200 200; _check "speech-to-text reachable from Open WebUI (Caddy :8090)" 200 200
+    _stt_mark_audio "$(stt_model)" refused
+    stt_turn_off_refused
+    dc up -d --no-deps --wait open-webui >/dev/null 2>&1 || warn "could not restart Open WebUI — ./stack up applies browser speech"
+    _stt_refresh_portal
+    _skip "$label" "$STT_AUDIO_GONE — turned off, see above"
+    return 0
+  fi
   case "$health:$hop:$tone" in 200:200:429*)
     _check "speech-to-text health (stt container)" 200 200; _check "speech-to-text reachable from Open WebUI (Caddy :8090)" 200 200
     _skip "$label" "Bedrock is throttling right now — not checked"; return 0 ;; esac
@@ -712,7 +888,11 @@ stt_test_checks() {
 # stt_costs_section — ./stack costs: one line either way
 stt_costs_section() {
   stt_key_problem
-  if ! stt_enabled; then printf '\nSpeech-to-text: browser (Web Speech), no cost — ./stack stt set bedrock enables voice calls\n'; return 0; fi
+  if ! stt_enabled; then
+    if stt_bedrock_refused; then printf '\nSpeech-to-text: browser (Web Speech), no cost — ./stack stt set openai|groq enables voice calls (Bedrock: %s)\n' "$STT_AUDIO_GONE"
+    else printf '\nSpeech-to-text: browser (Web Speech), no cost — ./stack stt set bedrock enables voice calls\n'; fi
+    return 0
+  fi
   printf '\nSpeech-to-text: %s\n' "$(stt_describe)"
   if [ "$(stt_provider)" = bedrock ]; then
     printf '  audio stays in your AWS account; its spend is in the open-webui key above (LiteLLM prices each request by its tokens)\n'

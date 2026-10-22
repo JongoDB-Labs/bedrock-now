@@ -6,6 +6,21 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Voice with Bedrock speech-to-text, now that AWS no longer accepts audio for the Voxtral models.** Since October 2026
+  Bedrock answers every recording sent to Mistral Voxtral Small and Mini with "Model does not support audio modality"
+  (text still works, so the model check said ok, and every press of the microphone failed). bedrock-now now recognises
+  that answer as its own state: an install with Bedrock speech-to-text on switches to your browser's speech recognition
+  once — at `./stack up`, `./stack update` (and Update now) or `./stack setup` — with Chat restarted, and says so
+  plainly on Home (the voice line and one notification), in `./stack status` and in `./stack stt status`: "Bedrock
+  speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models (since October 2026). Voice uses
+  your browser's speech recognition; or use your own OpenAI/Groq key: ./stack stt set openai|groq." `./stack stt set
+  bedrock` and Settings › Voice refuse Bedrock with the reason (Settings shows it unavailable), the model check lists
+  voxtral-* as "no audio (AWS)", setup no longer turns it on by default, and Chat shows a fixed message instead of AWS's
+  raw answer. Any other failure (network, permissions, throttling) is handled as before. The Bedrock path stays: half a
+  second of audio decides at each of those checks, so it works again if AWS takes audio again (docs/voice.md).
+
 ## [0.20.1] - 2026-10-22
 
 ### Security

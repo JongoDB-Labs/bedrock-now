@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 
-from . import icons, openrouter, updates, usage
+from . import hostfiles, icons, openrouter, updates, usage
 from . import prices as price_update
 from .config import Settings
 
@@ -29,6 +29,7 @@ def reason_code(reason: str) -> str:
         ("access denied", "access denied"),
         ("needs an inference profile", "needs inference profile"),
         ("throttled", "throttled (kept)"),
+        ("no audio:", "no audio (AWS)"),
     )
     for prefix, code in prefixes:
         if r.startswith(prefix):
@@ -159,15 +160,46 @@ STT_LABELS = {"voxtral-small": "Mistral Voxtral Small", "voxtral-mini": "Mistral
 STT_PROVIDERS = {"openai": ("OpenAI", "api.openai.com"), "groq": ("Groq", "api.groq.com")}
 
 
+# Since October 2026 Bedrock refuses audio for both Voxtral models (lib/stt.sh): ./stack turns Bedrock speech-to-text off
+# once and records the notice (STATUS_DIR/stt-notice.json); the model check records the models (reason "no audio: …").
+STT_NOTICE = "stt-notice.json"
+STT_REFUSED_NOTICE = ("Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models (since "
+                      "October 2026). Voice uses your browser's speech recognition; or use your own OpenAI/Groq key: "
+                      "./stack stt set openai|groq.")
+
+
 def voice_on(s: Settings) -> bool:
     return s.stt_engine == "openai" and s.stt_provider in ("bedrock", *STT_PROVIDERS)
+
+
+def stt_notice(s: Settings) -> int | None:
+    """When ./stack turned Bedrock speech-to-text off because Bedrock refuses its audio (epoch seconds), or None: no
+    notice, or anything in it is off."""
+    d = hostfiles.read_json(s.status_dir / STT_NOTICE, 1024)
+    at = d.get("at")
+    if d.get("reason") != "audio-refused" or not isinstance(at, int) or isinstance(at, bool) or at <= 0:
+        return None
+    return at
+
+
+def stt_bedrock_refused(s: Settings) -> bool:
+    """The last check found that Bedrock refuses audio for its speech-to-text models (litellm/probe-results.tsv)."""
+    try:
+        text = (s.litellm_dir / "probe-results.tsv").read_text(encoding="utf-8")[:200_000]
+    except (OSError, ValueError):
+        return False
+    rows = [f for f in (line.split("\t") for line in text.splitlines() if not line.startswith("#")) if len(f) >= 4 and f[1] == "stt"]
+    return bool(rows) and all(f[3].startswith("no audio:") for f in rows)
 
 
 def voice(s: Settings, prices: dict | None) -> dict:
     """Which speech-to-text Open WebUI's microphone and Call use (no key is ever part of this)."""
     if not voice_on(s):
-        return {"on": False, "provider": "browser", "label": "browser speech recognition", "per_minute": None,
-                "estimated": False, "where": "your browser"}
+        out = {"on": False, "provider": "browser", "label": "browser speech recognition", "per_minute": None,
+               "estimated": False, "where": "your browser", "bedrock_refused": stt_bedrock_refused(s)}
+        if stt_notice(s):
+            out["notice"] = STT_REFUSED_NOTICE
+        return out
     if s.stt_provider == "bedrock":
         model = s.stt_model or "voxtral-small"
         p = (prices or {}).get(model) or {}

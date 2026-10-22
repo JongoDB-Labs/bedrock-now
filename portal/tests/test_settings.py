@@ -330,6 +330,24 @@ def test_keys_that_go_together_and_values_that_did_not_change(make, dirs):
     assert apply(c, {"STT_PROVIDER": "openai", "STT_API_KEY": "sk-proj-abcdefghijklmnop1234"}).status_code == 202
 
 
+def test_bedrock_voice_is_refused_with_the_reason_while_aws_refuses_its_audio(make, dirs):
+    # (lib/stt.sh: since October 2026 Bedrock refuses audio for the Voxtral models; ./stack lists them in the snapshot)
+    sd, rq = dirs
+    write_snapshot(sd, choices={**CHOICES, "stt_bedrock_ready": [], "stt_bedrock_refused": ["voxtral-small", "voxtral-mini"]})
+    helper_up(sd)
+    c = make()
+    r = apply(c, {"STT_PROVIDER": "bedrock", "STT_MODEL": ""})
+    assert r.status_code == 400
+    assert r.json()["fields"]["STT_PROVIDER"] == st.STT_REFUSED
+    assert st.STT_REFUSED.startswith("Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models")
+    assert files(rq) == []
+    # browser speech, or a key of your own: fine
+    assert apply(c, {"STT_PROVIDER": "openai", "STT_API_KEY": "sk-proj-abcdefghijklmnop1234"}).status_code == 202
+    # the snapshot's list is type-checked like the others
+    write_snapshot(sd, choices={**CHOICES, "stt_bedrock_refused": ["voxtral-small", 5, None]})
+    assert st.snapshot(sd)["choices"]["stt_bedrock_refused"] == ["voxtral-small"]
+
+
 def test_stale_base_is_refused(make, dirs):
     sd, rq = dirs
     write_snapshot(sd); helper_up(sd)

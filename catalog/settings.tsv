@@ -62,7 +62,7 @@ LITELLM_KEY_CLAUDE_CODE	budgets	h	ro	-	-	claude-code key	The LiteLLM key claude-
 LITELLM_KEY_OPENWEBUI	budgets	h	ro	-	-	open-webui key	The LiteLLM key Chat uses (also document search and voice).	./stack setup (creates a missing one)
 LITELLM_KEY_SETUP	budgets	h	ro	-	-	setup key	The LiteLLM key for model checks and smoke tests.	./stack setup (creates a missing one)
 LITELLM_KEY_TERMINAL	budgets	h	ro	-	-	claude-code-terminal key	The browser terminal's own LiteLLM key, allowed only Claude Code's routes. Delete it in Admin to cut the terminal off.	./stack terminal enable (creates a missing one)
-STT_PROVIDER	voice	-	local	stt_provider	stt	Speech-to-text	bedrock = Mistral Voxtral in your AWS account (no key); openai or groq = your voice goes to that company (needs a key); blank = the browser's own speech recognition (no voice calls). Chat restarts (about 30 s).	./stack stt set bedrock|openai|groq   (./stack stt remove: browser)
+STT_PROVIDER	voice	-	local	stt_provider	stt	Speech-to-text	bedrock = Mistral Voxtral in your AWS account (no key; AWS no longer accepts its audio since October 2026); openai or groq = your voice goes to that company (needs a key); blank = the browser's own speech recognition (no voice calls). Chat restarts (about 30 s).	./stack stt set bedrock|openai|groq   (./stack stt remove: browser)
 STT_API_KEY	voice	h	local	stt_key	stt	Speech-to-text API key	The OpenAI or Groq key (checked with the provider first, free). Not used with Bedrock.	./stack stt set openai|groq
 STT_MODEL	voice	-	edit	stt_model	stt	Speech-to-text model	Blank = the provider's default (Bedrock: voxtral-small).	./stack stt set PROVIDER MODEL
 STT_BEDROCK_MODEL	voice	-	derived	-	-	Voxtral model in use	Follows the speech-to-text settings.	./stack stt status

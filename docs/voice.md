@@ -8,14 +8,63 @@ service; with only the browser's speech recognition (the Web Speech API), Open W
 
 | Choice | Key | Where your speech goes | Price per minute of audio |
 |---|---|---|---|
-| **Bedrock** — Mistral Voxtral Small (default) | none | **your AWS account** (Bedrock) | ~$0.00014, estimated |
-| Bedrock — Mistral Voxtral Mini | none | your AWS account (Bedrock) | ~$0.00004, estimated |
+| **Bedrock** — Mistral Voxtral Small (default; [unavailable since October 2026](#october-2026-aws-no-longer-accepts-audio-for-voxtral)) | none | **your AWS account** (Bedrock) | ~$0.00014, estimated |
+| Bedrock — Mistral Voxtral Mini (likewise) | none | your AWS account (Bedrock) | ~$0.00004, estimated |
 | OpenAI `gpt-4o-mini-transcribe` | OpenAI | api.openai.com | $0.003 |
 | Groq `whisper-large-v3-turbo` | Groq | api.groq.com | $0.0007 |
 | Browser only | — | your browser's speech service | — (no Call) |
 
-**Bedrock is the default.** When setup's model check finds that your AWS key can use Mistral Voxtral, it turns
-Bedrock speech-to-text on and says so in one line:
+## October 2026: AWS no longer accepts audio for Voxtral
+
+**What happened.** Since October 2026 Amazon Bedrock answers every recording sent to Mistral Voxtral Small and
+Mini with HTTP 400 *"The model returned the following errors: Model does not support audio modality"* — on both
+of its APIs (Converse and Invoke) and in every region we tried (us-east-1, us-east-2, us-west-2, eu-west-1). Text
+still works, so the model check's 1-token request kept saying *ok*, while every press of the microphone failed.
+AWS's model page now lists both models as **Legacy** (end of life 2027-03-30) without audio input.
+
+**What bedrock-now does now** (v0.20.2 and later). It recognises that answer as a state of its own — any other
+failure (network, permissions, throttling) is handled as before and never switches anything off:
+
+- An install with Bedrock speech-to-text on switches to your **browser's speech recognition once**, at
+  `./stack up`, `./stack update` (also the portal's *Update now*) or `./stack setup`: `STT_PROVIDER` is cleared
+  in `.env`, the stt container is removed and Chat restarts. It says so in the command's output, on Home (the
+  voice line, and one notification in Activity) and in `./stack status` and `./stack stt status`:
+
+  ```
+  Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models (since October 2026). Voice uses your browser's speech recognition; or use your own OpenAI/Groq key: ./stack stt set openai|groq.
+  ```
+
+  The notice stays until you make a voice choice (`./stack stt set …`, `./stack stt remove`, or Settings ›
+  Voice).
+- Setup no longer turns Bedrock speech-to-text on by default; its model check lists `voxtral-small` and
+  `voxtral-mini` with WHY **no audio (AWS)** (they stay enabled in LiteLLM: they still answer text).
+- `./stack stt set bedrock` refuses (nothing changes) with *"Bedrock speech-to-text is unavailable: AWS no
+  longer accepts audio for the Voxtral models (since October 2026). Use browser speech, or your own OpenAI/Groq
+  key: ./stack stt set openai|groq."*; Settings › Voice shows Bedrock as unavailable, with that reason.
+- If a recording still reaches Bedrock (an install not updated yet), Chat shows *"Bedrock speech-to-text is
+  unavailable: AWS no longer accepts audio for the Voxtral models — switch to browser speech in Settings ›
+  Voice."* instead of AWS's raw answer.
+
+**How it is checked.** Half a second of audio (`stt/check-tone.mp3`, the MP3 the stt container sends) through
+LiteLLM's Bedrock pass-through with the setup key: at each model check, at `./stack up` while Bedrock
+speech-to-text is on, at `./stack test`, and before `./stack stt set bedrock` or a Settings change to Bedrock.
+A refused request costs nothing; one that works costs well under $0.0001. The Bedrock code path stays in place:
+when AWS takes audio again, the next check finds it and `./stack stt set bedrock` (or, if you never chose
+otherwise, the next `./stack setup`) turns it back on.
+
+**What to use now.**
+
+- **Browser speech** (what you get by default): the microphone works in Chrome, Edge and Safari (which send the
+  audio to Google, Microsoft or Apple); voice **calls** are unavailable (Open WebUI needs server
+  speech-to-text for them).
+- **Your own OpenAI or Groq key** for the microphone and calls: `./stack stt set openai` or `./stack stt set
+  groq` (or Settings › Voice), see [OpenAI or Groq](#openai-or-groq-outside-bedrock). Your recorded speech then
+  goes to that provider.
+- **A Bedrock replacement** — another speech-to-text model on Bedrock, so your audio can stay in your AWS
+  account again — is being looked at; a release will say so when there is one.
+
+**Bedrock was the default** (until October 2026). When setup's model check finds that your AWS key can use
+Mistral Voxtral (and Bedrock takes its audio), it turns Bedrock speech-to-text on and says so in one line:
 
 ```
 ==> Voice: Bedrock speech-to-text on (Mistral Voxtral Small, ~$0.00014 per minute of audio, estimated) — ./stack stt remove to use browser speech
@@ -217,6 +266,9 @@ the audio and uses that.
 
 ## Troubleshooting
 
+- **"Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models"** (in Chat,
+  `./stack stt status` or Home): see [October 2026](#october-2026-aws-no-longer-accepts-audio-for-voxtral) —
+  `./stack up` (or *Update now*) switches to browser speech; `./stack stt set openai|groq` for calls.
 - **"Error transcribing chunk: External: …"** in Chat carries the stt container's message, for example:
   - *the Open WebUI key is over its monthly budget* — raise it in the portal's Settings → Spending & budgets (or `./stack config set BUDGET_OPENWEBUI`);
   - *Bedrock refused voxtral-small … for this AWS account* — model access was revoked: ask your AWS admin, then

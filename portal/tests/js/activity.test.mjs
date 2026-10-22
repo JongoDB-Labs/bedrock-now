@@ -120,9 +120,11 @@ test("a browser notification says fixed words only: no session title, prompt, jo
   const [warn, over] = A.budgetItems({ alert_pct: 80, keys: [key("claude-code", 42.5, 50, { label: "Claude Code" }), key("setup", 9, 5, { label: "Setup and tests" })] });
   const or = A.openrouterItems({ openrouter_usage: { failures: { groups: [{ label: secret, count: 2, last_at: "2026-10-17T10:00:00+00:00", fix: secret }] } } })[0];
   const other = A.takeServerItem({ id: "models:5", kind: "models", level: "warn", title: secret, text: secret, at: 5, link: "" });
-  const got = [code, job, done, warn, over, or, other].map((it) => plain(A.notificationText(it)));
+  const voice = A.takeServerItem({ id: "stt-notice:5", kind: "voice", level: "warn", title: secret, text: secret, at: 5, link: "#settings/STT_PROVIDER" });
+  const got = [code, job, done, warn, over, or, other, voice].map((it) => plain(A.notificationText(it)));
   assert.deepEqual(got.map((n) => n.title), ["A Code session needs you", "A job failed", "A job finished", "Budget alert: Claude Code at 85 %",
-    "Budget used up: Setup and tests", "OpenRouter requests failed", "A model check could not check every model"]);
+    "Budget used up: Setup and tests", "OpenRouter requests failed", "A model check could not check every model",
+    "Voice changed to browser speech"]);
   for (const n of got) {
     assert.equal(n.body, "Details in Activity, in the bedrock-now portal.");
     assert.ok(!JSON.stringify(n).includes("SECRET") && !JSON.stringify(n).includes("sk-live"), JSON.stringify(n));

@@ -6,6 +6,7 @@ hostfiles.read_json (size caps, no symlinks) and every field type-checked, as Ho
                                   a diagnostic, an automatic update (admin.py)
   STATUS_DIR/terminal-job.json    the last ./stack command typed in a terminal that changed the stack (lib/lock.sh)
   STATUS_DIR/code-default.json    an update nobody watched turned the Code page on (lib/code.sh; code.py)
+  STATUS_DIR/stt-notice.json      Bedrock speech-to-text was turned off: Bedrock refuses its audio (lib/stt.sh; summary.py)
   UPDATE_DIR/latest.json          the release check: an update is available (updates.py)
   litellm/probe-results.tsv       the last model check: models it could not check (summary.py)
 
@@ -163,6 +164,16 @@ def code_default_item(s: Settings, rem: bool) -> dict | None:
                                                   "egress": n["egress"], "terminal": n["terminal"]})
 
 
+def stt_notice_item(s: Settings) -> dict | None:
+    """Bedrock speech-to-text was turned off because AWS no longer accepts audio for the Voxtral models: said once (one
+    event: when ./stack recorded it), while no other voice choice was made since."""
+    at = summary.stt_notice(s)
+    if not at or summary.voice_on(s):
+        return None
+    title, _, text = summary.STT_REFUSED_NOTICE.partition(": ")
+    return _item(f"stt-notice:{at}", "voice", "warn", title, text[:1].upper() + text[1:], at, "#settings/STT_PROVIDER")
+
+
 def models_item(s: Settings, now: float) -> dict | None:
     """The last model check could not check some models (a timeout, throttling, an error answer): they keep their old
     state until the next check."""
@@ -187,7 +198,7 @@ def items(s: Settings, rem: bool, now: float | None = None) -> list[dict]:
     now = time.time() if now is None else now
     out: list[dict] = []
     for fn in (lambda: [update_item(s)], lambda: job_items(s.status_dir, now), lambda: [code_default_item(s, rem)],
-               lambda: [models_item(s, now)]):
+               lambda: [models_item(s, now)], lambda: [stt_notice_item(s)]):
         try:
             out += [x for x in fn() if x]
         except (OSError, ValueError, KeyError, TypeError, AttributeError):

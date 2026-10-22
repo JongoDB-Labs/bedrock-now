@@ -328,6 +328,7 @@ reason_code() {
     "access denied"*) echo "access denied" ;;
     "needs an inference profile"*) echo "needs inference profile" ;;
     throttled*) echo "throttled (kept)" ;;
+    "no audio:"*) echo "no audio (AWS)" ;;
     *"over its budget"*) echo "unverified: setup budget" ;;
     "unverified: no response"*) echo "unverified: timeout" ;;
     "unverified (aws exit "*) printf 'unverified: aws exit %s\n' "$(printf '%s' "$1" | sed -n 's/^unverified (aws exit \([0-9]*\)).*/\1/p')" ;;
@@ -341,6 +342,7 @@ reason_footnote() {
   case "$1" in
     ok | "ok (free check)") ;;
     "no Marketplace access" | "no model access" | "access denied") printf '%s: %s (see README › Asking your AWS admin for model access)\n' "$1" "$2" ;;
+    "no audio (AWS)") printf '%s: %s — voice uses browser speech, or your own OpenAI/Groq key (docs/voice.md)\n' "$1" "$2" ;;
     *) printf '%s: %s\n' "$1" "$2" ;;
   esac
 }
@@ -424,6 +426,10 @@ probe_models() {
           r2="$(classify_probe bedrock "$status" "$tmp" "$r" | cut -f2)"
           case "$r2" in "not subscribed"* | "no access to this model"*) reason="$r2" ;; esac ;;
       esac
+      # speech-to-text: its text answer alone says nothing about audio, which Bedrock may refuse (lib/stt.sh)
+      if [ "$mode" = stt ] && [ "$verdict" = ENABLED ] && declare -F stt_probe_audio >/dev/null; then
+        reason="$(stt_probe_audio "$name" "$reason")"
+      fi
     fi
     kind="$(kind_short "$mode")"; price="$(price_short "$name")"
     model_row "$name" "$kind" "$verdict" "$price" "$(reason_code "$reason")" >&2

@@ -198,7 +198,9 @@ def routes(ctx: Ctx) -> list[Route]:
                     fields["STT_API_KEY"] = f"{p} needs an API key"
             if p and model and model not in models:
                 fields["STT_MODEL"] = f"is not a {p} speech-to-text model ({', '.join(models)})"
-            if p == "bedrock" and (model or "voxtral-small") not in snap["choices"]["stt_bedrock_ready"]:
+            if p == "bedrock" and (model or "voxtral-small") in snap["choices"].get("stt_bedrock_refused", []):
+                fields["STT_PROVIDER"] = st.STT_REFUSED
+            elif p == "bedrock" and (model or "voxtral-small") not in snap["choices"]["stt_bedrock_ready"]:
                 fields["STT_PROVIDER"] = "Voxtral is not usable with your AWS key (the last model check)"
         return fields
 

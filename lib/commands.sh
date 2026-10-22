@@ -678,7 +678,7 @@ setup_bringup_and_probe() {
   # Probe and smoke-test spend is booked on its own key, so ./stack costs shows what setup itself cost.
   setup_step "checking which models your AWS key can use"
   ensure_virtual_key LITELLM_KEY_SETUP setup "$(get_env BUDGET_SETUP)"
-  log "probing which models your AWS key can use (chat/embedding/rerank/speech-to-text: 1-token requests, < \$0.01 total; images: free check)"
+  log "probing which models your AWS key can use (chat/embedding/rerank/speech-to-text: 1-token requests, speech-to-text also half a second of audio, < \$0.01 total; images: free check)"
   probe_models "$en.new" "$STACK_DIR/litellm/probe-results.tsv"
   [ -s "$en.new" ] || die "no models are usable with this AWS key — check with your AWS admin"
   mv "$en.new" "$en"
@@ -1037,6 +1037,8 @@ cmd_up() {
   # The stack's own services only: the Tailscale sidecar (remote access) is started afterwards without waiting.
   # shellcheck disable=SC2086  # word-split the service list on purpose
   run_phase "bedrock-now" "$STACK_SERVICES" dc up -d --wait $STACK_SERVICES
+  # lib/stt.sh: Bedrock refusing audio turns Bedrock speech-to-text off once (the notice); the list follows
+  stt_up_check; extra="$(optional_services)"; STACK_SERVICES="$STACK_BASE_SERVICES${extra:+ $extra}"
   terminal_after_up   # TERMINAL_EGRESS: what its way out no longer uses goes once the container has left it
   remote_up_hook
   ensure_portal_reachable   # lib/portal.sh: Docker Desktop forwarding the portal's port to a Caddy it replaced
@@ -1129,6 +1131,8 @@ cmd_status() {
     printf '  %sUpdate available: %s%s (you have %s) — ./stack update   (release notes on Home)\n' "$O_YEL" "$upd" "$O_OFF" "$(installed_version)"
   fi
   printf '  %s\n' "$(helper_status_line)"   # lib/helper.sh: one-click and automatic updates
+  # lib/stt.sh: Bedrock speech-to-text turned off because AWS refuses its audio — said until a voice choice is made
+  ! stt_notice_on || printf '  %sVoice: %s%s\n' "$O_YEL" "$STT_REFUSED_NOTICE" "$O_OFF"
 }
 
 _check() { # _check LABEL GOT WANT — uses the caller's `fails` counter
@@ -1727,6 +1731,8 @@ update_whats_new() {
   else printf "\nWhat's new in %s:\n" "$(installed_version)"; fi
   [ -z "$rels" ] || printf '%s\n' "$rels" | sed 's/^/  /'
   if stt_enabled; then printf '  Voice: %s speech-to-text is on (./stack stt status)\n' "$(stt_provider_label "$(stt_provider)")"
+  elif stt_notice_on; then printf '  Voice: %s\n' "$STT_REFUSED_NOTICE"
+  elif stt_bedrock_refused; then printf '  Voice: browser speech only — ./stack stt set openai|groq turns on speech-to-text with your own key (docs/voice.md)\n'
   else printf '  Voice: browser speech only — ./stack stt set bedrock turns on Bedrock speech-to-text (docs/voice.md)\n'; fi
   ! code_ready || printf '  Code page: on — the Code tab, Claude Code in the browser (sandbox folder %s); ./stack code disable turns it off\n' "$(get_env TERMINAL_WORKSPACE)"
   # the sandbox's way out changed under an update from a version without the egress proxy (v0.10.0 and earlier):

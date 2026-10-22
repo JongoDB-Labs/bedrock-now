@@ -27,6 +27,11 @@ from pathlib import Path
 
 from . import hostfiles
 
+# Settings › Voice when Bedrock refuses audio for its speech-to-text models (lib/stt.sh: since October 2026; the stack
+# says the same, with the command to use)
+STT_REFUSED = ("Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models (since October "
+               "2026). Use browser speech, or your own OpenAI/Groq key.")
+
 SNAPSHOT = "settings.json"
 BACKUPS = "backups.json"
 CAPABILITY = "helper-settings.json"
@@ -113,6 +118,8 @@ def snapshot(status_dir: Path) -> dict | None:
         "stt_models": {p: [m for m in stt.get(p) or [] if isinstance(m, str) and re.fullmatch(r"[a-z0-9.-]{1,64}", m)]
                        for p in ("bedrock", "openai", "groq")},
         "stt_bedrock_ready": [m for m in ch.get("stt_bedrock_ready") or [] if isinstance(m, str)][:10],
+        # Bedrock models Bedrock refuses audio for (lib/stt.sh, since October 2026): Settings shows them unavailable
+        "stt_bedrock_refused": [m for m in ch.get("stt_bedrock_refused") or [] if isinstance(m, str)][:10],
         "restart": [s for s in ch.get("restart") or [] if isinstance(s, str) and f"restart-{s}" in DIAG_ACTIONS],
         "chat_models": [[m[0], _s(m[1], 80) or m[0]] for m in ch.get("chat_models") or []
                         if isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) and re.fullmatch(r"[a-z0-9.-]{1,64}", m[0])],

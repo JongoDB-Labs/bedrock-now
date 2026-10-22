@@ -24,6 +24,15 @@ MAX_PROMPT = 500
 LANG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$")
 
 
+# Since October 2026 Bedrock answers every audio request to both Voxtral models with HTTP 400 "The model returned the
+# following errors: Model does not support audio modality" (Converse and Invoke, in every region tried); text still
+# works. That answer gets a fixed message and a code of its own (./stack recognises both: lib/stt.sh stt_refusal_in),
+# never AWS's text passed on.
+AUDIO_REFUSED = "does not support audio modality"
+AUDIO_REFUSED_MESSAGE = ("Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models — "
+                         "switch to browser speech in Settings › Voice.")
+
+
 class UpstreamError(Exception):
     def __init__(self, status: int, code: str, message: str):
         super().__init__(message)
@@ -121,6 +130,8 @@ def _excerpt(body: str) -> str:
 def map_error(status: int, body: str, model: str) -> UpstreamError:
     """LiteLLM/Bedrock failure -> a clear, actionable message (shown by Open WebUI after "Error transcribing chunk:")."""
     low = body.lower()
+    if AUDIO_REFUSED in low:
+        return UpstreamError(400, "audio_not_supported", AUDIO_REFUSED_MESSAGE)
     if "budget" in low and "exceed" in low:
         if "key=" in low:   # LiteLLM names the budget: "Key=…" (BUDGET_OPENWEBUI), else a team's, user's, tag's…
             return UpstreamError(429, "budget_exceeded",

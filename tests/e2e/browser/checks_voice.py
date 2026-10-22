@@ -14,6 +14,11 @@ from common import ENV, Skip, check, expect, need, origin
 
 FIXTURE = Path(__file__).parent / "fixtures" / "speech.webm"   # espeak-ng: fixtures/make-speech.sh
 WEB_STT = "Call feature is not supported when using Web STT engine"
+# Since October 2026 Bedrock refuses audio for both Voxtral models: ./stack turns Bedrock speech-to-text off once and
+# says so (lib/stt.sh STT_REFUSED_NOTICE) — on Home's voice line and as one Activity item
+REFUSED_NOTICE = ("Voice: Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models (since "
+                  "October 2026). Voice uses your browser's speech recognition; or use your own OpenAI/Groq key: "
+                  "./stack stt set openai|groq.")
 
 
 def stt_mode() -> str:
@@ -34,6 +39,17 @@ def home_voice(ctx):
     if stt_mode() == "bedrock":
         expect(text.startswith("Voice: Bedrock Mistral Voxtral"), f"voice line {text!r}")
         expect("estimated" in text and "per minute of audio" in text and "your AWS account" in text, f"voice line {text!r}")
+    elif stt_mode() == "browser" and text.startswith("Voice: Bedrock speech-to-text was turned off"):
+        # AWS refused the audio: the notice, word for word, and its one Activity item (a voice choice ends both)
+        expect(text == REFUSED_NOTICE, f"voice line {text!r}")
+        act = page.evaluate("""async () => { const r = await fetch('/api/activity', {headers: {'X-Requested-With': 'bedrock-now'}});
+            return {status: r.status, body: await r.text()}; }""")
+        expect(act["status"] == 200, f"/api/activity {act['status']}")
+        items = [i for i in json.loads(act["body"]).get("items") or [] if i.get("kind") == "voice"]
+        expect(len(items) == 1 and items[0]["title"] == "Bedrock speech-to-text was turned off"
+               and items[0]["link"] == "#settings/STT_PROVIDER", f"Activity voice items {items!r}")
+        rec.save()
+        return "browser speech after AWS refused Voxtral's audio: the notice on Home and one Activity item"
     elif stt_mode() == "browser":
         expect(text.startswith("Voice: browser speech recognition (Call is unavailable)"), f"voice line {text!r}")
     rec.save()

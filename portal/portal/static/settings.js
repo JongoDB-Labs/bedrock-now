@@ -17,6 +17,8 @@
     "LITELLM_KEY_OPENWEBUI", "LITELLM_KEY_SETUP", "SHARED_MCP_TOKEN"]);
   const DIAG_PHASES = ["check-aws", "models-recheck", "backup", "test", "report"];
   const STT_LABEL = { bedrock: "Bedrock (Mistral Voxtral, in your AWS account)", openai: "OpenAI", groq: "Groq", "": "Browser speech recognition (no voice calls)" };
+  // (portal/settings.py STT_REFUSED: the API refuses Bedrock with the same words)
+  const STT_REFUSED = "Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models (since October 2026). Use browser speech, or your own OpenAI/Groq key.";
   // what a change restarts, by settings.tsv's apply column (lib/settings.sh _cfg_post): the badge next to a setting
   const RESTARTS = { "portal-pw": ["portal"], email: ["Chat", "portal"], "litellm-pw": ["portal"], portal: ["portal"],
     "litellm-cfg": ["LiteLLM"], aws: ["LiteLLM"], pins: ["Chat", "portal"], "alert-pct": ["portal"], stt: ["LiteLLM", "Chat", "portal"],
@@ -1046,6 +1048,9 @@
         if (p === "bedrock" && !choices.stt_bedrock_ready.length) input.disabled = true;
         radios.append(el("label", { for: id, class: "set-radio" }, input, " ", STT_LABEL[p]));
       }
+      // Bedrock refusing audio for its speech-to-text models (lib/stt.sh): unavailable, and why
+      const refused = choices.stt_bedrock_refused || [];
+      if (!choices.stt_bedrock_ready.length && refused.length) radios.append(el("p", { class: "note", text: STT_REFUSED }));
       const msel = el("select", { id: "stt-model" });
       const keyIn = el("input", { id: "stt-key", type: "password", autocomplete: "new-password", maxlength: "512", placeholder: kk.set ? "keep the current key" : "" });
       const keyRow = el("div", { class: "set-sub" }, el("label", { for: "stt-key", text: "API key" }), keyIn);
@@ -1063,6 +1068,7 @@
         for (const m of choices.stt_models[p] || []) {
           const o = el("option", { value: m, text: m });
           if (p === "bedrock" && !choices.stt_bedrock_ready.includes(m)) o.disabled = true;
+          if (p === "bedrock" && (choices.stt_bedrock_refused || []).includes(m)) o.text = `${m} — AWS no longer accepts its audio`;
           if (m === model && p === prov) o.selected = true;
           msel.append(o);
         }

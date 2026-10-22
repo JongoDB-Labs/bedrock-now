@@ -593,8 +593,9 @@ if ! part_on cli; then record cli read-only SKIP 0 "--only $ONLY"; else
     else record cli clean-dry-run-removes-nothing FAIL 0 "images changed during clean --dry-run"; fi
   else record cli clean-dry-run SKIP 0 "no clean --dry-run on this branch"; fi
   cli helper-status 0 'Update helper: not installed' helper status
-  # setup --yes turns Bedrock speech-to-text on when Voxtral's check succeeded (the throwaway's key can use it)
-  cli stt-status 0 'Speech-to-text: on — Bedrock Mistral Voxtral Small.*estimated' stt status
+  # setup --yes turns Bedrock speech-to-text on when Voxtral's check succeeded (the throwaway's key can use it); since
+  # October 2026 AWS refuses audio for the Voxtral models: then browser speech and the notice (lib/stt.sh)
+  cli stt-status 0 'Speech-to-text: on — Bedrock Mistral Voxtral Small.*estimated|^  Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models' stt status
   cli remote-status 0 'Remote access: off' remote status
   cli openrouter-status 0 'OpenRouter: off' openrouter status
   cli serve-stop 0 'is not running' serve --stop
@@ -879,9 +880,50 @@ for path in ("/healthz", "/v1/audio/transcriptions", "/v1/models", "/", "/api/v1
     print("caddy8090%s\t%s" % (path, get(path)))
 PY
 }
+# stt_refused_state — 0 when the throwaway is in the state Bedrock refusing Voxtral's audio leads to (lib/stt.sh, since
+# October 2026): browser speech in .env, the notice recorded, the model check's "no audio:" for the Voxtral models
+stt_refused_state() {
+  [ -z "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)" ] && grep -q '"reason": "audio-refused"' "$STACK/.state/status/stt-notice.json" 2>/dev/null &&
+    awk -F'\t' '$2 == "stt" && index($4, "no audio:") == 1 { f = 1 } END { exit !f }' "$STACK/litellm/probe-results.tsv" 2>/dev/null
+}
+# stt_refused_up — an install from before that refusal (Bedrock speech-to-text on, its model check from then: ok, no
+# notice) runs ./stack up while AWS refuses the audio: browser speech, the notice once, Chat without server STT, the
+# stt container gone, and ./stack stt set bedrock refused with the reason (nothing changed). The real AWS answer.
+stt_refused_up() {
+  local t0 log rc bad='' owc env
+  t0="$(now)"; log="$LOGS/cli-up-stt-refused.log"
+  set_env STT_PROVIDER bedrock
+  awk -F'\t' -v OFS='\t' '$2 == "stt" && index($4, "no audio:") == 1 { $4 = "ok" } { print }' "$STACK/litellm/probe-results.tsv" > "$STACK/litellm/probe-results.tsv.e2e" &&
+    mv "$STACK/litellm/probe-results.tsv.e2e" "$STACK/litellm/probe-results.tsv"
+  rm -f "$STACK/.state/status/stt-notice.json"
+  st up > "$log" 2>&1; rc=$?
+  redact "$log"
+  [ "$rc" = 0 ] || bad="$bad exit:$rc"
+  stt_refused_state || bad="$bad state(STT_PROVIDER=$(get_env STT_PROVIDER),OWUI_STT_ENGINE=$(get_env OWUI_STT_ENGINE))"
+  grep -q 'Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models (since October 2026)' "$log" || bad="$bad no-notice-in-up"
+  [ -z "$(svc_id stt)" ] || bad="$bad stt-container-left"
+  owc="$(svc_id open-webui)"
+  env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$owc" 2>/dev/null | grep '^AUDIO_STT_ENGINE=' || true)"
+  [ "$env" = AUDIO_STT_ENGINE=web ] || bad="$bad chat-engine:${env:-none}"
+  if [ -z "$bad" ]; then
+    record voice stt-refused-up PASS "$(( $(now) - t0 ))" "STT_PROVIDER=bedrock before ./stack up, AWS refusing Voxtral's audio: browser speech (Chat AUDIO_STT_ENGINE=web, no stt container), the notice said once and recorded, voxtral-* 'no audio' in the model check"
+  else record voice stt-refused-up FAIL "$(( $(now) - t0 ))" "unexpected:$bad (log $log)"; fi
+  cli stt-status-refused 0 '^  Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models' stt status
+  cli status-stt-notice 0 'Voice: Bedrock speech-to-text was turned off' status
+  cli models-no-audio 0 'voxtral-small +stt +ENABLED .*no audio \(AWS\)' models
+  cli stt-set-bedrock-refused 1 'Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models.*Nothing changed' stt set bedrock
+  if [ -n "$(get_env STT_PROVIDER)" ]; then record voice stt-set-bedrock-refused-changes-nothing FAIL 0 "STT_PROVIDER=$(get_env STT_PROVIDER) after the refusal"
+  else record voice stt-set-bedrock-refused-changes-nothing PASS 0 "browser speech kept"; fi
+  ! part_on browser || browser_run "speech-to-text refused by AWS" 'browser/(home-voice-line|chat-voice-call|stt-transcription)$' stt-refused
+}
 if ! part_on voice; then record voice voice SKIP 0 "--only $ONLY"
+elif [ "$(get_env STT_PROVIDER)" != bedrock ] && stt_refused_state; then
+  # AWS refuses Voxtral's audio (since October 2026): setup recognised it — browser speech, and why
+  record voice bedrock-stt-on-after-setup PASS 0 "AWS refuses Voxtral's audio: recognised — browser speech, the notice recorded, voxtral-* 'no audio (AWS)' in the model check (see $LOGS/cli-setup.log)"
+  say "voice: an install with Bedrock speech-to-text on, when AWS refuses its audio"
+  stt_refused_up
 elif [ "$(get_env STT_PROVIDER)" != bedrock ]; then
-  record voice bedrock-stt-on-after-setup FAIL 0 "setup did not turn Bedrock speech-to-text on (STT_PROVIDER=$(get_env STT_PROVIDER)) — see $LOGS/cli-setup.log"
+  record voice bedrock-stt-on-after-setup FAIL 0 "setup did not turn Bedrock speech-to-text on (STT_PROVIDER=$(get_env STT_PROVIDER)), nor recognise AWS refusing its audio — see $LOGS/cli-setup.log"
 else
   say "voice: speech-to-text isolation and off/on round trip"
   record voice bedrock-stt-on-after-setup PASS 0 "STT_PROVIDER=bedrock, Open WebUI engine $(get_env OWUI_STT_ENGINE)"

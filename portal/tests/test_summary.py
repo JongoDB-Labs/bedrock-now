@@ -135,6 +135,37 @@ def test_voice_bedrock_shows_an_estimated_price_per_minute(settings):
     assert o["label"] == "OpenAI gpt-4o-mini-transcribe" and o["where"] == "api.openai.com" and o["per_minute"] is None
 
 
+def test_voice_says_why_when_aws_refuses_voxtrals_audio(settings, tmp_path):
+    # (lib/stt.sh: since October 2026; the notice ./stack recorded, and the model check's "no audio:" reasons)
+    from dataclasses import replace
+    import json
+    st = tmp_path / "status"; st.mkdir()
+    s = replace(settings, status_dir=st)
+    v = summary.voice(s, {})
+    assert "notice" not in v and v["bedrock_refused"] is False
+    (settings.litellm_dir / "probe-results.tsv").write_text(
+        "# name\tkind\tverdict\treason\tprice\tchecked_at\nbig\tchat\tENABLED\tok\t-\tT\n"
+        "voxtral-small\tstt\tENABLED\tno audio: Bedrock no longer accepts audio for this model (AWS: Model does not support audio modality)\t-\tT\n"
+        "voxtral-mini\tstt\tENABLED\tno audio: Bedrock no longer accepts audio for this model (AWS: x)\t-\tT\n")
+    assert summary.voice(s, {})["bedrock_refused"] is True
+    assert summary.reason_code("no audio: Bedrock no longer accepts audio for this model") == "no audio (AWS)"
+    (st / "stt-notice.json").write_text(json.dumps({"at": 1792700000, "reason": "audio-refused"}))
+    v = summary.voice(s, {})
+    assert v["notice"] == ("Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models (since "
+                           "October 2026). Voice uses your browser's speech recognition; or use your own OpenAI/Groq key: "
+                           "./stack stt set openai|groq.")
+    assert summary.stt_notice(s) == 1792700000
+    # anything odd in the file: no notice; and none once a server speech-to-text is on again
+    for bad in ({"at": "1", "reason": "audio-refused"}, {"at": 1, "reason": "other"}, {"at": True, "reason": "audio-refused"}, []):
+        (st / "stt-notice.json").write_text(json.dumps(bad))
+        assert "notice" not in summary.voice(s, {})
+    (st / "stt-notice.json").write_text(json.dumps({"at": 1792700000, "reason": "audio-refused"}))
+    assert "notice" not in summary.voice(replace(s, stt_engine="openai", stt_provider="openai", stt_model="gpt-4o-mini-transcribe"), {})
+    # one model still takes audio: not refused as a whole
+    (settings.litellm_dir / "probe-results.tsv").write_text("voxtral-small\tstt\tENABLED\tok\t-\tT\nvoxtral-mini\tstt\tENABLED\tno audio: x\t-\tT\n")
+    assert summary.voice(s, {})["bedrock_refused"] is False
+
+
 @respx.mock
 def test_services_include_the_stt_container_with_bedrock(settings):
     from dataclasses import replace

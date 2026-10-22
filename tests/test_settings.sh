@@ -1907,3 +1907,35 @@ JOB
   ! kill -0 "$pid" 2>/dev/null || { echo "left running" >&2; return 1; }
   _none_left
 }
+
+test_voice_bedrock_is_refused_while_aws_refuses_its_audio() {
+  # (lib/stt.sh: since October 2026 Bedrock answers Voxtral's audio with "Model does not support audio modality")
+  _env; _in_checkout; _stub_stack
+  mkdir -p "$STACK_DIR/stt"; cp "$T_ROOT/stt/check-tone.mp3" "$STACK_DIR/stt/"
+  printf 'big\nvoxtral-small\nvoxtral-mini\n' > "$STACK_DIR/litellm/enabled-models.txt"
+  printf '# name\tkind\tverdict\treason\tprice\tchecked_at\nvoxtral-small\tstt\tENABLED\tok\t-\tT\nvoxtral-mini\tstt\tENABLED\tok\t-\tT\n' \
+    > "$STACK_DIR/litellm/probe-results.tsv"
+  assert_contains "$(_settings_choices)" '"stt_bedrock_ready": ["voxtral-small", "voxtral-mini"], "stt_bedrock_refused": []'
+  run_phase() { echo "phase $1" >> "$TMP/calls"; }
+  cp "$ENV_FILE" "$TMP/before"
+  # Bedrock takes the half second of audio: it goes ahead (the image built first)
+  litellm_call() { echo "$3" >> "$TMP/audio"; printf '{}' > "$5"; echo 200; }
+  _lines STT_PROVIDER=bedrock | _apply --via portal --origin local --base "$(env_sha256)" 2> "$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  assert_eq "$(get_env STT_PROVIDER)" bedrock
+  assert_eq "$(cat "$TMP/audio")" /bedrock/model/voxtral-small/converse
+  assert_contains "$(cat "$TMP/calls")" "phase Speech-to-text image"
+  # it answers with the refusal: refused before anything changes, with the reason, and recorded
+  cp "$TMP/before" "$ENV_FILE"; : > "$TMP/calls"
+  litellm_call() { printf '%s' '{"message":"The model returned the following errors: Model does not support audio modality"}' > "$5"; echo 400; }
+  if out="$( (_lines STT_PROVIDER=bedrock | _apply --via portal --origin local --base "$(env_sha256)") 2>&1)"; then return 1; fi
+  assert_contains "$out" "Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models (since October 2026)"
+  assert_contains "$out" "nothing was changed"
+  assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
+  assert_not_contains "$(cat "$TMP/calls")" "phase"   # nothing built
+  # Settings shows what the check found (the portal disables Bedrock with the reason) and refuses it from the record
+  assert_contains "$(_settings_choices)" '"stt_bedrock_ready": ["voxtral-mini"], "stt_bedrock_refused": ["voxtral-small"]'
+  litellm_call() { echo "asked again" >> "$TMP/audio"; echo 000; }
+  if out="$( (_lines STT_PROVIDER=bedrock | _apply --via portal --origin local --base "$(env_sha256)") 2>&1)"; then return 1; fi
+  assert_contains "$out" "AWS no longer accepts audio for the Voxtral models"
+  assert_not_contains "$(cat "$TMP/audio")" "asked again"
+}

@@ -1133,3 +1133,255 @@ test_stt_set_bedrock_restores_the_previous_setting_when_the_container_fails() { 
   assert_eq "$(get_env STT_PROVIDER)" ""
   [ ! -e "$STATE_DIR/stt-choice" ]
 }
+
+# --- Bedrock refusing audio (since October 2026: HTTP 400 "Model does not support audio modality" for both Voxtral
+# models, on Converse and Invoke; text still works) ---
+
+# litellm_call stub for the half-second audio check: logs "KEY PATH", answers by model from REFUSE / OK (lists)
+_stub_audio() {
+  mkdir -p "$TMP/stt"; cp "$T_ROOT/stt/check-tone.mp3" "$TMP/stt/"
+  litellm_call() {
+    local m="${3#/bedrock/model/}"; m="${m%/converse}"
+    echo "$1 $3" >> "$TMP/audio-calls"; printf '%s' "$4" > "$TMP/audio-body"
+    case " ${OK:-} " in *" $m "*) printf '{"output":{"message":{"content":[{"text":"{}"}]}}}' > "$5"; echo 200; return 0 ;; esac
+    case " ${REFUSE:-} " in *" $m "*)
+      printf '%s' '{"error":{"message":"{'"'"'error'"'"': '"'"'{\"message\":\"The model returned the following errors: Model does not support audio modality\"}'"'"'}","type":"None","code":"400"}}' > "$5"
+      echo 400; return 0 ;; esac
+    printf '%s' "${OTHER_BODY:-{\"message\":\"Too many requests, please wait before trying again.\"}}" > "$5"; echo "${OTHER_CODE:-429}"
+  }
+}
+_refused_probed() {   # the model check after the refusal: both Voxtral models answer text (ENABLED) but not audio
+  _probed voxtral-small voxtral-mini
+  sed -i.bak "s/^\(voxtral-[a-z]*\)\tstt\tENABLED\tok/\1\tstt\tENABLED\t$STT_REFUSED_REASON/" "$TMP/litellm/probe-results.tsv"
+}
+
+test_refusal_is_recognised_in_aws_words_and_ours_and_nothing_else() {
+  stt_refusal_in '{"message":"The model returned the following errors: Model does not support audio modality"}'
+  stt_refusal_in 'ValidationException: Model does not support audio modality'
+  stt_refusal_in "400 Bedrock could not transcribe this audio: {'error': '{\"message\":\"The model returned the following errors: Model does not support audio modality\"}'}"
+  stt_refusal_in '400 Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models — switch to browser speech in Settings › Voice.'
+  stt_refusal_in '{"error":{"code":"audio_not_supported"}}'
+  for t in '429 Bedrock is throttling speech-to-text right now' '403 Bedrock refused voxtral-small (Mistral Voxtral) for this AWS account' \
+    '400 Bedrock could not transcribe this audio: Invalid audio' '000 URLError' '502 could not reach LiteLLM' ''; do
+    if stt_refusal_in "$t"; then echo "taken for the refusal: $t" >&2; return 1; fi
+  done
+}
+
+test_audio_check_sends_half_a_second_of_mp3_through_the_pass_through() {
+  _probed voxtral-small voxtral-mini; _stub_audio
+  printf 'LITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"
+  OK=voxtral-small stt_audio_check voxtral-small
+  assert_eq "$STT_AUDIO $STT_AUDIO_CODE" "ok 200"
+  assert_eq "$(cat "$TMP/audio-calls")" "sk-setupkey123 /bedrock/model/voxtral-small/converse"
+  python3 - "$TMP/audio-body" "$TMP/stt/check-tone.mp3" <<'PY' || return 1
+import base64, json, sys
+b = json.load(open(sys.argv[1])); c = b["messages"][0]["content"]
+assert len(b["messages"]) == 1 and c[0]["text"] and c[1]["audio"]["format"] == "mp3"
+assert base64.b64decode(c[1]["audio"]["source"]["bytes"]) == open(sys.argv[2], "rb").read()
+assert b["inferenceConfig"]["maxTokens"] <= 8
+PY
+  REFUSE=voxtral-mini stt_audio_check voxtral-mini
+  assert_eq "$STT_AUDIO $STT_AUDIO_CODE" "refused 400"
+  # any other answer is not this state: throttling, access, an error page, no answer
+  for c in 429 403 500 000; do OTHER_CODE=$c stt_audio_check voxtral-small; assert_eq "$STT_AUDIO" other; done
+  OTHER_CODE=400 OTHER_BODY='{"message":"ValidationException: Invalid audio"}' stt_audio_check voxtral-small
+  assert_eq "$STT_AUDIO" other
+  # never a model name that is not one (a path), and nothing without the tone file
+  : > "$TMP/audio-calls"
+  stt_audio_check '../../key/generate'; assert_eq "$STT_AUDIO" other
+  rm -f "$TMP/stt/check-tone.mp3"; OK=voxtral-small stt_audio_check voxtral-small; assert_eq "$STT_AUDIO" other
+  assert_eq "$(cat "$TMP/audio-calls")" ""
+}
+
+test_model_check_marks_voxtral_no_audio_and_keeps_it_enabled() {
+  _probed voxtral-small voxtral-mini; _stub_audio
+  assert_eq "$(REFUSE='voxtral-small voxtral-mini' stt_probe_audio voxtral-small ok)" "$STT_REFUSED_REASON"
+  assert_eq "$(OK=voxtral-small stt_probe_audio voxtral-small ok)" ok
+  assert_eq "$(stt_probe_audio voxtral-small ok)" ok   # throttled audio: the text check's ok stands
+  : > "$TMP/audio-calls"
+  assert_eq "$(REFUSE=voxtral-small stt_probe_audio voxtral-small 'throttled right now — kept')" 'throttled right now — kept'
+  assert_eq "$(cat "$TMP/audio-calls")" ""   # only an ok is asked about audio
+  assert_eq "$(reason_code "$STT_REFUSED_REASON")" "no audio (AWS)"
+  assert_contains "$(reason_footnote "no audio (AWS)" "$STT_REFUSED_REASON")" "Model does not support audio modality"
+  # in probe_models: a speech-to-text row the text request enabled is asked about audio; a chat row never
+  printf 'big\tchat\tbedrock/x.big\t-\t-\nvoxtral-small\tstt\tbedrock/mistral.voxtral-small\t-\t-\n' > "$TMP/cat.tsv"
+  probe_litellm() { echo 200; }
+  printf 'LITELLM_KEY_SETUP=sk-setupkey123\nAWS_REGION_NAME=us-east-1\n' > "$ENV_FILE"; : > "$TMP/audio-calls"
+  REFUSE=voxtral-small CATALOG="$TMP/cat.tsv" probe_models "$TMP/en.txt" "$TMP/res.tsv" 2> "$TMP/table"
+  assert_eq "$(cat "$TMP/audio-calls")" "sk-setupkey123 /bedrock/model/voxtral-small/converse"
+  assert_contains "$(cat "$TMP/table")" "no audio (AWS)"
+  assert_eq "$(awk -F'\t' '$1 == "voxtral-small" { print $3 "|" $4 }' "$TMP/res.tsv")" "ENABLED|$STT_REFUSED_REASON"
+  assert_eq "$(tr '\n' ' ' < "$TMP/en.txt")" "big voxtral-small "   # LiteLLM keeps serving it: a later check reaches it
+  assert_eq "$(models_table < "$TMP/res.tsv" | grep -c 'no audio (AWS):')" 1
+}
+
+test_a_refused_model_is_not_ready_and_the_record_follows_later_checks() {
+  _refused_probed
+  if stt_model_ready voxtral-small || stt_model_ready voxtral-mini; then return 1; fi
+  stt_model_refused voxtral-small; stt_bedrock_refused
+  _stt_mark_audio voxtral-small ok
+  stt_model_ready voxtral-small
+  if stt_bedrock_refused; then return 1; fi
+  stt_model_refused voxtral-mini
+  _stt_mark_audio voxtral-small refused
+  stt_model_refused voxtral-small
+  assert_eq "$(awk -F'\t' '$1 == "voxtral-small" { print $3 }' "$TMP/litellm/probe-results.tsv")" ENABLED
+  assert_eq "$(perm_of "$TMP/litellm/probe-results.tsv" 2>/dev/null || stat -f %Lp "$TMP/litellm/probe-results.tsv" 2>/dev/null || stat -c %a "$TMP/litellm/probe-results.tsv")" 644
+  # a model the text check found unusable stays as it was
+  _probed voxtral-small
+  _stt_mark_audio voxtral-mini refused
+  assert_contains "$(stt_model_reason voxtral-mini)" "not subscribed"
+}
+
+test_setup_turns_an_installs_bedrock_speech_off_once_and_says_why() {
+  _refused_probed
+  printf 'STT_PROVIDER=bedrock\nOWUI_STT_ENGINE=openai\nOWUI_STT_BASE_URL=http://caddy:8090/v1\nSTT_BEDROCK_MODEL=voxtral-small\n' > "$ENV_FILE"
+  stt_set_choice bedrock
+  : > "$STATE_DIR/stt-service"; dc() { echo "dc $*" >> "$TMP/dcs"; }
+  out="$(stt_after_probe 2>&1)"
+  assert_contains "$out" "Voice: Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models (since October 2026). Voice uses your browser's speech recognition; or use your own OpenAI/Groq key: ./stack stt set openai|groq."
+  assert_eq "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)$(get_env OWUI_STT_BASE_URL)$(get_env STT_BEDROCK_MODEL)" ""
+  assert_eq "$(stt_choice)" bedrock   # kept: audio taken again turns it back on
+  [ ! -e "$STATE_DIR/stt-start-failed" ]
+  at="$(cat "$STATE_DIR/status/stt-notice.json")"
+  assert_contains "$at" '"reason": "audio-refused"'
+  assert_eq "$(perm_of "$STATE_DIR/status/stt-notice.json" 2>/dev/null || stat -f %Lp "$STATE_DIR/status/stt-notice.json" 2>/dev/null || stat -c %a "$STATE_DIR/status/stt-notice.json")" 644
+  # the next setup: still refused — said again in its log, but the notice stays the one event it was
+  sleep 1; out="$(stt_after_probe 2>&1)"
+  assert_contains "$out" "Bedrock speech-to-text is unavailable: AWS no longer accepts audio"
+  assert_eq "$(cat "$STATE_DIR/status/stt-notice.json")" "$at"
+  # AWS takes audio again: on again, no notice
+  _probed voxtral-small voxtral-mini
+  out="$(stt_after_probe 2>&1)"
+  assert_eq "$(get_env STT_PROVIDER)" bedrock
+  [ ! -e "$STATE_DIR/status/stt-notice.json" ]
+}
+
+test_setup_default_is_browser_speech_with_the_notice_when_audio_is_refused() {
+  _refused_probed
+  printf 'X=1\n' > "$ENV_FILE"
+  out="$(stt_after_probe 2>&1)"
+  assert_contains "$out" "Voice: Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models (since October 2026)"
+  assert_not_contains "$out" "{"   # never AWS's raw answer
+  assert_eq "$(get_env STT_PROVIDER)" ""
+  [ -e "$STATE_DIR/status/stt-notice.json" ]
+  # an explicit browser (or OpenAI/Groq) choice: nothing to say
+  rm -rf "$STATE_DIR"; stt_set_choice browser
+  assert_eq "$(stt_after_probe 2>&1)" ""
+  [ ! -e "$STATE_DIR/status/stt-notice.json" ]
+  # only one model refused, the other takes audio: that one is used
+  _probed voxtral-small voxtral-mini
+  sed -i.bak "s/^voxtral-small\tstt\tENABLED\tok/voxtral-small\tstt\tENABLED\t$STT_REFUSED_REASON/" "$TMP/litellm/probe-results.tsv"
+  printf 'STT_PROVIDER=bedrock\n' > "$ENV_FILE"; rm -rf "$STATE_DIR"
+  assert_contains "$(stt_after_probe 2>&1)" "Bedrock no longer accepts audio for Mistral Voxtral Small — using Mistral Voxtral Mini"
+  assert_eq "$(get_env STT_PROVIDER)|$(get_env STT_MODEL)" "bedrock|voxtral-mini"
+}
+
+test_up_turns_bedrock_speech_off_when_aws_refuses_the_audio() {
+  _probed voxtral-small voxtral-mini; _stub_audio
+  printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"; stt_sync_env
+  mkdir -p "$STATE_DIR"; : > "$STATE_DIR/stt-service"
+  dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; }
+  ensure_portal_password_hash() { :; }
+  # audio taken: nothing changes (one request)
+  OK=voxtral-small stt_up_check 2>/dev/null
+  assert_eq "$(get_env STT_PROVIDER)" bedrock
+  assert_eq "$(wc -l < "$TMP/audio-calls" | tr -d ' ')" 1
+  [ ! -e "$TMP/dcs" ]
+  # throttling, an error, no answer: not this state — nothing changes
+  for c in 429 500 000 403; do OTHER_CODE=$c stt_up_check 2>/dev/null; done
+  assert_eq "$(get_env STT_PROVIDER)|$(get_env OWUI_STT_ENGINE)" "bedrock|openai"
+  [ ! -e "$TMP/dcs" ]
+  # refused for both: browser speech, the notice, Chat and the portal restarted, the stt container removed
+  out="$(REFUSE='voxtral-small voxtral-mini' stt_up_check 2>&1)"
+  assert_contains "$out" "Voice: Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models"
+  assert_eq "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)$(get_env OWUI_STT_BASE_URL)" ""
+  [ -e "$STATE_DIR/status/stt-notice.json" ]
+  assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait open-webui"
+  assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait portal"
+  stt_model_refused voxtral-small; stt_model_refused voxtral-mini
+  # ./stack status and ./stack stt status say it; costs suggest a key, not Bedrock
+  assert_contains "$(cmd_stt status 2>&1)" "  Bedrock speech-to-text was turned off: AWS no longer accepts audio for the Voxtral models"
+  assert_contains "$(stt_costs_section)" "./stack stt set openai|groq enables voice calls"
+  # small refused, mini takes audio: switches to mini
+  _probed voxtral-small voxtral-mini; rm -f "$TMP/dcs" "$STATE_DIR/status/stt-notice.json"
+  printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"; stt_sync_env
+  out="$(REFUSE=voxtral-small OK=voxtral-mini stt_up_check 2>&1)"
+  assert_contains "$out" "using Mistral Voxtral Mini"
+  assert_eq "$(get_env STT_PROVIDER)|$(get_env STT_MODEL)|$(get_env STT_BEDROCK_MODEL)" "bedrock|voxtral-mini|voxtral-mini"
+  assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait stt"
+  [ ! -e "$STATE_DIR/status/stt-notice.json" ]
+  # off, or OpenAI: no request at all
+  printf 'X=1\n' > "$ENV_FILE"; : > "$TMP/audio-calls"
+  stt_up_check
+  assert_eq "$(cat "$TMP/audio-calls")" ""
+  assert_contains "$(sed -n '/^cmd_up() {/,/^}/p' "$T_ROOT/lib/commands.sh")" "stt_up_check"
+}
+
+test_stt_set_bedrock_is_refused_while_aws_refuses_the_audio() {
+  _probed voxtral-small voxtral-mini; _stub_audio
+  mkdir -p "$TMP/litellm"; : > "$TMP/litellm/config.yaml"
+  printf 'LITELLM_MASTER_KEY=sk-m\nLITELLM_KEY_SETUP=sk-setupkey123\nSTT_PROVIDER=openai\nSTT_API_KEY=%s\n' "$OKEY" > "$ENV_FILE"
+  cp "$ENV_FILE" "$TMP/before"
+  dc() { case "$1" in ps) echo abc ;; esac; }
+  run_phase() { echo "PHASE $1" >> "$TMP/seq"; }
+  _stt_apply() { echo APPLY >> "$TMP/seq"; }
+  if out="$( (REFUSE=voxtral-small cmd_stt set bedrock) 2>&1)"; then return 1; fi
+  assert_contains "$out" "Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models (since October 2026). Use browser speech, or your own OpenAI/Groq key: ./stack stt set openai|groq. Nothing changed."
+  assert_eq "$(cat "$ENV_FILE")" "$(cat "$TMP/before")"
+  [ ! -e "$TMP/seq" ]   # nothing built, nothing applied
+  stt_model_refused voxtral-small   # recorded
+  # recorded, LiteLLM stopped: refused from the record
+  dc() { :; }
+  if out="$( (cmd_stt set bedrock) 2>&1)"; then return 1; fi
+  assert_contains "$out" "AWS no longer accepts audio"
+  # running again, and AWS takes the audio: the record is cleared and it goes ahead
+  dc() { case "$1" in ps) echo abc ;; esac; }
+  OK=voxtral-small cmd_stt set bedrock > /dev/null 2>&1
+  assert_eq "$(get_env STT_PROVIDER)" bedrock
+  assert_eq "$(stt_model_reason voxtral-small)" ok
+  assert_eq "$(tr '\n' ';' < "$TMP/seq")" "PHASE Speech-to-text image;APPLY;"
+}
+
+test_a_voice_choice_ends_the_notice() {
+  _refused_probed; _stub_curl_auth
+  printf 'X=1\n' > "$ENV_FILE"
+  stt_after_probe 2>/dev/null
+  stt_notice_on
+  check_docker_daemon() { :; }; dc() { :; }; status_table() { :; }; disk_line_cached() { echo disk; }
+  update_unfinished() { return 1; }; update_available() { return 1; }; helper_status_line() { echo helper; }
+  assert_eq "$(cmd_status 2>/dev/null | tail -n 1)" "  Voice: $STT_REFUSED_NOTICE"
+  assert_contains "$(update_whats_new 2>/dev/null)" "Voice: Bedrock speech-to-text was turned off"
+  _stt_apply() { :; }
+  cmd_stt remove 2>/dev/null
+  [ ! -e "$STATE_DIR/status/stt-notice.json" ]
+  assert_contains "$(cmd_stt status)" "./stack stt set openai|groq turns them on with your own key"
+  assert_contains "$(update_whats_new 2>/dev/null)" "./stack stt set openai|groq turns on speech-to-text"
+  stt_notice_record
+  STT_API_KEY="$OKEY" cmd_stt set openai > /dev/null 2>&1
+  assert_eq "$(get_env STT_PROVIDER)" openai
+  [ ! -e "$STATE_DIR/status/stt-notice.json" ]
+}
+
+test_stack_test_turns_bedrock_speech_off_when_the_tone_is_refused() {
+  _probed voxtral-small
+  printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"; stt_sync_env
+  stt_set_choice bedrock   # chosen: any other failure would count; this one turns it off
+  : > "$STATE_DIR/stt-service"
+  ensure_portal_password_hash() { :; }
+  for answer in "400 Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models — switch to browser speech in Settings › Voice." \
+      "400 Bedrock could not transcribe this audio: {'error': '{\"message\":\"The model returned the following errors: Model does not support audio modality\"}'}"; do
+    _probed voxtral-small
+    printf 'STT_PROVIDER=bedrock\nLITELLM_KEY_SETUP=sk-setupkey123\n' > "$ENV_FILE"; stt_sync_env; rm -f "$STATE_DIR/status/stt-notice.json" "$TMP/dcs"
+    A="$answer"
+    dc() { echo "dc $*" | cut -c1-40 >> "$TMP/dcs"; case "$*" in *healthz*) echo 200 ;; ps*) echo abc ;; "exec -T open-webui python3"*) cat > /dev/null 2>&1; printf '%s\n' "$A" ;; esac; }
+    fails=0; out="$(stt_test_checks 2>&1; echo "fails=$fails")"
+    assert_contains "$out" "skip  speech-to-text, 1 s tone through Caddy (Bedrock Mistral Voxtral Small) (AWS no longer accepts audio for the Voxtral models (since October 2026) — turned off, see above)"
+    assert_contains "$out" "Voice: Bedrock speech-to-text was turned off"
+    assert_contains "$out" "fails=0"
+    assert_eq "$(get_env STT_PROVIDER)$(get_env OWUI_STT_ENGINE)" ""
+    assert_contains "$(cat "$TMP/dcs")" "dc up -d --no-deps --wait open-webui"
+    [ -e "$STATE_DIR/status/stt-notice.json" ]
+    stt_model_refused voxtral-small
+  done
+}

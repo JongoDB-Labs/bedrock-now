@@ -393,6 +393,7 @@ settings_check_batch() {
         [ -z "$(cfg_effective STT_MODEL)" ] || stt_row bedrock "$(cfg_effective STT_MODEL)" >/dev/null ||
           die "STT_MODEL is not a Bedrock speech-to-text model: $(stt_models_of bedrock)"
         p="$(cfg_effective STT_MODEL)"
+        ! stt_model_refused "${p:-voxtral-small}" || die "$STT_REFUSED_ERR"   # (lib/stt.sh: the last check got that answer)
         stt_model_ready "${p:-voxtral-small}" ||
           die "Voxtral is not usable with your AWS key (the last model check) — ./stack models --recheck after your AWS admin enables it" ;;
       '') ;;
@@ -437,11 +438,12 @@ _settings_last_change() {
     printf "{\"at\": \"%s\", \"keys\": [%s], \"via\": \"%s\", \"result\": \"%s\"}\n", at, ko, v, r }'
 }
 
-# _settings_choices -> JSON: speech-to-text models per provider, which Bedrock ones the model check enabled, the
+# _settings_choices -> JSON: speech-to-text models per provider, which Bedrock ones the model check enabled (and which
+# Bedrock refuses audio for: lib/stt.sh — Settings shows Bedrock unavailable, with the reason), the
 # services ./stack restart takes, the chat models, and the folder the Code page's sandbox would see (code_workspace:
 # what Settings names before it turns the terminal on with the Code page; empty for a path JSON would need escapes in)
 _settings_choices() {
-  local p m out='' first sep ready='' ws
+  local p m out='' first sep ready='' refused='' ws
   ws="$(code_workspace)"
   case "$ws" in *'"'* | *'\'* | *[[:cntrl:]]*) ws='' ;; esac
   for p in bedrock openai groq; do
@@ -449,10 +451,11 @@ _settings_choices() {
     for m in $(stt_catalog | awk -F'\t' -v p="$p" '$1 == p { print $2 }'); do
       [ "$first" = 1 ] && sep='' || sep=', '; first=0; out="$out$sep\"$m\""
       [ "$p" != bedrock ] || ! stt_model_ready "$m" || ready="$ready${ready:+, }\"$m\""
+      [ "$p" != bedrock ] || ! stt_model_refused "$m" || refused="$refused${refused:+, }\"$m\""
     done
     out="$out]"
   done
-  printf '{"stt_models": {%s}, "stt_bedrock_ready": [%s], "restart": [%s], "chat_models": [%s], "code_workspace": "%s", "code_models": [%s]}\n' "$out" "$ready" \
+  printf '{"stt_models": {%s}, "stt_bedrock_ready": [%s], "stt_bedrock_refused": [%s], "restart": [%s], "chat_models": [%s], "code_workspace": "%s", "code_models": [%s]}\n' "$out" "$ready" "$refused" \
     "$(for s in $RESTART_SERVICES; do printf '"%s",' "$s"; done | sed 's/,$//')" \
     "$(for m in $(settings_chat_models); do printf '["%s", "%s"],' "$m" "$(_settings_display "$m")"; done | sed 's/,$//')" "$ws" "$(_settings_code_models)"
 }
@@ -744,6 +747,13 @@ _cfg_live_checks() {
       fi ;;
     bedrock)
       if cfg_has STT_PROVIDER && [ "$(get_env STT_PROVIDER)" != bedrock ] && _cfg_stack_running; then
+        # lib/stt.sh: does Bedrock take audio for it now? (refused: nothing changes, and Settings says why)
+        local sm; sm="$(cfg_effective STT_MODEL)"; sm="${sm:-voxtral-small}"
+        stt_audio_check "$sm"
+        case "$STT_AUDIO" in
+          refused) _stt_mark_audio "$sm" refused; _cfg_refuse "$STT_REFUSED_ERR" ;;
+          ok) _stt_mark_audio "$sm" ok ;;
+        esac
         (run_phase "Speech-to-text image" stt _stt_build_profiled) || _cfg_refuse "could not build the stt container"
       fi ;;
   esac

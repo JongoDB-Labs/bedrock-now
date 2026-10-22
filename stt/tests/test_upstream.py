@@ -95,6 +95,27 @@ def test_error_mapping(status, body, code, words):
     assert "sk-abcdef123456" not in e.message
 
 
+@pytest.mark.parametrize("status,body", [
+    # LiteLLM's Bedrock pass-through (as the stt container got it, 2026-10)
+    (400, json.dumps({"error": {"message": "{'error': '{\"message\":\"The model returned the following errors: Model does not "
+                                           "support audio modality\"}'}", "type": "None", "param": "None", "code": "400"}})),
+    # Bedrock's own answers: Converse, and Invoke
+    (400, '{"message":"The model returned the following errors: Model does not support audio modality"}'),
+    (400, '{"message":"ValidationException: Model does not support audio modality"}'),
+])
+def test_bedrock_refusing_audio_is_its_own_error_in_fixed_words(status, body):
+    e = upstream.map_error(status, body, "voxtral-small")
+    assert e.code == "audio_not_supported" and e.status == 400
+    assert e.message == ("Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models — "
+                         "switch to browser speech in Settings › Voice.")
+    assert "modality" not in e.message and "{" not in e.message   # AWS's text is never passed on
+
+
+def test_other_validation_errors_keep_their_mapping():
+    assert upstream.map_error(400, '{"message":"ValidationException: Invalid audio"}', "m").code == "invalid_audio"
+    assert upstream.map_error(403, '{"message":"not authorized to perform bedrock:InvokeModel"}', "m").code == "model_access_denied"
+
+
 def test_excerpt_strips_control_characters_and_keys():
     e = upstream.map_error(503, json.dumps({"error": {"message": "boom\n\x1b[31mred sk-secretkey123 " + "y" * 500}}), "m")
     assert "\x1b" not in e.message and "\n" not in e.message and "sk-secretkey123" not in e.message

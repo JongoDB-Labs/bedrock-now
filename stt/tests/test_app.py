@@ -119,6 +119,21 @@ def test_upstream_errors_become_openai_style_errors(fake_ffmpeg):
 
 
 @respx.mock
+def test_bedrock_refusing_audio_reaches_chat_in_fixed_words(fake_ffmpeg, caplog):
+    respx.post(URL).mock(return_value=httpx.Response(400, json={"error": {
+        "message": "{'error': '{\"message\":\"The model returned the following errors: Model does not support audio modality\"}'}",
+        "type": "None", "code": "400"}}))
+    with client() as c:
+        r = post(c)
+    assert r.status_code == 400
+    err = r.json()["error"]
+    assert err["code"] == "audio_not_supported"
+    assert err["message"] == ("Bedrock speech-to-text is unavailable: AWS no longer accepts audio for the Voxtral models — "
+                              "switch to browser speech in Settings › Voice.")
+    assert "audio_not_supported" in caplog.text and "modality" not in caplog.text
+
+
+@respx.mock
 def test_unreachable_litellm(fake_ffmpeg):
     respx.post(URL).mock(side_effect=httpx.ConnectError("refused"))
     with client() as c:

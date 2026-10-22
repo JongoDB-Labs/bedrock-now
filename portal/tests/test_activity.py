@@ -229,3 +229,20 @@ def test_the_page_builds_text_only_and_asks_for_notifications_only_when_turned_o
     assert 'new CustomEvent("bn:code-status", { detail: { waiting: reported.waiting, sessions: reported.sessions.map' in code
     sw = (STATIC / "sw.js").read_text(encoding="utf-8")
     assert 'addEventListener("notificationclick"' in sw and "push" not in sw.replace("no push", "")
+
+
+def test_voice_turned_off_because_aws_refuses_the_audio_is_one_item(s):
+    # (lib/stt.sh stt_notice_record: once, when Bedrock speech-to-text went off — or would have been the default)
+    assert activity.stt_notice_item(s) is None
+    (s.status_dir / "stt-notice.json").write_text(json.dumps({"at": 1792700000, "reason": "audio-refused"}))
+    it = activity.stt_notice_item(s)
+    assert it["id"] == "stt-notice:1792700000" and it["kind"] == "voice" and it["level"] == "warn"
+    assert it["title"] == "Bedrock speech-to-text was turned off"
+    assert it["text"].startswith("AWS no longer accepts audio for the Voxtral models (since October 2026). Voice uses your browser's")
+    assert it["link"] == "#settings/STT_PROVIDER" and it["at"] == 1792700000 and it["notify"] is True
+    assert [x["id"] for x in activity.items(s, False, now=1792700100) if x["kind"] == "voice"] == ["stt-notice:1792700000"]
+    # a server speech-to-text on again (a key of your own): no longer said
+    assert activity.stt_notice_item(replace(s, stt_engine="openai", stt_provider="groq", stt_model="whisper-large-v3-turbo")) is None
+    (s.status_dir / "stt-notice.json").write_text("{not json")
+    assert activity.stt_notice_item(s) is None
+
