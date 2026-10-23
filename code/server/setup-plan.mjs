@@ -454,7 +454,8 @@ export function planUnit(job) {
       const st = f === true ? 'there' : f === false ? 'missing' : k.name.startsWith('/') && !askable(k.name, projects) ? (hostOnly(k.name, home) ? 'missing' : 'unknown') : 'unknown';
       return { st, name: k.name, writable: k.name.startsWith('/') && inProject(k.name, projects) };
     }
-    if (k.kind === 'builtin') return { st: 'there', name: p };
+    // (a shell builtin, or a plugin's own file: nothing to say)
+    if (k.kind === 'builtin' || k.kind === 'plugin') return { st: 'there', name: p };
     return { st: k.kind === 'variable' ? 'unknown' : 'project', name: p.slice(0, 120) };
   };
   // programs of commands: each one the sandbox does not have, said; one in a project folder, said as Claude's to change
@@ -540,15 +541,17 @@ export function planUnit(job) {
           const p = { ...(j.permissions ?? {}) }, added = {}, wanted = {}, removed = [];
           for (const list of ['allow', 'ask', 'deny']) {
             if (p[list] !== undefined && !Array.isArray(p[list])) { blocked = 'the sandbox\'s settings.json has permissions of another shape: change it in the terminal first'; break; }
-            const mine = strList(prev[list]);
+            // (sets: the sandbox's own lists can be long — every test here is one lookup)
+            const mine = new Set(strList(prev[list]));
             const theirs = new Set(others.flatMap((o) => strList(isObj(o.wanted) ? o.wanted[list] : null)));
-            const next = strList(v[list]);
+            const next = strList(v[list]), nextSet = new Set(next);
             // (what this tool added before and no longer brings goes — unless the other tool brings it too — and is said)
-            const base = (p[list] ?? []).filter((r) => !mine.includes(r) || theirs.has(r) || next.includes(r));
-            for (const r of p[list] ?? []) if (!base.includes(r)) removed.push(`${list}: ${r}`);
-            const add = next.filter((r) => !base.includes(r));
+            const keepOf = (r) => !mine.has(r) || theirs.has(r) || nextSet.has(r);
+            const base = (p[list] ?? []).filter(keepOf), baseSet = new Set(base);
+            for (const r of p[list] ?? []) if (!keepOf(r)) removed.push(`${list}: ${r}`);
+            const add = [...new Set(next.filter((r) => !baseSet.has(r)))];
             if (p[list] !== undefined || add.length) p[list] = [...base, ...add];
-            added[list] = [...mine.filter((r) => next.includes(r) && base.includes(r)), ...add];
+            added[list] = [...[...mine].filter((r) => nextSet.has(r) && baseSet.has(r)), ...add];
             wanted[list] = next;
           }
           if (blocked) break;
@@ -570,7 +573,7 @@ export function planUnit(job) {
           pathFlags([...strList(v.allow), ...strList(v.ask), ...strList(v.deny)]);
           if (it.meta.dropped) flags.push(flag('info', `${it.meta.dropped} other permission setting${it.meta.dropped === 1 ? '' : 's'} (a default mode, more folders …) left out.`));
         } else if (k === 'hooks') {
-          const prev = strList(rec?.added);
+          const prev = new Set(strList(rec?.added));
           const theirs = new Set(others.flatMap((o) => strList(o.wanted)));
           if (j.hooks !== undefined && !isObj(j.hooks)) { blocked = 'the sandbox\'s settings.json has hooks of another shape: change it in the terminal first'; break; }
           const h = { ...(j.hooks ?? {}) }, added = [], wanted = [], removed = [];
@@ -579,7 +582,7 @@ export function planUnit(job) {
             if (!Array.isArray(h[ev])) continue;
             h[ev] = h[ev].filter((g) => {
               const id = stable([ev, g]);
-              const go = prev.includes(id) && !theirs.has(id) && !next.has(id);
+              const go = prev.has(id) && !theirs.has(id) && !next.has(id);
               if (go) removed.push(hookLine(id));
               return !go;
             });
@@ -587,9 +590,11 @@ export function planUnit(job) {
           }
           for (const [ev, gs] of Object.entries(v)) {
             const base = Array.isArray(h[ev]) ? h[ev] : [];
-            const add = gs.filter((g) => !base.some((b) => stable(b) === stable(g)));
+            const have = new Set(base.map((b) => stable(b)));
+            const add = gs.filter((g) => !have.has(stable(g)));
+            const addSet = new Set(add);
             if (base.length || add.length) h[ev] = [...base, ...add];
-            for (const g of gs) { const id = stable([ev, g]); wanted.push(id); if (add.includes(g) || prev.includes(id)) added.push(id); }
+            for (const g of gs) { const id = stable([ev, g]); wanted.push(id); if (addSet.has(g) || prev.has(id)) added.push(id); }
           }
           j.hooks = h;
           record[recKey(tool)] = { added, wanted, tool };

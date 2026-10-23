@@ -592,6 +592,16 @@ test('linear on hostile input: paths, programs, MCP secrets, URLs, front matter,
     ['!` with no end', (k) => big('!`', 2 * k * MB), plan.bangCommands], ['!`a` runs', (k) => big('!`a`', 2 * k * MB), plan.bangCommands],
     ['front matter lines', (k) => `---\n${big('allowed-tools: Bash\n', 2 * k * MB)}---\n`, (t) => plan.grantsOf(t, 'skill')],
     ['git identity', (k) => big('[user]\nname = "\\', k * MB), reader.identityOf], ['description blocks', (k) => big('---\ndescription: |\n  x\n', k * MB / 4), reader.frontmatter],
+    // (the sandbox's own settings.json is the sandbox's to write: thousands of rules and hook groups merge in linear time)
+    ['a merge into long lists', (k) => {
+      const own = { permissions: { allow: Array.from({ length: 5000 * k }, (_, i) => `Bash(own-${i}:*)`), deny: Array.from({ length: 5000 * k }, (_, i) => `Read(./x${i})`) },
+        hooks: { Stop: Array.from({ length: 1000 * k }, (_, i) => ({ hooks: [{ type: 'command', command: `own-${i}` }] })) } };
+      const text = JSON.stringify(own);
+      const it = (name, value) => ({ meta: { key: plan.itemKey('claude', 'setting', '-', name), tool: 'claude', kind: 'setting', scope: '-', name, value, hmac: 'k', files: [] }, files: [] });
+      return { items: [it('permissions', { allow: Array.from({ length: 1000 * k }, (_, i) => `Bash(mine-${i}:*)`) }), it('hooks', { Stop: Array.from({ length: 200 * k }, (_, i) => ({ hooks: [{ type: 'command', command: `mine-${i}` }] })) })],
+        state: { file: { exists: true, type: 'file', sha256: sha(text), text } },
+        records: { 'settings.json#permissions@claude': { added: { allow: Array.from({ length: 1000 * k }, (_, i) => `Bash(own-${i}:*)`) }, wanted: {} } } };
+    }, (job) => plan.planUnit(job)],
   ];
   for (const [label, make, run] of cases) assertLinear(make, run, label);
   assert.deepEqual(plan.programsOf('FOO=1 env BAR=2 /home/a/x.sh --flag | tee log && "my prog" arg; cd /x'), ['/home/a/x.sh', 'tee', 'my prog', 'cd']);
