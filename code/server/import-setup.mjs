@@ -155,15 +155,17 @@ function fileState(v) {
 /** The setup copied from this computer: the last look, the items opened, what was copied. */
 export class Setup {
   constructor({ dir = IMPORTS_DIR, stage = SETUP_STAGE, stageRoot = STAGE_DIR, helperFile = HELPER_FILE, now = () => Date.now(), call = null, plugins = null, egress = 'internet',
-    worker = false, imports = null } = {}) {
+    worker = false, imports = null, queue = null } = {}) {
     Object.assign(this, { dir, stageDir: stage, stageRoot, helperFile, now, call, egress });
     this.imports = imports ?? new Imports({ dir, stage: stageRoot, helperFile, now });
     // (plugins: the page's own install flow — the Code page's API, which reloads the open sessions' plugins; else the
     // CLI in the sandbox directly, for ./stack in a terminal)
     this.pluginsApi = plugins;
-    this.queue = new PlanQueue({ inline: !worker });
+    // (the import's own queue when there is one: one heavy check at a time in the code container, whatever it checks)
+    this.ownQueue = !queue;
+    this.queue = queue ?? new PlanQueue({ inline: !worker });
   }
-  close() { return this.queue.close(); }
+  close() { return this.ownQueue ? this.queue.close() : undefined; }
 
   // --- the look: what your setup holds ---
   indexFile() { return path.join(this.dir, 'setup-index.json'); }
@@ -530,7 +532,8 @@ export async function cli(argv, { stdin = process.stdin, setup = null, out = (o)
       for (const keys of unitsOf(s.staged())) {
         try {
           const p = await s.preview(keys, { mode, conflict });
-          const fl = p.flags.map((f) => `${f.level === 'warn' ? '! ' : ''}${f.text}${f.items?.length ? ` (${f.items.slice(0, 5).join(', ')}${f.items.length > 5 ? ', …' : ''})` : ''}`).join(' | ');
+          // (one flag a field of its own, apart by \x1f: a hook's command may hold a "|")
+          const fl = p.flags.map((f) => `${f.level === 'warn' ? '! ' : ''}${f.text}${f.items?.length ? ` (${f.items.slice(0, 5).join(', ')}${f.items.length > 5 ? ', …' : ''})` : ''}`.replace(/\x1f/g, ' ')).join('\x1f');
           line([keys.join('+'), p.digest, p.kind, p.tool, keys.length > 1 ? 'settings.json' : p.name, p.action, p.conflict ? `${p.conflict.dest}: ${p.conflict.why}` : '-', p.blocked ?? '-',
             p.findingsTotal, p.secrets.length, p.tokens.every ?? '?', fl].map(cell).join('\t'));
         } catch (e) { line([keys.join('+'), '-', '-', '-', '-', 'error', '-', e instanceof ImportError ? e.message : 'not checked', 0, 0, '?', ''].map(cell).join('\t')); }

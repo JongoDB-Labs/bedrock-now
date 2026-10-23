@@ -135,19 +135,18 @@ _sc_mount() {
   p="$(_sc_item "$1" "$2")"
   ! _sc_is_dir "$2" || kind=dir
   _sc_item_ok "$p" "$kind" || rc=$?
-  if [ "$rc" = 2 ]; then
-    case " $SC_LINKS " in *" $1="*) SC_LINKS="$(printf '%s' "$SC_LINKS" | sed "s/\\(^\\| \\)$1=\\([0-9]*\\)/\\1$1=X\\2/")" ;; *) SC_LINKS="$SC_LINKS $1=X" ;; esac
-    return 0
-  fi
+  # (one word per item left out: its tool)
+  if [ "$rc" = 2 ]; then SC_LINKS="$SC_LINKS $1"; return 0; fi
   [ "$rc" = 0 ] || return 0
   SS_MOUNTS+=(--mount "type=bind,source=$p,target=/in/$1-$2,readonly"); SC_INS+=(--in "$1:$2=/in/$1-$2")
 }
-# _sc_links_args -> --links TOOL=N for each tool with links left out
+# _sc_links_args -> --links TOOL=N for each tool with links left out (one a line)
 _sc_links_args() {
-  local w t n
-  for w in $SC_LINKS; do
-    t="${w%%=*}"; n="${w#*=}"; n="${#n}"
-    printf -- '--links\n%s=%s\n' "$t" "$n"
+  local t w n
+  for t in $SETUP_TOOLS; do
+    n=0
+    for w in $SC_LINKS; do [ "$w" != "$t" ] || n=$((n + 1)); done
+    [ "$n" = 0 ] || printf -- '--links\n%s=%s\n' "$t" "$n"
   done
 }
 
@@ -435,7 +434,7 @@ sessions_config_import() {
     [ "${nf:-0}" = 0 ] || printf '      %s possible secret(s): %s\n' "$nf" "$([ "$keep" = 1 ] && echo 'kept as they are (--keep-secrets)' || echo 'redacted')"
     [ "${ns:-0}" = 0 ] || printf '      %s secret-shaped value(s): %s\n' "$ns" "$([ "$keep" = 1 ] && echo 'copied (--keep-secrets)' || echo 'left out')"
     [ "$tok" = 0 ] || [ "$tok" = '?' ] || printf '      about %s tokens in every request\n' "$tok"
-    printf '%s\n' "$flags" | tr '|' '\n' | sed 's/^ *//' | while IFS= read -r line; do [ -n "$line" ] && printf '      %s\n' "$(plain_text "$line" | cut -c1-300)"; done
+    printf '%s\n' "$flags" | tr '\037' '\n' | sed 's/^ *//' | while IFS= read -r line; do [ -n "$line" ] && printf '      %s\n' "$(plain_text "$line" | cut -c1-300)"; done
     [ "$action" = none ] && [ "$conf" = - ] && continue
     units="${units:+$units,}$keys:$digest"
   done < <(_sc_code --secs "$SESSIONS_COPY_S" check --tsv --mode "$mode" --conflict "$conflict" 2>/dev/null)
@@ -490,7 +489,8 @@ _sc_consent_take() {
   _ss_consent_write "$lines"
   for f in "$(_sc_setup_dir)"/*.tsv; do
     [ -f "$f" ] || continue
-    if grep -q "^tools	.*$1" "$f" 2>/dev/null; then rm -f "$f"; fi
+    # (a look of that tool, among others or alone: its record goes — the other tools' rows are looked at again)
+    if awk -F'\t' -v t="$1" '$1 == "tools" { n = split($2, a, " "); for (i = 1; i <= n; i++) if (a[i] == t) f = 1 } END { exit !f }' "$f" 2>/dev/null; then rm -f "$f"; fi
   done
   _ss_forget setup "$1"
 }

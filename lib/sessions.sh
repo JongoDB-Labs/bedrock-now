@@ -83,8 +83,8 @@ Usage: ./stack sessions <command>
   consent                       What bedrock-now may read (the same as list); change it with:
       --project NAME [--tool T] --always | --once | --revoke
       --suggest --always | --once | --revoke   the names of the folders your tools kept sessions for
-      --revoke-all              take back everything (what the Code page's container read goes too; sessions
-                                already copied into the sandbox stay there)
+      --revoke-all              take back everything, your setup's too (what the Code page's container read goes
+                                too; sessions and setup already copied into the sandbox stay there)
   suggest                       The folders your tools kept sessions for, as suggested projects on the Code page
                                 (store folder names only: no session is read)
   config                        Your Claude Code setup (memory, skills, agents, commands, MCP servers, plugins, four
@@ -750,6 +750,8 @@ sessions_consent() {
   [ -n "$what" ] || { sessions_list; return 0; }
   if [ "$what" = revoke-all ]; then
     _ss_consent_take folder both all; _ss_consent_take suggest both all
+    # (everything: your setup's too — lib/sessions_config.sh)
+    if declare -F _sc_consent_take >/dev/null; then for t in $SETUP_TOOLS; do _sc_consent_take "$t"; done; _ss_forget setup all; sessions_status_sync; fi
     log "taken back: bedrock-now may read nothing of Claude Code's or claude-bedrock's on this computer now (sessions already copied into the sandbox stay there)"
     return 0
   fi
@@ -790,6 +792,7 @@ sessions_list() {
   local k t p s a n h rec name found=0 f
   printf 'What bedrock-now may read on this computer (./stack sessions consent changes it):\n'
   while IFS=$'\t' read -r k t p s a n h; do
+    [ "$k" != setup ] || continue   # (your setup's: ./stack sessions config list)
     found=1
     if [ "$k" = suggest ]; then printf '  %-15s the names of the folders it keeps sessions for (suggestions) — %s\n' "$(_ss_label "$t")" "$([ "$s" = always ] && echo always || echo once)"; continue; fi
     rec="$(project_find "$p" 2>/dev/null)"; name="$(printf '%s' "$rec" | cut -f2)"

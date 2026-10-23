@@ -510,9 +510,9 @@ function WriteView({ w }: { w: SetupWrite }) {
         <div class="small"><b>~/.claude/{w.dest}</b> in the sandbox{w.replaces ? ' (replacing what is there)' : ' (new)'} — {bytes(w.size)}</div>
         {w.text !== null ? <pre class="setup-text" data-testid="setup-text">{w.text}</pre> : <div class="small muted">Too long to show here (SHA-256 {w.sha256}).</div>}
         {w.before !== null && (
-          <details class="small">
-            <summary>Now in the sandbox (its own text)</summary>
-            <SandboxSaid words={{ by: 'sandbox', said: w.before.slice(0, 20000) } as SandboxWords} />
+          <details class="small" data-testid="setup-before">
+            <summary>Now in the sandbox (the sandbox's own text, shown as text)</summary>
+            <pre class="setup-text">{w.before}</pre>
           </details>
         )}
       </div>

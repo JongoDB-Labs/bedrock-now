@@ -246,7 +246,7 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   // your setup of this computer (Bring your setup): import-setup.mjs, setup-api.mjs — a plugin goes through the page's own
   // install flow (its sessions reload their plugins), each item's plan in the import's worker thread
   let setupStore = setup;
-  const stp = () => (setupStore ??= new Setup({ call, imports: imp(), worker: true,
+  const stp = () => (setupStore ??= new Setup({ call, imports: imp(), queue: imp().queue, worker: true,
     egress: sandboxInfo.egressHost ? 'host' : sandboxInfo.egress === false ? 'off' : 'internet',
     plugins: { list: () => api.plugins(), addMarketplace: (source) => api.marketplaceAdd({ source }), install: (id) => api.pluginAction('install', { name: id, scope: 'user' }),
       disable: (id) => api.pluginAction('disable', { name: id, scope: 'user' }) } }));
