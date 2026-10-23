@@ -347,6 +347,71 @@ export interface ImportResult { id: string; ok: boolean; as: string | null; fork
 /** A folder your coding tools kept sessions for (its store folder's name, turned into a folder that is there). */
 export interface ProjectSuggestion { path: string; claude: number; claudeBedrock: number; last: number }
 
+// ---------------------------------------------------------------- your setup of this computer (Bring your setup)
+export type SetupTool = 'claude' | 'claude-bedrock' | 'git';
+export type SetupKind = 'memory' | 'skill' | 'agent' | 'command' | 'output-style' | 'keybindings' | 'setting' | 'mcp' | 'plugin' | 'identity';
+/** An item of the last look at your setup on the computer (names and sizes only: nothing of it is read yet). */
+export interface SetupRow {
+  n: number;
+  tool: SetupTool;
+  kind: SetupKind;
+  /** user or local (an MCP server of the project's local scope); - for every other kind */
+  scope: 'user' | 'local' | '-';
+  name: string;
+  size: number;
+  tooLarge: boolean;
+  /** a skill's files, and how many of them are programs; files it leaves behind (links, hidden, odd names) */
+  files: number | null;
+  programs: number | null;
+  skipped: number | null;
+  transport: 'stdio' | 'http' | 'sse' | null;
+  marketplace: string | null;
+  enabled: boolean | null;
+  source: string | null;
+  has: { name: boolean; email: boolean } | null;
+  copied: { at: number | null } | null;
+}
+export interface SetupCounts { left: number; settingsOther: number; mcpOther: number; pluginsOther: number; links: number }
+export interface SetupView {
+  local: boolean;
+  helper: { running: boolean; actions: string[]; screen: boolean };
+  index: { scan: string; at: number; consent: 'once' | 'always'; fetchable: boolean; project: string | null; rows: SetupRow[]; counts: Partial<Record<SetupTool, SetupCounts>> } | null;
+  staged: { key: string; n: number; tool: SetupTool; kind: SetupKind; scope: string; name: string; at: number; digest: string | null }[];
+  requests: ImportRequest[];
+}
+export interface SetupFlag { level: 'warn' | 'info'; text: string; items: string[] }
+/** what a copy writes, as it will be (every secret redacted or left out): a file's text, a skill's files, an MCP server's
+ *  configuration, a plugin's install, the Git name and email — and the sandbox's own before it (its words: shown apart) */
+export type SetupWrite =
+  | { type: 'file'; dest: string; size: number; sha256: string; text: string | null; before: string | null; replaces: boolean }
+  | { type: 'dir'; dest: string; replaces: boolean; before: string[] | null; files: { path: string; exec: boolean; size: number; sha256: string; text: string | null }[] }
+  | { type: 'mcp'; name: string; replaces: boolean; config: unknown }
+  | { type: 'plugin'; id: string; marketplace: string; source: string; addMarketplace: boolean; disable: boolean }
+  | { type: 'git'; name: string; email: string; before: { name?: string; email?: string } };
+export interface SetupSecret { id: string; where: string; label: string; preview: string; drop: 'value' | 'server' }
+export interface SetupFinding { id: string; kind: string; label: string; file: string | null; preview: string; context: string; keepable: boolean }
+export interface SetupPreview {
+  keys: string[];
+  digest: string;
+  tool: SetupTool;
+  kind: SetupKind;
+  name: string;
+  scope: string;
+  action: 'none' | 'file' | 'dir' | 'mcp' | 'plugin' | 'git';
+  conflict: { dest: string; why: string } | null;
+  blocked: string | null;
+  /** an MCP server copied only with these kept */
+  needsKeep: string[] | null;
+  flags: SetupFlag[];
+  tokens: { every: number | null; when: number | null; unknown: boolean };
+  findings: SetupFinding[];
+  findingsTotal: number;
+  secrets: SetupSecret[];
+  left: { path: string; why: string }[];
+  writes: SetupWrite[];
+}
+export interface SetupResult { keys: string[]; ok: boolean; nothing: boolean; kind: string; name: string; why: string; said: SandboxWords | null; trashed: string | null; confirm: Confirmation | null; pluginId: string | null }
+
 export interface OpenSession {
   id: string;
   state: SessionState;

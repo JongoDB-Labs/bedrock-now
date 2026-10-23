@@ -15,7 +15,7 @@ import { Dialog } from './ui';
 import { Icon, Spinner } from './icons';
 
 type Tab = 'installed' | 'discover' | 'marketplaces';
-interface Pending {
+export interface Pending {
   action: api.PluginAction;
   id: string;
   confirm: Confirmation;
@@ -35,7 +35,7 @@ function Note({ o }: { o: NoteOf | null }) {
 }
 
 /** The marketplace-declared command, verbatim, and its SHA-256: what a person accepts. */
-function ConfirmCommand({ p, busy, onAccept, onCancel }: { p: Pending; busy: boolean; onAccept: () => void; onCancel: () => void }) {
+export function ConfirmCommand({ p, busy, onAccept, onCancel }: { p: Pending; busy: boolean; onAccept: () => void; onCancel: () => void }) {
   const c = p.confirm;
   const [mkt] = p.id.split('@').slice(1);
   return (

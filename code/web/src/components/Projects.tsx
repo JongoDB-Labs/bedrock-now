@@ -47,6 +47,7 @@ import { Icon, Spinner } from './icons';
 import { SandboxSaid } from './Said';
 import { Cmd, Dialog, Dropdown, MenuItem } from './ui';
 import { ImportSheet, Suggestions, TOOL_BADGE, TOOL_LABEL } from './Import';
+import { SetupSheet } from './Setup';
 import { modelLabel } from './Pickers';
 
 function StateDot({ v }: { v: SessionView | undefined }) {
@@ -209,6 +210,9 @@ function ProjectMenu({ p, onRename }: { p: Project; onRename: () => void }) {
               Import sessions from this computer…
             </MenuItem>
           )}
+          <MenuItem icon="download" onSelect={() => (close(), openProjectDialog({ kind: 'setup', id: p.id }))} testid="project-menu-setup">
+            Bring your setup…
+          </MenuItem>
           {p.host && (
             <MenuItem icon="trash" danger onSelect={() => (close(), openProjectDialog({ kind: 'remove', id: p.id }))} testid="project-menu-remove">
               Remove folder from Code…
@@ -517,6 +521,7 @@ export function ProjectDialogs() {
   if (d.kind === 'remove') return <RemoveProjectDialog id={d.id} onClose={close} />;
   if (d.kind === 'settings') return <SettingsDialog id={d.id} start={d.start} onClose={close} />;
   if (d.kind === 'import') return <ImportSheet id={d.id} onClose={close} />;
+  if (d.kind === 'setup') return <SetupSheet project={d.id} tool={d.tool ?? null} onClose={close} />;
   return <FileDialog ids={d.ids} onClose={close} />;
 }
 

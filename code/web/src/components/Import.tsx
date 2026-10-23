@@ -25,7 +25,7 @@ export const TOOL_LABEL: Record<ImportTool, string> = { claude: 'Claude Code', '
 export const TOOL_BADGE: Record<ImportTool, string> = { claude: 'CC', 'claude-bedrock': 'CB' };
 const SHOWN_ROWS = 500;
 // why a request to the helper did not go through, said by us (the helper says a fixed word: import-sessions.mjs)
-const WHY: Record<string, string> = {
+export const WHY: Record<string, string> = {
   password: 'The portal password was not right (the helper checks it itself).',
   busy: 'The computer is busy with another ./stack command: try again when it has finished.',
   limit: 'The helper asks at most once a minute (10 times a day): try again in a moment.',
@@ -43,7 +43,7 @@ const WHY: Record<string, string> = {
   timeout: 'It took too long on the computer and was stopped: nothing more was done (./stack sessions in a terminal there says why).',
   changed: 'That session was read again since you checked it: check it again.',
 };
-const STATE: Record<string, string> = {
+export const STATE: Record<string, string> = {
   unknown: 'Waiting for the update helper on the computer…',
   sent: 'Waiting for the update helper on the computer…',
   copying: 'Copying on the computer…',
@@ -52,7 +52,7 @@ const STATE: Record<string, string> = {
 };
 
 /** A request to the helper, followed until it is over: its state (sent, asking, reading) and how it ended. */
-function useRequest(onDone: () => void) {
+export function useRequest(onDone: () => void) {
   const [req, setReq] = useState<{ id: string; state: string; why: string | null } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
@@ -73,19 +73,19 @@ function useRequest(onDone: () => void) {
   };
   return { req, start: (id: string) => { setReq({ id, state: 'sent', why: null }); follow(id); }, clear: () => setReq(null) };
 }
-function RequestLine({ req }: { req: { state: string; why: string | null } | null }) {
+export function RequestLine({ req, why = WHY, cmd = './stack sessions', testid = 'import-request' }: { req: { state: string; why: string | null } | null; why?: Record<string, string>; cmd?: string; testid?: string }) {
   if (!req) return null;
-  if (STATE[req.state]) return (<div class="imp-req small" data-testid="import-request" data-state={req.state}><Spinner size={12} /> {STATE[req.state]}</div>);
+  if (STATE[req.state]) return (<div class="imp-req small" data-testid={testid} data-state={req.state}><Spinner size={12} /> {STATE[req.state]}</div>);
   if (req.state === 'done') return null;
   return (
-    <div class="imp-req plg-err small" role="alert" data-testid="import-request" data-state={req.state}>
-      {(req.why && WHY[req.why]) || (req.state === 'cancelled' ? 'Cancelled on the computer: nothing was read.' : 'It did not go through on the computer (./stack sessions in a terminal there says why).')}
+    <div class="imp-req plg-err small" role="alert" data-testid={testid} data-state={req.state}>
+      {(req.why && why[req.why]) || (req.state === 'cancelled' ? 'Cancelled on the computer: nothing was read.' : `It did not go through on the computer (${cmd} in a terminal there says why).`)}
     </div>
   );
 }
 
 /** The portal password, asked again for a request to the helper (it checks it against its own copy). */
-function Password({ value, onInput, testid }: { value: string; onInput: (v: string) => void; testid: string }) {
+export function Password({ value, onInput, testid }: { value: string; onInput: (v: string) => void; testid: string }) {
   return (
     <label class="imp-pw small">
       Portal password

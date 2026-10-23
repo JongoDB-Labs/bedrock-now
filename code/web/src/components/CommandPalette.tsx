@@ -107,6 +107,7 @@ function actions(s: AppState): Item[] {
     a('ports', 'Ports & previews…', () => setDialog('ports'), 'port', '', keysFor('ports')),
     a('run', 'Run & test…', openRun, 'play', "the workspace's scripts, make targets and entry points; Problems", keysFor('run')),
     a('memory', 'Memory (CLAUDE.md)…', () => setDialog('memory'), 'book'),
+    a('setup', 'Bring your setup from this computer…', () => openProjectDialog({ kind: 'setup', id: currentProject(s).id }), 'download', 'CLAUDE.md, skills, agents, commands, MCP servers, plugins, settings, your Git name and email'),
     a('plugins', 'Plugins & marketplaces…', () => setDialog('plugins'), 'plug'),
     a('mcp', 'MCP servers…', () => setDialog('mcp'), 'server'),
     a('reload-plugins', 'Reload plugins & skills', reloadPlugins, 'refresh'),

@@ -1,7 +1,8 @@
 // Deep links into the Code page (Home's Code card, a bookmark, a link someone sent): ?session=<id> shows or resumes
 // that session, ?project=<id> shows that project (an id of the list only: nothing is created by a link), ?prompt=<text>
 // puts a DRAFT into the prompt box — never sent by itself; ?git=hosts opens the Git panel's
-// Git hosts (Settings › Claude Code links there), ?git=clone its Clone dialog (empty: nothing is cloned by a link). A link is anyone's to make, so
+// Git hosts (Settings › Claude Code links there), ?git=clone its Clone dialog (empty: nothing is cloned by a link),
+// ?setup=1 the Bring your setup sheet (?setup=git: for the Git name and email; it reads nothing by itself). A link is anyone's to make, so
 // the draft is marked as coming from a link, capped, its invisible characters made visible (as everything untrusted
 // on this page), and the parameters leave the address bar at once (a reload does not bring the draft back).
 // Linear time: one pass over a capped string (test/polish.test.ts times hostile inputs).
@@ -24,13 +25,15 @@ export interface DeepLink {
   git: 'hosts' | 'clone' | null;
   /** a project to show (an id's shape: the page then looks it up in the list), or null */
   project: string | null;
+  /** the Bring your setup sheet to open (git: for the Git name and email), or null */
+  setup: '1' | 'git' | null;
   /** the link carried parameters this page knows (they are to be taken out of the address) */
   any: boolean;
 }
 
 /** parseDeepLink(location.search) — the parameters this page takes; anything else is left alone. */
 export function parseDeepLink(search: string): DeepLink {
-  const out: DeepLink = { session: null, prompt: null, cut: false, git: null, project: null, any: false };
+  const out: DeepLink = { session: null, prompt: null, cut: false, git: null, project: null, setup: null, any: false };
   if (typeof search !== 'string' || !search) return out;
   let p: URLSearchParams;
   try {
@@ -53,6 +56,11 @@ export function parseDeepLink(search: string): DeepLink {
     out.any = true;
     if (g === 'hosts' || g === 'clone') out.git = g;
   }
+  const su = p.get('setup');
+  if (su !== null) {
+    out.any = true;
+    if (su === '1' || su === 'git') out.setup = su;
+  }
   const raw = p.get('prompt');
   if (raw !== null) {
     out.any = true;
@@ -72,6 +80,7 @@ export function withoutDeepLink(href: string): string {
     u.searchParams.delete('prompt');
     u.searchParams.delete('git');
     u.searchParams.delete('project');
+    u.searchParams.delete('setup');
     return u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : '') + u.hash;
   } catch {
     return '/';

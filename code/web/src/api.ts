@@ -21,7 +21,8 @@ import {
   safe,
 } from './text';
 import type { AvailablePlugin, BnModel, Compat, Catalog, KeyBudget, RuleLine, CliModel, Command, ContextUsage, EditInfo, Ev, FileData, FsEntry, GitBranch, GitCommit, GitEntry, GitEvent, GitFile, GitFileDiff, GitHostRef, GitHostView, GitImported, GitOAuthView, GitSignInConfig, GitSignInFlow, GitIdentity, GitPlan, GitRemote, GitRemoteState, GitRemoteUrl, GitReview, GitRunResult, GitScope, GitStatus, GrepResult, Hunk, ImageBlock, InitInfo, InstalledPlugin, LoadedPlugin, Marketplace, McpServer, Mode, LaunchEntry, LaunchList, OpenSession, Outcome, PermissionReq, PortInfo, PreviewInfo, PreviewLink, RunList, RunResult, RunSource, RunSourceInfo, RunTask, ServerMsg, ServerState, SessionInfo, SessionState, SpendRow, Suggestion, WatchChange, SandboxWords, ImportTool, ImportedFrom, ImportRow, ImportView, ImportFinding,
-  ImportPreview, ImportResult, ImportRequest, ImportCounts, ProjectSuggestion } from './types';
+  ImportPreview, ImportResult, ImportRequest, ImportCounts, ProjectSuggestion, SetupTool, SetupKind, SetupRow, SetupView, SetupCounts, SetupPreview, SetupFlag, SetupWrite,
+  SetupSecret, SetupFinding, SetupResult } from './types';
 import { MODES, COMPATS } from './types';
 import { normBudget, type Budget as SessionBudget } from './budget';
 import { promptTitle } from './mentions';
@@ -2306,4 +2307,139 @@ export async function continueSession(id: string, project: string): Promise<stri
   const o = await request('POST', `/api/sessions/${id}/continue`, { project });
   if (!isUuid(o.id)) throw new ApiError(502, 'no new session');
   return o.id.toLowerCase();
+}
+
+// ---------------------------------------------------------------- your setup of this computer (Bring your setup)
+// What the backend says of it is what your setup on the computer held — names, files, settings, commands: untrusted
+// text (a skill or a CLAUDE.md can say anything), shown as text only; the sandbox's own text before a copy is the
+// sandbox's words, shown apart. A look and an open of items need the portal password and happen only on the computer.
+
+const SETUP_TOOLS: readonly SetupTool[] = ['claude', 'claude-bedrock', 'git'];
+const SETUP_KINDS: readonly SetupKind[] = ['memory', 'skill', 'agent', 'command', 'output-style', 'keybindings', 'setting', 'mcp', 'plugin', 'identity'];
+const SETUP_KEY = /^s_[0-9a-f]{16}$/;
+const SETUP_KEEP = /^(v|f[0-9]{1,3})#[0-9a-f]{16}$/;
+const setupTool = (v: unknown): SetupTool | null => (SETUP_TOOLS.includes(v as SetupTool) ? (v as SetupTool) : null);
+const setupKind = (v: unknown): SetupKind | null => (SETUP_KINDS.includes(v as SetupKind) ? (v as SetupKind) : null);
+function setupRow(v: unknown): SetupRow | null {
+  const o = obj(v);
+  const tool = setupTool(o?.tool), kind = setupKind(o?.kind);
+  if (!o || !tool || !kind || N(o.n, 1e5) === null || typeof o.name !== 'string' || !o.name) return null;
+  const has = obj(o.has), copied = obj(o.copied);
+  return {
+    n: N(o.n, 1e5) as number, tool, kind, scope: o.scope === 'user' || o.scope === 'local' ? o.scope : '-', name: label(o.name, 300), size: N(o.size, 1e12) ?? 0, tooLarge: o.tooLarge === true,
+    files: N(o.files, 1e6), programs: N(o.programs, 1e6), skipped: N(o.skipped, 1e6),
+    transport: o.transport === 'stdio' || o.transport === 'http' || o.transport === 'sse' ? o.transport : null,
+    marketplace: typeof o.marketplace === 'string' ? label(o.marketplace, 100) : null, enabled: typeof o.enabled === 'boolean' ? o.enabled : null,
+    source: typeof o.source === 'string' ? label(o.source, 20) : null, has: has ? { name: has.name === true, email: has.email === true } : null,
+    copied: copied ? { at: copied.at ? time(copied.at) : null } : null,
+  };
+}
+const SETUP_COUNTS = ['left', 'settingsOther', 'mcpOther', 'pluginsOther', 'links'] as const;
+/** Bring your setup's state: the last look (at most 5,000 items), the items opened, the helper, the requests. */
+export async function getSetup(): Promise<SetupView> {
+  const o = await request('GET', '/api/setup');
+  const ix = obj(o.index), h = obj(o.helper), head = obj(ix?.head), tools = obj(head?.tools);
+  const counts: Partial<Record<SetupTool, SetupCounts>> = {};
+  for (const t of SETUP_TOOLS) {
+    const c = obj(tools?.[t]);
+    if (c) counts[t] = Object.fromEntries(SETUP_COUNTS.map((k) => [k, N(c[k], 1e7) ?? 0])) as unknown as SetupCounts;
+  }
+  return {
+    local: o.local === true,
+    helper: { running: h?.running === true, actions: arr(h?.actions, 10).filter((a): a is string => typeof a === 'string' && /^(sessions|setup)-[a-z]{1,10}$/.test(a)), screen: h?.screen === true },
+    index: ix && typeof ix.scan === 'string' && /^[0-9a-f]{32}$/.test(ix.scan) ? {
+      scan: ix.scan, at: time(ix.at), consent: ix.consent === 'always' ? 'always' : 'once', fetchable: ix.fetchable === true,
+      project: typeof ix.project === 'string' && /^p_[0-9a-f]{8}$/.test(ix.project) ? ix.project : null,
+      rows: arr(ix.rows, 5000).map(setupRow).filter((r): r is SetupRow => r !== null), counts,
+    } : null,
+    staged: arr(o.staged, 300).map(obj).filter((x): x is Obj => x !== null && typeof x.key === 'string' && SETUP_KEY.test(x.key) && setupTool(x.tool) !== null && setupKind(x.kind) !== null)
+      .map((x) => ({ key: x.key as string, n: N(x.n, 1e5) ?? 0, tool: setupTool(x.tool) as SetupTool, kind: setupKind(x.kind) as SetupKind, scope: x.scope === 'user' || x.scope === 'local' ? x.scope : '-',
+        name: label(x.name, 300), at: time(x.at), digest: typeof x.digest === 'string' && /^[0-9a-f]{64}$/.test(x.digest) ? x.digest : null })),
+    requests: arr(o.requests, 20).map(importRequest).filter((r): r is ImportRequest => r !== null),
+  };
+}
+/** A look at your setup on the computer: the update helper asks there first (its screen). -> the request */
+export async function setupScan(tool: SetupTool | 'all', project: string | null, password: string): Promise<string> {
+  return askComputer({ action: 'setup-scan', tool, project: project && /^p_[0-9a-f]{8}$/.test(project) ? project : '-', password });
+}
+/** Open these rows of a look (their contents read into the backend, to check, then copy). -> the request */
+export async function setupFetch(scan: string, rows: number[], password: string): Promise<string> {
+  if (!/^[0-9a-f]{32}$/.test(scan)) throw new ApiError(400, 'bad request');
+  const ns = [...new Set(rows.filter((n) => Number.isInteger(n) && n >= 1 && n <= 5000))].slice(0, 100);
+  if (!ns.length) throw new ApiError(400, 'pick items of the list');
+  return askComputer({ action: 'setup-fetch', scan, rows: ns, password });
+}
+const strs = (v: unknown, max: number, len: number) => arr(v, max).filter((x): x is string => typeof x === 'string').map((x) => label(x, len));
+function setupWrite(v: unknown): SetupWrite | null {
+  const o = obj(v);
+  if (!o) return null;
+  // (text: shown in a <pre>, as text — safe() keeps its lines and makes controls and direction marks visible)
+  const text = (x: unknown) => (typeof x === 'string' ? safe(x, 300 * 1024) : null);
+  if (o.type === 'file') return { type: 'file', dest: label(o.dest, 400), size: N(o.size, 1e9) ?? 0, sha256: label(o.sha256, 64), text: text(o.text), before: text(o.before), replaces: o.replaces === true };
+  if (o.type === 'dir') {
+    return { type: 'dir', dest: label(o.dest, 400), replaces: o.replaces === true, before: Array.isArray(o.before) ? strs(o.before, 300, 300) : null,
+      files: arr(o.files, 300).map(obj).filter((f): f is Obj => f !== null && typeof f.path === 'string')
+        .map((f) => ({ path: label(f.path, 300), exec: f.exec === true, size: N(f.size, 1e9) ?? 0, sha256: label(f.sha256, 64), text: text(f.text) })) };
+  }
+  if (o.type === 'mcp') return { type: 'mcp', name: label(o.name, 64), replaces: o.replaces === true, config: o.config ?? null };
+  if (o.type === 'plugin') return { type: 'plugin', id: label(o.id, 200), marketplace: label(o.marketplace, 100), source: label(o.source, 500), addMarketplace: o.addMarketplace === true, disable: o.disable === true };
+  if (o.type === 'git') { const b = obj(o.before) ?? {}; return { type: 'git', name: label(o.name, 200), email: label(o.email, 200), before: { ...(typeof b.name === 'string' ? { name: label(b.name, 200) } : {}), ...(typeof b.email === 'string' ? { email: label(b.email, 200) } : {}) } }; }
+  return null;
+}
+/** A unit (an item; or the settings of one tool) as it would be copied — every secret redacted or left out. */
+export async function setupPreview(keys: string[], mode: 'replace' | 'append' = 'replace', conflict: 'leave' | 'replace' = 'leave'): Promise<SetupPreview> {
+  const ks = keys.filter((k) => SETUP_KEY.test(k)).slice(0, 4);
+  if (!ks.length) throw new ApiError(400, 'bad items');
+  const o = await request('GET', '/api/setup/preview' + q({ keys: ks.join(','), mode, conflict }));
+  const tok = obj(o.tokens), cf = obj(o.conflict);
+  return {
+    keys: ks, digest: typeof o.digest === 'string' && /^[0-9a-f]{64}$/.test(o.digest) ? o.digest : '', tool: setupTool(o.tool) ?? 'claude', kind: setupKind(o.kind) ?? 'memory', name: label(o.name, 300),
+    scope: label(o.scope, 10), action: ['none', 'file', 'dir', 'mcp', 'plugin', 'git'].includes(o.action as string) ? (o.action as SetupPreview['action']) : 'none',
+    conflict: cf ? { dest: label(cf.dest, 300), why: label(cf.why, 200) } : null, blocked: o.blocked ? label(o.blocked, 400) : null,
+    needsKeep: Array.isArray(o.needsKeep) ? arr(o.needsKeep, 64).filter((x): x is string => typeof x === 'string' && SETUP_KEEP.test(x)) : null,
+    flags: arr(o.flags, 60).map(obj).filter((f): f is Obj => f !== null).map((f): SetupFlag => ({ level: f.level === 'warn' ? 'warn' : 'info', text: label(f.text, 600), items: strs(f.items, 20, 300) })),
+    tokens: { every: N(tok?.every, 1e9), when: N(tok?.when, 1e9), unknown: tok?.unknown === true },
+    findings: arr(o.findings, 500).map(obj).filter((f): f is Obj => f !== null && typeof f.id === 'string' && SETUP_KEEP.test(f.id))
+      .map((f): SetupFinding => ({ id: f.id as string, kind: label(f.kind, 40), label: label(f.label, 120), file: f.file ? label(f.file, 300) : null, preview: label(f.preview, 80), context: label(f.context, 200), keepable: f.keepable === true })),
+    findingsTotal: N(o.findingsTotal, 1e7) ?? 0,
+    secrets: arr(o.secrets, 64).map(obj).filter((x): x is Obj => x !== null && typeof x.id === 'string' && SETUP_KEEP.test(x.id))
+      .map((x): SetupSecret => ({ id: x.id as string, where: label(x.where, 120), label: label(x.label, 120), preview: label(x.preview, 80), drop: x.drop === 'server' ? 'server' : 'value' })),
+    left: arr(o.left, 300).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ path: label(x.path, 300), why: label(x.why, 40) })),
+    writes: arr(o.writes, 5).map(setupWrite).filter((w): w is SetupWrite => w !== null),
+  };
+}
+function setupResults(list: unknown): SetupResult[] {
+  return arr(list, 60).map(obj).filter((x): x is Obj => x !== null).map((x) => {
+    const c = obj(x.confirm);
+    const confirm = c ? normOutcome({ needs_confirmation: c }).confirm : null;
+    return {
+      keys: arr(x.keys, 4).filter((k): k is string => typeof k === 'string' && SETUP_KEY.test(k)), ok: x.ok === true, nothing: x.nothing === true, kind: label(x.kind, 20), name: label(x.name, 300),
+      // (a refusal in the sandbox's words: apart, never in a sentence of ours)
+      why: x.ok === true ? (x.conflict ? `left as it is: ${label(x.conflict, 200)}` : '') : label(x.why, 400), said: x.ok !== true && typeof x.said === 'string' && x.said ? { by: 'sandbox', said: label(x.said, 300) } as SandboxWords : null,
+      trashed: typeof x.trashed === 'string' ? label(x.trashed, 300) : null, confirm,
+      pluginId: c && typeof c.id === 'string' && PLUGIN_ID.test(c.id) ? c.id : null,
+    };
+  }).filter((r) => r.keys.length);
+}
+/** Copy units into the sandbox — nothing kept: every finding redacted, every secret-shaped value left out. */
+export async function setupCopy(units: { keys: string[]; mode: 'replace' | 'append'; conflict: 'leave' | 'replace'; digest: string }[]): Promise<SetupResult[]> {
+  const o = await request('POST', '/api/setup/copy', { units: units.map((u) => ({ keys: u.keys.filter((k) => SETUP_KEY.test(k)).slice(0, 4), mode: u.mode, conflict: u.conflict, digest: u.digest })) });
+  return setupResults(o.results);
+}
+/** A copy that keeps some secrets (their ids): it needs the portal password — asked of the portal, done by the helper. */
+export async function setupCopyKept(unit: { keys: string[]; mode: 'replace' | 'append'; conflict: 'leave' | 'replace'; digest: string; keep: string[] }, password: string): Promise<string> {
+  const keys = unit.keys.filter((k) => SETUP_KEY.test(k)).slice(0, 4), keep = [...new Set(unit.keep.filter((k) => SETUP_KEEP.test(k)))].slice(0, 64);
+  if (!keys.length || !/^[0-9a-f]{64}$/.test(unit.digest) || !keep.length) throw new ApiError(400, 'bad request');
+  return askComputer({ action: 'setup-copy', units: keys, digest: unit.digest, mode: unit.mode, conflict: unit.conflict, keep, password });
+}
+/** How a setup request went (a copy's: its results). */
+export async function setupRequestState(id: string): Promise<{ state: ImportRequest['state']; why: string | null; results: SetupResult[] | null } | null> {
+  if (!/^[0-9a-f]{32}$/.test(id)) return null;
+  const o = await request('GET', `/api/imports/request/${id}`);
+  const r = importRequest({ ...o, results: undefined });
+  return r ? { state: r.state, why: r.why, results: Array.isArray(o.results) ? setupResults(o.results) : null } : null;
+}
+export async function setupDrop(key: string): Promise<void> {
+  if (!SETUP_KEY.test(key)) throw new ApiError(400, 'bad item');
+  await request('DELETE', '/api/setup/staged' + q({ key }));
 }

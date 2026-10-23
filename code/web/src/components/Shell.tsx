@@ -108,6 +108,9 @@ function MoreMenu() {
           <MenuItem icon="book" onSelect={() => (close(), setDialog('memory'))} testid="menu-memory">
             Memory (CLAUDE.md)…
           </MenuItem>
+          <MenuItem icon="download" onSelect={() => (close(), openProjectDialog({ kind: 'setup', id: currentProject(store.get()).id }))} testid="menu-setup">
+            Bring your setup from this computer…
+          </MenuItem>
           <MenuItem icon="shield" onSelect={() => (close(), setDialog('permissions'))} testid="menu-permissions">
             Permissions…
           </MenuItem>
@@ -755,6 +758,9 @@ function PhoneMenu() {
         </button>
         <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('memory'))} data-testid="phone-menu-memory">
           <Icon name="book" /> Memory (CLAUDE.md)
+        </button>
+        <button type="button" class="pm-link" onClick={() => (setSheet(null), openProjectDialog({ kind: 'setup', id: currentProject(store.get()).id }))} data-testid="phone-menu-setup">
+          <Icon name="download" /> Bring your setup
         </button>
         <button type="button" class="pm-link" onClick={() => (setSheet(null), setDialog('permissions'))} data-testid="phone-menu-permissions">
           <Icon name="shield" /> Permissions

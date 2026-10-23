@@ -22,6 +22,7 @@ import {
   stageGit,
   unstageGit,
   writeCommitMessage,
+  openProjectDialog,
   type GitDiffTab,
 } from '../app';
 import { codeTitle, commitBlocker } from '../git';
@@ -207,7 +208,11 @@ function CommitBox({ st }: { st: GitStatus }) {
       </div>
       {id && (
         <div class="gitp-note muted small" data-testid="git-identity" title={id.from === 'repository' ? "This repository's user.name and user.email" : id.from === 'sandbox' ? "The sandbox's ~/.gitconfig" : 'Set yours with git config user.name / user.email (in the terminal)'}>
-          As {label(id.name, 80)} &lt;{label(id.email, 120)}&gt;{id.from === 'default' ? ' (no git identity is set)' : ''}
+          As {label(id.name, 80)} &lt;{label(id.email, 120)}&gt;{id.from === 'default' ? ' (no git identity is set)' : ''}{' '}
+          <button type="button" class="linkish" onClick={() => openProjectDialog({ kind: 'setup', id: null, tool: 'git' })} data-testid="git-identity-bring"
+            title="Your user.name and user.email from ~/.gitconfig on the computer running bedrock-now, into the sandbox's ~/.gitconfig (Bring your setup)">
+            {id.from === 'default' ? 'Use yours from this computer…' : 'Bring yours from this computer…'}
+          </button>
         </div>
       )}
       <div class="gitp-note muted small" data-testid="git-no-hooks" title="git's hooks (pre-commit, commit-msg …), signing programs and editors never run for the panel's commands. On your computer, git would run this repository's hooks.">

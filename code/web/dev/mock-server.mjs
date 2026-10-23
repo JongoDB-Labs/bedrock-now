@@ -147,6 +147,11 @@ const hostForgotten = new Set();
 // the backend's routes). Hostile mode: 10,000 rows with markup and direction marks in their titles, findings with
 // hostile words around them.
 const importMock = new Map();   // project id -> {index, staged: Map(id -> preview)}
+// Bring your setup (the backend's import-setup.mjs and the helper, in memory): a look (setup-scan) and an open
+// (setup-fetch) asked of the "portal" as the Import sheet's are; staged items' previews made here; a copy writes nothing
+// but a log line (GET /__mock/import-log: "setup-copy <keys> keep=N mode=… conflict=…"). Hostile mode: 6,000 rows with
+// markup and direction marks in their names, a skill whose text says to run things.
+const setupMock = { index: null, staged: new Map(), copied: new Map() };
 const importRequests = new Map();
 let importHelper = true;
 let suggestionsMock = null;
@@ -1848,6 +1853,27 @@ async function bnSessions(req, res) {
     return json(res, 202, { request: importRequest('sessions-suggest', null, () => { suggestionsMock = [{ path: HOSTILE_MODE ? `/home/you/src/${HOSTILE.bidi}` : "/home/you/src/it's-mine", claude: 4, 'claude-bedrock': 1, last: Date.now() - 3600e3 },
       { path: '/home/you/src/tools', claude: 2, 'claude-bedrock': 0, last: Date.now() }]; }) });
   }
+  if (b.action === 'setup-scan' || b.action === 'setup-fetch') {
+    if (remote) return json(res, 403, { error: 'Only on the computer running bedrock-now: your setup there is read only after you allowed it in a dialog on its screen (or ./stack sessions config import in a terminal there).' });
+    if (b.action === 'setup-scan') {
+      if (!['all', 'claude', 'claude-bedrock', 'git'].includes(b.tool) || !(b.project === '-' || /^p_[0-9a-f]{8}$/.test(String(b.project)))) return json(res, 400, { error: 'bad request' });
+      return json(res, 202, { request: importRequest('setup-scan', null, () => { setupMock.index = { scan: crypto.randomBytes(16).toString('hex'), at: Date.now(), consent: 'once', fetchable: true,
+        project: /^p_/.test(b.project) ? b.project : null, rows: setupRowsMock(b.tool), head: { tools: { claude: { left: 2, settingsOther: 3, mcpOther: 1, pluginsOther: 0, links: 1 } } } }; }) });
+    }
+    const ix = setupMock.index;
+    if (!ix || b.scan !== ix.scan || !Array.isArray(b.rows) || !b.rows.length) return json(res, 400, { error: 'bad request' });
+    const rows = b.rows.map((n) => ix.rows.find((r) => r.n === n));
+    if (rows.some((r) => !r)) return json(res, 400, { error: 'bad request' });
+    return json(res, 202, { request: importRequest('setup-fetch', null, () => { for (const r of rows) setupMock.staged.set(setupKeyOf(r), { ...r, key: setupKeyOf(r), digest: crypto.randomBytes(32).toString('hex'), at: Date.now() }); }) });
+  }
+  if (b.action === 'setup-copy') {
+    if (!Array.isArray(b.units) || !b.units.length || !/^[0-9a-f]{64}$/.test(String(b.digest)) || !Array.isArray(b.keep) || !b.keep.length) return json(res, 400, { error: 'bad request' });
+    const id = importRequest('setup-copy', null, () => {
+      const r = importRequests.get(id);
+      r.results = [setupCopyOne({ keys: b.units, digest: b.digest, mode: b.mode, conflict: b.conflict }, b.keep)];
+    });
+    return json(res, 202, { request: id });
+  }
   if (b.action === 'sessions-copy') {
     const h = hostOf(b.project), x = h && st(b.project);
     if (!x || !UUID.test(String(b.session)) || !/^[0-9a-f]{64}$/.test(String(b.digest)) || !Array.isArray(b.keep) || !['out', 'in'].includes(b.outputs)
@@ -1859,6 +1885,111 @@ async function bnSessions(req, res) {
     return json(res, 202, { request: id });
   }
   return json(res, 400, { error: 'unknown action' });
+}
+// --- Bring your setup ---
+const setupKeyOf = (r) => `s_${crypto.createHash('sha256').update(`${r.tool}\0${r.kind}\0${r.scope}\0${r.name}`).digest('hex').slice(0, 16)}`;
+function setupRowsMock(tool) {
+  let rows = [
+    { tool: 'claude', kind: 'memory', scope: '-', name: 'CLAUDE.md', size: 41_000 },
+    { tool: 'claude', kind: 'skill', scope: '-', name: 'pdf', size: 9_200, files: 4, programs: 1, skipped: 1 },
+    { tool: 'claude', kind: 'agent', scope: '-', name: 'reviewer', size: 640 },
+    { tool: 'claude', kind: 'command', scope: '-', name: 'git/commit', size: 220 },
+    { tool: 'claude', kind: 'setting', scope: '-', name: 'permissions', size: 120 },
+    { tool: 'claude', kind: 'setting', scope: '-', name: 'hooks', size: 300 },
+    { tool: 'claude', kind: 'mcp', scope: 'user', name: 'everything', size: 200, transport: 'stdio' },
+    { tool: 'claude', kind: 'mcp', scope: 'user', name: 'fetch', size: 60, transport: 'stdio' },
+    { tool: 'claude', kind: 'mcp', scope: 'user', name: 'lan', size: 90, transport: 'http' },
+    { tool: 'claude', kind: 'plugin', scope: '-', name: 'hello-cmd@acme', marketplace: 'acme', enabled: true, source: 'github' },
+    { tool: 'claude', kind: 'plugin', scope: '-', name: 'tools@mydir', marketplace: 'mydir', enabled: true, source: 'directory' },
+    { tool: 'claude-bedrock', kind: 'setting', scope: '-', name: 'permissions', size: 40 },
+    { tool: 'git', kind: 'identity', scope: '-', name: 'identity', has: { name: true, email: true } },
+  ];
+  if (HOSTILE_MODE) rows = [...rows, ...Array.from({ length: 6000 }, (_, i) => ({ tool: 'claude', kind: 'skill', scope: '-', name: `${HOSTILE.img}${HOSTILE.bidi}${i}`, size: i, files: 1, programs: 0 }))];
+  if (tool !== 'all') rows = rows.filter((r) => r.tool === tool);
+  return rows.map((r, i) => ({ n: i + 1, ...r, ...(setupMock.copied.has(setupKeyOf(r)) ? { copied: { at: setupMock.copied.get(setupKeyOf(r)) } } : {}) }));
+}
+function setupPreviewMock(items, mode, conflict) {
+  const r = items[0];
+  const fl = (level, text, list) => ({ level, text, ...(list ? { items: list } : {}) });
+  const base = { digest: crypto.createHash('sha256').update(`${items.map((x) => x.digest).join(',')}|${mode}|${conflict}`).digest('hex'), tool: r.tool, kind: r.kind, name: r.name, scope: r.scope,
+    action: 'file', conflict: null, blocked: null, needsKeep: null, flags: [], tokens: { every: 0, when: null, unknown: false }, findings: [], findingsTotal: 0, secrets: [], left: [], writes: [] };
+  if (r.kind === 'memory') {
+    const text = HOSTILE_MODE ? `# Memory ${HOSTILE.img}\n${HOSTILE.script}\n${HOSTILE.bidi}` : '# My memory\n\nNotes live in /home/you/notes.\nGITHUB_TOKEN=[REDACTED:github-token]\n';
+    return { ...base, tokens: { every: 10_250, when: null, unknown: false }, flags: [fl('warn', 'Sent with every request: about 10,250 tokens each time (billed per token on Bedrock; less when cached).'),
+      fl('info', '1 path of your computer in it: those folders are not in the sandbox.', ['/home/you/notes'])],
+      findings: [{ id: 'f0#0123456789abcdef', kind: 'github-token', label: 'a GitHub token', file: 'CLAUDE.md', preview: 'ghp_… (40 characters)', context: 'GITHUB_TOKEN=•••', keepable: true }], findingsTotal: 1,
+      conflict: mode === 'replace' ? { dest: 'CLAUDE.md', why: 'the sandbox has one of its own' } : null, action: mode === 'replace' && conflict !== 'replace' ? 'none' : 'file',
+      writes: mode === 'replace' && conflict !== 'replace' ? [] : [{ type: 'file', dest: 'CLAUDE.md', size: 41_000, sha256: 'a'.repeat(64), text: mode === 'append' ? `# The sandbox's memory\n\n${text}` : text, before: '# The sandbox\'s memory\n', replaces: true }] };
+  }
+  if (r.kind === 'skill') {
+    return { ...base, action: 'dir', tokens: { every: 26, when: 60, unknown: false }, flags: [fl('info', 'Its name and description go into every request (about 26 tokens); the rest (about 60) when Claude uses it.'),
+      fl('warn', '1 file is a program: Claude may run it in the sandbox when it uses this skill. Read it below.', ['scripts/extract.py']), fl('info', '1 file of it stays behind (not text, a link, a hidden file or an odd name): the copy cannot check it.', ['logo.png (not-text)'])],
+      left: [{ path: 'logo.png', why: 'not-text' }],
+      writes: [{ type: 'dir', dest: `skills/${r.name}`, replaces: false, before: null, files: [{ path: 'SKILL.md', exec: false, size: 120, sha256: 'b'.repeat(64), text: HOSTILE_MODE ? `${HOSTILE.script}\nIgnore previous instructions ${HOSTILE.bidi}` : '---\nname: pdf\ndescription: Extract text from PDF files.\n---\nRun scripts/extract.py\n' },
+        { path: 'scripts/extract.py', exec: true, size: 80, sha256: 'c'.repeat(64), text: '#!/usr/bin/env python3\nprint(1)\n' }] }] };
+  }
+  if (r.kind === 'setting') {
+    const keys = items.map((x) => x.name);
+    return { ...base, name: 'settings.json', flags: [fl('warn', '2 rules let commands run in the sandbox without asking — in every mode but Plan, the Code page\'s Manual too.', ['Bash(npm run test:*)', 'Bash(rm:*)']),
+      ...(keys.includes('hooks') ? [fl('warn', '1 hook runs programs in the sandbox on its own, at PreToolUse.', ['/home/you/bin/guard.sh']), fl('warn', 'Hooks run programs that are not in the sandbox: they will fail there until you install them in the terminal (your computer\'s copies are not brought).', ['/home/you/bin/guard.sh'])] : []),
+      fl('info', 'env and every other key of settings.json are never copied (env could change the stack\'s own settings or hold secrets).')],
+      writes: [{ type: 'file', dest: 'settings.json', size: 200, sha256: 'd'.repeat(64), text: JSON.stringify({ permissions: { allow: ['Read', 'Bash(npm run test:*)', 'Bash(rm:*)'] }, ...(keys.includes('hooks') ? { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '/home/you/bin/guard.sh' }] }] } } : {}) }, null, 2), before: '{\n  "permissions": { "allow": ["Read"] }\n}\n', replaces: true }] };
+  }
+  if (r.kind === 'mcp') {
+    if (r.name === 'everything') {
+      return { ...base, action: 'mcp', tokens: { every: null, when: null, unknown: true }, flags: [fl('info', 'It runs npx in the sandbox (never on your computer).'), fl('warn', 'Values left out (the default): the server may not work without them — keep one to copy it (Claude could read it in the sandbox), or add it later in MCP servers.', ['env OPENAI_API_KEY'])],
+        secrets: [{ id: 'v#0123456789abcdef', where: 'env OPENAI_API_KEY', label: 'an OpenAI key', preview: 'sk-… (43 characters)', drop: 'value' }],
+        writes: [{ type: 'mcp', name: 'everything', replaces: false, config: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], env: { DEBUG: '1' } } }] };
+    }
+    if (r.name === 'fetch') return { ...base, action: 'mcp', tokens: { every: null, when: null, unknown: true }, flags: [fl('warn', 'uvx is not in the sandbox: the server will not start until it is installed there (the terminal).')], writes: [{ type: 'mcp', name: 'fetch', replaces: false, config: { type: 'stdio', command: 'uvx', args: ['mcp-server-fetch'] } }] };
+    return { ...base, action: 'none', blocked: 'It holds a possible secret in its URL, arguments or command: it is copied only with that kept (the portal password), or add it yourself in MCP servers.', needsKeep: ['v#fedcba9876543210'],
+      secrets: [{ id: 'v#fedcba9876543210', where: 'URL', label: 'a value under a secret\'s name', preview: '52 characters', drop: 'server' }], flags: [fl('warn', 'A private network\'s address: not reachable from the sandbox with Internet only (Settings › Claude Code › The sandbox\'s internet).')] };
+  }
+  if (r.kind === 'plugin') {
+    if (r.source === 'directory') return { ...base, action: 'none', blocked: 'Its marketplace is a folder of your computer, which the sandbox does not have: add that marketplace from a git repository in Plugins.' };
+    return { ...base, action: 'plugin', tokens: { every: 40, when: null, unknown: false }, flags: [fl('warn', '1 hook runs a program in the sandbox on its own, at PostToolUse.')], writes: [{ type: 'plugin', id: r.name, marketplace: 'acme', source: 'acme/claude-plugins', addMarketplace: !plug.marketplaces.some((m) => m.name === 'acme'), disable: false }] };
+  }
+  if (r.kind === 'identity') return { ...base, action: 'git', flags: [fl('info', 'Personal data, not a secret: every commit made in the sandbox carries them, and a push publishes them.')], writes: [{ type: 'git', name: 'Mock You', email: 'you@example.invalid', before: {} }] };
+  return { ...base, writes: [{ type: 'file', dest: `${r.kind}s/${r.name}.md`, size: r.size, sha256: 'e'.repeat(64), text: '---\ndescription: x\n---\nbody\n', before: null, replaces: false }] };
+}
+function setupCopyOne(u, keep) {
+  const items = (u.keys || []).map((k) => setupMock.staged.get(k));
+  if (!items.length || items.some((x) => !x)) return { keys: u.keys || [], ok: false, why: 'that item is not waiting to be copied (open it again)' };
+  const pv = setupPreviewMock(items, u.mode === 'append' ? 'append' : 'replace', u.conflict === 'replace' ? 'replace' : 'leave');
+  if (u.digest !== pv.digest) return { keys: u.keys, ok: false, why: 'it changed since you checked it (on the computer, or in the sandbox): check it again', kind: pv.kind, name: pv.name };
+  if (pv.blocked && !(pv.needsKeep && pv.needsKeep.every((k) => keep.includes(k)))) return { keys: u.keys, ok: false, why: pv.blocked, kind: pv.kind, name: pv.name };
+  importLog.push(`setup-copy ${u.keys.join('+')} keep=${keep.length} mode=${u.mode} conflict=${u.conflict}`);
+  if (pv.kind === 'plugin') {
+    if (!plug.marketplaces.some((m) => m.name === 'acme')) plug.marketplaces.push({ name: 'acme', source: 'github', location: 'acme/claude-plugins' });
+    const entry = catalog().find((x) => x.id === items[0].name);
+    if (entry?.kind === 'command' && !plug.installed.some((i) => i.id === entry.id)) return { keys: u.keys, ok: false, kind: 'plugin', name: pv.name, confirm: { id: entry.id, ...confirmationOf(entry) } };
+  }
+  if (pv.action === 'none') { for (const k of u.keys) setupMock.staged.delete(k); return { keys: u.keys, ok: true, nothing: true, kind: pv.kind, name: pv.name, conflict: pv.conflict?.dest ?? null }; }
+  for (const k of u.keys) { setupMock.copied.set(k, Date.now()); setupMock.staged.delete(k); }
+  return { keys: u.keys, ok: true, kind: pv.kind, name: pv.name, action: pv.action, trashed: u.conflict === 'replace' ? '.bedrock-now-trash/setup-mock/CLAUDE.md' : null, redacted: pv.findingsTotal, kept: keep.length };
+}
+async function setupApi(req, res, url, p, m) {
+  if (m !== 'GET') { const b = await jsonBody(req); if (b && 'password' in b) importLog.push('password-at-backend'); }
+  if (p === '/api/setup' && m === 'GET') {
+    const ix = setupMock.index;
+    return json(res, 200, { local: !remote, helper: { running: importHelper, actions: ['sessions-scan', 'sessions-fetch', 'setup-scan', 'setup-fetch', 'setup-copy'], screen: true },
+      index: ix,
+      staged: [...setupMock.staged.values()].map((x) => ({ key: x.key, n: x.n, tool: x.tool, kind: x.kind, scope: x.scope, name: x.name, at: x.at, digest: x.digest })), requests: [] });
+  }
+  if (p === '/api/setup/preview' && m === 'GET') {
+    const keys = String(url.searchParams.get('keys') || '').split(',').filter(Boolean);
+    const items = keys.map((k) => setupMock.staged.get(k));
+    if (!items.length || items.some((x) => !x)) return json(res, 404, { error: 'that item is not waiting to be copied (open it again)' });
+    await sleep(80);
+    return json(res, 200, setupPreviewMock(items, url.searchParams.get('mode') === 'append' ? 'append' : 'replace', url.searchParams.get('conflict') === 'replace' ? 'replace' : 'leave'));
+  }
+  if (p === '/api/setup/copy' && m === 'POST') {
+    const b = await jsonBody(req);
+    if ((b.units || []).some((u) => Array.isArray(u.keep) && u.keep.length)) return json(res, 403, { error: 'Keeping a possible secret needs the portal password: the sheet asks for it.' });
+    return json(res, 200, { results: (b.units || []).map((u) => setupCopyOne(u, [])) });
+  }
+  if (p === '/api/setup/staged' && m === 'DELETE') { setupMock.staged.delete(url.searchParams.get('key')); return json(res, 200, { ok: true }); }
+  return false;
 }
 async function importsApi(req, res, url, p, m) {
   const hostOf = (id) => hostMock.find((x) => x.id === id && !x.gone);
@@ -1879,7 +2010,7 @@ async function importsApi(req, res, url, p, m) {
     if (!r) return json(res, 200, { id: mm[1], state: 'unknown' });
     r.polls++;
     if (r.state !== 'done' && r.state !== 'refused') {
-      if (r.polls === 1) r.state = r.action === 'sessions-fetch' ? 'reading' : r.action === 'sessions-copy' ? 'copying' : 'asking';
+      if (r.polls === 1) r.state = r.action === 'sessions-fetch' || r.action === 'setup-fetch' ? 'reading' : r.action === 'sessions-copy' || r.action === 'setup-copy' ? 'copying' : 'asking';
       else if (r.polls === 2) r.state = 'reading';
       else if (typeof r.then === 'string') { r.state = 'refused'; r.why = r.then.split(':')[1]; }
       else { r.state = 'done'; r.then(); }
@@ -2099,6 +2230,10 @@ async function api(req, res, url) {
     return json(res, 200, { paths: paths.slice(0, lim), truncated: paths.length > lim });
   }
   // sessions of this computer: the Import sheet, suggestions, Continue in this project
+  if (p === '/api/setup' || p.startsWith('/api/setup/')) {
+    const r = await setupApi(req, res, url, p, m);
+    if (r !== false) return r;
+  }
   if (p.startsWith('/api/imports') || /^\/api\/sessions\/[^/]+\/continue$/.test(p)) {
     const r = await importsApi(req, res, url, p, m);
     if (r !== false) return r;
@@ -2972,6 +3107,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (url.pathname === '/__mock/reset') {
         importMock.clear(); importRequests.clear(); importLog.length = 0; importHelper = true; suggestionsMock = null;
+        setupMock.index = null; setupMock.staged.clear(); setupMock.copied.clear();
         projectsMock = [];
         for (const k of [...fsState.keys()]) if (k.startsWith('/')) fsState.delete(k);
         for (const h of hostMock) for (const [k, v] of [...saved]) if (v.cwd === h.root || v.cwd?.startsWith(`${h.root}/`)) saved.delete(k);

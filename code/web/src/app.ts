@@ -236,7 +236,10 @@ export type ProjectDialog =
   /** a project's own Claude Code settings: what they set, Trust / Stop trusting (start: then a new session there) */
   | { kind: 'settings'; id: string; start?: NewSessionOptions }
   /** your Claude Code and claude-bedrock sessions of a folder of this computer, copied into the sandbox (Import.tsx) */
-  | { kind: 'import'; id: string };
+  | { kind: 'import'; id: string }
+  /** Bring your setup: your Claude Code setup and Git name and email of this computer, copied into the sandbox (Setup.tsx);
+   *  id: the project it was opened from (a folder of this computer: its local MCP servers too), tool: git from the Git panel */
+  | { kind: 'setup'; id: string | null; tool?: 'git' };
 
 /** A draft that came from a link (?prompt=): never focused, never sent by Enter until you said you read it, and always
  *  sent into a NEW session in Manual mode — never into the session shown, never in your remembered mode. */
@@ -1042,6 +1045,8 @@ export async function boot(): Promise<void> {
     showGit();
     openGitDialog(link.git);
   }
+  // a link from Settings › Claude Code › Bring your setup (?setup=1), or for the Git name and email (?setup=git)
+  if (link.setup) openProjectDialog({ kind: 'setup', id: get().project ?? null, ...(link.setup === 'git' ? { tool: 'git' as const } : {}) });
   announce();
   startPortWatch();
   startBudgetWatch();
