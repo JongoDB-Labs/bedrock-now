@@ -457,7 +457,7 @@ function Unit({ keys, staged, choice, set, onPreview, onDropped }: { keys: strin
           )}
           {pv.secrets.length > 0 && (
             <div data-testid="setup-secrets">
-              <div class="small warn-text"><Icon name="alert" size={13} /> {pv.secrets.length} value{pv.secrets.length === 1 ? '' : 's'} that look like a secret: each left out unless you copy it.</div>
+              <div class="small warn-text"><Icon name="alert" size={13} /> {pv.secrets.length === 1 ? '1 value that looks like a secret: left out unless you copy it.' : `${pv.secrets.length} values that look like secrets: each left out unless you copy it.`}</div>
               <ul class="imp-findings">
                 {pv.secrets.map((x) => (
                   <li key={x.id} data-testid="setup-secret" data-where={x.where}>
@@ -488,7 +488,6 @@ function Unit({ keys, staged, choice, set, onPreview, onDropped }: { keys: strin
               </ul>
             </div>
           )}
-          {pv.left.length > 0 && <div class="small muted" data-testid="setup-left">{pv.left.length} file{pv.left.length === 1 ? '' : 's'} of it stay behind: {pv.left.slice(0, 5).map((l) => `${l.path} (${l.why})`).join(', ')}</div>}
           {pv.writes.length > 0 && (
             <>
               <button type="button" class="linkish small" aria-expanded={open} onClick={() => setOpen(!open)} data-testid="setup-show">
