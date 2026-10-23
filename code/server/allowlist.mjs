@@ -63,7 +63,7 @@ const base = (e) => pick(e, ENTRY_KEYS.map((k) => [k, primitive]));
 // (<bash-stdout>, <bash-stderr>, <local-command-stdout>, <local-command-stderr>) keeps its opening tag, all after it the
 // line. In text that is yours, every <system-reminder> and <user-prompt-submit-hook> block is left out wherever it is,
 // and an output tag's body runs to the LAST closing tag of its kind (none: to the end) — fail closed.
-const WRAPPER = /^\s*<([a-z][a-z0-9-]*)[\s>]/;
+const WRAPPER = /^\s*<([a-z][a-z0-9-]*)[\s>]/, WRAPPER_ANY = /<[a-z][a-z0-9-]*[\s>]/;
 const OWNER_TAGS = new Set(['bash-input', 'command-name', 'command-message', 'command-args']);
 const OUTPUT_START = new Set(['bash-stdout', 'bash-stderr', 'local-command-stdout', 'local-command-stderr']);
 // (with the outputs asked for: these are outputs — kept as they are; any other wrapper is still not yours)
@@ -96,7 +96,9 @@ export function stripTags(s, left) {
   return out + s.slice(at);
 }
 /** stripBlocks(s, left, keep) -> s with every <system-reminder> and <user-prompt-submit-hook> block (its tags too)
- *  replaced by left(block): to its first closing tag (none: to the end); keep(tag): a kind kept as it is */
+ *  replaced by left(block): to the LAST closing tag of its kind in the text (none: to the end) — a block that quotes a
+ *  closing tag, or holds another block, never ends early — and when a tag of Claude Code's is still after a block, the
+ *  whole text becomes left(s): fail closed. keep(tag): a kind kept as it is */
 export function stripBlocks(s, left, keep = () => false) {
   if (typeof s !== 'string' || s.indexOf('<') < 0) return s;
   let out = '', at = 0;
@@ -104,8 +106,9 @@ export function stripBlocks(s, left, keep = () => false) {
     let tag = null, open = -1;
     for (const t of BLOCK_TAGS) { const o = openingAt(s, i, t); if (o >= 0) { tag = t; open = o; break; } }
     if (!tag || keep(tag)) { i = tag ? open : i + 1; continue; }
-    const close = s.indexOf(`</${tag}>`, open);
-    const end = close < 0 ? s.length : close + tag.length + 3;
+    const close = s.lastIndexOf(`</${tag}>`);
+    const end = close >= open ? close + tag.length + 3 : s.length;
+    if (WRAPPER_ANY.test(s.slice(end))) return left(s);
     out += s.slice(at, i) + left(s.slice(i, end));
     at = end;
     i = end;

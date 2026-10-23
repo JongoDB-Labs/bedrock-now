@@ -1040,3 +1040,18 @@ test('dropThinking relinks a summary\'s leafUuid too', () => {
   const r = stripThinking(e);
   assert.equal(r.entries.find((x) => x.type === 'summary').leafUuid, 'u1');
 });
+
+test('a reminder or a hook\'s block ends at the LAST closing tag of its kind; a tag of Claude Code\'s after it makes the whole text one line', async () => {
+  const { rebuild } = await import('../server/allowlist.mjs');
+  const x = `SECRET${rand(10)}`;
+  const copy = (content) => JSON.stringify(rebuild([{ type: 'user', uuid: 'u', parentUuid: null, message: { role: 'user', content } }]).entries);
+  for (const t of [`OWNERKEPT <system-reminder>a </system-reminder> ${x}</system-reminder> typed`, `OWNERKEPT <system-reminder><system-reminder>y</system-reminder>${x}</system-reminder> end`,
+    `OWNERKEPT <user-prompt-submit-hook>quotes </user-prompt-submit-hook> ${x} </user-prompt-submit-hook>`, `OWNERKEPT <system-reminder>no end ${x}`]) {
+    const out = copy(t);
+    assert.ok(!out.includes(x) && out.includes('OWNERKEPT'), out);
+  }
+  // (Claude Code's tag still after a block: the whole text is the line)
+  const out = copy(`OWNERX <system-reminder>r</system-reminder> then <teammate-message>${x}</teammate-message>`);
+  assert.ok(!out.includes(x) && !out.includes('OWNERX'), out);
+  assert.ok(!copy(`<system-reminder>a </system-reminder> ${x}</system-reminder> typed`).includes(x));
+});

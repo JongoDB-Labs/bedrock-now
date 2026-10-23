@@ -727,7 +727,7 @@ test('what counts as yours, by allowlist too: Claude Code\'s wrapper tags (any, 
   const cb = push({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', parentUuid: null, logicalParentUuid: a2,
     compactMetadata: { trigger: 'manual', preTokens: 99, preservedSegment: { headUuid: u2, anchorUuid: cs, tailUuid: a2 } } });
   parent = cb;
-  user(`Summary SUMMARYKEPT2 <system-reminder>${M('sumrem')}</system-reminder> <bash-stdout>${M('sumout')}</bash-stdout>`, { uuid: cs, isCompactSummary: true, isVisibleInTranscriptOnly: true });
+  user(`Summary SUMMARYKEPT2 <bash-stdout>${M('sumout')}</bash-stdout> and <system-reminder>${M('sumrem')}</system-reminder>`, { uuid: cs, isCompactSummary: true, isVisibleInTranscriptOnly: true });
   user('OWNERAFTER3'); asst('CLAUDEAFTER3');
   // (a server tool's call whose result is of a kind not known: both go)
   push({ type: 'assistant', message: { id: 'msg_srv', type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'server_tool_use', id: 'srvtoolu_x', name: 'future_tool', input: {} }] } });
