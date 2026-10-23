@@ -634,7 +634,9 @@ names — [docs/security.md](docs/security.md#your-ai-subscriptions) lists them)
 
 **What it means for your logins**: anything running in the sandbox — Claude, a command it runs, a page it reads —
 can read those files and use your plan elsewhere until you sign out and revoke the login in your account's settings
-at the provider (Anthropic, OpenAI, GitHub, Cursor, xAI). Sign in only with plans you are comfortable using there. Which provider allows what, with links:
+at the provider (Anthropic, OpenAI, GitHub, Cursor, xAI). Sign in only with plans you are comfortable using there.
+The Code page's `@terminal` leaves a pane of these tools alone (their screens may show a sign-in code; their launchers
+mark their panes): a guard against reading one by accident, not a boundary. Which provider allows what, with links:
 [docs/security.md](docs/security.md#your-ai-subscriptions).
 
 ### The Code page

@@ -193,6 +193,8 @@ sub="${1:-status}"; [ $# -eq 0 ] || shift
 # (what ./stack and the Code page ask — status, sign-in, sign-out — runs the system's programs only, never one of the
 # same name in a folder of the home on PATH; open keeps your PATH: the tool you open uses it)
 case "$sub" in status | ids | login | logout) export PATH="${BN_SUBS_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" ;; esac
+# (a status or a sign-out leaves your shell's pane as it was; a sign-in or a tool opened marks it: its launcher's mark)
+case "$sub" in status | ids | logout) export BN_SUB_NOMARK=1 ;; esac
 case "$sub" in
   status) cmd_status "$@" ;;
   ids) for id in $(ids_all); do ! installed "$id" || echo "$id"; done ;;

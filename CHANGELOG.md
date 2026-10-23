@@ -46,8 +46,9 @@ All notable changes to bedrock-now are documented here. The format follows
 - `claude-sub` gets no stack MCP server (Chat's knowledge bases, the shared bucket): `CLAUDE_SUB_STACK_MCP=1` gives it,
   said each time. The other tools get none of the stack's variables either.
 - The Code page's terminal menu asks the portal for a launch token with a request of its own; an address alone (a
-  link in an answer, a preview) only gets the terminal's *Open … here?* question. `@terminal` never reads a window of
-  your subscriptions' tools (their screens may show sign-in codes).
+  link in an answer, a preview) only gets the terminal's *Open … here?* question. `@terminal` does not read a pane of
+  your subscriptions' tools (their screens may show sign-in codes): one their launchers or `bn-session` marked, or whose
+  processes are one of them — a guard against an accidental read, not a boundary.
 - `./stack subscriptions` runs the sandbox's command by its path with the system's `PATH`, reads at most 16 KiB of its
   status, marks each line it shows as the sandbox's, and keeps your keyboard away from every sign-in but the two that
   ask something back; Settings' messages for those jobs are never the sandbox's text.

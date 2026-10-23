@@ -216,6 +216,8 @@ echo "ARGS: $*"
 EOF
   chmod +x "$stub"
   mkdir -p "$HOME/.config/bedrock-now"; echo '{}' > "$HOME/.config/bedrock-now/mcp.json"
+  printf '#!/bin/sh\necho "tmux $*" >> "%s/tmux.log"\n' "$TMP" > "$TMP/tmux-stub"; chmod +x "$TMP/tmux-stub"
+  export BN_TMUX_BIN="$TMP/tmux-stub"; unset TMUX TMUX_PANE
   out="$(env ANTHROPIC_BASE_URL=http://gateway:8091 ANTHROPIC_AUTH_TOKEN=sk-terminal ANTHROPIC_MODEL=m ANTHROPIC_DEFAULT_OPUS_MODEL=o \
     ANTHROPIC_API_KEY=k CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_OAUTH_TOKEN=t CLAUDE_BEDROCK_OPUS_MODEL=b CLAUDE_CONFIG_DIR=/elsewhere \
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 SHARED_MCP_TOKEN=s \
@@ -245,6 +247,9 @@ EOF
   assert_contains "$out" "ARGS: auth status"
   out="$(TERMINAL_AUTO_MODE=true BN_CLAUDE_BIN="$stub" bash "$STACK_DIR/terminal/bin/claude-sub")"
   assert_not_contains "$out" "disableAutoMode"
+  # in tmux: its pane marked as one of your subscriptions' tools
+  TMUX=/tmp/t,1,0 TMUX_PANE=%9 BN_CLAUDE_BIN="$stub" bash "$STACK_DIR/terminal/bin/claude-sub" >/dev/null
+  assert_eq "$(cat "$TMP/tmux.log")" "tmux set-option -p -t %9 @bn-sub 1"
 }
 
 test_the_other_launchers_keep_updates_off_and_say_when_a_tool_is_left_out() {
@@ -255,6 +260,9 @@ test_the_other_launchers_keep_updates_off_and_say_when_a_tool_is_left_out() {
     printf '#!/bin/sh\necho "ARGS: $*"\nenv | grep -E "^(COPILOT_[A-Z_]*|NO_BROWSER|NO_OPEN_BROWSER|NODE_DISABLE_COMPILE_CACHE|GROK_DISABLE_AUTOUPDATER|GH_TOKEN|ANTHROPIC_[A-Z_]*|CLAUDE_CODE_[A-Z_]*|CLAUDE_BEDROCK_[A-Z_]*|CLAUDE_CONFIG_DIR|SHARED_MCP_TOKEN|BN_MCP_URL|AWS_[A-Z_]*)=" | sort\necho "umask $(umask)"\n' > "$b/$f"; chmod +x "$b/$f"
   done
   export BN_TOOLS_DIR="$b"
+  # (a tmux of the test's own: the launchers mark the pane they run in, never this computer's tmux)
+  printf '#!/bin/sh\necho "tmux $*" >> "%s/tmux.log"\n' "$TMP" > "$TMP/tmux-stub"; chmod +x "$TMP/tmux-stub"
+  export BN_TMUX_BIN="$TMP/tmux-stub"; unset TMUX TMUX_PANE
   # the stack's own variables never reach them (a key of yours for the tool itself does); what they write is private
   local stack_env=(ANTHROPIC_BASE_URL=http://gateway:8091 ANTHROPIC_AUTH_TOKEN=sk-terminal CLAUDE_BEDROCK_OPUS_MODEL=b CLAUDE_CODE_USE_BEDROCK=1
     CLAUDE_CONFIG_DIR=/x SHARED_MCP_TOKEN=s BN_MCP_URL=http://gateway:8091/mcp AWS_SECRET_ACCESS_KEY=a)
@@ -276,6 +284,15 @@ NO_BROWSER=true
 umask 0077"
   assert_eq "$(env "${stack_env[@]}" bash "$STACK_DIR/terminal/bin/codex" login --device-auth)" "ARGS: login --device-auth
 umask 0077"
+  # in tmux, each marks its pane as one of your subscriptions' tools (the Code page's @terminal leaves it alone) —
+  # except while `subscriptions status` asks them (BN_SUB_NOMARK)
+  [ ! -e "$TMP/tmux.log" ] || { echo "a launcher outside tmux marked a pane" >&2; return 1; }
+  for t in codex copilot cursor-agent gemini grok; do TMUX=/tmp/t,1,0 TMUX_PANE=%7 bash "$STACK_DIR/terminal/bin/$t" x >/dev/null; done
+  assert_eq "$(sort -u "$TMP/tmux.log")" "tmux set-option -p -t %7 @bn-sub 1"
+  assert_eq "$(wc -l < "$TMP/tmux.log" | tr -d ' ')" 5
+  : > "$TMP/tmux.log"
+  TMUX=/tmp/t,1,0 TMUX_PANE=%7 BN_SUB_NOMARK=1 bash "$STACK_DIR/terminal/bin/codex" x >/dev/null
+  [ ! -s "$TMP/tmux.log" ] || return 1
   rm "$b/codex/codex"
   out="$(bash "$STACK_DIR/terminal/bin/codex" 2>&1)" && return 1
   assert_contains "$out" "not in this sandbox (left out by TERMINAL_AI_TOOLS in .env"
@@ -301,7 +318,7 @@ test_bn_session_takes_only_its_words() {
   local M=0123456789abcdef0123456789abcdef now; now="$(date +%s)"
   local N1="$now-0123456789abcdef-$M" N2="$((now - 1))-fedcba9876543210-$M" N3="$((now - 2))-00112233445566aa-$M" out
   local OLD="$((now - 700))-0123456789abcdef-$M" AHEAD="$((now + 120))-0123456789abcdef-$M"
-  local N1x="$now-1111111111111111-$M" N4="$now-4444444444444444-$M"
+  local N1x="$now-1111111111111111-$M" N4="$now-4444444444444444-$M" N5="$now-5555555555555555-$M"
   # no words, wrong words, a nonce that is not one, a folder elsewhere, too many: the plain attach
   for args in "" "evil codex $N1" "open evil $N1" "open codex nothex" "open codex 0123456789abcdef" "open codex 1792760000-0123456789abcdef-short" \
     "open codex $N1 $TMP/elsewhere" "open codex $N1 $ws/../elsewhere" "open codex $N1 relative" "open codex $N1 $ws extra"; do
@@ -319,6 +336,7 @@ test_bn_session_takes_only_its_words() {
   # open: a window of the tool, made current; the same nonce again only attaches
   out="$(_run open codex "$N1")"
   assert_contains "$out" "tmux new-window -S -d -t =claude: -n codex -c $ws /usr/local/bin/subscriptions open codex; exec bash"
+  assert_contains "$out" "tmux set-option -p -t =claude:=codex @bn-sub 1"
   assert_contains "$out" "tmux select-window -t =claude:=codex"
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "tmux attach-session -t =claude"
   out="$(_run open codex "$N1")"
@@ -327,6 +345,10 @@ test_bn_session_takes_only_its_words() {
   local h; h="$(printf '%s' "$proj/inner" | "$b/sha256sum" | cut -c1-6)"
   out="$(_run open grok "$N2" "$proj/inner")"
   assert_contains "$out" "-n grok-inner-$h -c $proj/inner /usr/local/bin/subscriptions open grok"
+  # a shell (or Claude Code on Bedrock) is no subscription's tool: its window is not marked
+  out="$(_run open shell "$N5")"
+  assert_contains "$out" "-n shell -c $ws /usr/local/bin/subscriptions open shell"
+  assert_not_contains "$out" "@bn-sub"
   # Claude on your plan's window is claude-sub (the first window, claude, is claude-bedrock's)
   out="$(_run open claude "$N1x")"
   assert_contains "$out" "-n claude-sub -c $ws /usr/local/bin/subscriptions open claude"

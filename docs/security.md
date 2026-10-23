@@ -3119,8 +3119,13 @@ never reads, copies, keeps, passes on or relays a login.**
   tool of its fixed list, a token's form (each acts once, and only within 10 minutes of when it was made — also after
   the sandbox restarted) and a folder that resolves inside `/workspace` or a project folder; anything else is the plain
   attach of before. A tool chosen in the Chat tab earlier is offered again after a reload (*Reopen …*), never started
-  by itself. The Code page's `@terminal` never reads a window of one of these tools, nor a pane running one of their
-  commands: their screens may show a sign-in's one-time code.
+  by itself. The Code page's `@terminal` does not read a pane of one of these tools, whose screen may show a sign-in's
+  one-time code: one marked as such (the tmux pane option `@bn-sub`, which each tool's launcher sets when it starts in
+  tmux and `bn-session` sets on the windows it opens for them), one `bn-session` started for one, or one whose
+  processes — looked at anew in `/proc` — include one running from the tools' folder or a launcher, or with Claude on
+  your plan's folder in its environment. Never by a program's name (a tool runs as `node`, `claude`, a renamed binary).
+  **A guard against reading such a screen by accident, not a boundary**: anything in the sandbox can unset the mark or
+  hide a process, and can read those screens itself.
 - [x] **No login behind an API.** In this release none of these logins is used by LiteLLM, Open WebUI or the Code page's
   sessions (Chat lists them as planned models); the Chat tab can show the app itself (its own screen, in the
   terminal frame) — you type into the real app. If they come as Chat models and Code page sessions, it will be through

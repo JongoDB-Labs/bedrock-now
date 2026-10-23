@@ -63,6 +63,9 @@ if [ "$fresh" = 1 ]; then
   # image's own subscriptions by its full path: never one put in ~/.local/bin, which comes first on PATH; the folder
   # with its "#" doubled: tmux reads -c as a format)
   tmux new-window -S -d -t "=$S:" -n "$name" -c "${real//#/##}" "/usr/local/bin/subscriptions open $tool; exec bash" 2>/dev/null || plain
+  # (one of your subscriptions' tools: its pane marked at once, as its launcher marks it — the Code page's @terminal
+  # leaves it alone)
+  case "$tool" in bedrock | shell) ;; *) tmux set-option -p -t "=$S:=$name" @bn-sub 1 2>/dev/null || true ;; esac
 fi
 if [ "$mode" = open ]; then
   [ "$fresh" = 0 ] || tmux select-window -t "=$S:=$name" 2>/dev/null || true

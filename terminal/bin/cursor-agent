@@ -16,6 +16,11 @@ for v in $(compgen -e); do
     ANTHROPIC_* | CLAUDE_CODE_* | CLAUDE_BEDROCK_* | CLAUDE_CONFIG_DIR | SHARED_MCP_TOKEN | BN_MCP_URL | AWS_*) unset "$v" ;;
   esac
 done
+# A tmux pane running it is marked as one of your subscriptions' tools (pane option @bn-sub): the Code page's @terminal
+# leaves its screen alone, where a sign-in's code may show. A guard against an accidental read, not a boundary.
+if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] && [ "${BN_SUB_NOMARK:-0}" != 1 ] && [ -x "${BN_TMUX_BIN:-/usr/bin/tmux}" ]; then
+  "${BN_TMUX_BIN:-/usr/bin/tmux}" set-option -p -t "$TMUX_PANE" @bn-sub 1 >/dev/null 2>&1 || true
+fi
 export NO_OPEN_BROWSER=1
 # no compiled-code cache in the writable home (Cursor's script would keep one in ~/.cache, and Node would run from it)
 export NODE_DISABLE_COMPILE_CACHE=1

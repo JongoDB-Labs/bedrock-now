@@ -3339,12 +3339,49 @@ export async function terminalWindow(root = WS_ROOT, { tmux = tmuxBin() } = {}) 
 export const CAPTURE = Object.freeze({ linesDefault: 200, linesMax: 2000, readMax: 4 << 20, textMax: 64 << 10, lineMax: 4000 });
 const CAPTURE_HOOKS = ['after-capture-pane', 'after-display-message'];
 // what display-message prints for the pane: is its session exactly `claude` (1/0), its id, its window's index, whether
-// it was started for one of your subscriptions' tools (1/0: bn-session's `subscriptions open …`), then the free texts
-// (its command, the window's name: shown only); and the client's locale (UTF-8: no "_" for a character)
-export const CAPTURE_FORMAT = `#{==:#{session_name},${TMUX_SESSION}}|#{pane_id}|#{window_index}|#{m:*/usr/local/bin/subscriptions open *,#{pane_start_command}}|#{pane_current_command}|#{window_name}`;
-// A window of a subscription's tool is never read: its screen may show a sign-in's one-time code or link (or a token a
-// setup command prints) — those windows (started for one: the flag above), or a pane running one of their commands now
-export const CAPTURE_REFUSED = Object.freeze(['claude-sub', 'codex', 'gemini', 'copilot', 'cursor-agent', 'grok', 'subscriptions']);
+// it was started for one of your subscriptions' tools (1/0: bn-session's `subscriptions open …`), whether it is marked
+// as one's (1/0: the pane option @bn-sub, which the tools' launchers and bn-session set), its process's pid, then the
+// free texts (its command, the window's name: shown only); and the client's locale (UTF-8: no "_" for a character)
+export const CAPTURE_FORMAT = `#{==:#{session_name},${TMUX_SESSION}}|#{pane_id}|#{window_index}|#{m:*/usr/local/bin/subscriptions open *,#{pane_start_command}}|#{?#{@bn-sub},1,0}|#{pane_pid}|#{pane_current_command}|#{window_name}`;
+// A pane of one of your subscriptions' tools is never read: its screen may show a sign-in's one-time code or link (or a
+// token a setup command prints). Known by marks, not by a program's name (a tool runs as node, claude, a renamed
+// binary): the window bn-session started for one, the pane option the launchers set, and — looked at anew — the pane's
+// processes: one running from the tools' folder or a launcher, or with Claude on your plan's folder in its environment.
+// A guard against reading such a screen by accident, not a boundary: anything in the sandbox can unset a mark.
+const PROC_DIR = process.env.BN_PROC_DIR || '/proc';
+const TOOL_MARKS = ['/usr/local/lib/bn-tools/', '/usr/local/bin/claude-sub', '/usr/local/bin/codex', '/usr/local/bin/gemini', '/usr/local/bin/copilot',
+  '/usr/local/bin/cursor-agent', '/usr/local/bin/grok', '/usr/local/bin/subscriptions'];
+// paneRunsTool(pid) -> whether that process or one below it is one of the tools (TOOL_MARKS in its command line, or
+// CLAUDE_CONFIG_DIR=…/.claude-subscription in its environment). At most 16,384 processes looked at, 64 KiB of each.
+export function paneRunsTool(pid, procDir = PROC_DIR) {
+  let names = [];
+  try { names = fs.readdirSync(procDir).filter((n) => /^[1-9][0-9]{0,9}$/.test(n)).slice(0, 16384); } catch { return false; }
+  const kids = new Map();
+  for (const n of names) {
+    let stat = '';
+    try { stat = fs.readFileSync(path.join(procDir, n, 'stat'), 'utf8').slice(0, 4096); } catch { continue; }
+    const ppid = stat.replace(/^.*\) /s, '').split(' ')[1];
+    if (!/^[0-9]{1,10}$/.test(ppid || '')) continue;
+    if (!kids.has(ppid)) kids.set(ppid, []);
+    kids.get(ppid).push(n);
+  }
+  const read = (n, f) => {
+    let fd;
+    try { fd = fs.openSync(path.join(procDir, n, f), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK); } catch { return ''; }
+    try { return readSlice(fd, 0, 64 << 10).toString('utf8'); } catch { return ''; } finally { fs.closeSync(fd); }
+  };
+  const seen = new Set(), todo = [String(pid)];
+  while (todo.length && seen.size < 4096) {
+    const n = todo.shift();
+    if (seen.has(n)) continue;
+    seen.add(n);
+    const cmd = read(n, 'cmdline');
+    if (TOOL_MARKS.some((m) => cmd.includes(m))) return true;
+    if (/(^|\0)CLAUDE_CONFIG_DIR=[^\0]*\/\.claude-subscription\/?(\0|$)/.test(read(n, 'environ'))) return true;
+    for (const k of kids.get(n) ?? []) todo.push(k);
+  }
+  return false;
+}
 export const CAPTURE_ENV = Object.freeze({ LC_ALL: 'C.UTF-8' });
 const PANE_ID = /^%[0-9]{1,6}$/;
 
@@ -3437,7 +3474,7 @@ function runTail(cmd, args, timeoutMs, maxBytes, env = {}) {
 }
 
 // terminalCapture({lines?, pane?}) -> {pane, window: {index, name}, command, lines, asked, text, cut, wide}
-export async function terminalCapture(req = {}, { tmux = tmuxBin() } = {}) {
+export async function terminalCapture(req = {}, { tmux = tmuxBin(), procDir = PROC_DIR } = {}) {
   const n = req.lines === undefined || req.lines === null ? CAPTURE.linesDefault : req.lines;
   if (!Number.isInteger(n) || n < 1 || n > CAPTURE.linesMax) throw new Error(`lines: a whole number from 1 to ${CAPTURE.linesMax}`);
   const asked = req.pane === undefined || req.pane === null ? null : req.pane;
@@ -3456,12 +3493,11 @@ export async function terminalCapture(req = {}, { tmux = tmuxBin() } = {}) {
   // printable separator, and a UTF-8 locale for the client (with LANG=C tmux prints a control character as "_")
   const d = await run(tmux, ['display-message', '-p', '-t', asked ?? `=${TMUX_SESSION}:`, CAPTURE_FORMAT], 10000, 4000, CAPTURE_ENV);
   if (d.code !== 0 || d.cut) throw new Error(asked ? 'no such pane in the terminal' : `tmux: ${printable(d.err, 200) || `exit ${d.code}`}`);
-  const m = d.out.match(/^1\|(%[0-9]{1,6})\|([0-9]{1,6})\|([01])\|([^\n]*)\n?$/);
+  const m = d.out.match(/^1\|(%[0-9]{1,6})\|([0-9]{1,6})\|([01])\|([01])\|([1-9][0-9]{0,9})\|([^\n]*)\n?$/);
   if (!m || (asked !== null && m[1] !== asked)) throw new Error('no such pane in the terminal');
-  const [, pane, index, tool, rest] = m;
+  const [, pane, index, started, marked, pid, rest] = m;
   const bar = rest.indexOf('|');
-  const cmd = bar < 0 ? rest : rest.slice(0, bar);
-  if (tool === '1' || CAPTURE_REFUSED.includes(cmd)) {
+  if (started === '1' || marked === '1' || paneRunsTool(pid, procDir)) {
     throw new Error('that window runs one of your AI subscriptions\' tools, whose screen may show a sign-in code: it is not read (copy what you need from it yourself)');
   }
   // -p: to stdout; -J: wrapped lines joined; -S -N: from N lines back in the history (and the screen below them)
