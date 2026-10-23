@@ -920,12 +920,13 @@ test('every private key form, with and without its END, as plain text and inside
 
 test('"pass" and "pwd" names: wherever a word of the name ends with them, but the known words that do', () => {
   const x = `Zq${rand(14)}`;
-  for (const t of [`dbpass=${x}`, `DBPASS=${x}`, `smtp_pass: ${x}`, `MyPass=${x}`, `SMTP_PASS=${x}`, `export REDISPASS=${x}`, `dbpwd: ${x}`, `MYSQLPWD=${x}`, `bypass_token=${x}`]) {
+  for (const t of [`dbpass=${x}`, `DBPASS=${x}`, `smtp_pass: ${x}`, `MyPass=${x}`, `SMTP_PASS=${x}`, `export REDISPASS=${x}`, `dbpwd: ${x}`, `MYSQLPWD=${x}`, `bypass_token=${x}`,
+    `--pwd ${x}`, `_PWD=${x}`, `db-pwd: ${x}`, `.pwd=${x}`, `passcode: ${x}`, `PASS_CODE=${x}`, `passkey=${x}`, `door_passcode: ${x}`]) {
     assert.ok(!redactText(t).includes(x), t);
   }
   // (short values: a long random one after NAME= is an .env line's finding whatever the name)
   const y = `Zq${rand(8)}`;
-  for (const t of [`bypass: ${y}`, `passport_id: ${y}`, `surpassedThreshold=${y}`, `compass=${y}`, `BYPASS=${y}`, `bypassMode: ${y}`, `passThrough=${y}`, `trespass: ${y}`, `cd $PWD ${y}`, `OLDPWD=x${y}`]) {
+  for (const t of [`bypass: ${y}`, `passport_id: ${y}`, `surpassedThreshold=${y}`, `compass=${y}`, `BYPASS=${y}`, `bypassMode: ${y}`, `passThrough=${y}`, `trespass: ${y}`, `cd $PWD ${y}`, `OLDPWD=x${y}`, `echo \${PWD} ${y}`, `PWD=/x${y}`]) {
     assert.ok(redactText(t).includes(y), t);
   }
 });

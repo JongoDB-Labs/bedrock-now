@@ -156,14 +156,16 @@ function jwts(text) {
 // with them are left out by name, checked after the match: bypass, compass, trespass …, a shell's PWD and OLDPWD)
 const ci = (s) => s.replace(/[a-z]/g, (c) => `[${c}${c.toUpperCase()}]`);
 export const SECRET_NAME = new RegExp([
-  `${ci('pass')}(?:${ci('word')}|${ci('wd')}|${ci('phrase')})`, 'pass(?![a-z])', 'Pass(?![a-z])', 'PASS(?![A-Z])', 'pwd(?![a-z])', 'Pwd(?![a-z])', 'PWD(?![A-Z])',
+  `${ci('pass')}(?:${ci('word')}|${ci('wd')}|${ci('phrase')}|[_-]?${ci('code')}|[_-]?${ci('key')})`, 'pass(?![a-z])', 'Pass(?![a-z])', 'PASS(?![A-Z])', 'pwd(?![a-z])', 'Pwd(?![a-z])', 'PWD(?![A-Z])',
   ...['secret', 'token', 'api[_-]?key', 'access[_-]?key', 'private[_-]?key', 'credential', 'authorization', 'account[_-]?key', 'session[_-]?token', 'cookie'].map(ci),
 ].join('|'));
 const SECRET_NAMES = new RegExp(SECRET_NAME.source, 'g');
-// words that end with pass (or hold it before another word: passThrough), and names that are pwd: no secret's name
-const NOT_PASS = new Set(['bypass', 'compass', 'encompass', 'trespass', 'surpass', 'overpass', 'underpass', 'impass', 'passport', 'passenger', 'passive',
-  'passage', 'passthrough', 'passthru', 'passable', 'passer', 'passerby', 'passover', 'passing', 'passion', 'passcode']);
-const NOT_PWD = new Set(['pwd', 'oldpwd']);
+// words that end with pass (or hold it before another word: passThrough) and are never a credential's name — when in
+// doubt a word is not here (passcode, passkey are names of secrets); and the shell's own PWD and OLDPWD, as they are
+// written whole ($PWD, ${OLDPWD}), never DB_PWD, --pwd, _PWD
+const NOT_PASS = new Set(['bypass', 'compass', 'encompass', 'trespass', 'surpass', 'overpass', 'underpass', 'passport', 'passenger', 'passive',
+  'passage', 'passthrough', 'passthru', 'passable', 'passerby', 'passover', 'passion']);
+const NOT_PWD = /^\$?\{?(?:old)?pwd\}?$/i;
 const isLetter = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 const isUpper = (c) => c >= 65 && c <= 90, isLower = (c) => c >= 97 && c <= 122;
 // knownWord(text, at, len) -> whether this "pass" or "pwd" (at, its length) is one of the words above: the word it is in
@@ -177,7 +179,8 @@ function knownWord(text, at, len) {
     let a = at, b = at + len;
     while (a > 0 && isId(text.charCodeAt(a - 1))) a--;
     while (b < text.length && isId(text.charCodeAt(b))) b++;
-    return NOT_PWD.has(text.slice(a, b).replace(/^[-_.$]+/, '').toLowerCase());
+    if (text[a - 1] === '{' && text[a - 2] === '$') { a -= 2; if (text[b] === '}') b++; } else if (text[a - 1] === '$') a--;
+    return NOT_PWD.test(text.slice(a, b));
   }
   let a = at, b = at + len;
   while (a > 0 && isLetter(text.charCodeAt(a - 1)) && !(isLower(text.charCodeAt(a - 1)) && isUpper(text.charCodeAt(a)))) a--;
