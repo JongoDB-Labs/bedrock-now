@@ -2,7 +2,7 @@
 // Import sessions from this computer…): a sheet of three steps. 1 Look — the update helper on the computer asks there
 // first, in a dialog on its screen (Allow once, or Always for this folder), and only then lists them; never asked over
 // remote access. 2 Pick — the sessions of that list (titles, dates, sizes). 3 Check and copy — each one read into the
-// Code page's container, its possible secrets listed (a few characters and a length, never the whole of one) and
+// Code page's container, its possible secrets listed (their length, a token's public start only — never the whole of one) and
 // redacted unless you keep one, its thinking blocks taken out when it ran elsewhere than Bedrock, then copied into the
 // sandbox. Nothing is written back to the computer. And Suggested from your computer: the folders your tools kept
 // sessions for, which you add as projects on the computer (the page names no folder to it).

@@ -36,6 +36,15 @@ export const fake = {
   pypi: () => ['py', 'pi-'].join('') + rand(70),
   whsec: () => ['wh', 'sec_'].join('') + rand(32),
   putty: () => `PuTTY-User-Key-File-2: ssh-rsa\nEncryption: none\nComment: key\nPublic-Lines: 1\n${rand(60)}\nPrivate-Lines: 1\n${rand(60)}\n${['Private', 'MAC'].join('-')}: ${rand(40, '0123456789abcdef')}`,
+  googleOauth: () => ['ya', '29.'].join('') + rand(60),
+  googleClientSecret: () => ['GOC', 'SPX-'].join('') + rand(28),
+  slackApp: () => ['xa', 'pp-'].join('') + `1-A${rand(10, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')}-${rand(13, '0123456789')}-${rand(64, 'abcdef0123456789')}`,
+  digitalocean: () => ['do', 'p_v1_'].join('') + rand(64, 'abcdef0123456789'),
+  shopify: () => ['shp', 'at_'].join('') + rand(32, 'abcdef0123456789'),
+  linear: () => ['lin', '_api_'].join('') + rand(40),
+  atlassian: () => ['ATA', 'TT3x'].join('') + rand(180, `${alnum}_-=`),
+  age: () => ['AGE-SECRET', '-KEY-1'].join('') + rand(58, 'QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L'),
+  kubeKey: () => ['LS0tLS1', 'CRUdJTi'].join('') + rand(400, `${alnum}+/`) + '==',
   ssh2: () => `---- BEGIN SSH2 ENCRYPTED ${['PRIVATE', 'KEY'].join(' ')} ----\n${rand(64)}\n---- END SSH2 ENCRYPTED ${['PRIVATE', 'KEY'].join(' ')} ----`,
 };
 

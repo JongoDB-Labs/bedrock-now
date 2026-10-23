@@ -3332,7 +3332,7 @@ SESSIONS_APP = "e2e-sessions-app"
 def host_sessions_a(ctx):
     """run.sh added a folder (e2e-sessions-app) and read two synthetic sessions of a fake home into the Code page's
     container (./stack sessions consent, scan, fetch). The Import sheet opens on Check and copy: the Claude Code one
-    with 2 possible secrets (one in its prompt, one in a subagent's transcript — a few characters and a length shown,
+    with 2 possible secrets (one in its prompt, one in a subagent's transcript — its length shown — a token's public start only —,
     never the whole) and its thinking block to come out; copied (redacted), both badged (CC, CB); the CC one resumed on
     Haiku answers the word its copied history asked it to remember; Continue in this project (filed in the Workspace)
     makes a new session there. With E2E_HOST_SESSIONS_REAL, also the owner's one real transcript: copied and resumed."""
@@ -3358,7 +3358,7 @@ def host_sessions_a(ctx):
     expect(kinds == ["aws-key-id", "github-token"], f"the findings: {kinds}")
     see(one.get_by_test_id("import-thinking")).to_contain_text("taken out")
     text = page.get_by_test_id("import-sheet").inner_text()
-    expect("characters)" in text and not re.search(r"A[K]IA[A-Z2-7]{16}|gh[p]_[A-Za-z0-9]{36}", text), "the sheet shows a few characters and a length, never a secret")
+    expect("characters)" in text and not re.search(r"A[K]IA[A-Z2-7]{16}|gh[p]_[A-Za-z0-9]{36}", text), "the sheet shows a length and a token's public start, never a secret")
     shot(page, "s1-code-host-sessions-check")
     page.get_by_test_id("import-copy").click()
     see(page.get_by_test_id("import-result").filter(has_text="Copied")).to_have_count(len(ids), timeout=60000)

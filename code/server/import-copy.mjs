@@ -47,7 +47,7 @@ async function write(call, id, cwd, main, parts, replace) {
 const OTHER_ID = /^that session (is in the sandbox already|changed in the sandbox since it was copied)$/;
 
 /** preview(imports, pid, id, choices) -> what the Import sheet shows of a picked session: its findings (never a whole
- *  secret: a few characters, a length, words around it with every finding masked; id: the token that keeps it), the
+ *  secret: its length — a token's public start only —, words around it with every finding masked; id: the token that keeps it), the
  *  thinking blocks and what becomes of them, paths outside the project, lines that are no JSON, the transcript as it
  *  would be copied, as the page's history events (sandbox text), and the digest of what is waiting (a copy names it) */
 export async function preview(imports, pid, id, choices = {}) {

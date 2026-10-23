@@ -2723,28 +2723,42 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   read still coming in (`.<id>`) is never swept, unless it was left behind more than an hour ago.
 - [x] **Possible secrets redacted by default, and shown.** Before anything reaches the sandbox, the code container
   scans every string of the transcript — values *and* keys, every message, the subagents' transcripts and the tool
-  results and JSON files beside it — for AWS key ids and secrets, Amazon Bedrock API keys, GitHub, GitLab, Slack,
-  Anthropic, OpenAI, Google, Stripe (and its webhook secrets), SendGrid, npm, PyPI and Hugging Face tokens, Slack
-  webhooks, Azure account keys, private keys (PEM, SSH2, PuTTY), JSON web tokens, `Authorization` and cookie headers
-  (any scheme, JSON-escaped too), passwords in URLs, assignments to a secret's name (the name anywhere in an
-  identifier, any case: `db_password: …`, `GH_TOKEN=…`, `'secret' => …`, YAML, `--password …`) and `.env`-style lines
-  with a high-entropy value. A string whose own JSON key names a secret (`password`, `token`, `api_key`, `X-Api-Key`,
-  `SecretAccessKey`, `Cookie` …) is a finding whole, and so is the value of a `NAME=value` item of a list whose NAME
-  does (an environment, as in a tool's result). A value counts as a placeholder (`${VAR}`, `<your-token>`,
-  `changeme`, `string`) only when the WHOLE value is one; findings that overlap become one, their union. Each finding
-  is listed with its kind, where, a few characters and its length — never the whole — and replaced by
-  `[REDACTED:<kind>]`; redaction is idempotent. **Keeping one** needs the portal password (the sheet asks; the portal
-  hands the copy to the helper): a keep names the file the finding is in and a keyed hash of its kind and value (the
-  key is the waiting session's own, never shown — so the page holds no hash anyone could test guesses against), never
-  a position; the check shows a digest of what is waiting, and a copy is refused when the session was read again since.
-  The scan is linear on hostile text and never backtracks: each pattern finds only where a token starts and its least
-  length, and loops take the rest (assignments, headers, URLs, `.env` lines, private keys and JWTs are found by hand) —
-  timed on 7 MiB inputs built to be slow for each shape. It runs once per check or copy, in a worker thread, one job
-  at a time, each within 2 minutes: past that, the worker is ended and the session is not copied (fail closed). Every
-  bound **fails closed**: a string longer than 8 MiB is replaced whole (`[REDACTED:too-long]`), a string with more than
-  1,000 findings likewise (`too-many`) — neither can be kept; a file beside the transcript that cannot be parsed and
-  scanned is not copied, and the sheet says so. Titles, first prompts, branches and paths are scanned too before they
-  are shown. Not detectable, and so said in the sheet: a secret in a shape the scan does not know, or written in prose.
+  results and JSON files beside it — for AWS key ids (even right after a letter) and secrets, Amazon Bedrock API keys,
+  GitHub, GitLab, Slack (and its app tokens), Anthropic, OpenAI, Google (API keys, OAuth tokens and client secrets),
+  Stripe (and its webhook secrets), SendGrid, npm, PyPI, Hugging Face, DigitalOcean, Shopify, Linear and Atlassian
+  tokens, Slack webhooks, Azure account keys and SAS signatures, age keys, private keys (PEM, SSH2, PuTTY, and PEM in
+  base64 as a kubeconfig holds it), JSON web tokens, `Authorization` (any scheme, any case) and cookie headers, passwords
+  in URLs (an empty user, `/`, `#` or `@` in them: up to the last `@` before the query), passwords on a command line
+  (`curl -u user:pass`, `mysql -pPASS`, `sshpass -p`, `docker login -p`, `aws configure set aws_secret_access_key …`,
+  SQL's `IDENTIFIED BY` and `PASSWORD '…'`), values set to a secret's name (the name anywhere in an identifier, any
+  case: `db_password: …`, `GH_TOKEN=…`, `cfg["password"] = …`, `password: str = …`, `'secret' => …`, YAML, YAML's `|`
+  and `>` blocks, `--password …`, an `.netrc`'s `password …`, `<password>…</password>`, an `.npmrc`'s `_auth=…`) and
+  `.env`-style lines with a high-entropy value. In JSON, a string — or a number — under a key that names a secret
+  (`password`, `token`, `api_key`, `X-Api-Key`, `SecretAccessKey`, `Cookie`, docker's `auth` …) is a finding whole; so
+  is a name and its value apart: a `value` (`Value`, `ParameterValue`, `SecretString` …) beside a `name` (`Name`, `Key`,
+  `ParameterKey` …) that names a secret — Kubernetes' and ECS' env, SSM, CloudFormation — or under a key that does
+  (Terraform's `{db_password: {value}}`), any item of a list under such a key (`{api_keys: […]}`, `{Cookie: […]}`), the
+  item after a `--flag` that names one (`["--api-key", v]`), and a list's `NAME=value` items. A value counts as a
+  placeholder (`${VAR}`, `<your-token>`, `changeme`, `string`) only when the WHOLE value is one — `${VAR:-default}` only
+  when its default is empty or one too — and an unquoted value ends only at a space, a quote or its line's end (never at
+  `;` `,` `&` `)`: `password=ab;REST` leaves nothing behind). Findings that overlap become one, their union. Each
+  finding is listed with its kind, where and its length — and, only for a token whose start is everyone's (`ghp_`,
+  `AKIA`, `sk-ant-` …), that start: nothing of a password, a value, a cookie, a header or a URL's password, on any
+  device — and replaced by `[REDACTED:<kind>]`; redaction is idempotent. **Keeping one** needs the portal password (the
+  sheet asks; the portal hands the copy to the helper): a keep names the file the finding is in and a keyed hash of its
+  kind and value (the key is the waiting session's own, never shown — so the page holds no hash anyone could test
+  guesses against), never a position; the check shows a digest of what is waiting — its files and the id of that key —
+  and a copy is refused when the session was read again since, even unchanged. The scan is linear on hostile text and
+  never backtracks: each pattern finds only where a token starts and its least length, and loops take the rest
+  (assignments, headers, URLs, command lines, `.env` lines, private keys and JWTs are found by hand; every look back is
+  bounded) — timed on 7 MiB inputs built to be slow for each shape. It runs once per check or copy, in a worker thread,
+  one job at a time, each within 2 minutes: past that, the worker is ended and the session is not copied (fail
+  closed). Every bound **fails closed**: a string longer than 8 MiB is replaced whole (`[REDACTED:too-long]`), a string
+  with more than 1,000 findings likewise (`too-many`) — neither can be kept; JSON nested more than 200 deep is not
+  looked into and not copied (said: too deeply nested to check); a file beside the transcript that cannot be parsed and
+  scanned is not copied, and the sheet says so. Titles, first prompts and branches are scanned whole — on the computer,
+  by the reader, before they are cut to their length — and paths too, before they are shown. Not detectable, and so
+  said in the sheet: a secret in a shape the scan does not know, or written in prose.
 - [x] **Shown as data, never as instructions.** Nothing in a transcript is acted on by bedrock-now: titles, prompts,
   findings' context and tool calls reach the page as text only (the page's client keeps one line, shows control and
   direction-changing characters as `⟨U+202E⟩`, caps lengths and counts — 4,000 rows); Claude's words go through the

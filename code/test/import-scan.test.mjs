@@ -4,11 +4,11 @@
 // rewritten only where it stands as a path of its own, lines that are no JSON dropped). Fake secrets are made at run time.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scan, scanEntries, redactEntries, processEntries, redactText, entropy, masked, keepToken, KINDS, MAX_TEXT, KEEP_TOKEN } from '../server/secrets.mjs';
+import { scan, scanEntries, redactEntries, processEntries, redactText, entropy, masked, keepToken, KINDS, MAX_TEXT, KEEP_TOKEN, MAX_DEPTH, TooDeep } from '../server/secrets.mjs';
 import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewriteString, rewritePaths, rewrites, outsidePaths } from '../server/transcript.mjs';
 import { session, fake, rand, uuid } from './transcripts.mjs';
 
-test('every kind of secret is found, said in plain words with a few characters and its length — never whole', () => {
+test('every kind of secret is found, said in plain words with its length (a token\'s public start only) — never whole', () => {
   const cases = {
     'aws-key-id': () => `aws_access_key_id = ${fake.awsKeyId()}`,
     'aws-secret': () => `AWS_SECRET_ACCESS_KEY=${fake.awsSecret()}`,
@@ -31,6 +31,14 @@ test('every kind of secret is found, said in plain words with a few characters a
     'authorization': () => `curl -H "Authorization: Bearer ${fake.bearer()}" https://api`,
     'cookie': () => `curl -H 'Cookie: sid=${rand(24)}; theme=dark' https://x`,
     'url-password': () => `postgres://admin:${fake.password()}@db.internal:5432/app`,
+    'command-password': () => `mysql -u root -p${rand(14)} app`,
+    'google-oauth': () => `token ${fake.googleOauth()} ok`,
+    'digitalocean-token': () => `doctl auth init -t ${fake.digitalocean()}`,
+    'shopify-token': () => `shop ${fake.shopify()}`,
+    'linear-key': () => `linear ${fake.linear()}`,
+    'atlassian-token': () => `jira ${fake.atlassian()}`,
+    'age-key': () => `# key\n${fake.age()}\n`,
+    'base64-key': () => `    client-key-data ${fake.kubeKey()}`,
     'named': () => [rand(12), { named: true }],
     'assignment': () => `db_password: "${fake.password()}"`,
     'env-line': () => `\nSERVICE_CREDENTIAL_VALUE=${rand(32)}\n`.replace('CREDENTIAL', 'VALUE_OF'),
@@ -45,11 +53,15 @@ test('every kind of secret is found, said in plain words with a few characters a
     const [f] = opts.named ? scanEntries([{ type: 'user', password: text }]) : scanEntries([{ type: 'user', message: { role: 'user', content: text } }]);
     assert.equal(f.kind, kind);
     assert.ok(!f.preview.includes(secret) && !f.context.includes(secret), kind);
-    assert.match(f.preview, kind === 'private-key' ? /^a private key of \d+ lines$/ : /… \(\d+ characters\)$/);
+    // (a token's public start, its length — or, for a password, a value set to a name, a cookie, an Authorization header, a
+    // URL's password, a command's password, only its length: nothing of it)
+    const secretOnly = ['aws-secret', 'azure-key', 'authorization', 'cookie', 'url-password', 'command-password', 'named', 'assignment', 'env-line'];
+    assert.match(f.preview, kind === 'private-key' ? /^a private key of \d+ lines$/ : secretOnly.includes(kind) ? /^\d+ characters$/ : /^\S{3,16}… \(\d+ characters\)$/, `${kind}: ${f.preview}`);
     assert.ok(f.label.length > 5 && KEEP_TOKEN.test(f.id), kind);
   }
   // the other shapes of a few kinds: a short-term Bedrock key, Stripe's webhook secret, SSH2 and PuTTY keys
-  for (const [kind, text] of [['bedrock-api-key', `key="${fake.bedrockShort()}"`], ['stripe-key', `secret ${fake.whsec()}`], ['private-key', fake.ssh2()], ['private-key', fake.putty()]]) {
+  for (const [kind, text] of [['bedrock-api-key', `key="${fake.bedrockShort()}"`], ['stripe-key', `secret ${fake.whsec()}`], ['private-key', fake.ssh2()], ['private-key', fake.putty()],
+    ['google-oauth', `client ${fake.googleClientSecret()}`], ['slack-token', `app ${fake.slackApp()}`]]) {
     assert.deepEqual(scan(text).map((x) => x.kind), [kind], text.slice(0, 40));
     assert.ok(!redactText(text).includes(text.slice(-24)), kind);
   }
@@ -91,12 +103,14 @@ test('placeholders — only when the WHOLE value is one — variables, low-entro
   for (const s of ['password=${DB_PASSWORD}', 'token: <your-token-here>', 'api_key = "xxxxxxxxxxxxxxxx"', 'password: process.env.PASS', 'secret = [REDACTED:assignment]',
     'Authorization: Bearer [REDACTED:authorization]', 'export PATH_TO_THINGS=aaaaaaaaaaaaaaaaaaaaaaaa', 'the password field is required', 'https://user@example.com/x',
     'TOKEN=changeme', 'password=aaaaaaaabbbb', 'password: string;', '{{ secrets.API_TOKEN }}', 'apiKey: os.getenv("API_KEY")', 'Cookie: [REDACTED:cookie]',
-    'postgres://user:password@localhost/db', '--password $DB_PASS']) {
+    'postgres://user:password@localhost/db', '--password $DB_PASS', 'password=${DB_PASSWORD:-}', 'password=${DB_PASSWORD:?set it}', 'secret=${API_SECRET:-changeme}']) {
     assert.deepEqual(scan(s), [], s);
   }
   // (a real value that starts like a placeholder: found — M3)
   for (const [s, kind] of [[`password=Test${rand(8)}`, 'assignment'], [`secret: Trueblue${rand(6)}`, 'assignment'], [`postgres://admin:testing${rand(6)}@db`, 'url-password'],
-    [`TOKEN=changeme${rand(6, '0123456789')}`, 'assignment'], [`password = "/${rand(10)}"`, 'assignment'], [`api_key: example_${rand(10)}`, 'assignment']]) {
+    [`TOKEN=changeme${rand(6, '0123456789')}`, 'assignment'], [`password = "/${rand(10)}"`, 'assignment'], [`api_key: example_${rand(10)}`, 'assignment'],
+    // (a shell default holds a real value: M-b)
+    [`password=\${POSTGRES_PASSWORD:-${rand(10)}}`, 'assignment'], [`token=\${X:=${rand(10)}}`, 'assignment'], [`secret=\${X-${rand(10)}}`, 'assignment']]) {
     assert.deepEqual(scan(s).map((x) => x.kind), [kind], s);
   }
   // a thinking block's signature: dealt with by the caller (skipThinking: its blocks were checked and left out or kept as they are)
@@ -107,7 +121,9 @@ test('placeholders — only when the WHOLE value is one — variables, low-entro
   assert.equal(scanEntries([{ ...sig, type: 'user' }], { skipThinking: true }).length, 2);
   assert.ok(entropy('aaaa') === 0 && entropy('abcd') === 2);
   assert.equal(masked('abcdefghijklmnop', 'github-token'), 'abcd… (16 characters)');
-  assert.equal(masked('abc', 'url-password'), '… (3 characters)');
+  assert.equal(masked('abc', 'url-password'), '3 characters');
+  assert.equal(masked('hunter2hunter2', 'assignment'), '14 characters', 'nothing of a password');
+  assert.equal(masked('abcdef', 'github-token'), '6 characters', 'a prefix only with plenty after it');
 });
 
 test('a finding\'s words around it mask every other finding near it too', () => {
@@ -410,4 +426,124 @@ test('thinking blocks kept: a block that holds a finding or a path to rewrite is
   assert.deepEqual(rw.entries[1].message.content[0], { type: 'thinking', thinking: 'nothing to see', signature: 's3' });
   assert.ok(!JSON.stringify(rw.entries).includes(key));
   assert.equal(thinkingCount(rw.entries), 1);
+});
+
+test('a name and its value apart (M-a): env lists, SSM, CloudFormation, Terraform, lists under a secret\'s name, a --flag and the item after it, numbers', () => {
+  const v = () => `${rand(10)}-${rand(4, '0123456789')}`;
+  const shapes = [
+    ['Kubernetes / ECS env', () => { const x = v(); return [{ spec: { containers: [{ env: [{ name: 'DB_PASSWORD', value: x }, { name: 'HOST', value: 'db.internal' }] }] } }, x]; }],
+    ['{Name, Value}', () => { const x = v(); return [{ Parameter: { Name: '/prod/app/api-token', Type: 'SecureString', Value: x } }, x]; }],
+    ['{Key, Value}', () => { const x = v(); return [{ Tags: [{ Key: 'SESSION_TOKEN', Value: x }] }, x]; }],
+    ['{ParameterKey, ParameterValue}', () => { const x = v(); return [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: x }] }, x]; }],
+    ['SecretString', () => { const x = v(); return [{ SecretString: x }, x]; }],
+    ['Terraform output', () => { const x = v(); return [{ db_password: { sensitive: true, type: 'string', value: x } }, x]; }],
+    ['a list under a secret\'s name', () => { const x = v(); return [{ api_keys: ['first-one-x', x] }, x]; }],
+    ['Cookie as a list', () => { const x = `sid=${rand(20)}`; return [{ headers: { Cookie: [x] } }, x]; }],
+    ['--flag, then its value', () => { const x = v(); return [{ args: ['deploy', '--api-key', x, '--verbose'] }, x]; }],
+    ['--flag=value', () => { const x = v(); return [{ args: [`--client-secret=${x}`] }, x]; }],
+    ['a number under a secret\'s name', () => [{ db: { password: 83917264 } }, 83917264]],
+    ['docker\'s auth', () => { const x = Buffer.from(`me:${rand(12)}`).toString('base64'); return [{ auths: { 'registry.example': { auth: x } } }, x]; }],
+  ];
+  for (const [what, make] of shapes) {
+    const [e, secret] = make();
+    const r = processEntries([e]);
+    assert.ok(r.findings.length >= 1, `${what}: no finding`);
+    const out = JSON.stringify(r.entries);
+    assert.ok(!out.includes(String(secret)), `${what}: left in ${out}`);
+  }
+  // what stays: a value beside a name that is no secret's, the --flag itself, the item after a --flag that is none —
+  // and counts: Claude Code's own usage, a test run's numbers, a tokenizer's list
+  const r = processEntries([{ env: [{ name: 'HOST', value: 'db.internal.example' }], args: ['--verbose', 'deploy-everything-now'], passwordPolicy: { minLength: 12 },
+    message: { usage: { input_tokens: 123456, output_tokens: 98765, cache_creation_input_tokens: 2648213, cache_read_input_tokens: 1093884 } },
+    result: { numPassedTests: 1234567, numFailedTests: 0 }, tokens: ['token-one', 'token-two-of-them'], max_tokens: 64000 }]);
+  assert.deepEqual(r.findings, []);
+});
+
+test('${VAR:-default} holds a real value; formats of names (L-a); a value runs to a space or a quote (L-b)', () => {
+  const pw = () => `${rand(9)}${rand(3, '0123456789')}!`;
+  const cases = [
+    (x) => `cfg["password"] = "${x}"`, (x) => `os.environ['DB_PASSWORD'] = '${x}'`, (x) => `password: str = "${x}"`,
+    (x) => `machine api.example.com login me password ${x}`, (x) => `machine h\nlogin me\npassword ${x}\n`,
+    (x) => `CREATE USER app IDENTIFIED BY '${x}';`, (x) => `ALTER ROLE app WITH LOGIN PASSWORD '${x}';`,
+    (x) => `<config><password>${x}</password></config>`, (x) => `<secret>${x}</secret>`, (x) => `<token>${x}</token>`,
+    (x) => `curl -u admin:${x} https://api.example.com`, (x) => `curl --user=admin:${x} https://x`, (x) => `mysql -h db -u root -p${x} app`,
+    (x) => `sshpass -p ${x} ssh me@host`, (x) => `sshpass -p'${x}' ssh me@host`, (x) => `aws configure set aws_secret_access_key ${x}`,
+    (x) => `docker login -u me -p ${x} registry.example`, (x) => `private_key: |\n  ${x}\n  ${x}\nnext: 1`,
+    (x) => `postgres://admin:${x}/with/slashes@db.internal:5432/app`, (x) => `redis://:${x}@cache:6379/0`, (x) => `mongodb://me:p@ss${x}@db/x`,
+    (x) => `password=${x};and-the-rest-of-it`, (x) => `token=${x}&more=1`, (x) => `secret=${x},tail`,
+    (x) => `password=\${POSTGRES_PASSWORD:-${x}}`,
+  ];
+  for (const make of cases) {
+    const x = pw();
+    const t = make(x);
+    const out = redactText(t);
+    assert.ok(scan(t).length >= 1, `no finding: ${t}`);
+    assert.ok(!out.includes(x) && !out.includes(x.slice(2, 10)), `${t} -> ${out}`);
+  }
+  // L-b: nothing of the value after ; & , is left
+  assert.equal(redactText(`password=ab12;REST_OF_IT more`), 'password=[REDACTED:assignment] more');
+  // and what is no secret stays
+  for (const t of ['git push -u origin main', 'docker run -u 1000:1000 img', 'mkdir -pv a/b', 'mysql -p', 'the password field is required', 'password: string;',
+    'curl -u me https://x', 'https://example.com/a@b/c']) assert.deepEqual(scan(t), [], t);
+});
+
+test('new kinds (L-e); an AWS key id right after a letter; BEARER; a preview shows nothing of a password (L-d)', () => {
+  for (const [kind, t] of [['google-oauth', `x ${fake.googleOauth()}`], ['google-oauth', `x ${fake.googleClientSecret()}`], ['slack-token', `x ${fake.slackApp()}`],
+    ['digitalocean-token', `x ${fake.digitalocean()}`], ['shopify-token', `x ${fake.shopify()}`], ['linear-key', `x ${fake.linear()}`], ['atlassian-token', `x ${fake.atlassian()}`],
+    ['age-key', fake.age()], ['base64-key', `client-key-data: ${fake.kubeKey()}`], ['azure-key', `https://acct.blob.core.windows.net/c/b?sv=2022&sig=${rand(40)}%3D&se=1`],
+    ['aws-key-id', `prefix${fake.awsKeyId()}`], ['authorization', `BEARER ${rand(32)}`]]) {
+    assert.ok(scan(t).some((f) => f.kind === kind), `${kind}: ${JSON.stringify(scan(t))}`);
+  }
+  // an .npmrc's _auth, docker's auth (a whole name only: an author's name is no secret)
+  assert.equal(scan(`//registry.npmjs.org/:_auth=${Buffer.from(`me:${rand(10)}`).toString('base64')}`).length, 1);
+  assert.deepEqual(scan('author: Jane Q. Public-Writer'), []);
+  // previews: the public start of a token, else the length only
+  const [a] = scanEntries([{ type: 'user', message: { content: `db_password = "${rand(14)}"` } }]);
+  assert.match(a.preview, /^\d+ characters$/);
+  const [g] = scanEntries([{ type: 'user', message: { content: `key ${fake.github()}` } }]);
+  assert.match(g.preview, /^gh[a-z]_… \(40 characters\)$/);
+});
+
+test('deeper than the bound: refused in fixed words, fast; titles scanned whole before they are cut (L-c)', async () => {
+  let deep = 'x';
+  for (let i = 0; i < MAX_DEPTH + 5; i++) deep = { a: deep };
+  assert.throws(() => processEntries([deep]), (e) => e instanceof TooDeep && e.message === 'too deeply nested to check — not copied');
+  let ok = 'x';
+  for (let i = 0; i < MAX_DEPTH - 5; i++) ok = { a: ok };
+  assert.doesNotThrow(() => processEntries([ok]));
+  const { rowOf } = await import('../server/import-sessions.mjs');
+  const tok = fake.github();
+  const title = `${'w '.repeat(55)}${tok} more words`;
+  const r = rowOf({ n: 1, tool: 'claude', id: uuid(), title, first: title });
+  for (const v of [r.title, r.first]) assert.ok(!v.includes(tok.slice(0, 8)) && !v.includes(tok.slice(4, 12)), v);
+});
+
+test('every new shape stays linear on hostile 7 MiB text — never near a second', () => {
+  const M = 7 << 20;
+  const fill = (head, unit, tail = '') => head + unit.repeat(Math.floor((M - head.length - tail.length) / unit.length)) + tail;
+  const P = (...a) => a.join('');
+  const cases = [
+    ['IDENTIFIED BY and spaces', fill('IDENTIFIED', ' ', 'x')], ['IDENTIFIED repeated', fill('', 'identified by ')], ['<password> without its close', fill('<password>', 'x ')],
+    ['<password> repeated', fill('', '<password>')], ['-u repeated', fill('', '-u ')], ['-u with a long value', fill('curl -u ', 'a', ':b')],
+    ['mysql repeated', fill('', 'mysql ')], ['a long mysql command', fill('mysql ', '-x ', '-pSECRET')], ['sshpass -p repeated', fill('sshpass', ' -p')],
+    ['configure set and spaces', fill('aws configure set', ' ', 'x')], ['YAML blocks repeated', fill('', 'password: |\n')],
+    ['a YAML block of many lines', fill('password: |\n', '  line of text\n')], ['URLs with many @ and /', fill('postgres://u:', '@/', 'x')], ['redis://: repeated', fill('', 'redis://:')],
+    ['${X:- repeated', fill('password=', '${X:-')], ['${ without its brace', fill('password=${', 'a ')], ['cfg["password"] repeated', fill('', 'cfg["password"]')],
+    ['password: str = repeated', fill('', 'password: str = ')], ['.netrc: password at line starts', fill('', 'password x\n')],
+    ['.netrc: password after login, one line', fill('machine x login y ', 'password ')], ['quoted, many backslashes', fill('password="', '\\\\')],
+    ['sig= repeated', fill('', 'sig=')], ['base64 key, endless', fill(P('LS0tLS1', 'CRUdJTi'), 'A')], ['xapp- repeated', fill('', P('xa', 'pp-'))],
+    ['ATATT endless', fill(P('ATA', 'TT'), 'a')], ['age key endless', fill(P('AGE-SECRET', '-KEY-1'), 'A')], ['ya29. repeated', fill('', P('ya', '29.'))],
+    ['an AWS prefix in a long run', fill('', P('xAK', 'IA'))], ['_auth repeated', fill('', '_auth=')],
+  ];
+  for (const [label, text] of cases) {
+    const t0 = Date.now();
+    scan(text);
+    assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
+  }
+  // names and values apart, at volume: 200,000 env items and --flag pairs
+  const big = { env: Array.from({ length: 100000 }, (_, i) => ({ name: i % 2 ? 'DB_PASSWORD' : 'HOST', value: `v${i}-${'z'.repeat(8)}` })),
+    args: Array.from({ length: 100000 }, (_, i) => (i % 2 ? `val-${i}-xxxxxxxx` : '--api-key')) };
+  const t0 = Date.now();
+  processEntries([big]);
+  assert.ok(Date.now() - t0 < 5000, `processEntries: ${Date.now() - t0} ms`);
 });

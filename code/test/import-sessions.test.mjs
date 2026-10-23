@@ -390,6 +390,18 @@ test('a keep is bound to its file and what it is, never to a position: parts in 
   assert.ok(fs.readFileSync(path.join(base, 'a.txt'), 'utf8').includes(same));
   assert.equal(fs.readFileSync(path.join(base, 'b.txt'), 'utf8'), 'token [REDACTED:github-token]\n');
   assert.equal(fs.readFileSync(path.join(base, 'c.txt'), 'utf8'), 'id [REDACTED:aws-key-id]\n');
+  // read again with the very same content: a new key, so a new digest — a copy named with the old one is refused
+  // clearly (never a copy that silently keeps nothing)
+  const idR = uuid();
+  const dirR = hostStore(APP, [[idR, session({ id: idR, cwd: APP }), { 'tool-results/a.txt': `token ${same}\n` }]]);
+  const scanR = nonce();
+  imports.saveIndex('p_00000001', indexText(APP, dirR), { scan: scanR, consent: 'once', host: APP });
+  await imports.stageBundle('p_00000001', scanR, Readable.from([bundle(APP, dirR, [idR])]));
+  const pvR = await preview(imports, 'p_00000001', idR);
+  await imports.stageBundle('p_00000001', scanR, Readable.from([bundle(APP, dirR, [idR])]));
+  const rR = await copy(imports, call, 'p_00000001', [{ id: idR, keep: [pvR.findings[0].id], digest: pvR.digest }]);
+  assert.deepEqual([rR[0].ok, rR[0].why], [false, 'that session was read again since you checked it: check it again']);
+  imports.drop('p_00000001', idR);
   // a token of another waiting session (another key) keeps nothing here
   const id2 = uuid();
   const dir2 = hostStore(APP, [[id2, session({ id: id2, cwd: APP }), { 'tool-results/a.txt': `token ${same}\n` }]]);

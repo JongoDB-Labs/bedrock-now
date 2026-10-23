@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { redactText } from '../secrets.mjs';
 
 export const TOOLS = Object.freeze(['claude', 'claude-bedrock']);
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -169,10 +170,11 @@ export function describe(file, { budget = { left: LIMITS.passBudget } } = {}) {
       if (e.type === 'summary' && typeof e.summary === 'string') summary = e.summary;
       if (typeof e.gitBranch === 'string' && BRANCH.test(e.gitBranch)) branch = e.gitBranch;
     }
-    row.title = clean(custom || ai || summary || first);
-    row.first = clean(first);
+    // (a title or a first prompt is scanned whole, then cut: a secret across the cut is never half left)
+    row.title = clean(redactText(custom || ai || summary || first));
+    row.first = clean(redactText(first));
     row.started = typeof started === 'string' && !Number.isNaN(Date.parse(started)) ? new Date(Date.parse(started)).toISOString() : null;
-    row.branch = branch ? clean(branch, 80) : null;
+    row.branch = branch ? clean(redactText(branch), 80) : null;
     // the whole of a transcript that is not too large (within the index's budget): messages, models, version
     const models = new Set();
     let messages = null, version = null, thinking = 0;

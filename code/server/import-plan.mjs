@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { Worker } from 'node:worker_threads';
 import { TOOLS, UUID } from './harness/claude.mjs';
-import { processEntries, scanEntries, redactText } from './secrets.mjs';
+import { processEntries, scanEntries, redactText, TooDeep } from './secrets.mjs';
 import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewrites, rewritePaths, outsidePaths } from './transcript.mjs';
 
 export class ImportError extends Error {
@@ -33,11 +33,13 @@ export function readJson(file, max) {
   } catch { return null; } finally { fs.closeSync(fd); }
 }
 
-/** stageDigest(meta) -> one SHA-256 of a waiting session: its tool and each file's name and SHA-256, in order of name.
- *  The check step shows it; a copy names it, and is refused when the session was read again since. */
+/** stageDigest(meta) -> one SHA-256 of a waiting session: its tool, the id of the key its keeps are made with (a hash of
+ *  it: read again, even unchanged, it has a new key — the copy is refused clearly instead of keeping nothing), and each
+ *  file's name and SHA-256, in order of name. The check step shows it; a copy names it, and is refused when it changed. */
 export function stageDigest(meta) {
   const parts = [...meta.parts].sort((a, b) => (a.part === 'main' ? -1 : b.part === 'main' ? 1 : a.part < b.part ? -1 : a.part > b.part ? 1 : 0));
-  return sha256(`${meta.tool}\n${parts.map((p) => `${p.part}\0${p.sha256}`).join('\n')}`);
+  const keyId = sha256(`bn-keep-key\0${typeof meta.key === 'string' ? meta.key : ''}`).slice(0, 16);
+  return sha256(`${meta.tool}\n${keyId}\n${parts.map((p) => `${p.part}\0${p.sha256}`).join('\n')}`);
 }
 
 /** readStaged(stageDir, pid, id) -> {meta, main: Buffer, parts: [{part, data}] in order of name}: a waiting session,
@@ -104,7 +106,11 @@ export async function runJob(job) {
   const keep = job.keep === true ? true : new Set(Array.isArray(job.keep) ? job.keep : []);
   const { entries: raw, bad } = parseLines(s.main);
   let blocks = thinkingCount(raw);
-  const main = lines(raw, { part: 'main', keep, key, strip, pairs });
+  let main;
+  try { main = lines(raw, { part: 'main', keep, key, strip, pairs }); } catch (e) {
+    if (e instanceof TooDeep) throw new ImportError(422, 'that session is too deeply nested to check: it is not copied');
+    throw e;
+  }
   let { redacted, kept, rewritten } = main;
   let out = main.thinking;
   const findings = [...main.findings];
@@ -114,13 +120,21 @@ export async function runJob(job) {
     if (r.left) { left.push({ part: r.part, why: r.left }); continue; }
     if (r.kind === 'lines') {
       blocks += thinkingCount(r.entries);
-      const l = lines(r.entries, { part: r.part, keep, key, strip, pairs });
+      let l;
+      try { l = lines(r.entries, { part: r.part, keep, key, strip, pairs }); } catch (e) {
+        if (e instanceof TooDeep) { left.push({ part: r.part, why: 'too deeply nested to check — not copied' }); continue; }
+        throw e;
+      }
       redacted += l.redacted; kept += l.kept; rewritten += l.rewritten; out += l.thinking;
       findings.push(...l.findings);
       parts.push({ part: r.part, data: toJsonl(l.entries) });
       continue;
     }
-    const pr = processEntries(r.entries, { part: r.part, keep, key });
+    let pr;
+    try { pr = processEntries(r.entries, { part: r.part, keep, key }); } catch (e) {
+      if (e instanceof TooDeep) { left.push({ part: r.part, why: 'too deeply nested to check — not copied' }); continue; }
+      throw e;
+    }
     const rw = rewritePaths(pr.entries, pairs);
     redacted += pr.redacted; kept += pr.kept; rewritten += rw.n;
     findings.push(...pr.findings);

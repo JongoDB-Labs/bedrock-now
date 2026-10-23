@@ -866,15 +866,17 @@ written back to those folders.
   container read under it (the list, sessions waiting) is forgotten; `./stack sessions consent --project NAME --revoke`
   (or `--revoke-all`) in a terminal.
 - **Possible secrets** (AWS keys, Amazon Bedrock API keys, GitHub, GitLab, Slack, Anthropic, OpenAI, Google, Stripe,
-  SendGrid, npm, PyPI and Hugging Face tokens, Slack webhooks, Azure account keys, private keys, JSON web tokens,
-  `Authorization` and cookie headers, passwords in URLs, values set to a secret's name — `db_password: …`, `GH_TOKEN=…`,
-  `--password …`, a JSON field named `password`, `token`, `api_key`, `X-Api-Key`, `SecretAccessKey` … — and
-  `.env`-style lines with a random value) are listed per session — what kind, where, a few characters and its length,
-  never the whole — and **redacted by default** (`[REDACTED:<kind>]`). Untick one to keep it as it is: that copy needs
-  the portal password (the update helper makes it). The transcript, its subagents' transcripts and the tool results and
-  JSON files beside it alike; a file beside it that cannot be read so stays behind. What you chose holds for the session
-  as it was checked: read again, it is checked again. A secret in a shape the scan does not know, or in prose, can
-  still go along: the sheet shows the transcript as it would be copied.
+  SendGrid, npm, PyPI, Hugging Face, DigitalOcean, Shopify, Linear and Atlassian tokens, Slack webhooks, Azure keys,
+  age and private keys, JSON web tokens, `Authorization` and cookie headers, passwords in URLs and on command lines —
+  `curl -u`, `mysql -p`, `sshpass`, `docker login`, `aws configure set`, SQL —, values set to a secret's name —
+  `db_password: …`, `GH_TOKEN=…`, `--password …`, `<password>…`, a `.netrc`, a JSON field named `password`, `token`,
+  `api_key`, `X-Api-Key` …, or a `name`/`value` pair such as Kubernetes' env — and `.env`-style lines with a random
+  value) are listed per session — what kind, where, and its length; for a token only its public start (`ghp_…`),
+  never anything of a password — and **redacted by default** (`[REDACTED:<kind>]`). Untick one to keep it as it is:
+  that copy needs the portal password (the update helper makes it). The transcript, its subagents' transcripts and the
+  tool results and JSON files beside it alike; a file beside it that cannot be read so stays behind. What you chose
+  holds for the session as it was checked: read again, it is checked again. A secret in a shape the scan does not
+  know, or in prose, can still go along: the sheet shows the transcript as it would be copied.
 - **Thinking blocks** of a session that ran elsewhere than Bedrock (Anthropic's API, a Claude subscription) are taken out
   by default (Bedrock may refuse their signatures on resume; the text stays); *Keep them* if you like — a block is
   copied as it was or not at all, so one that holds a possible secret or a path to rewrite is left out.

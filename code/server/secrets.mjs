@@ -3,7 +3,7 @@
 // string of every entry (and every key of its objects) is scanned for the shapes below — the transcript's own lines and
 // the files beside it (subagents' lines, large tool results) alike; a string whose own key names a secret (password,
 // token, api_key, SecretAccessKey, Cookie …) is a finding whole, and so is the value of a NAME=value item of a list whose
-// NAME does. Each finding is said in plain words (its kind, where, a few characters of it and its length — never the
+// NAME does. Each finding is said in plain words (its kind, where, its length — a token's public start, nothing else of it: never the
 // whole of it), and redacted by default: replaced by [REDACTED:<kind>]. You may keep one (it then goes into the sandbox
 // as it is): a keep names the file it is in and a keyed hash of its kind and value, never a position. Redacting is
 // idempotent: a redacted text has nothing left to find. A secret in a shape this does not know, or in prose, can still
@@ -113,9 +113,11 @@ function jwts(text) {
 // --- names that say a value is a secret: in a JSON key, a NAME=value item, an assignment in text (anywhere in the name,
 // any case: db_password, X-Api-Key, SecretAccessKey, GH_TOKEN, sessionToken, Set-Cookie) ---
 export const SECRET_NAME = /pass(?:word|wd|phrase)?|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|authorization|account[_-]?key|session[_-]?token|cookie/i;
+// … and, as a whole name only, auth (docker's config.json, an .npmrc's _auth): "author" is no secret's name
+const AUTH_NAME = /^-*_?auth$/i;
 // (a redaction in a key is no name: [REDACTED:github-token] does not make its value a secret)
-export const isSecretName = (k) => typeof k === 'string' && k.length <= 256 && SECRET_NAME.test(k.replace(/\[REDACTED:[a-z-]*\]/g, ''));
-const KEYWORD = new RegExp(SECRET_NAME.source, 'gi');
+export const isSecretName = (k) => typeof k === 'string' && k.length <= 256 && (SECRET_NAME.test(k.replace(/\[REDACTED:[a-z-]*\]/g, '')) || AUTH_NAME.test(k));
+const KEYWORD = new RegExp(`${SECRET_NAME.source}|(?<![A-Za-z0-9])_?auth(?![A-Za-z0-9_-])`, 'gi');
 // headers whose whole value (to the end of the line or the closing quote) is the secret
 const HEADER = /^(?:proxy-)?authorization$|^(?:set-)?cookie$/i;
 const SCHEME = /^(?:Bearer|Basic|Token|Digest|Negotiate|NTLM|Bot|AWS4-HMAC-SHA256)[ \t]+/i;
@@ -123,16 +125,16 @@ const SCHEME = /^(?:Bearer|Basic|Token|Digest|Negotiate|NTLM|Bot|AWS4-HMAC-SHA25
 const ID = new Uint8Array(128);
 for (const c of 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-') ID[c.charCodeAt(0)] = 1;
 const isId = (c) => c < 128 && ID[c] === 1;
-// where an unquoted value ends
-const STOP = new Uint8Array(128);
-for (const c of ' \t\r\n\f\v"\'`,;)}]\\&') STOP[c.charCodeAt(0)] = 1;
+// where an unquoted value ends: a space, a line's end or a quote only (a value cut at ; , & ) } ] \\ would leave its
+// rest behind: password=ab;REST — fail closed, the whole run goes)
+const valueStop = (c) => isSpace(c) || c === 34 || c === 39 || c === 96;
 
 // a value that is a placeholder, not a secret — only when the WHOLE value is one (a value that merely starts like one,
 // "Test1234…" or "true-blue…", is a finding): a redaction already, a variable, a template, an example word, a type
 // name, one character repeated. Every alternative is anchored and bounded; the pattern sees at most 256 characters
 const PLACEHOLDER = new RegExp(`^(?:${[
   '\\[REDACTED(?::[a-z-]*)?\\]?',
-  '\\$\\{?[A-Za-z_][A-Za-z0-9_]*(?::?[-=?+][^}]{0,80})?\\}?',
+  '\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?',
   '\\$\\([^)]{0,200}\\)?',
   '<[^<>]{0,80}>',
   '%[A-Za-z_][A-Za-z0-9_]*%',
@@ -148,7 +150,20 @@ const PLACEHOLDER = new RegExp(`^(?:${[
 // repeated is checked by a loop, at any length)
 const PLACEHOLDER_MAX = 256;
 const repeated = (v) => { for (let i = 1; i < v.length; i++) if (v[i] !== v[0]) return false; return v.length > 0; };
-export const placeholder = (v) => repeated(v) || (v.length <= PLACEHOLDER_MAX && PLACEHOLDER.test(v));
+// ${VAR:-default}, ${VAR:=default}, ${VAR-default}, ${VAR+alt}: a placeholder only when its default is empty or one too
+// (${POSTGRES_PASSWORD:-realpw} holds a real one); ${VAR:?message} says what is missing: a placeholder
+const SHELL_DEFAULT = /^\$\{[A-Za-z_][A-Za-z0-9_]{0,127}(:?)([-=?+])/;
+export function placeholder(v) {
+  if (repeated(v)) return true;
+  if (v.length > PLACEHOLDER_MAX) return false;
+  const d = SHELL_DEFAULT.exec(v);
+  if (d) {
+    if (!v.endsWith('}')) return false;
+    const rest = v.slice(d[0].length, -1);
+    return d[2] === '?' || rest === '' || placeholder(rest);
+  }
+  return PLACEHOLDER.test(v);
+}
 
 // entropy(s) -> Shannon entropy in bits per character
 export function entropy(s) {
@@ -163,57 +178,144 @@ const ASSIGN_MIN = 6, ASSIGN_ENTROPY = 2.3, NAMED_MIN = 6, NAMED_ENTROPY = 2.0, 
 const named = (v) => v.length >= NAMED_MIN && !placeholder(v) && entropy(v) >= NAMED_ENTROPY;
 
 // assignments(text) -> [{kind, start, end}]: by hand, in one pass — a secret's name (SECRET_NAME anywhere in a name of
-// [A-Za-z0-9_.-]), its closing quote if quoted (" ' \" \'), then = : := => (or, for a --flag, a space), then its value:
-// to the closing quote when quoted, to the end of the line for a header (Authorization, Cookie), else a run up to a
-// space or one of " ' ` , ; ) } ] \ &
+// [A-Za-z0-9_.-], or auth as a whole name), then:
+//   its closing quote if quoted (" ' \" \'), a "]" (cfg["password"], os.environ['X']), spaces, then = : := => — a type
+//   between ":" and "=" skipped (password: str = "v"); YAML's | or > takes the indented lines below;
+//   or, with a space and no sign: a --flag's value, SQL's PASSWORD 'v', a .netrc's password v (at a line's start, or
+//   after login/machine on its line);
+//   or <password>v</password> (and <secret>, <token> …);
+// then the value: to its closing quote when quoted (escaped quotes inside it skipped), to the end of the line for a
+// header (Authorization, Cookie), else to a space or a quote — nothing else ends it (fail closed)
+const TYPE_RUN = cls('A-Za-z0-9_.[]|');
+const NETRC_NAME = /^(?:password|passwd)$/i;
+// (a line's start: only for a YAML block scalar's key, once per such line)
+function lineStart(text, at) { let i = at; while (i > 0 && !lineBreak(text.charCodeAt(i - 1))) i--; return i; }
+function lineEnd(text, at) { let i = at; while (i < text.length && !lineBreak(text.charCodeAt(i))) i++; return i; }
+// quotedEnd(text, v, q, escq) -> where a quoted value ends: its closing quote (an escaped one inside it skipped; in
+// JSON-escaped text, \" closes it), else the end of its line
+function quotedEnd(text, v, q, escq) {
+  const n = text.length;
+  let end = v;
+  while (end < n) {
+    const c = text[end];
+    if (c === '\n' || c === '\r') break;
+    if (c === '\\') { if (escq && text[end + 1] === q) break; end += 2; continue; }
+    if (!escq && c === q) break;
+    end++;
+  }
+  return Math.min(end, n);
+}
+// blockScalar(text, s, after) -> {start, end} of a YAML block scalar's lines (key at s, its | or > line ending at after):
+// the lines below more indented than the key's line (blank ones within them too), else null
+function blockScalar(text, s, after) {
+  const ls = lineStart(text, s);
+  let indent = 0;
+  while (ls + indent < s && isBlank(text[ls + indent])) indent++;
+  let at = after + (text[after] === '\r' && text[after + 1] === '\n' ? 2 : 1), start = -1, end = -1;
+  while (at < text.length) {
+    const le = lineEnd(text, at);
+    const ind = skipBlanks(text, at) - at;
+    if (at + ind === le) { at = le + 1; continue; }         // (a blank line: part of the block if more follows)
+    if (ind <= indent) break;
+    if (start < 0) start = at + ind;
+    end = le;
+    at = le + (text[le] === '\r' && text[le + 1] === '\n' ? 2 : 1);
+  }
+  return start < 0 ? null : { start, end };
+}
 function assignments(text) {
   const out = [];
   const n = text.length;
+  const value = (kind, start, end) => {
+    const val = text.slice(start, end);
+    // (a placeholder followed by a statement's end — password: string; — is one: judged without its trailing ; , ) } ];
+    // a finding still takes the whole run)
+    let z = val.length;
+    while (z > 0 && ';,)}]'.includes(val[z - 1])) z--;
+    const core = z === val.length ? val : val.slice(0, z);
+    const ph = placeholder(val) || (core !== val && placeholder(core));
+    if (kind === 'assignment' ? val.length >= ASSIGN_MIN && !ph && entropy(val) >= ASSIGN_ENTROPY : val.length >= HEADER_MIN && !ph) out.push({ kind, start, end });
+  };
   KEYWORD.lastIndex = 0;
   for (let m; (m = KEYWORD.exec(text)) !== null;) {
     let s = m.index, e = m.index + m[0].length;
     while (s > 0 && isId(text.charCodeAt(s - 1))) s--;
     while (e < n && isId(text.charCodeAt(e))) e++;
     KEYWORD.lastIndex = e;
-    let i = e;
-    if (text[i] === '\\' && (text[i + 1] === '"' || text[i + 1] === "'")) i += 2;
-    else if (text[i] === '"' || text[i] === "'") i++;
-    let j = i;
-    while (j < n && (text[j] === ' ' || text[j] === '\t')) j++;
-    let v;
-    if (text.startsWith('=>', j) || text.startsWith(':=', j)) v = j + 2;
-    else if (text[j] === '=' || text[j] === ':') v = j + 1;
-    else if (text[s] === '-' && j > i && j < n && text[j] !== '\n' && text[j] !== '\r') v = j;   // (--password value)
-    else continue;
-    while (v < n && (text[v] === ' ' || text[v] === '\t')) v++;
-    let q = null;
-    if (text[v] === '\\' && (text[v + 1] === '"' || text[v + 1] === "'")) { q = text[v + 1]; v += 2; }
-    else if (text[v] === '"' || text[v] === "'" || text[v] === '`') { q = text[v]; v++; }
-    const name = text.slice(s, e);
+    // (only a name's first 64 and last 20 characters are ever looked at: a name of any length costs its run, once)
+    const name = e - s <= 64 ? text.slice(s, e) : `${text.slice(s, s + 44)}${text.slice(e - 20, e)}`;
+    // <password>value</password>
+    if (s > 0 && text[s - 1] === '<' && text[e] === '>') {
+      const close = text.indexOf('<', e + 1), end = close < 0 ? n : close;
+      let a = skipBlanks(text, e + 1), z = end;
+      while (z > a && isSpace(text.charCodeAt(z - 1))) z--;
+      value('assignment', a, z);
+      KEYWORD.lastIndex = Math.max(e, end);
+      continue;
+    }
+    const i = text[e] === ']' ? e + 1 : skipQuote(text, e) + (text[skipQuote(text, e)] === ']' ? 1 : 0);
+    let j = skipBlanks(text, i);
     let d = 0;
     while (d < name.length && name[d] === '-') d++;
     const header = name.length - d <= 20 && HEADER.test(name.slice(d));
-    let end = v;
-    if (q || header) {
-      while (end < n) {
-        const c = text[end];
-        if (c === '\n' || c === '\r' || c === '\\' || (q ? c === q : c === '"')) break;
-        end++;
+    let v = -1, sep = '';
+    if (text.startsWith('=>', j) || text.startsWith(':=', j)) { v = j + 2; sep = '='; }
+    else if (text[j] === '=' && text[j + 1] !== '=') { v = j + 1; sep = '='; }
+    else if (text[j] === ':' && text[j + 1] !== ':') { v = j + 1; sep = ':'; }
+    else if (j > i && j < n && !lineBreak(text.charCodeAt(j))) {
+      // (no sign: a --flag's value; SQL's PASSWORD 'v'; a .netrc's password v)
+      // (at a line's start: only blanks before it on its line — looked at back to the first other character; or after
+      // login or machine within the 256 characters before it on its line)
+      const netrc = NETRC_NAME.test(name) && (() => {
+        let k = s;
+        while (k > 0 && isBlank(text[k - 1])) k--;
+        if (k === 0 || lineBreak(text.charCodeAt(k - 1))) return true;
+        let before = text.slice(Math.max(0, s - 256), s);
+        const nl = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r'));
+        if (nl >= 0) before = before.slice(nl + 1);
+        return /(?:^|[ \t])(?:login|machine)[ \t]/.test(before);
+      })();
+      if (text[s] === '-' || netrc || (NETRC_NAME.test(name) && QUOTE(text[j]))) v = j;
+    }
+    if (v < 0) continue;
+    v = skipBlanks(text, v);
+    // (a type between ":" and "=": password: str = "v")
+    if (sep === ':') {
+      const te = runEnd(text, v, TYPE_RUN);
+      if (te > v && te - v <= 64) { const k = skipBlanks(text, te); if (text[k] === '=' && text[k + 1] !== '=') v = skipBlanks(text, k + 1); }
+    }
+    // (YAML: key: | or key: > — the indented lines below)
+    if (sep === ':' && (text[v] === '|' || text[v] === '>')) {
+      let k = v + 1;
+      while (k < n && /[-+0-9]/.test(text[k])) k++;
+      k = skipBlanks(text, k);
+      if (k >= n || lineBreak(text.charCodeAt(k))) {
+        const b = blockScalar(text, s, k);
+        if (b) { value('assignment', b.start, b.end); KEYWORD.lastIndex = Math.max(e, b.end); }
+        continue;
       }
-      while (end > v && (text[end - 1] === ' ' || text[end - 1] === '\t')) end--;
-    } else {
-      while (end < n) { const c = text.charCodeAt(end); if (c < 128 && STOP[c] === 1) break; end++; }
+    }
+    let q = null, escq = false;
+    if (text[v] === '\\' && QUOTE(text[v + 1])) { q = text[v + 1]; escq = true; v += 2; }
+    else if (QUOTE(text[v]) || text[v] === '`') { q = text[v]; v++; }
+    let end;
+    if (q) end = quotedEnd(text, v, q, escq);
+    else if (header) { end = lineEnd(text, v); while (end > v && isBlank(text[end - 1])) end--; }
+    else {
+      end = v;
+      // (a shell expansion may hold spaces: ${X:?set it} — to its closing brace on the line, then on to a space)
+      // (within 256 characters: a longer one is taken to a space, as any value)
+      if (text.startsWith('${', v)) { let k = v + 2; const lim = Math.min(n, v + 256); while (k < lim && text[k] !== '}' && !lineBreak(text.charCodeAt(k))) k++; if (text[k] === '}') end = k + 1; }
+      while (end < n && !valueStop(text.charCodeAt(end))) end++;
     }
     KEYWORD.lastIndex = Math.max(e, end);
     if (header) {
       const sm = SCHEME.exec(text.slice(v, Math.min(end, v + 40)));
       const from = sm ? v + sm[0].length : v;
-      const val = text.slice(from, end);
-      if (val.length >= HEADER_MIN && !placeholder(val)) out.push({ kind: /cookie$/i.test(name) ? 'cookie' : 'authorization', start: from, end });
+      value(/cookie$/i.test(name) ? 'cookie' : 'authorization', from, end);
       continue;
     }
-    const val = text.slice(v, end);
-    if (val.length >= ASSIGN_MIN && !placeholder(val) && entropy(val) >= ASSIGN_ENTROPY) out.push({ kind: 'assignment', start: v, end });
+    value('assignment', v, end);
   }
   return out;
 }
@@ -258,7 +360,7 @@ function sendgrid(text) {
   return out;
 }
 // a bearer token: Bearer, spaces, then 16 or more of [A-Za-z0-9._~+/=-]
-const BEARER = /(?<![A-Za-z0-9_-])[Bb]earer[ \t]/g, BEARER_RUN = cls('A-Za-z0-9._~+/=-');
+const BEARER = /(?<![A-Za-z0-9_-])bearer[ \t]/gi, BEARER_RUN = cls('A-Za-z0-9._~+/=-');
 function bearers(text) {
   const out = [];
   BEARER.lastIndex = 0;
@@ -269,24 +371,99 @@ function bearers(text) {
   }
   return out;
 }
-// a password in a URL: scheme://user:password@ — the scheme a run of [a-z0-9+.-] starting with a letter (and no such
-// character before it), the user up to ":", the password (3 or more) up to "@"; neither has a space, / " ' ` (nor the
-// user : or @, the password @)
-const URL_SCHEME = cls('a-zA-Z0-9+.-'), USER_STOP = cls('/:@"\'`'), PASS_STOP = cls('/@"\'`');
+// a password in a URL: scheme://user:password@host — the scheme a run of [a-z0-9+.-] starting with a letter (and no
+// such character before it); the user up to ":" (it may be empty: redis://:pw@host); the password up to the LAST "@"
+// before the query's "?" (it may hold "/", "#" and "@" itself) — or, with no "@" before a "?" (a password holding
+// one), the last "@" before a space or a quote: more is redacted rather than less. At least 1 character.
+const URL_SCHEME = cls('a-zA-Z0-9+.-'), USER_STOP = cls('/:@"\'`'), AUTH_STOP = cls('"\'`<>');
 function urlPasswords(text) {
   const out = [];
   for (let at = text.indexOf('://'); at >= 0; at = text.indexOf('://', at + 3)) {
     const s = runStart(text, at, URL_SCHEME);
     if (s === at || !/[A-Za-z]/.test(text[s])) continue;
     const u = at + 3, ue = runUntil(text, u, USER_STOP);
-    if (ue === u || text[ue] !== ':') continue;
-    const pe = runUntil(text, ue + 1, PASS_STOP);
-    if (pe - ue - 1 >= 3 && text[pe] === '@') {
-      const v = text.slice(ue + 1, pe);
-      if (!placeholder(v)) out.push({ start: ue + 1, end: pe });
+    if (text[ue] !== ':') continue;
+    const stop = runUntil(text, ue + 1, AUTH_STOP);
+    // (the last "@" of this authority, looked for in it only)
+    let last = -1, beforeQuery = -1, query = false;
+    for (let k = ue + 1; k < stop; k++) {
+      const c = text.charCodeAt(k);
+      if (c === 63) query = true;
+      else if (c === 64) { last = k; if (!query) beforeQuery = k; }
     }
+    if (beforeQuery > 0) last = beforeQuery;
+    if (last > ue + 1) {
+      const v = text.slice(ue + 1, last);
+      if (!placeholder(v)) out.push({ start: ue + 1, end: last });
+    }
+    // (the next URL starts after this one's authority: nothing is looked at twice)
+    at = Math.max(at, Math.min(stop, text.length) - 3);
   }
   return out;
+}
+// a password on a command line: curl -u user:pass (--user); mysql -pPASS (mariadb, mysqldump …); sshpass -p PASS;
+// docker / podman login -p PASS; aws configure set aws_secret_access_key VALUE; SQL's IDENTIFIED BY 'PASS'. A
+// command's words are read by hand up to its end (a line's end, ; | &); the next command word is looked for after it
+const CMD = /(?<![A-Za-z0-9_-])(?:mysql(?:dump|admin|import|sh|check)?|mariadb(?:-dump|-admin)?|sshpass|docker|podman|configure|identified)(?![A-Za-z0-9_-])/gi;
+const USER_FLAG = /(?<![A-Za-z0-9_-])(?:-u|--user)(?=[ \t=])/g;
+const cmdEnd = (c) => c === 10 || c === 13 || c === 59 || c === 124 || c === 38;   // \n \r ; | &
+// words(text, at) -> [{start, end}] of a command's words from at to its end (quotes taken as part of a word), and that end
+function words(text, at) {
+  const out = [];
+  let i = at;
+  while (i < text.length && !cmdEnd(text.charCodeAt(i))) {
+    if (isSpace(text.charCodeAt(i))) { i++; continue; }
+    const s = i;
+    while (i < text.length && !isSpace(text.charCodeAt(i)) && !cmdEnd(text.charCodeAt(i))) i++;
+    out.push({ start: s, end: i });
+    if (out.length > 4096) break;
+  }
+  return { list: out, end: i };
+}
+// unquote(text, w) -> the span inside a word's quotes, if it is quoted
+const unquote = (text, w) => (w.end - w.start >= 2 && QUOTE(text[w.start]) && text[w.end - 1] === text[w.start] ? { start: w.start + 1, end: w.end - 1 } : w);
+function commandPasswords(text) {
+  const out = [];
+  const add = (w) => { const x = unquote(text, w); const v = text.slice(x.start, x.end); if (v.length >= 1 && !placeholder(v)) out.push({ start: x.start, end: x.end }); };
+  USER_FLAG.lastIndex = 0;
+  for (let m; (m = USER_FLAG.exec(text)) !== null;) {
+    let i = m.index + m[0].length;
+    i = text[i] === '=' ? i + 1 : skipBlanks(text, i);
+    const q = QUOTE(text[i]) ? text[i] : null;
+    const a = q ? i + 1 : i;
+    let e = a;
+    while (e < text.length && !(q ? text[e] === q || lineBreak(text.charCodeAt(e)) : valueStop(text.charCodeAt(e)))) e++;
+    let colon = -1;
+    for (let k = a; k < e; k++) if (text.charCodeAt(k) === 58) { colon = k; break; }
+    if (colon > a) {
+      const v = text.slice(colon + 1, e);
+      if (v.length >= 4 && !/^[0-9]+$/.test(v) && !placeholder(v)) out.push({ start: colon + 1, end: e });
+    }
+    USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, e);
+  }
+  CMD.lastIndex = 0;
+  for (let m; (m = CMD.exec(text)) !== null;) {
+    const word = m[0].toLowerCase();
+    const { list, end } = words(text, m.index + m[0].length);
+    CMD.lastIndex = Math.max(CMD.lastIndex, end);
+    const w = (k) => (list[k] ? text.slice(list[k].start, list[k].end) : '');
+    if (word === 'identified') {
+      if (w(0).toLowerCase() === 'by' && list[1]) add(list[1]);
+      continue;
+    }
+    if (word === 'configure') {
+      if (w(0) === 'set' && list[2] && isSecretName(w(1))) add(list[2]);
+      continue;
+    }
+    if ((word === 'docker' || word === 'podman') && w(0) !== 'login') continue;
+    const glued = word.startsWith('mysql') || word.startsWith('mariadb') || word === 'sshpass';
+    for (let k = 0; k < list.length; k++) {
+      const t = w(k);
+      if (t === '-p' || t === '--password') { if ((word === 'sshpass' || word === 'docker' || word === 'podman') && list[k + 1]) add(list[k + 1]); continue; }
+      if (glued && t.startsWith('-p') && t.length > 2 && !t.startsWith('-p=')) add({ start: list[k].start + 2, end: list[k].end });
+    }
+  }
+  return out.sort((x, y) => x.start - y.start);
 }
 // a .env-style line: (spaces) (export) NAME=value (quotes around it, spaces after it) to the end of the line — NAME of
 // [A-Z][A-Z0-9_]{2,}, the value 16 or more of [A-Za-z0-9_+/=.-] with 3.5 bits a character
@@ -330,21 +507,31 @@ const T = '(?<![A-Za-z0-9])';
 const tok = (re, run) => ({ re: new RegExp(re, 'g'), run: cls(run) });
 const KINDS_ = [
   { kind: 'private-key', label: 'a private key', find: pemBlocks },
-  { kind: 'aws-key-id', label: 'an AWS access key ID', tokens: [tok(`${T}((?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16})`, 'A-Z0-9')] },
+  // (an AWS key id even right after a letter or digit: its prefix and 16 of [A-Z0-9] are rare enough by chance)
+  { kind: 'aws-key-id', label: 'an AWS access key ID', tokens: [tok('((?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16})', 'A-Z0-9')] },
   { kind: 'aws-secret', label: 'an AWS secret access key', find: awsSecrets },
   { kind: 'bedrock-api-key', label: 'an Amazon Bedrock API key',
     tokens: [tok(`${T}(ABSK[A-Za-z0-9+/=]{20})`, 'A-Za-z0-9+/='), tok(`${T}(bedrock-api-key-[A-Za-z0-9+/=%_-]{20})`, 'A-Za-z0-9+/=%_-')] },
   { kind: 'github-token', label: 'a GitHub token', tokens: [tok(`${T}(gh[pousr]_[A-Za-z0-9]{36})`, 'A-Za-z0-9'), tok(`${T}(github_pat_[A-Za-z0-9_]{22})`, 'A-Za-z0-9_')] },
   { kind: 'gitlab-token', label: 'a GitLab token', tokens: [tok(`${T}(gl(?:pat|dt|rt|ptt|cbt|oas|ft|imt|soat|agent)-[A-Za-z0-9_-]{20})`, 'A-Za-z0-9_-')] },
-  { kind: 'slack-token', label: 'a Slack token', tokens: [tok(`${T}(xox[abposrce]-[A-Za-z0-9-]{10})`, 'A-Za-z0-9-')] },
+  { kind: 'slack-token', label: 'a Slack token', tokens: [tok(`${T}(xox[abposrce]-[A-Za-z0-9-]{10})`, 'A-Za-z0-9-'), tok(`${T}(xapp-[A-Za-z0-9-]{10})`, 'A-Za-z0-9-')] },
   { kind: 'slack-webhook', label: 'a Slack webhook', tokens: [tok('hooks\\.slack\\.com\\/((?:services|workflows|triggers)\\/[A-Za-z0-9_/+-]{16})', 'A-Za-z0-9_/+-')] },
   { kind: 'anthropic-key', label: 'an Anthropic API key', tokens: [tok(`${T}(sk-ant-[A-Za-z0-9_-]{20})`, 'A-Za-z0-9_-')] },
   // (proj-, svcacct-, admin-: in the run's characters already)
   { kind: 'openai-key', label: 'an OpenAI-style API key', tokens: [tok(`${T}(sk-(?!ant-)[A-Za-z0-9_-]{20})`, 'A-Za-z0-9_-')] },
   { kind: 'google-api-key', label: 'a Google API key', tokens: [tok(`${T}(AIza[0-9A-Za-z_-]{35})`, '0-9A-Za-z_-')] },
+  { kind: 'google-oauth', label: 'a Google OAuth token or client secret', tokens: [tok(`${T}(ya29\\.[A-Za-z0-9_-]{20})`, 'A-Za-z0-9_-'), tok(`${T}(GOCSPX-[A-Za-z0-9_-]{20})`, 'A-Za-z0-9_-')] },
   { kind: 'stripe-key', label: 'a Stripe secret key', tokens: [tok(`${T}((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10})`, 'A-Za-z0-9'), tok(`${T}(whsec_[A-Za-z0-9+/=]{20})`, 'A-Za-z0-9+/=')] },
   { kind: 'sendgrid-key', label: 'a SendGrid API key', find: sendgrid },
-  { kind: 'azure-key', label: 'an Azure account key', tokens: [{ re: /(?<![A-Za-z0-9])(?:AccountKey|SharedAccessKey)=([A-Za-z0-9+/=]{20})/gi, run: cls('A-Za-z0-9+/=') }] },
+  { kind: 'azure-key', label: 'an Azure account key or SAS signature', tokens: [{ re: /(?<![A-Za-z0-9])(?:AccountKey|SharedAccessKey)=([A-Za-z0-9+/=]{20})/gi, run: cls('A-Za-z0-9+/=') },
+    { re: /(?<![A-Za-z0-9])sig=([A-Za-z0-9%+/=]{16})/gi, run: cls('A-Za-z0-9%+/=') }] },
+  { kind: 'digitalocean-token', label: 'a DigitalOcean token', tokens: [tok(`${T}(do[opr]_v1_[a-f0-9]{32})`, 'a-f0-9')] },
+  { kind: 'shopify-token', label: 'a Shopify token', tokens: [tok(`${T}(shp(?:at|ss|ca|pa)_[a-fA-F0-9]{16})`, 'a-fA-F0-9')] },
+  { kind: 'linear-key', label: 'a Linear API key', tokens: [tok(`${T}(lin_api_[A-Za-z0-9]{20})`, 'A-Za-z0-9')] },
+  { kind: 'atlassian-token', label: 'an Atlassian API token', tokens: [tok(`${T}(ATATT[A-Za-z0-9_=-]{20})`, 'A-Za-z0-9_=-')] },
+  { kind: 'age-key', label: 'an age secret key', tokens: [tok(`${T}(AGE-SECRET-KEY-1[0-9A-Z]{20})`, '0-9A-Z')] },
+  // (a PEM block in base64 — a kubeconfig's client-key-data, client-certificate-data: -----BEGIN … encoded)
+  { kind: 'base64-key', label: 'a key or certificate in base64 (a kubeconfig\'s client-key-data …)', tokens: [tok('(LS0tLS1CRUdJTi)', 'A-Za-z0-9+/=')] },
   { kind: 'npm-token', label: 'an npm token', tokens: [tok(`${T}(npm_[A-Za-z0-9]{36})`, 'A-Za-z0-9')] },
   { kind: 'pypi-token', label: 'a PyPI token', tokens: [tok(`${T}(pypi-[A-Za-z0-9_-]{40})`, 'A-Za-z0-9_-')] },
   { kind: 'huggingface-token', label: 'a Hugging Face token', tokens: [tok(`${T}(hf_[A-Za-z]{34})`, 'A-Za-z')] },
@@ -352,6 +539,7 @@ const KINDS_ = [
   { kind: 'authorization', label: 'an Authorization header or bearer token', find: (text, ctx) => [...byKind('authorization')(text, ctx), ...bearers(text)].sort((x, y) => x.start - y.start) },
   { kind: 'cookie', label: 'a cookie', find: byKind('cookie') },
   { kind: 'url-password', label: 'a password in a URL', find: urlPasswords },
+  { kind: 'command-password', label: 'a password in a command (curl -u, mysql -p, sshpass, docker login, aws configure set, SQL)', find: commandPasswords },
   { kind: 'named', label: 'a value under a secret\'s name (a password, token, key or cookie)' },
   { kind: 'assignment', label: 'a password, token or key set to a value', find: byKind('assignment') },
   { kind: 'env-line', label: 'a .env-style line with a long random value', find: envLines },
@@ -405,7 +593,10 @@ function item(text) {
   let a = 0, b = eq;
   while (a < b && blank(text[a])) a++;
   while (b > a && blank(text[b - 1])) b--;
-  const name = text.slice(a, b);
+  let name = text.slice(a, b);
+  let d = 0;
+  while (d < name.length && name[d] === '-') d++;   // (--api-key=value)
+  name = name.slice(d);
   if (!NAME.test(name)) return null;
   let start = eq + 1, end = text.length;
   while (start < end && blank(text[start])) start++;
@@ -451,12 +642,21 @@ export function scan(text, { named: isNamed = false, item: isItem = false } = {}
   return found;
 }
 
-// what a finding is shown as: its first characters and its length — never the whole of it
+// what a finding is shown as — on any device, remote ones too — never the whole of it: its kind and its length; and,
+// only for a token whose start is the same for everyone's (ghp_, AKIA, sk-ant- …), that start — nothing of a password,
+// a cookie, a value set to a name, a URL's password or an Authorization header
+const PUBLIC_PREFIX = {
+  'aws-key-id': 4, 'bedrock-api-key': 4, 'github-token': 4, 'gitlab-token': 4, 'slack-token': 4, 'slack-webhook': 8, 'anthropic-key': 7,
+  'openai-key': 3, 'google-api-key': 4, 'google-oauth': 5, 'stripe-key': 3, 'sendgrid-key': 3, 'npm-token': 4, 'pypi-token': 5,
+  'huggingface-token': 3, 'jwt': 3, 'digitalocean-token': 7, 'shopify-token': 6, 'linear-key': 8, 'atlassian-token': 5, 'age-key': 16,
+  'base64-key': 14,
+};
 export function masked(v, kind) {
   if (WHOLE.includes(kind)) return `the whole text (${v.length} characters)`;
   if (kind === 'private-key') return `a private key of ${v.split('\n').length} lines`;
-  const head = [...v.slice(0, 8)].slice(0, Math.min(4, Math.max(0, v.length - 8))).join('');
-  return `${head}… (${v.length} characters)`;
+  const n = PUBLIC_PREFIX[kind] ?? 0;
+  // (the prefix only when there is plenty after it)
+  return n && v.length >= n + 8 ? `${v.slice(0, n)}… (${v.length} characters)` : `${v.length} characters`;
 }
 // a few words around it on one line, every finding in the string (this one, and any other near it) replaced by •••
 const around = (text, f, all) => {
@@ -487,6 +687,15 @@ export function keepToken(part, kind, value, key = '') {
 }
 export const KEEP_TOKEN = /^(main|(subagents|tool-results)\/[A-Za-z0-9][A-Za-z0-9._-]{0,199})#[0-9a-f]{16}$/;
 
+// a value nested deeper than this is not looked into: the file is not copied (said in fixed words)
+export const MAX_DEPTH = 200;
+export class TooDeep extends Error { constructor() { super('too deeply nested to check — not copied'); } }
+// the keys a name and its value come under in lists of settings (Kubernetes' and ECS' env, SSM, CloudFormation …)
+const NAME_KEY = /^(?:name|key|id|parameterkey|parametername|optionname|variable|var|envname|secretname|field)$/i;
+const VALUE_KEY = /^(?:value|values|parametervalue|secretstring|secretvalue|optionvalue|stringvalue|plaintext)$/i;
+// a count, not a secret: a number (or a list) under such a key is never named — Claude Code's own usage, input_tokens,
+// cache_read_input_tokens …, a test run's numPassedTests
+const COUNTLIKE = /tokens|counts?|total|limit|max|min|size|length|passed|failed/i;
 /** processEntries(entries, {part, keep, key, skipThinking}) -> {entries, findings, redacted, kept}: every string and key
  *  of every entry scanned ONCE — the findings (in order; id: the keep token) and a copy with each one replaced by
  *  [REDACTED:<kind>] but those kept (keep: a Set of tokens, or true for all — never a whole-text one). line: the line
@@ -511,19 +720,48 @@ export function processEntries(entries, { part = 'main', keep = new Set(), key =
     }
     return res + s.slice(at);
   };
-  const walk = (v, path, key0, inList, parent, depth) => {
-    if (typeof v === 'string') return one(v, path, { named: !inList && isSecretName(key0), item: inList }, false);
+  // walk(v, path, key0, ctx, parent, depth): ctx — what the value is to the scan: '' (as found), 'named' (a secret's
+  // value whole), 'item' (an item of a list: NAME=value). A name and its value apart are joined here: a value-like key
+  // (value, Value, ParameterValue, SecretString …) beside a name-like one (name, Name, Key, ParameterKey …) that names a
+  // secret; a value-like key, or any item of a list, under a key that names a secret (Terraform's {db_password: {value}},
+  // {api_keys: [v]}, {Cookie: ["sid=…"]}); a list's item after a --flag that names one (["--api-key", v]). A number in
+  // such a place is a finding too.
+  const walk = (v, path, key0, ctx, parent, depth) => {
+    if (depth > MAX_DEPTH) throw new TooDeep();
+    if (typeof v === 'string') return one(v, path, ctx === 'named' ? { named: true } : ctx === 'item' ? { item: true } : {}, false);
+    if (typeof v === 'number' && ctx === 'named' && Number.isFinite(v)) {
+      const t = String(v);
+      if (!named(t)) return v;
+      const tok = keepToken(part, 'named', t, key);
+      findings.push({ id: tok, n: findings.length + 1, kind: 'named', label: LABELS.named, line, message: Math.max(1, message), part, path,
+        preview: masked(t, 'named'), context: '•••', keepable: true });
+      if (keeps(tok, 'named')) { kept++; return v; }
+      redacted++;
+      return redactedAs('named');
+    }
     if (Array.isArray(v)) {
       const thinkingHere = skipThinking && assistant && depth === 2 && key0 === 'content' && parent === 'message';
-      return v.map((x, i) => (thinkingHere && THINKING(x) ? x : walk(x, `${path}[${i}]`, String(i), true, key0, depth + 1)));
+      const under = ctx === 'named' || (isSecretName(key0) && !COUNTLIKE.test(key0));
+      let flag = false;
+      return v.map((x, i) => {
+        if (thinkingHere && THINKING(x)) return x;
+        const c = under || flag ? 'named' : 'item';
+        flag = typeof x === 'string' && x.length <= 256 && x[0] === '-' && !x.includes('=') && isSecretName(x);
+        return walk(x, `${path}[${i}]`, String(i), c, key0, depth + 1);
+      });
     }
     if (v && typeof v === 'object') {
+      const under = ctx === 'named' || isSecretName(key0);
+      let pair = false;
+      for (const [k, x] of Object.entries(v)) if (NAME_KEY.test(k) && typeof x === 'string' && isSecretName(x)) { pair = true; break; }
       const o = {};
       for (const [k, x] of Object.entries(v)) {
         const at = path ? `${path}.${k.slice(0, 40)}` : k.slice(0, 40);
         let nk = one(k, at, {}, true);
         if (nk !== k || Object.prototype.hasOwnProperty.call(o, nk)) { const base = nk; for (let i = 2; Object.prototype.hasOwnProperty.call(o, nk); i++) nk = `${base}#${i}`; }
-        Object.defineProperty(o, nk, { value: walk(x, at, k, false, key0, depth + 1), enumerable: true, writable: true, configurable: true });
+        const secretKey = isSecretName(k) && !((typeof x === 'number' || Array.isArray(x)) && COUNTLIKE.test(k));
+        const c = secretKey || (VALUE_KEY.test(k) && (pair || under)) ? 'named' : '';
+        Object.defineProperty(o, nk, { value: walk(x, at, k, c, key0, depth + 1), enumerable: true, writable: true, configurable: true });
       }
       return o;
     }
@@ -533,7 +771,7 @@ export function processEntries(entries, { part = 'main', keep = new Set(), key =
     line = i + 1;
     if (e && (e.type === 'user' || e.type === 'assistant')) message++;
     assistant = Boolean(e && e.type === 'assistant');
-    return walk(e, '', '', false, '', 0);
+    return walk(e, '', '', '', '', 0);
   });
   return { entries: out, findings, redacted, kept };
 }

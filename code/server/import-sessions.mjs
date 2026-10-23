@@ -74,13 +74,14 @@ export function rowOf(r) {
   if (n === null || !TOOLS.includes(r.tool) || typeof r.id !== 'string' || !UUID.test(r.id)) return null;
   return {
     // (titles, first prompts and branches are what a past session said: shown, so scanned too — L2)
-    n, tool: r.tool, id: r.id, title: redactText(clean(r.title)), first: redactText(clean(r.first)), started: ISO(r.started), last: int(r.last, 0, 1e14) ?? 0,
+    n, tool: r.tool, id: r.id, title: clean(redactText(typeof r.title === 'string' ? r.title : '')), first: clean(redactText(typeof r.first === 'string' ? r.first : '')),
+    started: ISO(r.started), last: int(r.last, 0, 1e14) ?? 0,
     messages: int(r.messages, 0, 1e7), size: int(r.size, 0, 1 << 40) ?? 0, parts: int(r.parts, 0, 100000) ?? 0, partsSkipped: int(r.partsSkipped, 0, 100000) ?? 0,
     models: Array.isArray(r.models) ? r.models.filter((m) => typeof m === 'string' && MODEL.test(m)).slice(0, 6) : [],
     version: typeof r.version === 'string' && VERSION.test(r.version) ? r.version : null,
     format: ['tested', 'other', 'unknown'].includes(r.format) ? r.format : 'unknown',
     source: ['bedrock-now', 'bedrock', 'anthropic', 'unknown'].includes(r.source) ? r.source : 'unknown',
-    thinking: int(r.thinking, 0, 1e7), branch: r.branch ? redactText(clean(r.branch, 80)) || null : null, tooLarge: r.tooLarge === true || (int(r.size, 0, 1 << 40) ?? 0) > READER.sessionBytes,
+    thinking: int(r.thinking, 0, 1e7), branch: typeof r.branch === 'string' && r.branch ? clean(redactText(r.branch), 80) || null : null, tooLarge: r.tooLarge === true || (int(r.size, 0, 1 << 40) ?? 0) > READER.sessionBytes,
   };
 }
 const COUNTS = ['folders', 'listed', 'older', 'otherFolder', 'noCwd', 'unreadable', 'sidechain'];
