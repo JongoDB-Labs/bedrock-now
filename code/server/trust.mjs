@@ -158,10 +158,13 @@ export function frontMatter(t) {
 // ---   gVn=/```!\s*\n?([\s\S]*?)\n?```/g          a fenced block opened by ```!
 // ---   hVn=/(?<=^|\s)!`([^`]+)`/gm               an inline !`…` after a line's start or whitespace — read on the text
 // ---                                               with inline code blanked first: /`[^`\n]+`/g not after ! or `
-// ---   each command trimmed, CRLF as LF; an empty one skipped)
+// ---   each command trimmed, CRLF as LF; an empty one skipped. Its blanking, whole:
+// ---   function cOe(e){return e.replace(/`[^`\n]+`/g,(n,r)=>{let s=e[r-1];return s==="!"||s==="`"?n:"`"+vi(" ",
+// ---     n.length-2)+"`"})}  — a span after ! or ` is kept as it is, and consumed all the same)
 // --- — mirrored here by scans, in linear time (the fenced pattern's \s* before an unclosed block is quadratic): every
 // --- command Claude Code would run is listed; a fenced block with no closing ``` (which runs nothing there) is listed too.
-// blankInlineCode(text) -> the text with inline code spans (`…` on one line, not right after ! or `) as spaces
+// blankInlineCode(text) -> cOe(text): each inline code span (`…` on one line, matched left to right as that regular
+// expression does) as spaces — but one right after ! or `, kept as it is (and passed over, as there)
 function blankInlineCode(s) {
   let out = '', from = 0;
   for (let i = s.indexOf('`'); i >= 0; ) {
@@ -174,21 +177,23 @@ function blankInlineCode(s) {
   }
   return out + s.slice(from);
 }
-/** shellBlocks(text) -> [{kind: 'fenced' | 'inline', command}]: the shell commands Claude Code runs (in the sandbox, as
- *  the session) each time the skill or command is used, before the model reads its text — at most 200 of them, each
- *  cut at 2,000 characters */
-export function shellBlocks(text) {
+/** shellBlocks(text, max) -> {list: [{kind: 'fenced' | 'open' | 'inline', command}], more}: the shell commands Claude
+ *  Code runs (in the sandbox, as the session) each time the skill or command is used, before the model reads its text —
+ *  each whole (never cut: a caller that cannot show one whole says so); the first max of them, more when there are more
+ *  (a caller says so). 'open': a ```! block with no closing ``` — Claude Code runs nothing there; listed all the same */
+export function shellBlocks(text, max = 1000) {
   const s = String(text), out = [];
-  const add = (kind, c) => { const cmd = c.trim().replaceAll('\r\n', '\n'); if (cmd && out.length < 200) out.push({ kind, command: cmd.slice(0, 2000) }); };
-  for (let at = s.indexOf('```!'); at >= 0 && out.length < 200; ) {
+  let more = false;
+  const add = (kind, c) => { const cmd = c.trim().replaceAll('\r\n', '\n'); if (!cmd) return; if (out.length < max) out.push({ kind, command: cmd }); else more = true; };
+  for (let at = s.indexOf('```!'); at >= 0 && !more; ) {
     const close = s.indexOf('```', at + 4);
-    add('fenced', s.slice(at + 4, close < 0 ? s.length : close));
+    add(close < 0 ? 'open' : 'fenced', s.slice(at + 4, close < 0 ? s.length : close));
     if (close < 0) break;
     at = s.indexOf('```!', close + 3);
   }
   if (s.includes('!`')) {
     const b = blankInlineCode(s);
-    for (let at = b.indexOf('!`'); at >= 0 && out.length < 200; ) {
+    for (let at = b.indexOf('!`'); at >= 0 && !more; ) {
       if (at > 0 && !WS_CHAR.test(b[at - 1])) { at = b.indexOf('!`', at + 1); continue; }
       const end = b.indexOf('`', at + 2);
       if (end < 0) break;
@@ -197,7 +202,7 @@ export function shellBlocks(text) {
       at = b.indexOf('!`', end + 1);
     }
   }
-  return out;
+  return { list: out, more };
 }
 // canonical(v) -> JSON with sorted keys (every field, whatever the friendly line shows)
 const canonical = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
@@ -240,9 +245,12 @@ export function summarize(files) {
       if (!fm.plain) { note('front matter this page cannot read the way Claude Code does (only `key: value` lines and `- item` lists)'); incomplete('front matter beyond plain key: value lines'); }
       // (and the shell commands Claude Code runs each time a skill or command is used: !`…` and ```! blocks — listed with
       // its grants, whatever the file)
-      const shell = f.text !== null ? shellBlocks(f.text) : [];
+      // — every one shown whole, or the summary incomplete: never one that runs but is not shown)
+      const shell = f.text !== null ? shellBlocks(f.text, LIST_MAX) : { list: [], more: false };
+      if (shell.more) incomplete(`more than ${LIST_MAX} shell commands in one file`);
+      if (shell.list.some((x) => x.command.length > TEXT_MAX)) incomplete('a shell command too long to show');
       out.files.push({ name: text(f.name), size: f.size, grants: [...fm.grants.map((g) => ({ key: text(g.key), value: text(g.value) })),
-        ...shell.map((x) => ({ key: x.kind === 'fenced' ? 'runs in a shell when used (```!)' : 'runs in a shell when used (!`…`)', value: text(x.command) }))] });
+        ...shell.list.map((x) => ({ key: x.kind === 'inline' ? 'runs in a shell when used (!`…`)' : 'runs in a shell when used (```!)', value: text(x.command) }))] });
     }
     if (f.type === 'link') note(`a link to ${f.target ?? '?'}${f.text === null ? ' (not read: outside the workspace, or not a file)' : ''}`);
     if (f.type === 'big') { note('too large to show (over 256 KiB)'); incomplete('a file too large to show'); continue; }
