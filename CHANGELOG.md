@@ -71,6 +71,11 @@ All notable changes to bedrock-now are documented here. The format follows
   Since v0.21.0 its tidying of the request folder kept update, settings and diagnostic requests but deleted the Import
   sheet's (`ses-*.json`) before reading them, so a look, a read, suggestions or a copy keeping a possible secret asked
   from the page did nothing on a running helper (`./stack sessions` in a terminal was not affected).
+- **Command palette: Tab, Shift+Tab and Enter typed quickly run the entry they chose.** The selection went back to the
+  first entry a moment after a query changed, so a Tab typed before that was undone and the next Shift+Tab could land
+  on another entry.
+- `./stack sessions` (and Bring your setup): the reader's failure now says why (its message was read after it was
+  removed).
 
 ## [0.21.0] - 2026-10-23
 
