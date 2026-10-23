@@ -591,3 +591,25 @@ test('the scan stays linear without its jumps: values that are no findings, nest
     assert.ok(Date.now() - t0 < 1500, `${label}: ${Date.now() - t0} ms`);
   }
 });
+
+test('every finder: bounded work per start and a cursor that only moves on — a secret right after an unredacted URL or -u value is still found by its own finder; hostile starts stay linear', () => {
+  const x = rand(12);
+  for (const [t, kind] of [
+    [`https://a:b@h?x=1 https://u:${x}@h2/db`, 'url-password'], [`https://host:443/plain https://me:${x}@db.example/x`, 'url-password'],
+    [`curl -u me -u admin:${x} https://x`, 'command-password'], [`curl -u ${'a'.repeat(3000)} -u admin:${x} x`, 'command-password'],
+  ]) {
+    assert.ok(scan(t).some((f) => f.kind === kind), `${kind}: ${t.slice(0, 80)}`);
+    assert.ok(!redactText(t).includes(x), t.slice(0, 80));
+  }
+  // a user:pass longer than the look's bound is redacted to its end (fail closed)
+  const long = `${'p'.repeat(1500)}${rand(3000)}`;
+  assert.ok(!redactText(`curl -u admin:${long} x`).includes(long.slice(-40)));
+  const M = 7 << 20;
+  const fill = (unit) => unit.repeat(Math.floor(M / unit.length));
+  for (const [label, text] of [['https://a starts', fill('https://a')], ['x://a:b@h? starts', fill('x://a:b@h?')], ['--user= chain', fill('--user=')], ['-u x starts', fill('-u x')],
+    ['user: starts', fill('user:')], ['-u with a long value', `-u ${fill('a:')}`], ['a long query', `https://a:${fill('?@')}`], ['x:// chain', fill('x://')], ['scheme runs', fill('aaaaaaaa://')]]) {
+    const t0 = Date.now();
+    scan(text);
+    assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
+  }
+});

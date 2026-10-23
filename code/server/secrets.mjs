@@ -15,6 +15,13 @@
 // its usual length is redacted whole; a text longer than MAX_TEXT, or with more than MAX_FINDINGS findings, is redacted
 // whole (said; never kept); a private key's BEGIN with no END is redacted to the end of the text, an END with no BEGIN
 // from its start. Findings that overlap become one: their union, said as the most specific kind among them.
+//
+// Every finder keeps two promises. Its work from any one start is bounded (a token's run, a user part or a URL's
+// authority of at most 2,048 characters, a command's words, a line), or it never looks at that span again; and its
+// cursor only moves on — past what it examined, found or not — except where moving on could step over a secret only
+// it would find: the assignment finder goes past a value only when the value is a finding or a whole placeholder (a
+// value that is neither never holds = or :, so the scan inside it stays cheap). Every finder reads the whole text on
+// its own: one finder stepping over a span never hides it from the others. Timed on hostile 7 MiB inputs per shape.
 import crypto from 'node:crypto';
 
 export const MARK = '[REDACTED';
@@ -386,14 +393,19 @@ function bearers(text) {
 // before the query's "?" (it may hold "/", "#" and "@" itself) — or, with no "@" before a "?" (a password holding
 // one), the last "@" before a space or a quote: more is redacted rather than less. At least 1 character.
 const URL_SCHEME = cls('a-zA-Z0-9+.-'), USER_STOP = cls('/:@"\'`'), AUTH_STOP = cls(' \t\r\n"\'`<>');
+// (each start's look is bounded — CAP characters of a user part or an authority, past which it is no longer examined —
+// and the finder's cursor always moves past what it examined, found or not: every finder reads the whole text on its
+// own, so this one stepping over a span never hides it from the others; in all, linear)
+const CAP = 2048;
+const runUntilMax = (text, at, stop, max) => { let e = at; const lim = Math.min(text.length, max); while (e < lim) { const c = text.charCodeAt(e); if (isSpace(c) || (c < 128 && stop[c] === 1)) break; e++; } return e; };
 function urlPasswords(text) {
   const out = [];
   for (let at = text.indexOf('://'); at >= 0; at = text.indexOf('://', at + 3)) {
     const s = runStart(text, at, URL_SCHEME);
     if (s === at || !/[A-Za-z]/.test(text[s])) continue;
-    const u = at + 3, ue = runUntil(text, u, USER_STOP);
-    if (text[ue] !== ':') continue;
-    const stop = runUntil(text, ue + 1, AUTH_STOP);
+    const u = at + 3, ue = runUntilMax(text, u, USER_STOP, u + CAP);
+    if (text[ue] !== ':') { at = Math.max(at, ue - 3); continue; }
+    const stop = runUntilMax(text, ue + 1, AUTH_STOP, ue + 1 + CAP);
     // (the last "@" of this authority, looked for in it only)
     let last = -1, beforeQuery = -1, query = false;
     for (let k = ue + 1; k < stop; k++) {
@@ -402,14 +414,11 @@ function urlPasswords(text) {
       else if (c === 64) { last = k; if (!query) beforeQuery = k; }
     }
     if (beforeQuery > 0) last = beforeQuery;
-    // (no "@" in this authority at all: no URL starting inside it can have a password either — its own authority ends
-    // at the same space or quote — so the next look starts after it; with one, past the password redacted only)
-    if (last < 0) { at = Math.max(at, stop - 3); continue; }
     if (last > ue + 1) {
       const v = text.slice(ue + 1, last);
-      // (past this URL only up to the password it redacts: what follows is looked at as everything else is)
-      if (!placeholder(v)) { out.push({ start: ue + 1, end: last }); at = Math.max(at, last - 3); }
+      if (!placeholder(v)) out.push({ start: ue + 1, end: last });
     }
+    at = Math.max(at, stop - 3);
   }
   return out;
 }
@@ -432,15 +441,19 @@ function commandPasswords(text) {
     i = text[i] === '=' ? i + 1 : skipBlanks(text, i);
     const q = QUOTE(text[i]) ? text[i] : null;
     const a = q ? i + 1 : i;
-    let e = a;
-    while (e < n && !(q ? text[e] === q || lineBreak(text.charCodeAt(e)) : valueStop(text.charCodeAt(e)))) e++;
-    let colon = -1;
-    for (let k = a; k < e; k++) if (text.charCodeAt(k) === 58) { colon = k; break; }
+    // (the user part: its ":" looked for within CAP characters; a user:pass is then taken to its end, however long — the
+    // cursor moves past all it examined, found or not)
+    const ends = (k) => (q ? text[k] === q || lineBreak(text.charCodeAt(k)) : valueStop(text.charCodeAt(k)));
+    let e = a, colon = -1;
+    const lim = Math.min(n, a + CAP);
+    while (e < lim && !ends(e)) { if (colon < 0 && text.charCodeAt(e) === 58) colon = e; e++; }
+    if (colon > a) while (e < n && !ends(e)) e++;
     if (colon > a) {
-      const user = text.slice(a, colon), v = text.slice(colon + 1, e);
+      const user = text.slice(a, Math.min(colon, a + 64)), v = text.slice(colon + 1, Math.min(e, colon + 1 + 64));
       // (a user id and a group id, docker run -u 1000:1000, are no password; any other digits are)
-      if (v.length >= 1 && !(/^[0-9]+$/.test(user) && /^[0-9]+$/.test(v)) && !placeholder(v)) { out.push({ start: colon + 1, end: e }); USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, e); }
+      if (e > colon + 1 && !(/^[0-9]+$/.test(user) && /^[0-9]+$/.test(v) && e - colon - 1 <= 64) && !placeholder(text.slice(colon + 1, e))) out.push({ start: colon + 1, end: e });
     }
+    USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, e);
   }
   // (each command: its words, once)
   let i = 0;

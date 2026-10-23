@@ -2745,8 +2745,10 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   no placeholder holds `=` or `:` (`{{ token=… }}` is none) — `${VAR:-default}` only when its default is empty or one
   too; a value under a secret's name counts from 4 characters (`1234`, `abcd`); an unquoted value ends only at a space,
   a quote or its line's end (never at `;` `,` `&` `)`: `password=ab;REST` leaves nothing behind). No finder steps over
-  text it did not redact: past a value only when it is a finding (or a placeholder), past a URL only up to the password
-  it redacts (or an authority with no `@`, where none can be), a command line read word by word to its end. Findings that overlap become one, their union. Each
+  text it did not redact where only it would find a secret: past a value only when it is a finding (or a placeholder);
+  every other finder looks at most 2,048 characters from any one start and then moves its cursor past what it examined
+  (a URL's authority, a `-u` value — a `user:pass` is still redacted to its end, however long), which never hides that
+  text from the others, since each reads the whole text on its own. Findings that overlap become one, their union. Each
   finding is listed with its kind, where and its length — and, only for a token whose start is everyone's (`ghp_`,
   `AKIA`, `sk-ant-` …), that start: nothing of a password, a value, a cookie, a header or a URL's password, on any
   device — and replaced by `[REDACTED:<kind>]`; redaction is idempotent. **Keeping one** needs the portal password (the
