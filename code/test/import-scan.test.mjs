@@ -720,3 +720,66 @@ test('the assignment finder reads every name and stays linear: chains of names i
     assert.ok(Date.now() - t0 < 1500, `${label}: ${Date.now() - t0} ms`);
   }
 });
+
+test('two readings, the union redacted: URL exemptions never cover a "://", apostrophes never hide a password flag, quotes glued to more, types', () => {
+  const [x, y] = [`Zq${rand(12)}`, `Wk${rand(12)}`];
+  const hidden = (t, ...secrets) => {
+    const out = redactText(t);
+    for (const v of secrets) assert.ok(!out.includes(v), `${t.slice(0, 120)} -> ${out.slice(0, 160)}`);
+    assert.equal(redactText(out), out, `redacting again changes nothing: ${out.slice(0, 120)}`);
+  };
+  // (an exemption — mailto:, an image's tag, a port, a placeholder — only for a span with no "://" in it)
+  hidden(`mailto:a:https://u:${x}@h`, x);
+  hidden(`img:v1://u:${x}@sha256:${'ab'.repeat(32)}`, x);
+  hidden(`http://h:8080/x?u=https://u:${x}@h2`, x);
+  hidden(`https://u:\${X}://a:${x}@h`, x);
+  // (an apostrophe inside a word, then a password flag on the same line)
+  const prose = "it's what we don't know: O'Brien's notes, the team's 'list and Rock 'n' roll's ";
+  hidden(`${prose}sshpass -p ${x} ssh host`, x);
+  hidden(`${prose}&& docker login -u bob -p ${x} registry`, x);
+  hidden(`${prose}; mysql -uroot -p${x} db`, x);
+  hidden(`${prose}curl -u o'brien:${x} https://api`, x);
+  hidden(`${prose}--password ${x}`, x);
+  hidden(`mysql --user=o'brien -p${x} db`, x);
+  // (a quote at a word's start, after = or a flag opens a part: spaces and ; in it are the password's)
+  hidden(`sshpass -p'${x} ${y}' ssh h`, x, y);
+  hidden(`mysql -p"${x};${y}" db`, x, y);
+  hidden(`echo 'a' && sshpass -p'${x} more' ssh`, x);
+  // (an unquoted value: to a space and to a quote mark — both judged; a closing quote glued to more)
+  hidden(`password=O'Brien${x} next`, x);
+  hidden(`password=it's${x}`, x);
+  hidden(`password='abc'${x} next`, x);
+  hidden(`token="abc"${x}`, x);
+  hidden(`x="password=abc${x}" y`, x);
+  // (a "type" before = is judged as a value too)
+  hidden(`password: Prefix${x} = ${y}`, x, y);
+  // (<token> is a placeholder and a tag: what follows it is judged)
+  hidden(`--token <token> ${x}`, x);
+  // (a redaction made already starts nothing: a marker's ":" before an @, its kind before =)
+  hidden(`x ${fake.jwt()}@host/x`);
+  hidden(`${fake.github()}=value${x}`);
+  hidden(`x ${fake.jwt()}:${x}@h`, x);
+  // (and still left alone: placeholders, uid:gid, date formats, a JSON address)
+  for (const t of ['password=${DB_PASSWORD:?set it}', 'docker run -u 1000:1000 img', 'date -u +%Y-%m-%dT%H:%M:%SZ', '{"email":"me@example.com","url":"http://localhost:3000"}', "it's O'Brien's"]) {
+    assert.deepEqual(scan(t), [], t);
+  }
+});
+
+test('two readings stay linear: apostrophes, quotes with and without a match, glued quotes, nested chains — 1 to 8 MiB', () => {
+  const fillTo = (size) => (head, unit, tail = '') => head + unit.repeat(Math.floor((size - head.length - tail.length) / unit.length)) + tail;
+  for (const size of [1 << 20, 7 << 20, MAX_TEXT - 16]) {
+    const fill = fillTo(size);
+    for (const [label, text] of [
+      ['apostrophes, a flag at the end', fill('', "it's O'Brien's ", 'sshpass -p x')], ['quotes with no match', fill('mysql ', "-p'a ")],
+      ['quotes, one line', fill('', `-u '`)], ['--user= glued parts', fill('', `--user='x'`)], ['-u "x -u "', fill('', '-u "x ')],
+      ['token= glued, no space', fill('', "token='x'")], ['nested glued chain', fill('password="', "token='x'")], ['apostrophes in a value', fill('password=', "a'b")],
+      ['mailto: chain', fill('', 'mailto:a:')], ['a:b:// chain', fill('', 'a:b://')], ['<token> after a flag', fill('', '--token <token> ')],
+      ['=" quotes', fill('password=', '="')], ['double quotes, many lines', fill('', 'sshpass -p "a\n')], ['types', fill('', 'password: T = ')],
+      ['markers', fill('', '[REDACTED:jwt]@')],
+    ]) {
+      const t0 = Date.now();
+      scan(text);
+      assert.ok(Date.now() - t0 < 1000, `${label}, ${size >> 20} MiB: ${Date.now() - t0} ms`);
+    }
+  }
+});

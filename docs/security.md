@@ -2752,8 +2752,12 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   only as a format); the assignment finder looks at every name, even one glued inside a value it redacted
   (`password=a,token="b c"`) — it skips a value only where its end cannot pass the redacted one's, and a value that is
   no finding holds no `=`, `:` or space, so no other name's value; a `${…}` in a value goes to its closing brace (none
-  on the line: to its end). Each finder reads the whole text on its own. Findings that overlap become one, their
-  union. Each finding is listed with its kind, where and its length — and, only for a token whose start is everyone's
+  on the line: to its end). Each finder reads the whole text on its own. Where text can be read two ways, both are and
+  the union is redacted — an exemption only removes a finding when there is one reading: a shell word with quote marks
+  (quoted, and plain — an apostrophe in `don't` or `O'Brien` never hides a `-p` after it), an unquoted value (to a
+  space, and to a quote mark), a closing quote glued to more (`'a'b`), a type before `=` (`password: T = v`: both),
+  `<token>` (a placeholder, and a tag with a value after it), and a URL's span holding `://` (no `mailto:`, port,
+  image-tag or placeholder exemption then). Findings that overlap become one, their union. Each finding is listed with its kind, where and its length — and, only for a token whose start is everyone's
   (`ghp_`, `AKIA`, `sk-ant-` …), that start: nothing of a password, a value, a cookie, a header or a URL's password, on any
   device — and replaced by `[REDACTED:<kind>]`; redaction is idempotent. **Keeping one** needs the portal password (the
   sheet asks; the portal hands the copy to the helper): a keep names the file the finding is in and a keyed hash of its

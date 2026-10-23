@@ -22,12 +22,20 @@
 // crosses that end is still found); the assignment finder looks at every name, even inside a value it redacted (a
 // value starting inside a redacted one is not read again only where its end cannot pass that one's, by the forms of
 // their ends), and a value that is no finding holds no other name's value (it has no = : or space). Every finder reads
-// the whole text on its own. Timed on hostile 7 MiB inputs per shape.
+// the whole text on its own. Timed on hostile 1-8 MiB inputs per shape.
+//
+// Where text can be read two ways, both are, and what either finds is redacted — an exemption only ever removes a
+// finding when the text is read one way only: a shell word with quote marks (quoted, and plain: an apostrophe in
+// don't is no quote), an unquoted value (to a space, and to a quote mark), a closing quote glued to more ('a'b), a
+// "type" before = (password: T = v: T and v), <token> (a placeholder, and a tag with a value after it), a URL's span
+// with a "://" in it (no mailto:, port, image-tag or placeholder exemption then).
 import crypto from 'node:crypto';
 
 export const MARK = '[REDACTED';
 export const redactedAs = (kind) => `[REDACTED:${kind}]`;
 export const MAX_TEXT = 8 << 20, MAX_FINDINGS = 1000;
+// (more candidates of one shape than this: the whole text is redacted — a finder may stop looking once it has more)
+const FIND_CAP = 2 * MAX_FINDINGS;
 // the whole text, redacted (never kept)
 export const WHOLE = Object.freeze(['too-long', 'too-many']);
 
@@ -217,10 +225,13 @@ function quotedEnd(text, v, q, escq) {
   }
   return Math.min(end, n);
 }
-// unquotedEnd(text, v) -> where an unquoted value ends: at a space, a quote or a backtick — but a shell expansion ${…}
-// anywhere in it may hold them (${X:?set it}, ${X:-"a b"}): it goes on to its closing brace on the line; with none
-// there, the value goes to the line's end (fail closed). Each character looked at once
-function unquotedEnd(text, v) {
+// unquotedEnd(text, v, quotes) -> where an unquoted value ends: at a space — and, read the other way (quotes), at a
+// quote mark or a backtick too (an apostrophe in it, it's, or a quote that closes what was around it: both readings are
+// judged) — but a shell expansion ${…} anywhere in it may hold them (${X:?set it}, ${X:-"a b"}): it goes on to its
+// closing brace on the line; with none there, the value goes to the line's end (fail closed). Each character once
+// trimQuotes(text, a, b) -> b, without the quote marks and backticks at its end (none left before a)
+const trimQuotes = (text, a, b) => { while (b > a && (QUOTE(text[b - 1]) || text[b - 1] === '`')) b--; return b; };
+function unquotedEnd(text, v, quotes) {
   const n = text.length;
   let end = v;
   while (end < n) {
@@ -232,7 +243,7 @@ function unquotedEnd(text, v) {
       end = k + 1;
       continue;
     }
-    if (valueStop(c)) break;
+    if (quotes ? valueStop(c) : isSpace(c)) break;
     end++;
   }
   return end;
@@ -261,10 +272,10 @@ function assignments(text) {
   // value(kind, start, end) -> whether it is a finding (then pushed); a whole placeholder is noted (cover.p)
   const value = (kind, start, end) => {
     const val = text.slice(start, end);
-    // (a placeholder followed by a statement's end — password: string; — is one: judged without its trailing ; , ) } ];
-    // a finding still takes the whole run)
+    // (a placeholder followed by a statement's end — password: string; — is one: judged without its trailing ; , ) } ]
+    // and quote marks; a finding still takes the whole run)
     let z = val.length;
-    while (z > 0 && ';,)}]'.includes(val[z - 1])) z--;
+    while (z > 0 && ';,)}]"\'`'.includes(val[z - 1])) z--;
     const core = z === val.length ? val : val.slice(0, z);
     const ph = placeholder(val) || (core !== val && placeholder(core));
     // (a value holding = or :, another assignment or a URL, or a space, is one whatever its entropy: what is not a
@@ -279,12 +290,16 @@ function assignments(text) {
   // one it starts inside, by the form of their ends: an unquoted value inside an unquoted one (it ends where that one
   // does, or before), an unquoted value or a header's inside a header's (a line's end), any of the three inside a YAML
   // block. Quoted values and <name> values are read each time: of one quote mark (or one <), they never overlap. And a
-  // name inside a whole placeholder is none (${DB_PASSWORD:?set it}, --token <token>): no placeholder holds a value
-  // that could run on past it (none of its forms holds = or : but a shell default's, checked whole itself).
-  const cover = { u: [0, 0], h: [0, 0], y: [0, 0], p: [0, 0] };
+  // name inside a whole placeholder is none (${DB_PASSWORD:?set it}): no placeholder holds a value that could run on
+  // past it (none of its forms holds = or : but a shell default's, checked whole itself) — but <token> is read both
+  // ways: a placeholder, and a tag whose value follows it. Each reading of an ambiguous value is judged: an unquoted
+  // one to a space and to a quote mark too; a quoted one glued to more ('a'b) as its quotes and as a word.
+  const cover = { u: [-1, -1], h: [-1, -1], y: [-1, -1], p: [-1, -1] };
   const inside = (c, v) => v >= c[0] && v < c[1];
-  // (the value starts come in order: the cover kept is the one reaching furthest)
-  const covered = (c, a, b) => { if (b > c[1]) { c[0] = a; c[1] = b; } };
+  // (a cover grows by a region that meets it, else the one reaching furthest is kept)
+  const covered = (c, a, b) => {
+    if (a <= c[1] && b >= c[0]) { c[0] = Math.min(c[0], a); c[1] = Math.max(c[1], b); } else if (b > c[1]) { c[0] = a; c[1] = b; }
+  };
   // (a .netrc's password: is there a login or machine before it on its line — the text read once, left to right, as
   // the names come)
   let np = 0, nMark = false;
@@ -303,11 +318,14 @@ function assignments(text) {
     while (s > 0 && isId(text.charCodeAt(s - 1))) s--;
     while (e < n && isId(text.charCodeAt(e))) e++;
     KEYWORD.lastIndex = e;
-    if (inside(cover.p, m.index)) continue;
+    const tag = s > 0 && text[s - 1] === '<' && text[e] === '>';
+    if (inside(cover.p, m.index) && !tag) continue;
+    // (a redaction already made, [REDACTED:github-token]: its kind is no name)
+    if (s >= 10 && text.startsWith('[REDACTED:', s - 10)) continue;
     // (only a name's first 64 and last 20 characters are ever looked at: a name of any length costs its run, once)
     const name = e - s <= 64 ? text.slice(s, e) : `${text.slice(s, s + 44)}${text.slice(e - 20, e)}`;
     // <password>value</password>
-    if (s > 0 && text[s - 1] === '<' && text[e] === '>') {
+    if (tag) {
       const close = text.indexOf('<', e + 1), end = close < 0 ? n : close;
       let a = skipBlanks(text, e + 1), z = end;
       while (z > a && isSpace(text.charCodeAt(z - 1))) z--;
@@ -335,12 +353,13 @@ function assignments(text) {
     }
     if (v < 0) continue;
     v = skipBlanks(text, v);
-    // (a type between ":" and "=": password: str = "v" — a "type" longer than 64 characters is judged as a value too)
-    if (sep === ':') {
+    // (a type between ":" and "=": password: str = "v" — the "type" is judged as a value too: either may be the value;
+    // a header's value is its whole line: Cookie: session=…)
+    if (sep === ':' && !header) {
       const te = runEnd(text, v, TYPE_RUN);
       if (te > v) {
         const k = skipBlanks(text, te);
-        if (text[k] === '=' && text[k + 1] !== '=') { if (te - v > 64) value('assignment', v, te); v = skipBlanks(text, k + 1); }
+        if (text[k] === '=' && text[k + 1] !== '=') { value('assignment', v, te); v = skipBlanks(text, k + 1); }
       }
     }
     // (YAML: key: | or key: > — the indented lines below)
@@ -356,21 +375,46 @@ function assignments(text) {
       }
     }
     let q = null, escq = false;
+    const qat = v;
     if (text[v] === '\\' && QUOTE(text[v + 1])) { q = text[v + 1]; escq = true; v += 2; }
     else if (QUOTE(text[v]) || text[v] === '`') { q = text[v]; v++; }
-    let end;
-    if (q) end = quotedEnd(text, v, q, escq);
-    else {
-      if (inside(cover.y, v) || inside(cover.h, v) || (!header && inside(cover.u, v))) continue;
-      // (a header's value: to the end of its line; any other: to a space or a quote)
-      end = header ? lineEnd(text, v) : unquotedEnd(text, v);
+    const kind = header ? (/cookie$/i.test(name) ? 'cookie' : 'authorization') : 'assignment';
+    if (q) {
+      const end = quotedEnd(text, v, q, escq);
+      let from = v;
+      if (header) { const sm = SCHEME.exec(text.slice(v, Math.min(end, v + 40))); if (sm) from = v + sm[0].length; }
+      value(kind, from, end);
+      // (its closing quote glued to more — 'a'b, "x"y — read as one word too: the quoted part and what follows it to a
+      // space; a statement's end after it — 'v', 'v'); — holds nothing more)
+      const after = end + (escq ? 2 : 1);
+      if (end < n && !lineBreak(text.charCodeAt(end)) && after < n && !isSpace(text.charCodeAt(after)) && !inside(cover.u, after)) {
+        const e2 = unquotedEnd(text, after, false);
+        let k = after;
+        while (k < e2 && ',;)]}'.includes(text[k])) k++;
+        if (k === e2) continue;
+        // (redacted from its opening quote, so what is left holds no quote without its match — redacting again changes
+        // nothing; quote marks at the end are left: they close what was around it)
+        if (value(kind, qat, trimQuotes(text, qat, e2))) covered(cover.u, after, e2);
+      }
+      continue;
     }
-    let z = end;
-    if (header && !q) while (z > v && isBlank(text[z - 1])) z--;
-    let from = v;
-    if (header) { const sm = SCHEME.exec(text.slice(v, Math.min(z, v + 40))); if (sm) from = v + sm[0].length; }
-    const found = value(header ? (/cookie$/i.test(name) ? 'cookie' : 'authorization') : 'assignment', from, z);
-    if (found && !q) covered(header ? cover.h : cover.u, v, end);
+    if (inside(cover.y, v) || inside(cover.h, v) || (!header && inside(cover.u, v))) continue;
+    if (header) {
+      // (a header's value: to the end of its line)
+      const end = lineEnd(text, v);
+      let z = end;
+      while (z > v && isBlank(text[z - 1])) z--;
+      let from = v;
+      const sm = SCHEME.exec(text.slice(v, Math.min(z, v + 40)));
+      if (sm) from = v + sm[0].length;
+      if (value(kind, from, z)) covered(cover.h, v, end);
+      continue;
+    }
+    // (any other: to a space, and to a quote mark too — both readings judged; the longer redacted when it is one)
+    const e2 = unquotedEnd(text, v, false);
+    if (value(kind, v, trimQuotes(text, v, e2))) { covered(cover.u, v, e2); continue; }
+    const e1 = unquotedEnd(text, v, true);
+    if (e1 < e2) value(kind, v, e1);
   }
   return out;
 }
@@ -432,19 +476,21 @@ function bearers(text) {
 // nothing skipped, nothing read twice.
 const RUN_STOP = (c) => isSpace(c) || c === 34 || c === 39 || c === 96 || c === 60 || c === 62;   // space " ' ` < >
 // (no password, each judged on the whole value: a port and its slash — http://localhost:5173/@vite/client; an image's
-// tag before its digest — node:22@sha256:…; the address of a mailto:)
+// tag before its digest — node:22@sha256:…; the address of a mailto: — and, like a placeholder, only where the span
+// holds no "://": mailto:x:https://u:p@h is a URL's password too, whichever way it is read)
 const PORT_ONLY = /^[0-9]{1,5}\/$/, IMAGE_TAG = /^[A-Za-z0-9_.-]{1,128}$/;
 const notPassword = (text, colon, at, v) => PORT_ONLY.test(v)
   || (IMAGE_TAG.test(v) && (text.startsWith('sha256:', at + 1) || text.startsWith('sha512:', at + 1)))
   || (colon >= 6 && text.slice(colon - 6, colon).toLowerCase() === 'mailto' && (colon === 6 || !ALNUM[text.charCodeAt(colon - 7)]));
 function urlPasswords(text) {
   const out = [];
-  const n = text.length;
+  let n = text.length;
   let colon = -1, at = -1, slash = false;
   const decide = () => {
     if (colon >= 0 && at > colon + 1) {
       const v = text.slice(colon + 1, at);
-      if (!notPassword(text, colon, at, v) && !placeholder(v)) out.push({ start: colon + 1, end: at });
+      if (v.includes('://') || (!notPassword(text, colon, at, v) && !placeholder(v))) out.push({ start: colon + 1, end: at });
+      if (out.length > FIND_CAP) n = 0;   // (over the cap: the whole text is redacted — stop)
     }
     colon = -1; at = -1; slash = false;
   };
@@ -454,7 +500,8 @@ function urlPasswords(text) {
     if (c === 58 /* : */) {
       // (a "://" after a ":" with no "@" yet may be in the password — jdbc:mysql://u:p@h is redacted from mysql on)
       if (text.charCodeAt(i + 1) === 47 && text.charCodeAt(i + 2) === 47 && (colon < 0 || at >= 0)) { decide(); i += 2; continue; }
-      if (colon < 0 && !slash) colon = i;
+      // (the ":" of a redaction already made — [REDACTED:jwt]@host — starts no userinfo: redacting again changes nothing)
+      if (colon < 0 && !slash && !(i >= 9 && text.startsWith('[REDACTED', i - 9))) colon = i;
     } else if (c === 64 /* @ */) {
       if (colon >= 0) at = i; else slash = false;
     } else if (c === 47 /* / */ && colon < 0) slash = true;
@@ -468,20 +515,65 @@ function urlPasswords(text) {
 // words after it in that command mean — nothing is skipped
 const USER_FLAG = /(?<![A-Za-z0-9_-])(?:-u|--user)(?=[ \t=])/g;
 const cmdEnd = (c) => c === 10 || c === 13 || c === 59 || c === 124 || c === 38;   // \n \r ; | &
-// shellWord(text, i, cmd) -> the end of the shell word at i: a space or a backtick ends it (cmd: a command's end too, ;
-// | &) — but not in a quoted part ("…" or '…', to its closing quote or the line's end). Each character looked at once
-function shellWord(text, i, cmd) {
+// A shell word has two readings, and what either finds is redacted (an ambiguous quote mark never hides a password):
+// plainWord — to a space or a backtick (cmd: a command's end too, ; | &), quote marks as any character; quotedWord —
+// a quote mark opens a part to its match on the line, so spaces and ; | & in it are the word's — but only where one can
+// open a part: at the word's start, after = or :, after a flag (-p'…', --password"…") or right after another part. An
+// apostrophe inside a word (don't, O'Brien) or a quote mark with no match on its line is a character like any other
+function plainWord(text, i, cmd) {
   const n = text.length;
+  while (i < n) { const c = text.charCodeAt(i); if (isSpace(c) || c === 96 || (cmd && cmdEnd(c))) break; i++; }
+  return i;
+}
+// quoteIndex(text) -> matched(i, c): whether another quote mark c follows i on its line — the text read once, on the
+// first question, for its quote marks and line ends; questions in order walk on from the last answer, others search
+function quoteIndex(text) {
+  let idx = null;
+  const grow = (a, len) => { if (len < a.length) return a; const b = new Int32Array(a.length * 2); b.set(a); return b; };
+  const build = () => {
+    let dq = new Int32Array(64), sq = new Int32Array(64), br = new Int32Array(64), nd = 0, ns = 0, nb = 0;
+    for (let k = 0; k < text.length; k++) {
+      const c = text.charCodeAt(k);
+      if (c === 34) { dq = grow(dq, nd); dq[nd++] = k; } else if (c === 39) { sq = grow(sq, ns); sq[ns++] = k; } else if (lineBreak(c)) { br = grow(br, nb); br[nb++] = k; }
+    }
+    return { dq, nd, sq, ns, br, nb };
+  };
+  // (the first of a[0..len) above i, or -1 — from the last answer's place when i is not before it)
+  const at = [0, 0, 0];
+  const after = (w, a, len, i) => {
+    let lo = at[w];
+    if (lo > 0 && a[lo - 1] > i) {
+      lo = 0;
+      let hi = len;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (a[mid] > i) hi = mid; else lo = mid + 1; }
+    } else while (lo < len && a[lo] <= i) lo++;
+    at[w] = lo;
+    return lo < len ? a[lo] : -1;
+  };
+  return (i, c) => {
+    idx ??= build();
+    const q = c === 34 ? after(0, idx.dq, idx.nd, i) : after(1, idx.sq, idx.ns, i);
+    if (q < 0) return false;
+    const b = after(2, idx.br, idx.nb, i);
+    return b < 0 || q < b;
+  };
+}
+function quotedWord(text, i, cmd, matched) {
+  const n = text.length;
+  let flag = text.charCodeAt(i) === 45, open = true;
   while (i < n) {
     const c = text.charCodeAt(i);
-    if (c === 34 || c === 39) {
+    if ((c === 34 || c === 39) && open && matched(i, c)) {
       i++;
-      while (i < n && text.charCodeAt(i) !== c && !lineBreak(text.charCodeAt(i))) i++;
-      if (i < n && text.charCodeAt(i) === c) i++;
+      while (text.charCodeAt(i) !== c) i++;
+      i++;
+      flag = false;
       continue;
     }
     if (isSpace(c) || c === 96 || (cmd && cmdEnd(c))) break;
     i++;
+    flag = flag && (c === 45 || (c < 128 && ALNUM[c] === 1));
+    open = c === 61 || c === 58 || flag;
   }
   return i;
 }
@@ -491,41 +583,59 @@ const unquote = (text, w) => (w.end - w.start >= 2 && QUOTE(text[w.start]) && te
 function commandPasswords(text) {
   const out = [];
   const n = text.length;
-  const add = (w) => { const x = unquote(text, w); const v = text.slice(x.start, x.end); if (v.length >= 1 && !placeholder(v)) out.push({ start: x.start, end: x.end }); };
-  // (the value of -u, --user: one shell word, looked at once — the cursor always moves past it: user:pass redacted
-  // from its first ":" to the word's end, quotes aside; uid:gid — docker run -u 1000:1000 — only when both whole parts
-  // are numbers of at most 10 digits; date -u +%H:%M — a format, no user — only when the word starts with +%)
+  // (a value without the quote marks at its ends — inside them when it is quoted whole; a quote of one reading is left
+  // out of what is redacted, so redacting again changes nothing)
+  const add = (w) => {
+    let { start, end } = unquote(text, w);
+    while (start < end && QUOTE(text[start])) start++;
+    while (end > start && QUOTE(text[end - 1])) end--;
+    const v = text.slice(start, end);
+    if (v.length >= 1 && !placeholder(v)) out.push({ start, end });
+  };
+  // (over FIND_CAP: the whole text is redacted — no need to look on)
+  const full = () => out.length > FIND_CAP;
+  // (the value of -u, --user: its shell word, both readings, each looked at once — the cursor always moves past the
+  // plain one: user:pass redacted from its first ":" to the word's end, quotes aside; uid:gid — docker run -u
+  // 1000:1000 — only when both whole parts are numbers of at most 10 digits; date -u +%H:%M — a format, no user — only
+  // when the word starts with +%)
   const numeric = (a, b) => b > a && b - a <= 10 && /^[0-9]+$/.test(text.slice(a, b));
+  const matched = quoteIndex(text);
+  const userPass = (i, e) => {
+    let colon = i;
+    while (colon < e && text.charCodeAt(colon) !== 58) colon++;
+    if (colon >= e) return;
+    const us = QUOTE(text[i]) ? i + 1 : i;
+    if (text[us] === '+' && text[us + 1] === '%') return;
+    let vs = colon + 1, ve = e;
+    if (ve > vs && QUOTE(text[ve - 1])) ve--;
+    if (ve > vs && QUOTE(text[vs])) vs++;
+    if (ve <= vs || (numeric(us, colon) && numeric(vs, ve))) return;
+    if (!placeholder(text.slice(vs, ve))) out.push({ start: vs, end: ve });
+  };
   USER_FLAG.lastIndex = 0;
   for (let m; (m = USER_FLAG.exec(text)) !== null;) {
     let i = m.index + m[0].length;
     i = text[i] === '=' ? i + 1 : skipBlanks(text, i);
-    const e = shellWord(text, i, false);
-    USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, e);
-    let colon = i;
-    while (colon < e && text.charCodeAt(colon) !== 58) colon++;
-    if (colon >= e) continue;
-    const us = QUOTE(text[i]) ? i + 1 : i;
-    if (text[us] === '+' && text[us + 1] === '%') continue;
-    let vs = colon + 1, ve = e;
-    if (ve > vs && QUOTE(text[ve - 1])) ve--;
-    if (ve > vs && QUOTE(text[vs])) vs++;
-    if (ve <= vs || (numeric(us, colon) && numeric(vs, ve))) continue;
-    if (!placeholder(text.slice(vs, ve))) out.push({ start: vs, end: ve });
+    const eP = plainWord(text, i, false);
+    // (the quoted reading only where a quote mark is in the plain word: none, and both are one)
+    let hasQuote = false;
+    for (let k = i; k < eP && !hasQuote; k++) hasQuote = QUOTE(text[k]);
+    const eQ = hasQuote ? quotedWord(text, i, false, matched) : eP;
+    userPass(i, eP);
+    if (eQ !== eP) userPass(i, eQ);
+    USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, eP);
+    if (full()) return out;
   }
-  // (each command: its words, once)
-  let i = 0;
-  while (i < n) {
-    const ws = [];
-    while (i < n && !cmdEnd(text.charCodeAt(i))) {
-      if (isSpace(text.charCodeAt(i)) || text.charCodeAt(i) === 96) { i++; continue; }
-      const s = i;
-      i = shellWord(text, i, true);
-      ws.push({ start: s, end: i });
-    }
-    i++;
-    if (ws.length < 2) continue;
-    const w = (k) => (ws[k] && ws[k].end - ws[k].start <= 64 ? text.slice(ws[k].start, ws[k].end).toLowerCase() : '');
+  // (each command's words, once in each reading: a command word sets what the words after it in that command mean)
+  const pair = (ws) => {
+    // (a command word compared without quote marks around it: "mysql, sshpass')
+    const w = (k) => {
+      if (!ws[k]) return '';
+      let a = ws[k].start, b = ws[k].end;
+      while (a < b && QUOTE(text[a])) a++;
+      while (b > a && QUOTE(text[b - 1])) b--;
+      return b - a <= 64 ? text.slice(a, b).toLowerCase() : '';
+    };
     let ctx = '';
     for (let k = 0; k < ws.length; k++) {
       const t = w(k);
@@ -540,6 +650,21 @@ function commandPasswords(text) {
       if ((ctx === 'mysql' || ctx === 'sshpass') && text[ws[k].start] === '-' && text[ws[k].start + 1] === 'p' && ws[k].end - ws[k].start > 2 && text[ws[k].start + 2] !== '=') {
         add({ start: ws[k].start + 2, end: ws[k].end });
       }
+      if (full()) return;
+    }
+  };
+  for (const quoted of [false, true]) {
+    let i = 0;
+    while (i < n && !full()) {
+      const ws = [];
+      while (i < n && !cmdEnd(text.charCodeAt(i))) {
+        if (isSpace(text.charCodeAt(i)) || text.charCodeAt(i) === 96) { i++; continue; }
+        const s = i;
+        i = quoted ? quotedWord(text, i, true, matched) : plainWord(text, i, true);
+        ws.push({ start: s, end: i });
+      }
+      i++;
+      if (ws.length >= 2) pair(ws);
     }
   }
   return out.sort((x, y) => x.start - y.start);
@@ -707,7 +832,7 @@ export function scan(text, { named: isNamed = false, item: isItem = false } = {}
   }
   // (every string, however short: pass=abc is a finding too)
   for (const k of KINDS) {
-    const cands = candidates(k, text, 2 * MAX_FINDINGS, ctx);
+    const cands = candidates(k, text, FIND_CAP, ctx);
     if (cands === null) return [{ kind: 'too-many', start: 0, end: text.length }];
     for (const c of cands) if (c.end > c.start) all.push({ kind: c.kind ?? k.kind, start: c.start, end: c.end });
   }
