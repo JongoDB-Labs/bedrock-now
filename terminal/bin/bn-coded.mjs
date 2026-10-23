@@ -54,6 +54,12 @@
 //                   the Code page; or a fork for Continue in this project): into the store folder of a working folder
 //                   the sandbox has, a checked id, at most 32 MiB, never over another nor an id another folder has; and
 //                   one read whole (at most 32 MiB) for such a fork
+//   setup.read / setup.write / setup.git / setup.which
+//                   Bring your setup: items of your Claude Code setup on the computer, checked on the Code page, copied
+//                   into this sandbox's own ~/.claude — a fixed set of destinations (CLAUDE.md, settings.json,
+//                   keybindings.json, agents/, commands/, output-styles/, skills/<name>/), never through a link, only while
+//                   each is as the page showed it, what it replaces moved to ~/.claude/.bedrock-now-trash/; the sandbox's
+//                   Git name and email; which programs the sandbox has (looked up, never run)
 //   ports.list / ports.stop
 //                   the servers listening on the sandbox's loopback or all addresses (/proc/net/tcp, tcp6) with their
 //                   process, for the page's previews (bn-preview); stop: SIGTERM/SIGKILL to such a server's process only
@@ -760,6 +766,224 @@ export function sessionsExport(send, id, cwd) {
     }
     return { size: pos, sha256: h.digest('hex') };
   } finally { fs.closeSync(fd); }
+}
+
+// --- setup.read / setup.write / setup.git / setup.which: Bring your setup — items of your Claude Code setup on the
+// --- computer (read there, checked and shown on the Code page) copied into this sandbox's own configuration. The code
+// --- container decides what a copy says; here only where it goes: a fixed set of destinations in ~/.claude (CLAUDE.md,
+// --- settings.json, keybindings.json, agents/, commands/, output-styles/ and skills/<name>/), never through a link, only
+// --- while the destination is still as the page showed it (its SHA-256, or a folder's digest), a temporary file or
+// --- folder renamed into place — what it replaces moved to ~/.claude/.bedrock-now-trash/ first, never deleted; the
+// --- sandbox's Git name and email (git config --file ~/.gitconfig, only while they are as shown); and which programs the
+// --- sandbox has (a name looked up in PATH, a path looked at: nothing is ever run). MCP servers go through the `cli`
+// --- op (claude mcp add-json); plugins through Claude Code's own install. ---
+const SETUP_PLAIN = '[A-Za-z0-9][A-Za-z0-9._-]{0,99}';
+export const SETUP_DEST = new RegExp(`^(CLAUDE\\.md|settings\\.json|keybindings\\.json|(agents|commands)/(${SETUP_PLAIN}/){0,3}${SETUP_PLAIN}\\.md|output-styles/${SETUP_PLAIN}\\.md|skills/${SETUP_PLAIN})$`);
+const SETUP_PART = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}$/;
+export const SETUP_LIMITS = Object.freeze({ file: 1 << 20, dirFiles: 300, dirBytes: 8 << 20, depth: 8, dests: 20, which: 50, global: 32 << 20, servers: 200 });
+const SETUP_TMP = () => path.join(CONFIG_DIR, '.bedrock-now-tmp');
+const SETUP_TRASH = () => path.join(CONFIG_DIR, '.bedrock-now-trash');
+// the sandbox's global Claude Code configuration (its MCP servers of user scope): as Claude Code finds it
+const GLOBAL_CONFIG = () => (process.env.CLAUDE_CONFIG_DIR ? path.join(CONFIG_DIR, '.claude.json') : path.join(os.homedir(), '.claude.json'));
+const isSkillDest = (d) => d.startsWith('skills/');
+// setupPath(dest, make) -> the destination's absolute path, every folder on the way a real folder (made, mode 755, when
+// make is set and it is missing); throws when one is a link or not a folder
+function setupPath(dest, make = false) {
+  if (typeof dest !== 'string' || !SETUP_DEST.test(dest)) throw new Error('not a destination of the setup');
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  realDir(CONFIG_DIR);
+  const parts = dest.split('/');
+  let d = CONFIG_DIR;
+  for (const p of parts.slice(0, -1)) {
+    d = path.join(d, p);
+    try { realDir(d, make); } catch (e) { if (e.message === 'ENOENT') return null; throw e; }
+  }
+  return path.join(d, parts[parts.length - 1]);
+}
+// setupTree(dir) -> {files: [{path, sha256, size, exec}], other, digest} of a folder (never through a link: a link or
+// anything not a file or folder is counted in other — and changes the digest)
+export function setupTree(dir) {
+  const files = [];
+  let other = 0, bytes = 0;
+  const walk = (d, prefix, level) => {
+    let es = [];
+    try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { other++; return; }
+    for (const e of es.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory() && level + 1 < SETUP_LIMITS.depth + 2 && files.length < 2 * SETUP_LIMITS.dirFiles) { walk(path.join(d, e.name), rel, level + 1); continue; }
+      if (!e.isFile() || files.length >= 2 * SETUP_LIMITS.dirFiles || bytes > 4 * SETUP_LIMITS.dirBytes) { other++; continue; }
+      const b = readRegular(path.join(d, e.name), 4 * SETUP_LIMITS.dirBytes);
+      if (!b) { other++; continue; }
+      let st = null;
+      try { st = fs.lstatSync(path.join(d, e.name)); } catch { /* gone */ }
+      files.push({ path: rel, sha256: sha256(b), size: b.length, exec: Boolean(st && (st.mode & 0o111)) });
+      bytes += b.length;
+    }
+  };
+  walk(dir, '', 0);
+  const digest = sha256(`${files.map((f) => `${f.path}\0${f.sha256}\0${f.exec ? 1 : 0}`).join('\n')}\n${other}`);
+  return { files, other, digest };
+}
+// setupState(dest) -> {dest, exists, type, sha256 | digest, size, text?, files?} of a destination as it is now
+function setupState(dest, { text = true } = {}) {
+  const abs = setupPath(dest);
+  if (abs === null) return { dest, exists: false };
+  let st;
+  try { st = fs.lstatSync(abs); } catch (e) { if (e.code === 'ENOENT') return { dest, exists: false }; throw e; }
+  if (isSkillDest(dest)) {
+    if (!st.isDirectory()) return { dest, exists: true, type: 'other', digest: 'other' };
+    const t = setupTree(abs);
+    return { dest, exists: true, type: 'dir', digest: t.digest, files: t.files, other: t.other };
+  }
+  if (!st.isFile()) return { dest, exists: true, type: 'other', sha256: 'other' };
+  const b = readRegular(abs, SETUP_LIMITS.file);
+  if (!b) return { dest, exists: true, type: 'file', sha256: 'too-large', size: st.size };
+  const out = { dest, exists: true, type: 'file', sha256: sha256(b), size: b.length, mode: st.mode & 0o777 };
+  if (text) { const s = b.toString('utf8'); if (Buffer.from(s, 'utf8').equals(b)) out.text = s; }
+  return out;
+}
+/** setup.read {dests, mcp, git} -> {items: [state of each destination], mcp: {servers} (the sandbox's user scope),
+ *  git: {name, email} (the sandbox's own ~/.gitconfig)} */
+export function setupRead(req) {
+  const dests = Array.isArray(req?.dests) ? req.dests : [];
+  if (dests.length > SETUP_LIMITS.dests || !dests.every((d) => typeof d === 'string' && SETUP_DEST.test(d))) throw new Error('not a destination of the setup');
+  const out = { items: [...new Set(dests)].map((d) => setupState(d)) };
+  if (req.mcp === true) {
+    const b = readRegular(GLOBAL_CONFIG(), SETUP_LIMITS.global);
+    let j = null;
+    try { j = b ? JSON.parse(b.toString('utf8')) : {}; } catch { j = null; }
+    const servers = {};
+    const list = j && typeof j === 'object' && j.mcpServers && typeof j.mcpServers === 'object' && !Array.isArray(j.mcpServers) ? j.mcpServers : {};
+    for (const [k, v] of Object.entries(list).slice(0, SETUP_LIMITS.servers)) {
+      if (/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(k) && v && typeof v === 'object' && JSON.stringify(v).length <= 64 << 10) servers[k] = v;
+    }
+    out.mcp = j === null ? { error: 'not valid JSON' } : { servers };
+  }
+  if (req.git === true) out.git = sandboxIdentity();
+  return out;
+}
+/** setup.write: OPEN {dest, if: SHA-256 (a file) | digest (a skill's folder) | 'absent', size, exec (a file) | files:
+ *  [{path, size, exec}] (a folder)}, then STDIN frames with the bytes in that order, then STDIN_END -> {ok, trashed} */
+export function setupWriteBegin(req) {
+  const dest = req?.dest;
+  const dir = typeof dest === 'string' && isSkillDest(dest);
+  const want = req?.if;
+  if (typeof want !== 'string' || !(want === 'absent' || /^[0-9a-f]{64}$/.test(want))) throw new Error('bad if');
+  let list;
+  if (dir) {
+    list = Array.isArray(req.files) ? req.files : [];
+    if (!list.length || list.length > SETUP_LIMITS.dirFiles) throw new Error('bad files');
+    let total = 0;
+    const seen = new Set();
+    for (const f of list) {
+      const parts = typeof f?.path === 'string' ? f.path.split('/') : [];
+      if (!parts.length || parts.length > SETUP_LIMITS.depth || !parts.every((p) => SETUP_PART.test(p)) || seen.has(f.path) || !Number.isInteger(f.size) || f.size < 0) throw new Error('bad files');
+      // (a file and a folder of the same name: refused)
+      for (let i = 1; i < parts.length; i++) if (seen.has(parts.slice(0, i).join('/'))) throw new Error('bad files');
+      seen.add(f.path); total += f.size;
+    }
+    if ([...seen].some((p) => [...seen].some((q) => q.startsWith(`${p}/`)))) throw new Error('bad files');
+    if (!list.some((f) => f.path === 'SKILL.md')) throw new Error('a skill needs its SKILL.md');
+    if (total > SETUP_LIMITS.dirBytes) throw new Error('too large');
+  } else {
+    if (!Number.isInteger(req?.size) || req.size < 0 || req.size > SETUP_LIMITS.file) throw new Error('bad size');
+    list = [{ path: '', size: req.size, exec: false }];
+  }
+  const final = setupPath(dest, true);
+  realDir(SETUP_TMP(), true);
+  const tmp = path.join(SETUP_TMP(), `w-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+  fs.mkdirSync(tmp, { mode: 0o700 });
+  const files = list.map((f, k) => ({ ...f, tmp: dir ? path.join(tmp, 'd', ...f.path.split('/')) : path.join(tmp, `f${k}`) }));
+  if (dir) fs.mkdirSync(path.join(tmp, 'd'), { mode: 0o755 });
+  let i = 0, got = 0, fd = null;
+  const openNext = () => {
+    while (i < files.length) {
+      if (fd === null) {
+        fs.mkdirSync(path.dirname(files[i].tmp), { recursive: true, mode: 0o755 });
+        fd = fs.openSync(files[i].tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, files[i].exec ? 0o755 : 0o644);
+      }
+      if (got < files[i].size) return;
+      fs.fchmodSync(fd, files[i].exec ? 0o755 : 0o644);
+      fs.closeSync(fd); fd = null; got = 0; i++;
+    }
+  };
+  const abort = () => {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* closed */ } fd = null; }
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* gone */ }
+  };
+  openNext();
+  return {
+    abort,
+    chunk(b) {
+      let at = 0;
+      while (at < b.length) {
+        if (i >= files.length) throw new Error('more bytes than announced');
+        const n = Math.min(b.length - at, files[i].size - got);
+        fs.writeSync(fd, b, at, n); got += n; at += n;
+        openNext();
+      }
+    },
+    end() {
+      try {
+        openNext();
+        if (i < files.length) throw new Error('fewer bytes than announced');
+        // (the destination as the page saw it — else nothing changes)
+        const now = setupState(dest, { text: false });
+        const have = !now.exists ? 'absent' : dir ? now.digest : now.sha256;
+        if (have !== want) throw new Error('changed in the sandbox since you checked: check it again');
+        let trashed = null;
+        if (now.exists) {
+          realDir(SETUP_TRASH(), true);
+          const box = path.join(SETUP_TRASH(), `setup-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
+          fs.mkdirSync(box, { mode: 0o700 });
+          const to = path.join(box, dest.replace(/\//g, '__'));
+          // (a file: linked into the trash, then replaced at once by the rename; a folder: moved there, then the new one in)
+          if (dir) fs.renameSync(final, to); else fs.linkSync(final, to);
+          trashed = path.relative(CONFIG_DIR, to);
+        }
+        if (dir) fs.renameSync(path.join(tmp, 'd'), final);
+        else {
+          if (now.exists && Number.isInteger(now.mode)) fs.chmodSync(files[0].tmp, now.mode & 0o666);
+          fs.renameSync(files[0].tmp, final);
+        }
+        return { ok: true, dest, trashed };
+      } finally { abort(); }
+    },
+  };
+}
+/** setup.git {name, email, if: {name, email} | null} — the sandbox's own ~/.gitconfig [user] (git config --file, nothing
+ *  else of it changed), only while the sandbox's name and email are what the page showed */
+export async function setupGit(req, { git = GIT } = {}) {
+  const ok = (v) => identName(v) && !v.startsWith('-');
+  const okEmail = (v) => identEmail(v) && !v.startsWith('-');
+  if (!ok(req?.name) || !okEmail(req?.email)) throw new Error('a name and an email, please');
+  const cur = sandboxIdentity();
+  const was = req.if && typeof req.if === 'object' ? req.if : {};
+  if ((cur.name ?? null) !== (was.name ?? null) || (cur.email ?? null) !== (was.email ?? null)) throw new Error('changed in the sandbox since you checked: check it again');
+  const file = path.join(os.homedir(), '.gitconfig');
+  try { if (!fs.lstatSync(file).isFile()) throw new Error('~/.gitconfig is not a regular file: change it in the terminal'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  for (const [k, v] of [['user.name', req.name], ['user.email', req.email]]) {
+    const r = await runCapped(git, ['config', '--file', file, k, v], { cwd: os.homedir(), env: gitEnv(), timeoutMs: 15000, maxOut: 4096 });
+    if (r.code !== 0) throw new Error('git config failed');
+  }
+  return { ok: true, ...sandboxIdentity() };
+}
+/** setup.which {names} -> {found: {name: true|false}}: whether each program is here — a plain name looked up in PATH, a
+ *  path (or ~/…, the sandbox's own home) looked at; never run */
+export function setupWhich(req) {
+  const names = Array.isArray(req?.names) ? req.names : [];
+  if (names.length > SETUP_LIMITS.which) throw new Error('too many names');
+  const dirs = String(process.env.PATH || '/usr/local/bin:/usr/bin:/bin').split(':').filter((d) => d.startsWith('/')).slice(0, 40);
+  const exe = (p) => { try { const st = fs.statSync(p); return st.isFile() && (st.mode & 0o111) !== 0; } catch { return false; } };
+  const found = {};
+  for (const n of names) {
+    if (typeof n !== 'string' || n.length > 1024 || /[\x00-\x1f\x7f]/.test(n)) throw new Error('bad name');
+    if (/^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$/.test(n)) found[n] = dirs.some((d) => exe(path.join(d, n)));
+    else if (n.startsWith('/') && path.posix.normalize(n) === n) found[n] = exe(n);
+    else if (n.startsWith('~/') && path.posix.normalize(n) === n && !n.includes('/../')) found[n] = exe(path.join(os.homedir(), n.slice(2)));
+    else throw new Error('bad name');
+  }
+  return { found };
 }
 
 // --- files under /workspace ---
@@ -4211,6 +4435,14 @@ export function serve(sock) {
         // (a copy into the store — its data follows as STDIN frames; and one read whole, for a fork into another folder)
         case 'sessions.import': writer = sessionsImportBegin(req); return undefined;
         case 'sessions.export': return finish(T.RESULT, sessionsExport(send, req.id, req.cwd));
+        // (Bring your setup: what is there now, a copy into a fixed destination — its data follows as STDIN frames —, the
+        // Git name and email, which programs are here)
+        case 'setup.read': return finish(T.RESULT, setupRead(req));
+        case 'setup.write': writer = setupWriteBegin(req); return undefined;
+        case 'setup.git':
+          setupGit(req).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
+          return undefined;
+        case 'setup.which': return finish(T.RESULT, setupWhich(req));
         case 'fs.list': return finish(T.RESULT, fsList(req.path, root()));
         case 'fs.mkdir': return finish(T.RESULT, fsMkdir(req.path, root()));
         case 'fs.rename': return finish(T.RESULT, fsRename(req.from, req.to, root()));
@@ -4378,7 +4610,7 @@ export function serve(sock) {
       return undefined;
     }
     if (writer) {
-      // (fs.write and memory.write: one file; sessions.import: a writer of its own — chunk, end, abort)
+      // (fs.write and memory.write: one file; sessions.import and setup.write: a writer of their own — chunk, end, abort)
       try {
         if (type === T.STDIN) return writer.chunk ? writer.chunk(payload) : fsWriteChunk(writer, payload);
         if (type === T.STDIN_END) { const w = writer; writer = null; return finish(T.RESULT, w.end ? w.end() : fsWriteEnd(w)); }

@@ -189,6 +189,17 @@ export const SANDBOX_REFUSALS = Object.freeze([
   'that session is in the sandbox already',
   'that session changed in the sandbox since it was copied',
   'that session is not in the sandbox (any more)',
+  // Bring your setup (setup.read, setup.write, setup.git, setup.which)
+  'not a destination of the setup',
+  'bad if',
+  'bad files',
+  'a skill needs its SKILL.md',
+  'too large',
+  'changed in the sandbox since you checked: check it again',
+  'a name and an email, please',
+  '~/.gitconfig is not a regular file: change it in the terminal',
+  'git config failed',
+  'too many names',
 ]);
 // bn-coded's own fixed texts in an answer's error field (the launch configurations, Run's sources and tasks, the
 // permission rules' files, a search): the literal values of its error:, bad(…) and taskError(…) and NO_PROGRAM's —
