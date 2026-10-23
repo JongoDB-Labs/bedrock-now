@@ -522,7 +522,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             nonce = settings_mod.write_sessions_request(
                 settings.request_dir, act, password, rem, project=data.get("project"), tool=data.get("tool", "both"), scan=data.get("scan"),
                 rows=data.get("rows"), session=data.get("session"), digest=data.get("digest"), thinking=data.get("thinking") or "default",
-                keep=data.get("keep"))
+                outputs=data.get("outputs") or "out", keep=data.get("keep"))
         except ValueError:
             return sessions_err(400, "bad request")
         except OSError as e:

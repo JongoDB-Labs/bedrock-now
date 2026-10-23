@@ -2240,11 +2240,12 @@ function importFinding(v: unknown): ImportFinding | null {
   return { id: o.id, n: N(o.n, 1e7) ?? 0, kind: label(o.kind, 40), label: label(o.label, 120), message: N(o.message, 1e7) ?? 0, part: o.part ? label(o.part, 220) : null,
     preview: label(o.preview, 80), context: label(o.context, 200), keepable: o.keepable === true };
 }
-/** A waiting session as it would be copied (thinking: as the backend decides, or as asked). */
-export async function importPreview(project: string, id: string, thinking: 'strip' | 'keep' | null = null): Promise<ImportPreview> {
+/** A waiting session as it would be copied (thinking: as the backend decides, or as asked; outputs: its tool outputs
+ *  included — scanned — or, by default, left out). */
+export async function importPreview(project: string, id: string, thinking: 'strip' | 'keep' | null = null, outputs = false): Promise<ImportPreview> {
   if (!isUuid(id)) throw new ApiError(400, 'bad session id');
-  const o = await request('GET', '/api/imports/preview' + q({ project, id, thinking: thinking ?? undefined }));
-  const th = obj(o.thinking), out = obj(o.outside);
+  const o = await request('GET', '/api/imports/preview' + q({ project, id, thinking: thinking ?? undefined, outputs: outputs ? '1' : undefined }));
+  const th = obj(o.thinking), out = obj(o.outside), op = obj(o.outputs);
   return {
     id: id.toLowerCase(), tool: importTool(o.tool) ?? 'claude', title: label(o.title, 200), messages: N(o.messages, 1e7), size: N(o.size, 1e13),
     digest: typeof o.digest === 'string' && /^[0-9a-f]{64}$/.test(o.digest) ? o.digest : null,
@@ -2253,6 +2254,7 @@ export async function importPreview(project: string, id: string, thinking: 'stri
     outside: { count: N(out?.count, 1e7) ?? 0, sample: arr(out?.sample, 30).map((p) => label(p, 300)).filter(Boolean) },
     bad: N(o.bad, 1e7) ?? 0, rewritten: N(o.rewritten, 1e9) ?? 0, hidden: o.hidden === true, parts: N(o.parts, 1e6) ?? 0,
     left: arr(o.left, 600).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ part: label(x.part, 220), why: label(x.why, 120) })),
+    outputs: { included: op?.included === true, left: N(op?.left, 1e7) ?? 0, bytes: N(op?.bytes, 1e13) ?? 0 },
     format: label(o.format, 20), version: o.version ? label(o.version, 40) : null, again: obj(o.again) ? { at: time(obj(o.again)?.at) } : null,
     events: arr(o.events, 3000).map(normEvent).filter((e): e is Ev => e !== null), total: N(o.total, 1e7) ?? 0,
   };
@@ -2261,24 +2263,25 @@ function importResults(list: unknown[]): ImportResult[] {
   return arr(list, 100).map(obj).filter((x): x is Obj => x !== null).map((x) => ({
     id: isUuid(x.id) ? x.id.toLowerCase() : '', ok: x.ok === true, as: isUuid(x.as) ? x.as.toLowerCase() : null, forked: x.forked === true,
     redacted: N(x.redacted, 1e7) ?? 0, kept: N(x.kept, 1e7) ?? 0, thinkingRemoved: N(x.thinkingRemoved, 1e7) ?? 0, thinkingLeft: N(x.thinkingLeft, 1e7) ?? 0, left: N(x.left, 1e6) ?? 0,
+    outputsLeft: N(x.outputsLeft, 1e7) ?? 0,
     // (a refusal of the sandbox's: its words apart, never in a sentence of ours)
     why: x.ok === true ? '' : x.sandbox === true ? 'the sandbox refused the copy' : label(x.why, 300),
     said: x.ok !== true && x.sandbox === true ? { by: 'sandbox', said: label(x.why, 300) } as SandboxWords : null,
   })).filter((r) => r.id);
 }
-/** Copy waiting sessions into the sandbox, every finding redacted: each with what becomes of its thinking and the digest
- *  its check showed (refused when it was read again since). */
-export async function importCopy(project: string, items: { id: string; thinking: 'strip' | 'keep' | null; digest: string | null }[]): Promise<ImportResult[]> {
-  const o = await request('POST', '/api/imports/copy', { project, items: items.map((i) => ({ id: i.id, ...(i.thinking ? { thinking: i.thinking } : {}), ...(i.digest ? { digest: i.digest } : {}) })) });
+/** Copy waiting sessions into the sandbox, every finding redacted: each with what becomes of its thinking, whether its
+ *  tool outputs come along (scanned) and the digest its check showed (refused when it was read again since). */
+export async function importCopy(project: string, items: { id: string; thinking: 'strip' | 'keep' | null; outputs?: boolean; digest: string | null }[]): Promise<ImportResult[]> {
+  const o = await request('POST', '/api/imports/copy', { project, items: items.map((i) => ({ id: i.id, ...(i.thinking ? { thinking: i.thinking } : {}), ...(i.outputs ? { outputs: true } : {}), ...(i.digest ? { digest: i.digest } : {}) })) });
   return importResults(arr(o.results, 100));
 }
 /** A copy that keeps some findings (their ids): it needs the portal password — asked of the portal, done by the helper.
  *  -> the request (its results come with its state) */
-export async function importCopyKept(project: string, item: { id: string; keep: string[]; thinking: 'strip' | 'keep' | null; digest: string }, password: string): Promise<string> {
+export async function importCopyKept(project: string, item: { id: string; keep: string[]; thinking: 'strip' | 'keep' | null; outputs?: boolean; digest: string }, password: string): Promise<string> {
   if (!isUuid(item.id) || !/^[0-9a-f]{64}$/.test(item.digest)) throw new ApiError(400, 'bad request');
   const keep = [...new Set(item.keep.filter((k) => KEEP_TOKEN.test(k)))].slice(0, 64);
   if (!keep.length) throw new ApiError(400, 'nothing to keep');
-  return askComputer({ action: 'sessions-copy', project, session: item.id.toLowerCase(), digest: item.digest, thinking: item.thinking ?? 'default', keep, password });
+  return askComputer({ action: 'sessions-copy', project, session: item.id.toLowerCase(), digest: item.digest, thinking: item.thinking ?? 'default', outputs: item.outputs ? 'in' : 'out', keep, password });
 }
 export async function importDrop(project: string, id: string): Promise<void> {
   if (!isUuid(id)) throw new ApiError(400, 'bad session id');

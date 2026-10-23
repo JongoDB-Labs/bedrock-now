@@ -334,13 +334,15 @@ export interface ImportPreview {
   hidden: boolean;
   parts: number;
   left: { part: string; why: string }[];
+  /** tool outputs: included (asked for: scanned) or left out — how many, how many bytes */
+  outputs: { included: boolean; left: number; bytes: number };
   format: string;
   version: string | null;
   again: { at: number } | null;
   events: Ev[];
   total: number;
 }
-export interface ImportResult { id: string; ok: boolean; as: string | null; forked: boolean; redacted: number; kept: number; thinkingRemoved: number; thinkingLeft: number; left: number; why: string; said: SandboxWords | null }
+export interface ImportResult { id: string; ok: boolean; as: string | null; forked: boolean; redacted: number; kept: number; thinkingRemoved: number; thinkingLeft: number; left: number; outputsLeft: number; why: string; said: SandboxWords | null }
 /** A folder your coding tools kept sessions for (its store folder's name, turned into a folder that is there). */
 export interface ProjectSuggestion { path: string; claude: number; claudeBedrock: number; last: number }
 

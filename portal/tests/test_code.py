@@ -797,7 +797,10 @@ def test_sessions_requests_each_field_checked_never_a_path(cs, tmp_path):
             ({"action": "sessions-suggest"}, '"origin":"local"}'),
             ({"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "thinking": "keep",
               "keep": ["main#0123456789abcdef", "subagents/agent-1.jsonl#fedcba9876543210"]},
-             f'"session":"{sid}","digest":"{dig}","thinking":"keep","keep":"main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210"}}'),
+             f'"session":"{sid}","digest":"{dig}","thinking":"keep","outputs":"out","keep":"main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210"}}'),
+            # (its tool outputs too, asked for on the sheet)
+            ({"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "outputs": "in", "keep": ["main#0123456789abcdef"]},
+             f'"session":"{sid}","digest":"{dig}","thinking":"default","outputs":"in","keep":"main#0123456789abcdef"}}'),
         ]
         for body, tail in good:
             import time
@@ -813,6 +816,7 @@ def test_sessions_requests_each_field_checked_never_a_path(cs, tmp_path):
             {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "keep": ["../../etc#0123456789abcdef"]},
             {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": "x", "keep": ["main#0123456789abcdef"]},
             {"action": "sessions-copy", "project": "p_0000aaaa", "session": "x", "digest": dig, "keep": ["main#0123456789abcdef"]},
+            {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "outputs": "all", "keep": ["main#0123456789abcdef"]},
         ]
         before = _ses_files(s)
         for body in bad:

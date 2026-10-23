@@ -248,9 +248,12 @@ test_the_helper_takes_the_code_pages_requests_from_the_portal_only_in_their_fixe
   sessions_poll_once 2>/dev/null
   assert_contains "$(cat "$CALLS")" "sessions suggest --origin local --request 33333333333333333333333333333333 --screen"
   local dig; dig="$(printf 'd%.0s' $(seq 1 64))"
-  _ses 66666666666666666666666666666666 '"sessions-copy"' ",\"project\":\"p_0000aaaa\",\"session\":\"$UUID_A\",\"digest\":\"$dig\",\"thinking\":\"keep\",\"keep\":\"main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210\""
+  _ses 66666666666666666666666666666666 '"sessions-copy"' ",\"project\":\"p_0000aaaa\",\"session\":\"$UUID_A\",\"digest\":\"$dig\",\"thinking\":\"keep\",\"outputs\":\"out\",\"keep\":\"main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210\""
   sessions_poll_once 2>/dev/null
-  assert_contains "$(cat "$CALLS")" "sessions copy --project p_0000aaaa --session $UUID_A --digest $dig --thinking keep --keep main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210 --origin local --request 66666666666666666666666666666666"
+  assert_contains "$(cat "$CALLS")" "sessions copy --project p_0000aaaa --session $UUID_A --digest $dig --thinking keep --outputs out --keep main#0123456789abcdef,subagents/agent-1.jsonl#fedcba9876543210 --origin local --request 66666666666666666666666666666666"
+  _ses 67777777777777777777777777777777 '"sessions-copy"' ",\"project\":\"p_0000aaaa\",\"session\":\"$UUID_A\",\"digest\":\"$dig\",\"thinking\":\"default\",\"outputs\":\"in\",\"keep\":\"main#0123456789abcdef\""
+  sessions_poll_once 2>/dev/null
+  assert_contains "$(cat "$CALLS")" "sessions copy --project p_0000aaaa --session $UUID_A --digest $dig --thinking default --outputs in --keep main#0123456789abcdef --origin local --request 67777777777777777777777777777777"
   [ -z "$(ls "$(request_dir)")" ] || { echo "left in the requests folder: $(ls "$(request_dir)")" >&2; return 1; }   # (each request moved out, then gone)
   # never a path, an extra field, another action, a range of rows, a keep that is not a token, a wrong password; a
   # request used once
@@ -259,8 +262,10 @@ test_the_helper_takes_the_code_pages_requests_from_the_portal_only_in_their_fixe
   for t in '"sessions-scan"|,"project":"p_0000aaaa","tool":"both","path":"/home/x"' '"sessions-scan"|,"project":"/home/x/src","tool":"both"' \
            '"sessions-scan"|,"project":"p_0000aaaa","tool":"codex"' '"sessions-fetch"|,"project":"p_0000aaaa","scan":"'"$NONCE"'","rows":"1-5"' \
            '"sessions-fetch"|,"project":"p_0000aaaa","scan":"../x","rows":"1"' '"sessions-fetch"|,"project":"p_0000aaaa","scan":"'"$NONCE"'","id":"'"$UUID_A"'","rows":"1"' \
-           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","keep":"../../etc#0123456789abcdef"' \
-           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","keep":""' \
+           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","outputs":"out","keep":"../../etc#0123456789abcdef"' \
+           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","outputs":"out","keep":""' \
+           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","outputs":"all","keep":"main#0123456789abcdef"' \
+           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","keep":"main#0123456789abcdef"' \
            '"sessions-import"|,"project":"p_0000aaaa"'; do
     n="${n%?}$(( ${n: -1} + 1 ))"
     _ses "$n" "${t%%|*}" "${t#*|}"
@@ -375,8 +380,8 @@ test_what_a_store_said_is_printed_as_plain_ascii() {
 test_the_whole_import_in_a_terminal_as_stack_runs_it() {
   _stubs
   export LIST_TSV="$(printf '1\tclaude\t4\t1790000000000\t100\t-\tfirst\n2\tclaude-bedrock\t2\t1790000000000\t50\t-\tsecond')"
-  export FINDINGS_TSV="$(printf '%s\t2\taws-key-id,github-token\t1\tout\t0\t0\tfirst' "$UUID_A")"
-  export COPY_TSV="$(printf '%s\tok\t%s\t2\t0\t0\t-\t\n%s\tno\t-\t0\t0\t0\tsandbox\tGitHub says: \033]0;run this\007 now' "$UUID_A" "$UUID_A" "$UUID_B")"
+  export FINDINGS_TSV="$(printf '%s\t2\taws-key-id,github-token\t1\tout\t0\t0\t3\t4096\tfirst' "$UUID_A")"
+  export COPY_TSV="$(printf '%s\tok\t%s\t2\t0\t0\t3\t-\t\n%s\tno\t-\t0\t0\t0\t0\tsandbox\tGitHub says: \033]0;run this\007 now' "$UUID_A" "$UUID_A" "$UUID_B")"
   sessions_consent --project app --always 2>/dev/null
   _store claude >/dev/null; _store claude-bedrock >/dev/null
   # (set -e and pipefail, as ./stack: no step of the happy path may end it early)
@@ -384,13 +389,29 @@ test_the_whole_import_in_a_terminal_as_stack_runs_it() {
   out="$( (set -euo pipefail; ASSUME_YES=1; sessions_import --project app --rows 1) 2>&1 )" || { echo "the import under set -e ended: $out" >&2; return 1; }
   assert_contains "$out" "2 possible secret(s) (aws-key-id,github-token): redacted"
   assert_contains "$out" "1 thinking block(s) taken out"
-  assert_contains "$out" "copied: $UUID_A — 2 redaction(s)"
+  assert_contains "$out" "copied: $UUID_A — 2 redaction(s), 3 tool output(s) left out"
+  assert_contains "$out" "3 tool output(s) left out (4096 bytes): --with-tool-outputs brings them, scanned (best effort)"
   # (a refusal in the sandbox's words: shown apart, labelled as the sandbox's, as printable text)
   assert_contains "$out" "not copied: $UUID_B — the sandbox refused it. What it said:"
   assert_contains "$out" "      | GitHub says: ?]0;run this? now"
   ! printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\033')"
   assert_contains "$(cat "$TMP/dc")" "copy --project p_0000aaaa --ids $UUID_A --tsv"
   assert_not_contains "$(cat "$TMP/dc")" "--keep-secrets"
+  assert_not_contains "$(cat "$TMP/dc")" "--with-tool-outputs"
+}
+
+test_tool_outputs_come_along_only_when_asked() {
+  _stubs
+  export LIST_TSV="$(printf '1\tclaude\t4\t1790000000000\t100\t-\tfirst')"
+  export FINDINGS_TSV="$(printf '%s\t1\taws-key-id\t0\tout\t0\t0\tin\t0\tfirst' "$UUID_A")"
+  export COPY_TSV="$(printf '%s\tok\t%s\t1\t0\t0\t0\t-\t' "$UUID_A" "$UUID_A")"
+  sessions_consent --project app --always 2>/dev/null
+  _store claude >/dev/null
+  local out
+  out="$( (set -euo pipefail; ASSUME_YES=1; sessions_import --project app --rows 1 --with-tool-outputs) 2>&1 )" || { echo "ended early: $out" >&2; return 1; }
+  assert_contains "$out" "its tool outputs included, scanned (the scan is best effort: command output often holds secrets)"
+  assert_contains "$(grep -c -- '--with-tool-outputs' "$TMP/dc")" "2"
+  assert_contains "$(./stack sessions --help 2>&1)" "--with-tool-outputs"
 }
 
 test_cli_wiring() {

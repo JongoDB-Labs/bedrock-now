@@ -865,6 +865,11 @@ written back to those folders.
   bedrock-now may read on this computer**, where **Take back** (from any device) undoes it — and what the Code page's
   container read under it (the list, sessions waiting) is forgotten; `./stack sessions consent --project NAME --revoke`
   (or `--revoke-all`) in a terminal.
+- **Tool outputs are left out by default** — what a session's tools gave back (command output, files it read, an API's
+  answer) is where its secrets mostly are. Each becomes one line saying so and its size; the tool calls and their
+  results' ids stay, so the session resumes as it was (Claude can run a tool again when it needs what it saw). Tick
+  **Include tool outputs** on the sheet (`./stack sessions import … --with-tool-outputs` in a terminal) to bring them,
+  scanned and redacted as below; the sheet says how many were left out.
 - **Possible secrets** (AWS keys, Amazon Bedrock API keys, GitHub, GitLab, Slack, Anthropic, OpenAI, Google, Stripe,
   SendGrid, npm, PyPI, Hugging Face, DigitalOcean, Shopify, Linear and Atlassian tokens, Slack webhooks, Azure keys,
   age and private keys, JSON web tokens, `Authorization` and cookie headers, passwords in URLs and on command lines —
@@ -874,14 +879,16 @@ written back to those folders.
   value) are listed per session — what kind, where, and its length; for a token only its public start (`ghp_…`),
   never anything of a password — and **redacted by default** (`[REDACTED:<kind>]`). Untick one to keep it as it is:
   that copy needs the portal password (the update helper makes it). The transcript, its subagents' transcripts and the
-  tool results and JSON files beside it alike; a file beside it that cannot be read so stays behind. What you chose
-  holds for the session as it was checked: read again, it is checked again. A secret in a shape the scan does not
-  know, or in prose, can still go along: the sheet shows the transcript as it would be copied.
+  JSON files beside it alike (and the tool outputs, when you include them); a file beside it that cannot be read so
+  stays behind. What you chose holds for the session as it was checked: read again, it is checked again. **The
+  redaction is a best-effort safety net, not a guarantee**: a secret in a shape the scan does not know, or in prose,
+  can still go along — the sheet shows the transcript as it would be copied.
 - **Thinking blocks** of a session that ran elsewhere than Bedrock (Anthropic's API, a Claude subscription) are taken out
   by default (Bedrock may refuse their signatures on resume; the text stays); *Keep them* if you like — a block is
   copied as it was or not at all, so one that holds a possible secret or a path to rewrite is left out.
 - **The copy** keeps the session's id (the same conversation; badged **CC** or **CB** in the project), its subagents'
-  transcripts and large tool results; it opens in Manual the first time. Copying again later replaces the copy while it
+  transcripts and its large tool results' files (each one line, unless you included the outputs); it opens in Manual
+  the first time. Copying again later replaces the copy while it
   is as it was copied; once continued here, a later copy comes in as a new session. A fork of a copy opens in Manual
   the first time too. A folder whose path is hidden
   (`/projects/<name>`) gets its path rewritten in the copy; paths outside the project (`~/.zshrc` …) are listed — they

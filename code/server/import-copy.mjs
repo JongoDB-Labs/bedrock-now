@@ -4,6 +4,7 @@
 // An imported session keeps its id — the same conversation, resumed natively on any model of the catalog — unless
 // its copy here was continued since it was copied (or something else of that id is here): then it comes in as a new
 // session, a fork with fresh ids (the Agent SDK's own forkSession, over this container's memory: nothing on disk here).
+// Its tool outputs are left out unless asked: each becomes one line saying so, its call and its result's id kept.
 // Its subagents' transcripts and large tool results come along with the same id — through the same scan, redaction,
 // thinking and path rewriting as the transcript (a file that cannot be read so stays behind: never copied as it was);
 // a fork starts without them, as the SDK's forks do. Continue in this project forks a session of the sandbox into
@@ -51,18 +52,18 @@ const OTHER_ID = /^that session (is in the sandbox already|changed in the sandbo
  *  thinking blocks and what becomes of them, paths outside the project, lines that are no JSON, the transcript as it
  *  would be copied, as the page's history events (sandbox text), and the digest of what is waiting (a copy names it) */
 export async function preview(imports, pid, id, choices = {}) {
-  const pl = await imports.plan(pid, id, { kind: 'preview', thinking: choices.thinking ?? null });
+  const pl = await imports.plan(pid, id, { kind: 'preview', thinking: choices.thinking ?? null, outputs: choices.outputs === true });
   const copied = imports.imported()[id];
   return {
     id, tool: pl.meta.tool, title: pl.row?.title ?? '', messages: pl.row?.messages ?? null, size: pl.size, digest: pl.digest,
     findings: pl.findings, findingsTotal: pl.findingsTotal, thinking: pl.thinking, outside: pl.outside, bad: pl.bad, rewritten: pl.rewritten, hidden: pl.hidden,
-    parts: pl.parts, left: pl.left, format: pl.row?.format ?? 'unknown', version: pl.row?.version ?? null,
+    parts: pl.parts, left: pl.left, outputs: pl.outputs, format: pl.row?.format ?? 'unknown', version: pl.row?.version ?? null,
     again: copied ? { at: copied.at } : null, events: pl.events, total: pl.total,
   };
 }
 
 /** copy(imports, call, pid, items) -> [{id, ok, as?, forked?, why?}]: each picked session (items: [{id, keep, thinking,
- *  digest}]) written into the sandbox's store, then its stage dropped and the copy recorded. keep: tokens of findings
+ *  outputs, digest}]; outputs: true — its tool outputs included, scanned; else left out) written into the sandbox's store, then its stage dropped and the copy recorded. keep: tokens of findings
  *  (the Code page sends none: a copy that keeps any goes through the portal and the helper, with the password); digest:
  *  the one the check step showed — refused when the session was read again since */
 export async function copy(imports, call, pid, items) {
@@ -74,7 +75,7 @@ export async function copy(imports, call, pid, items) {
     const thinking = it.thinking === 'keep' || it.thinking === 'strip' ? it.thinking : null;
     const digest = typeof it.digest === 'string' && /^[0-9a-f]{64}$/.test(it.digest) ? it.digest : null;
     try {
-      const pl = await imports.plan(pid, it.id, { kind: 'copy', keep, thinking, digest });
+      const pl = await imports.plan(pid, it.id, { kind: 'copy', keep, thinking, outputs: it.outputs === true, digest });
       const cwd = pl.project.root;
       const { main } = pl;
       if (main.length + pl.parts.reduce((s, p) => s + p.data.length, 0) > READER.sessionBytes) throw new ImportError(413, 'that session is too large to copy (more than 32 MiB)');
@@ -94,10 +95,11 @@ export async function copy(imports, call, pid, items) {
         as = f.id; forked = true;
       }
       imports.noteImported(as, { project: pid, tool: pl.meta.tool, source: it.id, sourceSha: pl.sourceSha, writtenSha: sha256(written), at: Date.now(),
-        redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, thinkingLeft: pl.thinking.left, bad: pl.bad, rewritten: pl.rewritten, ...(forked ? { forkedFrom: it.id } : {}) });
+        redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, thinkingLeft: pl.thinking.left, bad: pl.bad, rewritten: pl.rewritten,
+        outputsLeft: pl.outputs.left, ...(forked ? { forkedFrom: it.id } : {}) });
       imports.drop(pid, it.id);
       out.push({ id: it.id, ok: true, as, forked, redacted: pl.redacted, kept: pl.kept, thinkingRemoved: pl.thinking.removed, thinkingLeft: pl.thinking.left,
-        left: pl.left.length + (forked ? pl.parts.length : 0) });
+        left: pl.left.length + (forked ? pl.parts.length : 0), outputsLeft: pl.outputs.left });
     } catch (e) {
       out.push({ id: it.id, ok: false, why: e instanceof ImportError || e instanceof SandboxError ? e.message : 'the copy failed', sandbox: e instanceof SandboxError });
     }

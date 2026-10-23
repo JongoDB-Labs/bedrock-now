@@ -28,6 +28,7 @@ const { sandboxCall } = await import('../server/spawn-client.mjs');
 const { Imports, parseIndex, ImportError, LIMITS, cli } = await import('../server/import-sessions.mjs');
 const { KEEP_TOKEN } = await import('../server/secrets.mjs');
 const { copy, preview, continueIn, fork } = await import('../server/import-copy.mjs');
+const { leaveOutputs, parseLines, toJsonl } = await import('../server/transcript.mjs');
 const reader = await import('../server/harness/claude.mjs');
 
 const SOCK = path.join(SOCKDIR, 'coded.sock');
@@ -186,6 +187,10 @@ test('a project\'s sessions copied: listed, picked, checked (secrets redacted, t
   assert.deepEqual([pv.thinking.blocks, pv.thinking.removed, pv.thinking.strip, pv.thinking.source], [2, 2, true, 'anthropic']);
   assert.ok(pv.events.some((e) => e.type === 'user' && /deploy with \[REDACTED:aws-key-id\]/.test(e.text)));
   assert.equal(pv.parts, 1);
+  // tool outputs left out by default: each Read's result one line saying so, the tool calls and their ids kept
+  assert.equal(pv.outputs.included, false);
+  assert.equal(pv.outputs.left, 2 + 1, 'two in the transcript, one in its subagent\'s');
+  assert.ok(pv.outputs.bytes > 0);
   // copy both: b keeps its token (asked), a is redacted and loses its thinking
   const pb = await preview(imports, 'p_00000001', b);
   const res = await copy(imports, call, 'p_00000001', [{ id: a }, { id: b, keep: [pb.findings[0].id] }]);
@@ -193,7 +198,17 @@ test('a project\'s sessions copied: listed, picked, checked (secrets redacted, t
   const ca = fs.readFileSync(path.join(storeOf(APP), `${a}.jsonl`), 'utf8');
   assert.ok(!ca.includes(key) && ca.includes('[REDACTED:aws-key-id]'));
   assert.ok(!ca.includes('"thinking"'));
-  assert.equal(fs.readFileSync(path.join(storeOf(APP), a, 'subagents', 'agent-1.jsonl'), 'utf8'), subLines, 'a subagent\'s transcript, as it was (nothing to change in it)');
+  assert.equal(fs.readFileSync(path.join(storeOf(APP), a, 'subagents', 'agent-1.jsonl'), 'utf8'), toJsonl(leaveOutputs(parseLines(Buffer.from(subLines)).entries).entries).toString('utf8'),
+    'a subagent\'s transcript as it was but for its tool outputs');
+  // (every tool call still has its result: the same ids, the content one line)
+  const lines = ca.trim().split('\n').map((l) => JSON.parse(l));
+  const uses = lines.flatMap((e) => (e.type === 'assistant' && Array.isArray(e.message.content) ? e.message.content.filter((b) => b.type === 'tool_use').map((b) => b.id) : []));
+  const results = lines.flatMap((e) => (e.type === 'user' && Array.isArray(e.message.content) ? e.message.content.filter((b) => b.type === 'tool_result') : []));
+  assert.deepEqual(results.map((b) => b.tool_use_id), uses);
+  assert.ok(results.every((b) => /^\[tool output left out by bedrock-now — [0-9.]+ (bytes|KB); re-import with "Include tool outputs" to bring it\]$/.test(b.content)));
+  assert.ok(lines.filter((e) => e.toolUseResult !== undefined).every((e) => typeof e.toolUseResult === 'string' && e.toolUseResult.startsWith('[tool output left out')));
+  assert.ok(!ca.includes('export const main'), 'what the tool read is not in the copy');
+  assert.equal(res[0].outputsLeft, 3);
   assert.ok(fs.readFileSync(path.join(storeOf(APP), `${b}.jsonl`), 'utf8').includes(gh));
   assert.deepEqual(imports.staged('p_00000001'), [], 'the stage is dropped');
   const rec = imports.imported()[a];
@@ -244,7 +259,9 @@ test('the files beside a transcript go through the same scan: a secret only in a
   const scan = nonce();
   imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
   await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
-  const pv = await preview(imports, 'p_00000001', id);
+  // (tool outputs asked for: scanned like the rest)
+  const pv = await preview(imports, 'p_00000001', id, { outputs: true });
+  assert.deepEqual(pv.outputs, { included: true, left: 0, bytes: 0 });
   assert.deepEqual(pv.findings.map((x) => [x.kind, x.part]).sort(), [['aws-key-id', 'tool-results/toolu_1.txt'], ['github-token', 'subagents/agent-1.jsonl'],
     ['gitlab-token', 'subagents/agent-1.meta.json']].sort());
   assert.ok(pv.findings.every((x) => KEEP_TOKEN.test(x.id) && x.id.startsWith(`${x.part}#`)), 'each kept by its file and a hash of what it is');
@@ -253,7 +270,7 @@ test('the files beside a transcript go through the same scan: a secret only in a
   assert.ok(!JSON.stringify(pv).includes(sub) && !JSON.stringify(pv).includes(out) && !JSON.stringify(pv).includes(json));
   // copied: redacted (the subagent's thinking out too), the unreadable ones not copied; one finding kept on request
   const keep = pv.findings.find((x) => x.kind === 'gitlab-token').id;
-  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [keep] }]);
+  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [keep], outputs: true }]);
   assert.equal(r[0].ok, true, JSON.stringify(r));
   assert.deepEqual([r[0].redacted, r[0].kept, r[0].left], [2, 1, 2]);
   const base = path.join(storeOf(APP), id);
@@ -274,9 +291,9 @@ test('a tool\'s large output is scanned whole: a secret across 4 MiB in a line l
   const scan = nonce();
   imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
   await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
-  const pv = await preview(imports, 'p_00000001', id);
+  const pv = await preview(imports, 'p_00000001', id, { outputs: true });
   assert.deepEqual(pv.findings.map((x) => [x.part, x.kind, x.keepable]).sort(), [['tool-results/huge.txt', 'too-long', false], ['tool-results/long.txt', 'github-token', true]]);
-  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [pv.findings.find((x) => x.kind === 'too-long').id] }]);
+  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [pv.findings.find((x) => x.kind === 'too-long').id], outputs: true }]);
   assert.equal(r[0].ok, true, JSON.stringify(r));
   const base = path.join(storeOf(APP), id, 'tool-results');
   const long = fs.readFileSync(path.join(base, 'long.txt'), 'utf8');
@@ -374,17 +391,17 @@ test('a keep is bound to its file and what it is, never to a position: parts in 
   const scan = nonce();
   imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
   await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
-  const pv = await preview(imports, 'p_00000001', id);
+  const pv = await preview(imports, 'p_00000001', id, { outputs: true });
   assert.deepEqual(pv.findings.map((f) => f.part), ['tool-results/a.txt', 'tool-results/b.txt', 'tool-results/c.txt'], 'in order of name, whatever the folder\'s');
   const [fa, fb] = pv.findings;
   assert.notEqual(fa.id, fb.id, 'the same secret in two files: two keeps');
   // a copy checked with another digest (read again since): refused, nothing written
-  await assert.rejects(imports.plan('p_00000001', id, { kind: 'copy', digest: 'f'.repeat(64) }), /read again since you checked it/);
-  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [fa.id], digest: 'e'.repeat(64) }]);
+  await assert.rejects(imports.plan('p_00000001', id, { kind: 'copy', outputs: true, digest: 'f'.repeat(64) }), /read again since you checked it/);
+  const r = await copy(imports, call, 'p_00000001', [{ id, keep: [fa.id], outputs: true, digest: 'e'.repeat(64) }]);
   assert.deepEqual([r[0].ok, r[0].why], [false, 'that session was read again since you checked it: check it again']);
   assert.ok(!fs.existsSync(path.join(storeOf(APP), `${id}.jsonl`)));
   // kept in a.txt only: b.txt and c.txt redacted
-  const r2 = await copy(imports, call, 'p_00000001', [{ id, keep: [fa.id], digest: pv.digest }]);
+  const r2 = await copy(imports, call, 'p_00000001', [{ id, keep: [fa.id], outputs: true, digest: pv.digest }]);
   assert.equal(r2[0].ok, true, JSON.stringify(r2));
   const base = path.join(storeOf(APP), id, 'tool-results');
   assert.ok(fs.readFileSync(path.join(base, 'a.txt'), 'utf8').includes(same));
@@ -397,9 +414,9 @@ test('a keep is bound to its file and what it is, never to a position: parts in 
   const scanR = nonce();
   imports.saveIndex('p_00000001', indexText(APP, dirR), { scan: scanR, consent: 'once', host: APP });
   await imports.stageBundle('p_00000001', scanR, Readable.from([bundle(APP, dirR, [idR])]));
-  const pvR = await preview(imports, 'p_00000001', idR);
+  const pvR = await preview(imports, 'p_00000001', idR, { outputs: true });
   await imports.stageBundle('p_00000001', scanR, Readable.from([bundle(APP, dirR, [idR])]));
-  const rR = await copy(imports, call, 'p_00000001', [{ id: idR, keep: [pvR.findings[0].id], digest: pvR.digest }]);
+  const rR = await copy(imports, call, 'p_00000001', [{ id: idR, keep: [pvR.findings[0].id], outputs: true, digest: pvR.digest }]);
   assert.deepEqual([rR[0].ok, rR[0].why], [false, 'that session was read again since you checked it: check it again']);
   imports.drop('p_00000001', idR);
   // a token of another waiting session (another key) keeps nothing here
@@ -408,7 +425,7 @@ test('a keep is bound to its file and what it is, never to a position: parts in 
   const scan2 = nonce();
   imports.saveIndex('p_00000001', indexText(APP, dir2), { scan: scan2, consent: 'once', host: APP });
   await imports.stageBundle('p_00000001', scan2, Readable.from([bundle(APP, dir2, [id2])]));
-  const pl = await imports.plan('p_00000001', id2, { kind: 'copy', keep: [fa.id] });
+  const pl = await imports.plan('p_00000001', id2, { kind: 'copy', keep: [fa.id], outputs: true });
   assert.deepEqual([pl.kept, pl.redacted], [0, 1]);
   imports.drop('p_00000001', id2);
 });
@@ -487,4 +504,63 @@ test('the command line ./stack uses: index, stage, request states, forget — fi
   assert.equal(out[4].results[0].ok, true);
   await assert.rejects(cli(['request', '--id', nonce(), '--state', 'done', '--why', 'whatever'], { imports, out: () => {} }), /bad request state/);
   await assert.rejects(cli(['nope'], { imports, out: () => {} }), /unknown command/);
+});
+
+test('tool outputs left out by default — a large output\'s file one line too (valid JSON for a .json) — and only asked for are they scanned and copied; the copy resumes', async () => {
+  const id = uuid();
+  const out = fake.awsKeyId(), big = fake.github();
+  const e = session({ id, cwd: APP, prompts: ['look', 'again'] });
+  // (a Bash call whose output holds a secret: only in the output)
+  e.push({ type: 'assistant', message: { id: 'msg_x', role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'tool_use', id: 'toolu_bash1', name: 'Bash', input: { command: 'env' } }], stop_reason: 'tool_use' }, uuid: uuid(), parentUuid: e.at(-1).uuid, sessionId: id, cwd: APP });
+  e.push({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bash1', content: `AWS_ACCESS_KEY_ID=${out}` }] }, toolUseResult: { stdout: `AWS_ACCESS_KEY_ID=${out}`, stderr: '' }, uuid: uuid(), parentUuid: e.at(-1).uuid, sessionId: id, cwd: APP });
+  const dir = hostStore(APP, [[id, e, { 'tool-results/toolu_big.txt': `token ${big}\n`, 'tool-results/toolu_j.json': JSON.stringify({ token: big }) }]]);
+  const stage = async () => {
+    const scan = nonce();
+    imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
+    await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
+  };
+  await stage();
+  const pv = await preview(imports, 'p_00000001', id);
+  assert.deepEqual(pv.findings, [], 'nothing found: the outputs are not looked at');
+  assert.deepEqual([pv.outputs.included, pv.outputs.left], [false, 3 + 2], 'three results in the transcript, two large outputs');
+  assert.ok(!JSON.stringify(pv).includes(out) && !JSON.stringify(pv).includes(big));
+  assert.ok(pv.events.some((ev) => ev.type === 'tool_result' && /tool output left out by bedrock-now/.test(ev.text)), 'the preview shows the line');
+  // the CLI says so too (the column: how many left out, their bytes), and with --with-tool-outputs scans them
+  const lines = [];
+  await cli(['findings', '--project', 'p_00000001', '--ids', id, '--tsv'], { imports, line: (l) => lines.push(l) });
+  assert.deepEqual(lines[0].split('\t').slice(7, 8), ['5']);
+  lines.length = 0;
+  await cli(['findings', '--project', 'p_00000001', '--ids', id, '--tsv', '--with-tool-outputs'], { imports, line: (l) => lines.push(l) });
+  assert.deepEqual(lines[0].split('\t').slice(1, 3), ['4', 'aws-key-id,github-token'], 'the result and its toolUseResult, the two files');
+  assert.equal(lines[0].split('\t')[7], 'in');
+  // copied as asked by default: the outputs out, the large outputs' files one line each
+  const r = await copy(imports, call, 'p_00000001', [{ id, digest: pv.digest }]);
+  assert.equal(r[0].ok, true, JSON.stringify(r));
+  assert.equal(r[0].outputsLeft, 5);
+  const text = fs.readFileSync(path.join(storeOf(APP), `${id}.jsonl`), 'utf8');
+  assert.ok(!text.includes(out));
+  const base = path.join(storeOf(APP), id, 'tool-results');
+  assert.match(fs.readFileSync(path.join(base, 'toolu_big.txt'), 'utf8'), /^\[tool output left out by bedrock-now — [0-9]+ bytes; re-import with "Include tool outputs" to bring it\]$/);
+  assert.match(JSON.parse(fs.readFileSync(path.join(base, 'toolu_j.json'), 'utf8')), /^\[tool output left out by bedrock-now/);
+  // it resumes: the SDK reads the copy whole — every call with its result, in order — and forks it
+  const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk');
+  const entries = parseLines(fs.readFileSync(path.join(storeOf(APP), `${id}.jsonl`))).entries;
+  const store = { async load(k) { return k?.sessionId === id ? entries : null; }, async append() {}, async listSessions() { return [{ sessionId: id, mtime: Date.now() }]; } };
+  const msgs = await getSessionMessages(id, { dir: APP, sessionStore: store });
+  const blocks = msgs.flatMap((m) => (Array.isArray(m.message?.content) ? m.message.content : []));
+  const uses = blocks.filter((b) => b.type === 'tool_use').map((b) => b.id), results = blocks.filter((b) => b.type === 'tool_result').map((b) => b.tool_use_id);
+  assert.deepEqual(results, uses, 'each call has its result');
+  assert.ok(uses.includes('toolu_bash1'));
+  const f = await fork(id, entries, APP);
+  assert.ok(f.entries.length >= entries.length - 1);
+  // asked for: scanned, redacted, copied (read again: a copy dropped the stage)
+  await stage();
+  const pv2 = await preview(imports, 'p_00000001', id, { outputs: true });
+  assert.deepEqual(pv2.findings.map((x) => [x.kind, x.part]).sort(), [['aws-key-id', null], ['aws-key-id', null], ['github-token', 'tool-results/toolu_big.txt'], ['github-token', 'tool-results/toolu_j.json']]);
+  const r2 = await copy(imports, call, 'p_00000001', [{ id, outputs: true, digest: pv2.digest }]);
+  assert.equal(r2[0].ok, true, JSON.stringify(r2));
+  assert.equal(r2[0].outputsLeft, 0);
+  const text2 = fs.readFileSync(path.join(storeOf(APP), `${id}.jsonl`), 'utf8');
+  assert.ok(!text2.includes(out) && text2.includes('AWS_ACCESS_KEY_ID=[REDACTED:aws-key-id]'));
+  assert.equal(fs.readFileSync(path.join(base, 'toolu_big.txt'), 'utf8'), 'token [REDACTED:github-token]\n');
 });

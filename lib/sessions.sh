@@ -12,8 +12,9 @@
 #   list                                      what bedrock-now may read here, and the last looks
 #   scan --project NAME [--tool T]            a list of the project's sessions (T: claude, claude-bedrock or both)
 #   fetch --project NAME --rows 1,3-5|--all   read those sessions into the code container (checked on the Code page)
-#   import --project NAME [--tool T] [--rows …|--all] [--keep-secrets] [--keep-thinking] [--rescan]
-#                                             the whole way in a terminal: look, pick, check, copy
+#   import --project NAME [--tool T] [--rows …|--all] [--keep-secrets] [--keep-thinking] [--with-tool-outputs] [--rescan]
+#                                             the whole way in a terminal: look, pick, check, copy (tool outputs left
+#                                             out unless --with-tool-outputs: the scan is best effort)
 #   consent [--project NAME] [--tool T] --always|--once|--revoke | --suggest --always|--once|--revoke | --revoke-all
 #   suggest                                   the folders your tools kept sessions for, as suggested projects
 #
@@ -75,6 +76,9 @@ Usage: ./stack sessions <command>
       --keep-secrets            copy what looks like a secret as it is (redacted otherwise)
       --keep-thinking           keep thinking blocks of a session that ran elsewhere than Bedrock (taken out otherwise:
                                 Bedrock may refuse their signatures)
+      --with-tool-outputs       bring what its tools gave back too — command output, files read —, scanned and
+                                redacted (left out otherwise, each one line saying so: the scan is best effort, and
+                                command output often holds secrets)
       --rescan                  look again even when a list of the last hour is there
   consent                       What bedrock-now may read (the same as list); change it with:
       --project NAME [--tool T] --always | --once | --revoke
@@ -595,13 +599,14 @@ _ss_fetch_pipe() {
 # (their tokens: a file's name and a hash), only if it is still what was checked (--digest); the results are kept
 # with the request in the code container, for the page
 sessions_copy() {
-  local ref='' session='' digest='' thinking=default keep='' origin=local res line th='' t
+  local ref='' session='' digest='' thinking=default outputs=out keep='' origin=local res line th='' outs='' t
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) ref="${2:-}"; shift 2 || true ;;
       --session) session="${2:-}"; shift 2 || true ;;
       --digest) digest="${2:-}"; shift 2 || true ;;
       --thinking) thinking="${2:-}"; shift 2 || true ;;
+      --outputs) outputs="${2:-}"; shift 2 || true ;;
       --keep) keep="${2:-}"; shift 2 || true ;;
       --origin) origin="${2:-}"; shift 2 || true ;;
       --request) SS_REQ="${2:-}"; shift 2 || true ;;
@@ -616,6 +621,7 @@ sessions_copy() {
   [[ $session =~ $uuid ]] || _ss_fail bad-request "bad session id"
   [[ $digest =~ $hex64 ]] || _ss_fail bad-request "bad digest"
   case "$thinking" in default) ;; strip) th=--strip-thinking ;; keep) th=--keep-thinking ;; *) _ss_fail bad-request "--thinking: default, strip or keep" ;; esac
+  case "$outputs" in out) ;; in) outs=--with-tool-outputs ;; *) _ss_fail bad-request "--outputs: out or in" ;; esac
   [ -n "$keep" ] || _ss_fail bad-request "--keep: the findings to keep"
   local IFS=,
   for t in $keep; do [[ $t =~ $tokre ]] || { IFS=$' \t\n'; _ss_fail bad-request "bad keep"; }; done
@@ -623,7 +629,7 @@ sessions_copy() {
   _ss_project "$ref"
   _ss_need_code
   _ss_tell copying
-  res="$(_ss_code copy --project "$SS_ID" --ids "$session" --digest "$digest" --keep "$keep" ${th:+"$th"} --request "${SS_REQ:-}" --tsv 2>/dev/null)" || true
+  res="$(_ss_code copy --project "$SS_ID" --ids "$session" --digest "$digest" --keep "$keep" ${th:+"$th"} ${outs:+"$outs"} --request "${SS_REQ:-}" --tsv 2>/dev/null)" || true
   line="$(printf '%s\n' "$res" | grep -E "^$session"$'\t' | head -n 1)" || true
   [ -n "$line" ] || _ss_fail code "the Code page's container did not copy it"
   _ss_tell done
@@ -634,7 +640,7 @@ sessions_copy() {
 }
 
 sessions_import() {
-  local ref='' tool=both rows='' all=0 keep=0 think_keep=0 rescan=0 last at now n t ids='' k title flag msgs size id
+  local ref='' tool=both rows='' all=0 keep=0 think_keep=0 outputs=0 rescan=0 last at now n t ids='' k title flag msgs size id
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) ref="${2:-}"; shift 2 || true ;;
@@ -643,6 +649,7 @@ sessions_import() {
       --all) all=1; shift ;;
       --keep-secrets) keep=1; shift ;;
       --keep-thinking) think_keep=1; shift ;;
+      --with-tool-outputs) outputs=1; shift ;;
       --rescan) rescan=1; shift ;;
       *) die "unknown option: $1 (./stack sessions help)" ;;
     esac
@@ -677,11 +684,12 @@ sessions_import() {
   [ -n "$rows" ] || rows="$(ask "Copy which sessions into the sandbox? (numbers like 1,3-5, or all)" "")"
   [ -n "$rows" ] || die "none picked: nothing was read"
   if [ "$rows" = all ]; then sessions_fetch --project "$SS_ID" --scan "$last" --all; else sessions_fetch --project "$SS_ID" --scan "$last" --rows "$rows"; fi
-  # what was found in them (id, findings, their kinds, thinking blocks to come out, paths outside, files left behind, title)
-  local list nf kinds think outside left
+  # what was found in them (id, findings, their kinds, thinking blocks to come out, paths outside, files left behind, tool
+  # outputs left out — or "in" — and their bytes, title)
+  local list nf kinds think outside left outs outbytes
   list="$(for k in $(if [ "$rows" = all ]; then seq 1 "$n"; else _ss_rows "$rows" "$n"; fi); do awk -F'\t' -v k="$k" '$1 == "row" && $2 == k { print $4 }' "$(_ss_scans_dir)/$last.tsv"; done | paste -sd, -)"
   printf '\n'
-  while IFS=$'\t' read -r id nf kinds think thmode outside left title; do
+  while IFS=$'\t' read -r id nf kinds think thmode outside left outs outbytes title; do
     case "$id" in [0-9a-f]*-*) ;; *) continue ;; esac
     ids="${ids:+$ids,}$id"
     printf '  %s\n' "$(plain_text "$title" | cut -c1-70)"
@@ -693,18 +701,20 @@ sessions_import() {
     fi
     [ "${outside:-0}" = 0 ] || printf '      %s path(s) outside the project named in its tool calls (not in the sandbox)\n' "$outside"
     [ "${left:-0}" = 0 ] || printf '      %s file(s) beside it that cannot be checked: not copied\n' "$left"
-  done < <(_ss_code --secs "$SESSIONS_COPY_S" findings --project "$SS_ID" --ids "$list" --tsv 2>/dev/null)
+    if [ "$outs" = in ]; then printf '      its tool outputs included, scanned (the scan is best effort: command output often holds secrets)\n'
+    elif [ "${outs:-0}" != 0 ]; then printf '      %s tool output(s) left out (%s bytes): --with-tool-outputs brings them, scanned (best effort)\n' "$outs" "${outbytes:-0}"; fi
+  done < <(_ss_code --secs "$SESSIONS_COPY_S" findings --project "$SS_ID" --ids "$list" --tsv $([ "$outputs" = 1 ] && echo --with-tool-outputs) 2>/dev/null)
   [ -n "$ids" ] || die "none of those sessions could be read"
   printf '\n'
   confirm "Copy $(printf '%s' "$ids" | tr ',' '\n' | grep -c .) session(s) into the sandbox (the project $SS_NAME)?" || { log "not copied: they wait on the Code page's Import sheet for an hour"; return 0; }
-  local okv as red kept why
-  while IFS=$'\t' read -r id okv as red kept left by why; do
+  local okv as red kept why oleft
+  while IFS=$'\t' read -r id okv as red kept left oleft by why; do
     case "$id" in [0-9a-f]*-*) ;; *) continue ;; esac
-    if [ "$okv" = ok ]; then log "copied: $id$([ "$as" = "$id" ] || echo " as a new session $as (the copy in the sandbox was continued since)") — ${red:-0} redaction(s)$([ "${kept:-0}" = 0 ] || echo ", $kept kept")$([ "${left:-0}" = 0 ] || echo ", $left file(s) beside it not copied")"
+    if [ "$okv" = ok ]; then log "copied: $id$([ "$as" = "$id" ] || echo " as a new session $as (the copy in the sandbox was continued since)") — ${red:-0} redaction(s)$([ "${kept:-0}" = 0 ] || echo ", $kept kept")$([ "${left:-0}" = 0 ] || echo ", $left file(s) beside it not copied")$([ "${oleft:-0}" = 0 ] || echo ", $oleft tool output(s) left out")"
     # (the sandbox's own words are shown apart, labelled as the sandbox's — never as a sentence of bedrock-now's)
     elif [ "$by" = sandbox ]; then warn "not copied: $id — the sandbox refused it. What it said:"; printf '      | %s\n' "$(plain_text "$why" | head -c 300)" >&2
     else warn "not copied: $id — $(plain_text "$why" | head -c 300)"; fi
-  done < <(_ss_code --secs "$SESSIONS_COPY_S" copy --project "$SS_ID" --ids "$ids" --tsv $([ "$keep" = 1 ] && echo --keep-secrets) $([ "$think_keep" = 1 ] && echo --keep-thinking) 2>/dev/null)
+  done < <(_ss_code --secs "$SESSIONS_COPY_S" copy --project "$SS_ID" --ids "$ids" --tsv $([ "$keep" = 1 ] && echo --keep-secrets) $([ "$think_keep" = 1 ] && echo --keep-thinking) $([ "$outputs" = 1 ] && echo --with-tool-outputs) 2>/dev/null)
   log "on the Code page: $SS_NAME › its sessions (badged CC or CB) resume on any model there"
 }
 
@@ -874,12 +884,12 @@ sessions_suggest() {
 }
 
 # --- the update helper: the Code page's requests, written by the portal (lib/settings_helper.sh calls these) ---
-# _ss_check_request FILE NAME -> "ACTION NONCE AUTH ORIGIN PROJECT TOOL SCAN ROWS SESSION DIGEST THINKING KEEP" ("-" for
+# _ss_check_request FILE NAME -> "ACTION NONCE AUTH ORIGIN PROJECT TOOL SCAN ROWS SESSION DIGEST THINKING OUTPUTS KEEP" ("-" for
 # a field it has not) of a valid request (one line, every field fixed — never a path), the reason on stderr otherwise.
 # The file is read as Settings' requests are (_req_read: not a link, a regular file, owned by you or the portal's user,
 # a bounded read), after it was moved into the helper's private inbox.
 _ss_check_request() {
-  local f="$1" name="$2" nonce body action ts n auth origin project=- tool=- scan=- rows=- session=- digest=- thinking=- keep=- now
+  local f="$1" name="$2" nonce body action ts n auth origin project=- tool=- scan=- rows=- session=- digest=- thinking=- outputs=- keep=- now
   case "$name" in ses-*.json) ;; *) echo "unexpected file name" >&2; return 1 ;; esac
   nonce="${name#ses-}"; nonce="${nonce%.json}"
   case "$nonce" in *[!0-9a-f]*) echo "bad nonce in the file name" >&2; return 1 ;; esac
@@ -893,14 +903,14 @@ _ss_check_request() {
   local re_fetch="$head"',"project":"(p_[0-9a-f]{8})","scan":"([0-9a-f]{32})","rows":"([0-9]{1,5}(,[0-9]{1,5}){0,49})"\}$'
   local re_suggest="$head"'\}$'
   local tokre='(main|(subagents|tool-results)/[A-Za-z0-9][A-Za-z0-9._-]*)#[0-9a-f]{16}'
-  local re_copy="$head"',"project":"(p_[0-9a-f]{8})","session":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})","digest":"([0-9a-f]{64})","thinking":"(default|strip|keep)","keep":"('"$tokre"'(,'"$tokre"')*)"\}$'
+  local re_copy="$head"',"project":"(p_[0-9a-f]{8})","session":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})","digest":"([0-9a-f]{64})","thinking":"(default|strip|keep)","outputs":"(out|in)","keep":"('"$tokre"'(,'"$tokre"')*)"\}$'
   if [[ $body =~ $re_scan ]] && [ "${BASH_REMATCH[1]}" = sessions-scan ]; then
     project="${BASH_REMATCH[6]}"; tool="${BASH_REMATCH[7]}"
   elif [[ $body =~ $re_fetch ]] && [ "${BASH_REMATCH[1]}" = sessions-fetch ]; then
     project="${BASH_REMATCH[6]}"; scan="${BASH_REMATCH[7]}"; rows="${BASH_REMATCH[8]}"
   elif [[ $body =~ $re_suggest ]] && [ "${BASH_REMATCH[1]}" = sessions-suggest ]; then :
   elif [[ $body =~ $re_copy ]] && [ "${BASH_REMATCH[1]}" = sessions-copy ]; then
-    project="${BASH_REMATCH[6]}"; session="${BASH_REMATCH[7]}"; digest="${BASH_REMATCH[8]}"; thinking="${BASH_REMATCH[9]}"; keep="${BASH_REMATCH[10]}"
+    project="${BASH_REMATCH[6]}"; session="${BASH_REMATCH[7]}"; digest="${BASH_REMATCH[8]}"; thinking="${BASH_REMATCH[9]}"; outputs="${BASH_REMATCH[10]}"; keep="${BASH_REMATCH[11]}"
   else echo "not a valid request" >&2; return 1; fi
   action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"; origin="${BASH_REMATCH[5]}"
   [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }
@@ -915,7 +925,7 @@ _ss_check_request() {
   [ "$ts" -le $((now + 30)) ] || { echo "dated in the future" >&2; return 1; }
   [ $((now - ts)) -le "$HELPER_MAX_AGE_S" ] || { echo "stale (older than ${HELPER_MAX_AGE_S}s)" >&2; return 1; }
   ! grep -qx "$nonce" "$(helper_dir)/nonces" 2>/dev/null || { echo "replayed (this request was already used)" >&2; return 1; }
-  printf '%s %s %s %s %s %s %s %s %s %s %s %s\n' "$action" "$nonce" "$auth" "$origin" "$project" "$tool" "$scan" "$rows" "$session" "$digest" "$thinking" "$keep"
+  printf '%s %s %s %s %s %s %s %s %s %s %s %s %s\n' "$action" "$nonce" "$auth" "$origin" "$project" "$tool" "$scan" "$rows" "$session" "$digest" "$thinking" "$outputs" "$keep"
 }
 # _ss_tell_req NONCE STATE [WHY] — a request's state, told by the helper itself (before or instead of ./stack sessions)
 _ss_tell_req() { SS_REQ="$1" _ss_tell "$2" "${3:-}" 2>/dev/null; }
@@ -923,7 +933,7 @@ _ss_tell_req() { SS_REQ="$1" _ss_tell "$2" "${3:-}" 2>/dev/null; }
 # into the helper's private inbox, checked, the password (the helper's own hash, with its lock-out), the limits; then
 # ./stack sessions as a child of the helper (its dialog on this screen when one is needed). 0 when one ran.
 sessions_poll_once() {
-  local dir inbox f name box res reason action nonce auth origin project tool scan rows session digest thinking keep logf rc
+  local dir inbox f name box res reason action nonce auth origin project tool scan rows session digest thinking outputs keep logf rc
   dir="$(request_dir)"
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   inbox="$(helper_dir)/inbox"
@@ -940,7 +950,7 @@ sessions_poll_once() {
       continue
     fi
     rm -rf "$box"
-    read -r action nonce auth origin project tool scan rows session digest thinking keep <<< "$res"
+    read -r action nonce auth origin project tool scan rows session digest thinking outputs keep <<< "$res"
     _remember_nonce "$nonce"
     SS_REQ_ACTION="$action"; SS_REQ_PROJECT="$([ "$project" = - ] || echo "$project")"
     if ! reason="$(_auth_ok "$auth" 2>&1)"; then auth=''; _ss_tell_req "$nonce" refused password; continue; fi
@@ -952,7 +962,7 @@ sessions_poll_once() {
       sessions-scan) set -- sessions scan --project "$project" --tool "$tool" --origin "$origin" --request "$nonce" --screen ;;
       sessions-fetch) set -- sessions fetch --project "$project" --scan "$scan" --rows "$rows" --origin "$origin" --request "$nonce" ;;
       sessions-suggest) set -- sessions suggest --origin "$origin" --request "$nonce" --screen ;;
-      sessions-copy) set -- sessions copy --project "$project" --session "$session" --digest "$digest" --thinking "$thinking" --keep "$keep" --origin "$origin" --request "$nonce" ;;
+      sessions-copy) set -- sessions copy --project "$project" --session "$session" --digest "$digest" --thinking "$thinking" --outputs "$outputs" --keep "$keep" --origin "$origin" --request "$nonce" ;;
     esac
     logf="$(helper_dir)/last-sessions.log"
     : > "$logf"; chmod 600 "$logf"

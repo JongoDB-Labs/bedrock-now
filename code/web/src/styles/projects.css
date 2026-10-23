@@ -107,6 +107,8 @@
 .imp-row .imp-meta { grid-column: 3; }
 .imp-row.off { opacity: .6; }
 .imp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imp-outputs { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0; }
+.imp-outputs input { margin-top: 2px; flex: none; }
 .imp-staged { margin: 8px 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
 .imp-staged.off { opacity: .55; }
 .imp-staged-head { display: flex; align-items: center; gap: 8px; min-width: 0; }

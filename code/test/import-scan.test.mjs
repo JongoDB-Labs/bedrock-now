@@ -930,3 +930,34 @@ test('"pass" and "pwd" names: wherever a word of the name ends with them, but th
     assert.ok(redactText(t).includes(y), t);
   }
 });
+
+test('tool outputs left out: each result one line with its size; its call, its id, is_error kept; toolUseResult, progress output too; the input unchanged', async () => {
+  const { leaveOutputs, outputLeft, sizeLabel } = await import('../server/transcript.mjs');
+  const key = fake.awsKeyId();
+  const e = [
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'cat .env' } }] } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: `KEY=${key}\n` }] },
+      toolUseResult: { stdout: `KEY=${key}\n`, stderr: '', interrupted: false } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_2', is_error: true, content: [{ type: 'text', text: `no: ${key}` }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBOR' } }] }] } },
+    { type: 'progress', data: { type: 'bash_progress', output: `partial ${key}`, fullOutput: `all ${key}`, elapsedTimeSeconds: 2 } },
+    { type: 'progress', data: { type: 'agent_progress', message: { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_9', content: `sub ${key}` }] } } } },
+    { type: 'user', message: { role: 'user', content: `my prompt holds ${key}` } },
+  ];
+  const before = JSON.stringify(e);
+  const r = leaveOutputs(e);
+  assert.equal(JSON.stringify(e), before, 'the input is never changed');
+  assert.equal(r.n, 3, 'three tool results (one in a subagent\'s progress)');
+  const out = JSON.stringify(r.entries);
+  assert.equal(out.split(key).length - 1, 1, 'only the prompt still holds it');
+  assert.deepEqual(r.entries[1].message.content[0], { type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: outputLeft(Buffer.byteLength(`KEY=${key}\n`)) });
+  assert.equal(r.entries[2].message.content[0].is_error, true);
+  assert.match(r.entries[2].message.content[0].content, /^\[tool output left out by bedrock-now — [0-9]+ bytes; re-import with "Include tool outputs" to bring it\]$/);
+  assert.match(r.entries[1].toolUseResult, /^\[tool output left out by bedrock-now/);
+  assert.match(r.entries[3].data.output, /^\[tool output left out/);
+  assert.equal(r.entries[3].data.elapsedTimeSeconds, 2);
+  assert.equal(r.entries[0].message.content[0].input.command, 'cat .env', 'tool calls stay');
+  assert.ok(r.bytes > 100);
+  assert.deepEqual([sizeLabel(1), sizeLabel(512), sizeLabel(12_595), sizeLabel(4 << 20)], ['1 byte', '512 bytes', '12.3 KB', '4.0 MB']);
+  // (scanned after: nothing of an output is a finding)
+  assert.deepEqual(scanEntries(r.entries).map((f) => f.path), ['message.content']);
+});

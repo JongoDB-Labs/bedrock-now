@@ -294,6 +294,8 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
   const [busy, setBusy] = useState(false);
   const [pw, setPw] = useState('');
   const [phase, setPhase] = useState<string | null>(null);
+  // (tool outputs: left out unless asked, for the whole import — the scan is best effort)
+  const [outputs, setOutputs] = useState(false);
   const digestOf = (id: string) => view.staged.find((s) => s.id === id)?.digest ?? null;
   const fresh = (id: string): Choice => ({ keep: [], thinking: null, skip: false, digest: digestOf(id) });
   const ch = (id: string) => { const c = choices[id]; return c && c.digest === digestOf(id) ? c : fresh(id); };
@@ -306,19 +308,19 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
     try {
       // (nothing kept: here, at once; some kept: through the portal and the helper, with the password, one at a time)
       const plain = todo.filter((s) => !ch(s.id).keep.length);
-      if (plain.length) out.push(...await api.importCopy(project, plain.map((s) => ({ id: s.id, thinking: ch(s.id).thinking, digest: ch(s.id).digest }))));
+      if (plain.length) out.push(...await api.importCopy(project, plain.map((s) => ({ id: s.id, thinking: ch(s.id).thinking, outputs, digest: ch(s.id).digest }))));
       for (const s of kept) {
         const c = ch(s.id);
-        if (!c.digest) { out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, why: 'check it again first', said: null }); continue; }
+        if (!c.digest) { out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, outputsLeft: 0, why: 'check it again first', said: null }); continue; }
         setPhase('Copying on the computer, with the possible secrets you chose kept…');
         try {
-          const req = await api.importCopyKept(project, { id: s.id, keep: c.keep, thinking: c.thinking, digest: c.digest }, pw);
+          const req = await api.importCopyKept(project, { id: s.id, keep: c.keep, thinking: c.thinking, outputs, digest: c.digest }, pw);
           const r = await followRequest(req);
           if (r?.results?.length) out.push(...r.results);
-          else out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, said: null,
+          else out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, outputsLeft: 0, said: null,
             why: (r?.why && WHY[r.why]) || 'it did not go through on the computer (./stack sessions in a terminal there says why)' });
         } catch (e) {
-          out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, said: null, why: e instanceof Error ? label(e.message, 300) : 'not asked' });
+          out.push({ id: s.id, ok: false, as: null, forked: false, redacted: 0, kept: 0, thinkingRemoved: 0, thinkingLeft: 0, left: 0, outputsLeft: 0, said: null, why: e instanceof Error ? label(e.message, 300) : 'not asked' });
         }
       }
       setPw('');
@@ -342,7 +344,8 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
                   Copied{r.forked ? ' as a new session (the copy here had been continued since)' : ''} — {r.redacted} redaction{r.redacted === 1 ? '' : 's'}
                   {r.kept ? `, ${r.kept} kept as they were` : ''}{r.thinkingRemoved ? `, ${r.thinkingRemoved} thinking block${r.thinkingRemoved === 1 ? '' : 's'} out` : ''}
                   {r.thinkingLeft ? `, ${r.thinkingLeft} thinking block${r.thinkingLeft === 1 ? '' : 's'} left out` : ''}
-                  {r.left ? `, ${r.left} file${r.left === 1 ? '' : 's'} beside it left behind` : ''}.{' '}
+                  {r.left ? `, ${r.left} file${r.left === 1 ? '' : 's'} beside it left behind` : ''}
+                  {r.outputsLeft ? `, ${r.outputsLeft} tool output${r.outputsLeft === 1 ? '' : 's'} left out` : ''}.{' '}
                   {r.as && <button type="button" class="linkish" onClick={() => void resumeSession(r.as as string)} data-testid="import-open">Open it</button>}
                 </>
               ) : (
@@ -353,7 +356,13 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
         </ul>
       )}
       {!view.staged.length && !results && <div class="side-note">Nothing read yet: pick sessions first.</div>}
-      {view.staged.map((s) => <Staged key={`${s.id}:${s.digest ?? ''}`} project={project} id={s.id} tool={s.tool} choice={ch(s.id)} set={(v) => set(s.id, v)} />)}
+      {view.staged.length > 0 && (
+        <label class="small imp-outputs" data-testid="import-outputs-opt">
+          <input type="checkbox" checked={outputs} onChange={(e) => setOutputs((e.currentTarget as HTMLInputElement).checked)} data-testid="import-outputs-include" />{' '}
+          Include tool outputs (scanned — the scan is best effort; command output often holds secrets)
+        </label>
+      )}
+      {view.staged.map((s) => <Staged key={`${s.id}:${s.digest ?? ''}`} project={project} id={s.id} tool={s.tool} choice={ch(s.id)} outputs={outputs} set={(v) => set(s.id, v)} />)}
       {view.staged.length > 0 && (
         <>
           <p class="muted small">
@@ -378,15 +387,15 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
   );
 }
 
-function Staged({ project, id, tool, choice, set }: { project: string; id: string; tool: ImportTool; choice: Choice; set: (v: Partial<Choice>) => void }) {
+function Staged({ project, id, tool, choice, outputs, set }: { project: string; id: string; tool: ImportTool; choice: Choice; outputs: boolean; set: (v: Partial<Choice>) => void }) {
   const [pv, setPv] = useState<ImportPreview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     let gone = false;
-    api.importPreview(project, id, choice.thinking).then((p) => { if (!gone) setPv(p); }, (e) => { if (!gone) setErr(e instanceof Error ? e.message : 'not read'); });
+    api.importPreview(project, id, choice.thinking, outputs).then((p) => { if (!gone) setPv(p); }, (e) => { if (!gone) setErr(e instanceof Error ? e.message : 'not read'); });
     return () => { gone = true; };
-  }, [project, id, choice.thinking]);
+  }, [project, id, choice.thinking, outputs]);
   const keepable = pv?.findings.filter((f) => f.keepable) ?? [];
   return (
     <section class={`imp-staged${choice.skip ? ' off' : ''}`} data-testid="import-staged" data-session={id}>
@@ -436,6 +445,13 @@ function Staged({ project, id, tool, choice, set }: { project: string; id: strin
               <button type="button" class="linkish" onClick={() => set({ thinking: pv.thinking.strip ? 'keep' : 'strip' })} data-testid="import-thinking-toggle">
                 {pv.thinking.strip ? 'Keep them' : 'Take them out'}
               </button>
+            </div>
+          )}
+          {(pv.outputs.included || pv.outputs.left > 0) && (
+            <div class="small" data-testid="import-outputs">
+              {pv.outputs.included
+                ? 'Its tool outputs come along, scanned and redacted as the rest (the scan is best effort).'
+                : `${pv.outputs.left} tool output${pv.outputs.left === 1 ? '' : 's'} (${bytes(pv.outputs.bytes)}) left out: each becomes one line saying so — the tool calls stay, and the session resumes.`}
             </div>
           )}
           {pv.outside.count > 0 && (

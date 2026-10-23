@@ -696,15 +696,16 @@ def write_sessions_action(request_dir: Path, password: str, project: str, tool: 
 
 def write_sessions_request(request_dir: Path, action: str, password: str, remote: bool, *, project: str | None = None,
                            tool: str = "both", scan: str | None = None, rows: list | None = None, session: str | None = None,
-                           digest: str | None = None, thinking: str = "default", keep: list | None = None,
+                           digest: str | None = None, thinking: str = "default", outputs: str = "out", keep: list | None = None,
                            now: float | None = None) -> str:
     """REQUEST_DIR/ses-<nonce>.json: what the Code page's Import sheet asks of the computer, for the helper — one line,
     its fields in a fixed order, every one checked here and again by the helper (lib/sessions.sh), never a path:
       sessions-scan     {…,"origin","project","tool"}               a look (asks on the computer's screen)
       sessions-fetch    {…,"origin","project","scan","rows"}        rows of that look read in
       sessions-suggest  {…,"origin"}                                the folders your tools kept sessions for
-      sessions-copy     {…,"origin","project","session","digest","thinking","keep"}
+      sessions-copy     {…,"origin","project","session","digest","thinking","outputs","keep"}
                                                                     a copy that keeps the findings named by keep
+                                                                    (outputs: "in" — its tool outputs too — or "out")
     origin: remote when the portal says the request came over remote access. -> nonce"""
     if action not in SESSIONS_REQUESTS:
         raise ValueError("action not allowed")
@@ -725,10 +726,10 @@ def write_sessions_request(request_dir: Path, action: str, password: str, remote
         body.update({"project": project, "scan": scan, "rows": ",".join(str(n) for n in rows)})
     elif action == "sessions-copy":
         if not pid_ok or not isinstance(session, str) or not UUID_RE.fullmatch(session) or not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest) \
-                or thinking not in ("default", "strip", "keep") or not isinstance(keep, list) or not 1 <= len(keep) <= SESSIONS_KEEP_MAX \
+                or thinking not in ("default", "strip", "keep") or outputs not in ("out", "in") or not isinstance(keep, list) or not 1 <= len(keep) <= SESSIONS_KEEP_MAX \
                 or not all(isinstance(k, str) and KEEP_RE.fullmatch(k) for k in keep) or len(set(keep)) != len(keep):
             raise ValueError("bad request")
-        body.update({"project": project, "session": session, "digest": digest, "thinking": thinking, "keep": ",".join(keep)})
+        body.update({"project": project, "session": session, "digest": digest, "thinking": thinking, "outputs": outputs, "keep": ",".join(keep)})
     raw = json.dumps(body, separators=(",", ":")).encode("ascii")
     if len(raw) > SESSIONS_REQ_MAX:
         raise ValueError("too large")

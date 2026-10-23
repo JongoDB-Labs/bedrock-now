@@ -15,8 +15,10 @@ All notable changes to bedrock-now are documented here. The format follows
   Anthropic/OpenAI and other tokens, private keys, JWTs, `Authorization` and cookie headers, passwords in URLs, values
   set to a secret's name — in text or as a JSON field named `password`, `token`, `api_key` … — and `.env`-style lines)
   listed with their length (a token's public start only) and **redacted by default**, its thinking blocks taken out when it ran
-  elsewhere than Bedrock, the transcript shown as it would be copied; *Copy into the sandbox* keeps the session's id,
-  its subagents' transcripts and large tool results, and it resumes on any model of the catalog (first open in Manual).
+  elsewhere than Bedrock, **its tool outputs left out** (each one line saying so and its size; *Include tool outputs*
+  brings them, scanned — `--with-tool-outputs` in a terminal), the transcript shown as it would be copied; *Copy into
+  the sandbox* keeps the session's id, its tool calls with their results' ids and its subagents' transcripts, and it
+  resumes on any model of the catalog (first open in Manual).
   Badged CC or CB in the project. Keeping a finding needs the portal password (the update helper makes that copy).
   Copy one way: nothing is ever written to `~/.claude` or `~/.claude-bedrock`; copying again replaces a copy not
   continued since, else comes in as a new session. **Continue in this project** forks a session into another
@@ -27,6 +29,9 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ### Security
 
+- **Tool outputs are left out of an imported session unless you ask for them**: a scan of text is best effort, and
+  command output and files read are where a session's secrets mostly are. The redaction is a safety net, not a
+  guarantee; the sheet says how many outputs were left out.
 - Reading your session stores is allowed only on this computer, per tool and folder, and taken back from anywhere
   (the code container then forgets what it read); a request over remote access never asks or allows. The stores are
   read by a throwaway container of the code image (no network, read-only, no capabilities, as you, a time limit) that

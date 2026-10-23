@@ -5132,10 +5132,22 @@ def import_sheet(browser):
     expect(cc.get_by_test_id("import-finding").nth(1)).to_contain_text("in subagents/agent-1.jsonl")
     expect(cc.get_by_test_id("import-thinking")).to_contain_text("taken out")
     expect(cc.get_by_test_id("import-outside")).to_contain_text("2 paths outside the project")
-    expect(cc.get_by_test_id("import-left")).to_contain_text("tool-results/image.bin")
+    # tool outputs left out by default: said with their count and size; the transcript's tool result is the line that
+    # says so; nothing of a large output's file is listed
+    expect(page.get_by_test_id("import-outputs-include")).not_to_be_checked()
+    expect(cc.get_by_test_id("import-outputs")).to_contain_text("3 tool outputs")
+    expect(cc.get_by_test_id("import-outputs")).to_contain_text("left out: each becomes one line saying so")
+    expect(cc.get_by_test_id("import-left")).to_have_count(0)
     cc.get_by_test_id("import-preview-toggle").click()
     expect(cc.get_by_test_id("import-transcript")).to_contain_text("[REDACTED:aws-key-id]")
+    expect(cc.get_by_test_id("import-transcript")).to_contain_text("tool output left out by bedrock-now")
     p.shot("import-check.png")
+    # asked for: the outputs come along, scanned — one more finding (in a large output's file), the file that cannot be
+    # read listed
+    page.get_by_test_id("import-outputs-include").check()
+    expect(cc.get_by_test_id("import-finding")).to_have_count(3, timeout=10_000)
+    expect(cc.get_by_test_id("import-outputs")).to_contain_text("come along, scanned")
+    expect(cc.get_by_test_id("import-left")).to_contain_text("tool-results/image.bin")
     # keep one finding, keep the thinking blocks: what the copy is told — keeping needs the password (the portal, then
     # the helper copies it); the other one is copied by the backend, everything redacted
     cc.get_by_test_id("import-redact").nth(1).uncheck()
@@ -5149,8 +5161,8 @@ def import_sheet(browser):
     expect(page.get_by_test_id("import-result")).to_have_count(2, timeout=20_000)
     expect(page.get_by_test_id("import-result").filter(has_text="1 kept as they were")).to_have_count(1)
     log = mock_get(NORMAL, "/__mock/import-log")["log"]
-    assert any(x.startswith("copy ") and "keep=1 thinking=keep" in x for x in log), log
-    assert any(x.startswith("copy ") and "keep=0 thinking=default" in x for x in log), log
+    assert any(x.startswith("copy ") and "keep=1 thinking=keep outputs=in" in x for x in log), log
+    assert any(x.startswith("copy ") and "keep=0 thinking=default outputs=in" in x for x in log), log
     assert "sessions-copy " + tools in log and "password-at-backend" not in log, log
     assert any(u.endswith("/.bn/sessions") for u in p.requests), "asked of the portal"
     # (expected: the portal's 403 for the wrong password, logged by the browser as a failed load)

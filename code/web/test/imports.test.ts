@@ -48,15 +48,25 @@ test('a preview: findings by their own ids, their words as text; events through 
   assert.equal(pv.title, 'Deploy⟨U+2066⟩');
   assert.deepEqual(pv.events.map((e) => e.kind), ['user', 'text']);
   assert.deepEqual(pv.left, [{ part: 'tool-results/a.bin', why: 'not text (not UTF-8)' }]);
+  // (tool outputs: left out unless asked — the answer's counts, numbers only; asked for with outputs=1)
+  assert.deepEqual(pv.outputs, { included: false, left: 0, bytes: 0 });
+  assert.equal(sent.at(-1)?.url.includes('outputs='), false);
+  answer({ tool: 'claude', outputs: { included: 'yes', left: '3; rm', bytes: -1 } });
+  assert.deepEqual((await importPreview(P, S)).outputs, { included: false, left: 0, bytes: 0 });
+  answer({ tool: 'claude', outputs: { included: true, left: 0, bytes: 0 } });
+  assert.equal((await importPreview(P, S, null, true)).outputs.included, true);
+  assert.match(sent.at(-1)?.url ?? '', /[?&]outputs=1(&|$)/);
   await assert.rejects(importPreview(P, 'not-a-uuid'), /bad session id/);
 });
 
 test('a copy\'s results: a refusal of the sandbox\'s is its words apart, never in a sentence of ours', async () => {
-  answer({ results: [{ id: S, ok: true, as: S, redacted: 2 }, { id: S, ok: false, why: 'GitHub asks you to confirm: enter WDJB-MJHT', sandbox: true }, { id: S, ok: false, why: 'that session is too large' }, { id: 'x', ok: true }] });
+  answer({ results: [{ id: S, ok: true, as: S, redacted: 2, outputsLeft: 4 }, { id: S, ok: false, why: 'GitHub asks you to confirm: enter WDJB-MJHT', sandbox: true }, { id: S, ok: false, why: 'that session is too large' }, { id: 'x', ok: true }] });
   const r = await importCopy(P, [{ id: S, thinking: null, digest: 'b'.repeat(64) }]);
   assert.deepEqual(sent.at(-1), { url: '/api/imports/copy', method: 'POST', body: { project: P, items: [{ id: S, digest: 'b'.repeat(64) }] } });
   assert.equal(r.length, 3);
-  assert.deepEqual([r[0].ok, r[0].redacted], [true, 2]);
+  assert.deepEqual([r[0].ok, r[0].redacted, r[0].outputsLeft], [true, 2, 4]);
+  await importCopy(P, [{ id: S, thinking: null, outputs: true, digest: 'b'.repeat(64) }]);
+  assert.deepEqual(sent.at(-1)?.body, { project: P, items: [{ id: S, outputs: true, digest: 'b'.repeat(64) }] });
   assert.equal(r[1].why, 'the sandbox refused the copy');
   assert.deepEqual(r[1].said, { by: 'sandbox', said: 'GitHub asks you to confirm: enter WDJB-MJHT' });
   assert.equal(r[2].said, null);
@@ -82,8 +92,10 @@ test('what needs the password goes to the portal on this host (/.bn/sessions): a
     { action: 'sessions-scan', project: P, tool: 'claude', password: 'pw' },
     { action: 'sessions-fetch', project: P, scan: 'd'.repeat(32), rows: [3, 1], password: 'pw' },
     { action: 'sessions-suggest', password: 'pw' },
-    { action: 'sessions-copy', project: P, session: S, digest: 'e'.repeat(64), thinking: 'default', keep: ['main#0123456789abcdef'], password: 'pw' },
+    { action: 'sessions-copy', project: P, session: S, digest: 'e'.repeat(64), thinking: 'default', outputs: 'out', keep: ['main#0123456789abcdef'], password: 'pw' },
   ]);
+  await importCopyKept(P, { id: S, keep: ['main#0123456789abcdef'], thinking: 'keep', outputs: true, digest: 'e'.repeat(64) }, 'pw');
+  assert.deepEqual(sent.at(-1)?.body, { action: 'sessions-copy', project: P, session: S, digest: 'e'.repeat(64), thinking: 'keep', outputs: 'in', keep: ['main#0123456789abcdef'], password: 'pw' });
   await assert.rejects(importFetch(P, '../x', [1], 'pw'), /bad request/);
   await assert.rejects(importFetch(P, 'd'.repeat(32), [0], 'pw'), /pick sessions/);
   await assert.rejects(importCopyKept(P, { id: S, keep: ['x'], thinking: null, digest: 'e'.repeat(64) }, 'pw'), /nothing to keep/);

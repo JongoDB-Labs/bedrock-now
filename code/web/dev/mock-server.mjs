@@ -1786,17 +1786,22 @@ function importRowsFor(host) {
     { n: 3, tool: 'claude', id: crypto.randomUUID(), title: 'A huge one', first: 'x', last: now - 5 * 86400e3, messages: 9000, size: 40 << 20, format: 'other', version: '1.0.3', tooLarge: true },
   ].map((r) => ({ ...r, cwd: host }));
 }
-function importPreviewOf(r, host, thinking) {
+// (outputs: its tool outputs asked for — then one more finding, in a large output's file; else they are left out)
+function importPreviewOf(r, host, thinking, outputs = false) {
   const strip = thinking === null ? r.source !== 'bedrock-now' : thinking === 'strip';
+  const left = r.tool === 'claude' ? 3 : 0;
   const findings = r.tool === 'claude' ? [
     { id: 'main#0123456789abcdef', n: 1, kind: 'aws-key-id', label: 'an AWS access key ID', message: 2, part: null, preview: `${KEY}… (20 characters)`, context: HOSTILE_MODE ? `${HOSTILE.img}••• ${HOSTILE.bidi}` : 'export AWS_ACCESS_KEY_ID=•••', keepable: true },
     { id: 'subagents/agent-1.jsonl#fedcba9876543210', n: 2, kind: 'github-token', label: 'a GitHub token', message: 4, part: 'subagents/agent-1.jsonl', preview: 'ghp_… (40 characters)', context: 'GH_TOKEN=••• gh pr list', keepable: true },
+    ...(outputs ? [{ id: 'tool-results/toolu_01.txt#00112233445566ff', n: 3, kind: 'env-line', label: 'a .env-style line with a long random value', message: 3, part: 'tool-results/toolu_01.txt',
+      preview: '32 characters', context: 'STRIPE_SIGNING=•••', keepable: true }] : []),
   ] : [];
   return { id: r.id, tool: r.tool, title: r.title, messages: r.messages, size: r.size, digest: r.digest, findings, findingsTotal: findings.length,
     thinking: { blocks: r.thinking ?? 0, removed: strip ? r.thinking ?? 0 : 0, left: !strip && r.thinking ? 1 : 0, strip, source: r.source }, outside: { count: r.tool === 'claude' ? 2 : 0, sample: ['/home/you/.zshrc', '/etc/hosts'] },
-    bad: 0, rewritten: 0, hidden: host.startsWith('/projects/'), parts: 1, left: r.tool === 'claude' ? [{ part: 'tool-results/image.bin', why: 'not text (not UTF-8)' }] : [], format: r.format, version: r.version ?? null, again: null,
+    bad: 0, rewritten: 0, hidden: host.startsWith('/projects/'), parts: 1, left: r.tool === 'claude' && outputs ? [{ part: 'tool-results/image.bin', why: 'not text (not UTF-8)' }] : [],
+    outputs: { included: outputs, left: outputs ? 0 : left, bytes: outputs ? 0 : left * 6144 }, format: r.format, version: r.version ?? null, again: null,
     events: [{ type: 'user', text: `${r.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'tool_use', id: 'toolu_01', name: 'Read', input: { file_path: `${host}/src/login.ts` } },
-      { type: 'tool_result', id: 'toolu_01', text: 'export const login = () => true;', isError: false }, { type: 'text', text: HOSTILE_MODE ? hostileMarkdown().slice(0, 2000) : 'Fixed: **login** works again.', model: 'claude-sonnet-4-5' }],
+      { type: 'tool_result', id: 'toolu_01', text: outputs ? 'export const login = () => true;' : '[tool output left out by bedrock-now — 6.0 KB; re-import with "Include tool outputs" to bring it]', isError: false }, { type: 'text', text: HOSTILE_MODE ? hostileMarkdown().slice(0, 2000) : 'Fixed: **login** works again.', model: 'claude-sonnet-4-5' }],
     total: 4, _row: r };
 }
 function importRequest(action, project, then) {
@@ -1815,8 +1820,9 @@ function importCopyOne(h, x, it, keep) {
     transcript: [{ type: 'user', text: `${v._row.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'text', text: 'Fixed: **login** works again.' },
       { type: 'result', subtype: 'success', turns: 1, duration: 2000, usage: { input_tokens: 400, output_tokens: 50 } }] });
   x.staged.delete(it.id);
-  importLog.push(`copy ${v.id} keep=${kept} thinking=${it.thinking ?? 'default'}`);
-  return { id: v.id, ok: true, as: v.id, forked: false, redacted: v.findingsTotal - kept, kept, thinkingRemoved: v.thinking.removed, left: v.left.length };
+  importLog.push(`copy ${v.id} keep=${kept} thinking=${it.thinking ?? 'default'} outputs=${it.outputs ? 'in' : 'out'}`);
+  return { id: v.id, ok: true, as: v.id, forked: false, redacted: v.findingsTotal - kept, kept, thinkingRemoved: v.thinking.removed, left: v.left.length,
+    outputsLeft: it.outputs ? 0 : v.tool === 'claude' ? 3 : 0 };
 }
 // POST /.bn/sessions: the portal's side — the password checked here (never by the backend), the request made for the helper
 async function bnSessions(req, res) {
@@ -1844,10 +1850,10 @@ async function bnSessions(req, res) {
   }
   if (b.action === 'sessions-copy') {
     const h = hostOf(b.project), x = h && st(b.project);
-    if (!x || !UUID.test(String(b.session)) || !/^[0-9a-f]{64}$/.test(String(b.digest)) || !Array.isArray(b.keep) || !b.keep.length) return json(res, 400, { error: 'bad request' });
+    if (!x || !UUID.test(String(b.session)) || !/^[0-9a-f]{64}$/.test(String(b.digest)) || !Array.isArray(b.keep) || !b.keep.length || !['out', 'in'].includes(b.outputs)) return json(res, 400, { error: 'bad request' });
     const id = importRequest('sessions-copy', b.project, () => {
       const r = importRequests.get(id);
-      r.results = [importCopyOne(h, x, { id: b.session, digest: b.digest, thinking: b.thinking === 'default' ? null : b.thinking }, b.keep)];
+      r.results = [importCopyOne(h, x, { id: b.session, digest: b.digest, thinking: b.thinking === 'default' ? null : b.thinking, outputs: b.outputs === 'in' }, b.keep)];
     });
     return json(res, 202, { request: id });
   }
@@ -1884,7 +1890,7 @@ async function importsApi(req, res, url, p, m) {
     if (!v) return json(res, 404, { error: 'that session is not waiting to be copied (read it again)' });
     const h = hostOf(url.searchParams.get('project'));
     const th = url.searchParams.get('thinking');
-    const { _row, ...out } = importPreviewOf(v._row, h.root, th === 'keep' || th === 'strip' ? th : null);
+    const { _row, ...out } = importPreviewOf(v._row, h.root, th === 'keep' || th === 'strip' ? th : null, url.searchParams.get('outputs') === '1');
     return json(res, 200, out);
   }
   if (p === '/api/imports/copy' && m === 'POST') {

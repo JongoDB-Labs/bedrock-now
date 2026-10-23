@@ -9,8 +9,9 @@
 //
 //   GET    /api/imports?project=ID              the project's list, the sessions waiting, the helper, the requests
 //   GET    /api/imports/request/<nonce>         how a request went (a copy's: its results)
-//   GET    /api/imports/preview?project=&id=&thinking=   a waiting session as it would be copied (and its digest)
-//   POST   /api/imports/copy     {project, items: [{id, thinking, digest}]}   (nothing kept: every finding redacted)
+//   GET    /api/imports/preview?project=&id=&thinking=&outputs=1   a waiting session as it would be copied (and its digest;
+//                                                                   outputs=1: its tool outputs included, else left out)
+//   POST   /api/imports/copy     {project, items: [{id, thinking, outputs, digest}]}   (nothing kept: every finding redacted)
 //   DELETE /api/imports/staged?project=&id=     drop a waiting session
 //   GET    /api/imports/suggestions             folders your tools kept sessions for (not projects yet)
 //   POST   /api/sessions/<id>/continue  {project}  Continue in this project
@@ -52,7 +53,7 @@ export function makeImportsApi({ imports, call, projects, cwdFor, rootFor }) {
       }
       if (p === '/api/imports/preview' && m === 'GET') {
         const th = q.get('thinking');
-        return send(200, await preview(imports, q.get('project'), q.get('id'), { thinking: th === 'keep' || th === 'strip' ? th : null }));
+        return send(200, await preview(imports, q.get('project'), q.get('id'), { thinking: th === 'keep' || th === 'strip' ? th : null, outputs: q.get('outputs') === '1' }));
       }
       if (p === '/api/imports/copy' && m === 'POST') {
         const b = await readJson();
@@ -60,7 +61,7 @@ export function makeImportsApi({ imports, call, projects, cwdFor, rootFor }) {
         if (!Array.isArray(b.items)) throw new ImportError(400, 'items: the sessions to copy');
         // (keeping a possible secret needs the portal password: such a copy goes through the portal and the helper)
         if (b.items.some((it) => it && (it.keep === true || (Array.isArray(it.keep) && it.keep.length)))) throw new ImportError(403, 'Keeping a possible secret needs the portal password: the sheet asks for it.');
-        return send(200, { results: await copy(imports, call, b.project, b.items.map((it) => ({ id: it?.id, keep: [], thinking: it?.thinking, digest: it?.digest }))) });
+        return send(200, { results: await copy(imports, call, b.project, b.items.map((it) => ({ id: it?.id, keep: [], thinking: it?.thinking, outputs: it?.outputs === true, digest: it?.digest }))) });
       }
       if (p === '/api/imports/staged' && m === 'DELETE') return send(200, imports.drop(q.get('project'), q.get('id')));
       if (p === '/api/imports/suggestions' && m === 'GET') return send(200, suggestions());

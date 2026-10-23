@@ -910,11 +910,15 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   cc="$HS/home/.claude/projects/$enc"; cb="$HS/home/.claude-bedrock/projects/$enc"; mkdir -p "$cc" "$cb"
   # (made now: an AWS-key-shaped and a GitHub-token-shaped fake — the prefixes split so no literal here has their shape)
   HS_KEY="$(printf '%s%s' AK IA)$(hs_rand 16 'A-Z2-7')"; HS_TOKEN="$(printf '%s%s' gh p_)$(hs_rand 36 'A-Za-z0-9')"
-  HS_S1="$(hs_uuid)"; HS_S2="$(hs_uuid)"; u1="$(hs_uuid)"; a1="$(hs_uuid)"; a2="$(hs_uuid)"; v1="$(hs_uuid)"; w1="$(hs_uuid)"
+  # (and a GitLab-token-shaped one only in a tool's output: left out of the copy by default, never scanned or shown)
+  HS_OUT="$(printf '%s%s' glp at-)$(hs_rand 20 'A-Za-z0-9')"
+  HS_S1="$(hs_uuid)"; HS_S2="$(hs_uuid)"; u1="$(hs_uuid)"; a1="$(hs_uuid)"; t1="$(hs_uuid)"; r1="$(hs_uuid)"; a2="$(hs_uuid)"; v1="$(hs_uuid)"; w1="$(hs_uuid)"
   HS_ID="$HS_S1"
   { hs_line "\"parentUuid\":null,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Remember the word PELICAN for later. My key is $HS_KEY.\"},\"uuid\":\"$u1\"" 1 1
     hs_line "\"parentUuid\":\"$u1\",\"type\":\"assistant\",\"requestId\":\"req_e2e1\",\"message\":{\"id\":\"msg_e2e1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"The user wants me to remember a word.\",\"signature\":\"$(hs_rand 64 'A-Za-z0-9')\"}],\"stop_reason\":null,\"usage\":{\"input_tokens\":20,\"output_tokens\":10}},\"uuid\":\"$a1\"" 1 2
-    hs_line "\"parentUuid\":\"$a1\",\"type\":\"assistant\",\"requestId\":\"req_e2e1\",\"message\":{\"id\":\"msg_e2e1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"OK, I will remember it.\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10}},\"uuid\":\"$a2\"" 1 3
+    hs_line "\"parentUuid\":\"$a1\",\"type\":\"assistant\",\"requestId\":\"req_e2e1\",\"message\":{\"id\":\"msg_e2e1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_e2e_env1\",\"name\":\"Bash\",\"input\":{\"command\":\"cat .env\"}}],\"stop_reason\":\"tool_use\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10}},\"uuid\":\"$t1\"" 1 3
+    hs_line "\"parentUuid\":\"$t1\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_e2e_env1\",\"type\":\"tool_result\",\"content\":\"DEPLOY_TOKEN=$HS_OUT\"}]},\"toolUseResult\":{\"stdout\":\"DEPLOY_TOKEN=$HS_OUT\",\"stderr\":\"\",\"interrupted\":false},\"uuid\":\"$r1\"" 1 4
+    hs_line "\"parentUuid\":\"$r1\",\"type\":\"assistant\",\"requestId\":\"req_e2e2\",\"message\":{\"id\":\"msg_e2e3\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"OK, I will remember it.\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10}},\"uuid\":\"$a2\"" 1 5
     printf '{"type":"custom-title","customTitle":"e2e remember a word","sessionId":"%s"}\n' "$HS_S1"; } > "$cc/$HS_S1.jsonl"
   mkdir -p "$cc/$HS_S1/subagents"
   HS_ID="$HS_S1" hs_line "\"parentUuid\":null,\"isSidechain\":true,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"GH_TOKEN=$HS_TOKEN gh pr list\"},\"uuid\":\"$(hs_uuid)\"" 1 4 > "$cc/$HS_S1/subagents/agent-e2e.jsonl"
@@ -954,10 +958,10 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   E2E_SESSIONS_PASS=a E2E_SESSIONS_REAL="$HS_REAL" browser_run "sessions of this computer: the Import sheet" 'browser/code-host-sessions-a$' sessions-a runner-sessions-a
   t0="$(now)"; tc="$(svc_id terminal)"; cc_id="$(svc_id code)"
   # neither fake secret anywhere in the sandbox's store; the stores on "this computer" as they were
-  leak="$(docker exec -e K="$HS_KEY" -e T="$HS_TOKEN" "$tc" sh -c 'grep -rlF -e "$K" -e "$T" /home/claude/.claude/projects 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
+  leak="$(docker exec -e K="$HS_KEY" -e T="$HS_TOKEN" -e O="$HS_OUT" "$tc" sh -c 'grep -rlF -e "$K" -e "$T" -e "$O" /home/claude/.claude/projects 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
   copied="$(docker exec "$tc" sh -c "ls /home/claude/.claude/projects/$enc/ 2>/dev/null" | grep -c '\.jsonl$' || true)"
   if [ "${leak:-1}" = 0 ] && [ "${copied:-0}" -ge 2 ] && [ "$(hs_sum)" = "$hs_before" ]; then
-    record projects host-sessions-copied-redacted PASS "$(( $(now) - t0 ))" "$copied transcripts in the project's store folder in the sandbox, neither fake secret anywhere there; the fake home's stores unchanged"
+    record projects host-sessions-copied-redacted PASS "$(( $(now) - t0 ))" "$copied transcripts in the project's store folder in the sandbox, no fake secret anywhere there (the tool output's left out); the fake home's stores unchanged"
   else record projects host-sessions-copied-redacted FAIL "$(( $(now) - t0 ))" "fake secrets found in ${leak:-?} file(s) of the sandbox's store; $copied copied; stores unchanged: $([ "$(hs_sum)" = "$hs_before" ] && echo yes || echo no)"; fi
   BN_SESSIONS_HOME="$HS/home" cli sessions-revoke 0 'no longer reads' sessions consent --project e2e-sessions-app --revoke
   t0="$(now)"

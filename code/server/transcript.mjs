@@ -152,3 +152,36 @@ export function outsidePaths(entries, roots, max = 30) {
   }
   return { count: seen.size, sample: [...seen].sort().slice(0, max) };
 }
+
+// --- tool outputs left out (the import's default): what a tool gave back is where a session's secrets mostly are —
+// a command's output, a file read, an API's answer — and a scan of them is best effort. Each tool result's content
+// becomes one fixed line saying so; its block keeps its type, its tool_use_id and is_error, so every tool call still
+// has its result and the session resumes. The same for a tool's structured result beside it (toolUseResult), a
+// running command's output (a progress entry's output) and a large output kept in a file of its own (tool-results/…).
+/** sizeLabel(n) -> 512 bytes, 12.3 KB, 4.0 MB */
+export const sizeLabel = (n) => (n < 1024 ? `${n} byte${n === 1 ? '' : 's'}` : n < 1 << 20 ? `${(n / 1024).toFixed(1)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`);
+/** outputLeft(bytes) -> the line that stands for a tool output left out */
+export const outputLeft = (bytes) => `[tool output left out by bedrock-now — ${sizeLabel(bytes)}; re-import with "Include tool outputs" to bring it]`;
+const OUTPUT_KEYS = new Set(['output', 'fullOutput', 'stdout', 'stderr']);
+const sizeOf = (v) => (typeof v === 'string' ? Buffer.byteLength(v, 'utf8') : Buffer.byteLength(JSON.stringify(v) ?? '', 'utf8'));
+/** leaveOutputs(entries) -> {entries, n, bytes}: a copy with every tool output replaced by its line (n: how many tool
+ *  results; bytes: how much was left out, all of it). The input is never changed. */
+export function leaveOutputs(entries) {
+  let n = 0, bytes = 0;
+  const left = (v) => { const b = sizeOf(v); bytes += b; return outputLeft(b); };
+  const walk = (v, progress, depth) => {
+    if (depth > 400 || !v || typeof v !== 'object') return v;
+    if (Array.isArray(v)) return v.map((x) => walk(x, progress, depth + 1));
+    const o = {};
+    for (const [k, x] of Object.entries(v)) {
+      let y;
+      if (k === 'content' && v.type === 'tool_result') { y = left(x); n++; }
+      else if ((k === 'toolUseResult' || k === 'tool_use_result') && x !== undefined) y = left(x);
+      else if (progress && OUTPUT_KEYS.has(k) && typeof x === 'string') y = left(x);
+      else y = walk(x, progress || (k === 'data' && v.type === 'progress'), depth + 1);
+      Object.defineProperty(o, k, { value: y, enumerable: true, writable: true, configurable: true });
+    }
+    return o;
+  };
+  return { entries: entries.map((e) => walk(e, false, 0)), n, bytes };
+}

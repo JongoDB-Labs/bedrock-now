@@ -137,6 +137,12 @@ test('a read done by the helper waits here; the preview never has the secret, an
   assert.equal(r.json.digest, (await req('GET', `/api/imports?project=${ID}`)).json.staged[0].digest);
   assert.ok(!JSON.stringify(r.json).includes(key));
   assert.ok(r.json.events.length > 0);
+  // (its tool outputs: left out unless outputs=1 — then scanned as the rest)
+  assert.deepEqual([r.json.outputs.included, r.json.outputs.left], [false, 1]);
+  const withOutputs = (await req('GET', `/api/imports/preview?project=${ID}&id=${A}&outputs=1`)).json;
+  assert.deepEqual([withOutputs.outputs.included, withOutputs.outputs.left], [true, 0]);
+  assert.ok(withOutputs.events.some((e) => e.type === 'tool_result' && /export const main/.test(e.text)));
+  assert.ok(r.json.events.some((e) => e.type === 'tool_result' && /tool output left out by bedrock-now/.test(e.text)));
 });
 
 test('the copy: nothing kept here (keeping needs the password: the portal), the digest checked; badged; its first open in Manual — a fork\'s too, marked once it opened', async () => {
@@ -148,7 +154,8 @@ test('the copy: nothing kept here (keeping needs the password: the portal), the 
   assert.deepEqual([r.json.results[0].ok, r.json.results[0].why], [false, 'that session was read again since you checked it: check it again']);
   r = await req('POST', '/api/imports/copy', { project: ID, items: [{ id: A, digest: pv.digest }] });
   assert.equal(r.status, 200, JSON.stringify(r.json));
-  assert.deepEqual([r.json.results[0].ok, r.json.results[0].as, r.json.results[0].redacted], [true, A, 2], "the key and the title's token");
+  assert.deepEqual([r.json.results[0].ok, r.json.results[0].as, r.json.results[0].redacted, r.json.results[0].outputsLeft], [true, A, 2, 1], "the key and the title's token; its Read's output left out");
+  assert.ok(!stored.get(A).toString().includes('export const main'));
   const imp = calls.filter((c) => c.op === 'sessions.import').at(-1);
   assert.deepEqual([imp.id, imp.cwd, imp.replace, imp.parts.length], [A, APP, null, 1]);
   assert.ok(!stored.get(A).toString().includes('AK'.concat('IA')));

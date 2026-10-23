@@ -268,10 +268,11 @@ export class Imports {
     return readStaged(this.stageDir, pid, id);
   }
 
-  /** plan(pid, id, {kind, keep, thinking, digest}) -> what a copy of a waiting session will be (import-plan.mjs runJob,
-   *  in the worker): kind 'preview' (findings, the transcript as events) or 'copy' (its bytes). keep: tokens of
-   *  findings to keep (or true: all); digest: the one the check step showed (a copy is refused when it changed). */
-  async plan(pid, id, { kind = 'preview', keep = [], thinking = null, digest = null } = {}) {
+  /** plan(pid, id, {kind, keep, thinking, outputs, digest}) -> what a copy of a waiting session will be (import-plan.mjs
+   *  runJob, in the worker): kind 'preview' (findings, the transcript as events) or 'copy' (its bytes). keep: tokens of
+   *  findings to keep (or true: all); outputs: true — tool outputs included (scanned), else left out; digest: the one
+   *  the check step showed (a copy is refused when it changed). */
+  async plan(pid, id, { kind = 'preview', keep = [], thinking = null, outputs = false, digest = null } = {}) {
     const p = this.project(pid);
     if (!UUID.test(String(id))) throw new ImportError(400, 'bad session id');
     this.sweep();
@@ -285,7 +286,7 @@ export class Imports {
     const res = await this.queue.run({
       kind, stageDir: this.stageDir, pid, id, root: p.root, host, source, sandboxStore: SANDBOX_STORE, storeName: encodeCwd(host), sandboxName: encodeCwd(p.root),
       keep: keep === true ? true : (Array.isArray(keep) ? keep.filter((k) => typeof k === 'string' && KEEP_TOKEN.test(k)).slice(0, 2000) : []),
-      thinking: thinking === 'keep' || thinking === 'strip' ? thinking : null, digest,
+      thinking: thinking === 'keep' || thinking === 'strip' ? thinking : null, outputs: outputs === true, digest,
     });
     // (the Buffers come back from the worker as Uint8Arrays)
     if (kind === 'copy') { res.main = Buffer.from(res.main); res.parts = res.parts.map((x) => ({ part: x.part, data: Buffer.from(x.data) })); }
@@ -423,22 +424,24 @@ export async function cli(argv, { stdin = process.stdin, imports = new Imports({
   }
   const ids = () => String(opt(argv, '--ids') ?? '').split(',').filter((x) => UUID.test(x)).slice(0, LIMITS.copy);
   const thinkingOpt = () => (argv.includes('--keep-thinking') ? 'keep' : argv.includes('--strip-thinking') ? 'strip' : null);
+  // (tool outputs: left out unless --with-tool-outputs)
+  const outputsOpt = argv.includes('--with-tool-outputs');
   if (cmd === 'findings') {
     const pid = opt(argv, '--project');
     const all = [];
     for (const id of ids()) {
       try {
-        const pl = await imports.plan(pid, id, { thinking: thinkingOpt() });
+        const pl = await imports.plan(pid, id, { thinking: thinkingOpt(), outputs: outputsOpt });
         const kinds = {};
         for (const f of pl.findings) kinds[f.kind] = (kinds[f.kind] || 0) + 1;
-        all.push({ id, title: pl.row?.title ?? '', findings: pl.findingsTotal, kinds, thinking: pl.thinking, outside: pl.outside.count, left: pl.left.length, bad: pl.bad, hidden: pl.hidden });
+        all.push({ id, title: pl.row?.title ?? '', findings: pl.findingsTotal, kinds, thinking: pl.thinking, outside: pl.outside.count, left: pl.left.length, bad: pl.bad, hidden: pl.hidden, outputs: pl.outputs });
       } catch (e) { all.push({ id, error: e instanceof ImportError ? e.message : 'unreadable' }); }
     }
     if (tsv) {
       for (const r of all) {
         if (r.error) continue;
         const th = r.thinking.strip ? r.thinking.removed : r.thinking.left;
-        line([r.id, r.findings, Object.keys(r.kinds).join(',') || '-', th, r.thinking.strip ? 'out' : 'left', r.outside, r.left, r.title].map(cell).join('\t'));
+        line([r.id, r.findings, Object.keys(r.kinds).join(',') || '-', th, r.thinking.strip ? 'out' : 'left', r.outside, r.left, r.outputs.included ? 'in' : r.outputs.left, r.outputs.bytes, r.title].map(cell).join('\t'));
       }
       return undefined;
     }
@@ -452,7 +455,7 @@ export async function cli(argv, { stdin = process.stdin, imports = new Imports({
     const keep = argv.includes('--keep-secrets') ? true : keepArg ? keepArg.split(',').filter((k) => KEEP_TOKEN.test(k)) : [];
     const digest = opt(argv, '--digest');
     const nonce = opt(argv, '--request');
-    const items = ids().map((id) => ({ id, keep, thinking: thinkingOpt(), digest: digest && DIGEST.test(digest) ? digest : null }));
+    const items = ids().map((id) => ({ id, keep, thinking: thinkingOpt(), outputs: outputsOpt, digest: digest && DIGEST.test(digest) ? digest : null }));
     const { copy } = await import('./import-copy.mjs');
     const { sandboxCall } = await import('./spawn-client.mjs');
     const results = await copy(imports, call ?? sandboxCall, pid, items);
@@ -461,7 +464,7 @@ export async function cli(argv, { stdin = process.stdin, imports = new Imports({
     }
     if (tsv) {
       // (said: whose words a refusal is — the sandbox's are shown apart, as the sandbox's, never in a sentence of ours)
-      for (const r of results) line([r.id, r.ok ? 'ok' : 'no', r.as ?? '-', r.redacted ?? 0, r.kept ?? 0, r.left ?? 0, r.ok ? '-' : r.sandbox ? 'sandbox' : 'ours', r.ok ? '' : r.why].map(cell).join('\t'));
+      for (const r of results) line([r.id, r.ok ? 'ok' : 'no', r.as ?? '-', r.redacted ?? 0, r.kept ?? 0, r.left ?? 0, r.outputsLeft ?? 0, r.ok ? '-' : r.sandbox ? 'sandbox' : 'ours', r.ok ? '' : r.why].map(cell).join('\t'));
       return undefined;
     }
     return out({ ok: true, results });

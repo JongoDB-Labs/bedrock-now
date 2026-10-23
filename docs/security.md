@@ -2721,9 +2721,22 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   `tool-results/*`, plain names), whole, matching, and within the budget (a 160 MB tmpfs, at most 128 MiB staged).
   The stage is swept every 5 minutes: a waiting session goes an hour after it was read (or once copied or dropped); a
   read still coming in (`.<id>`) is never swept, unless it was left behind more than an hour ago.
+- [x] **Tool outputs left out by default.** A scan of text is best effort, and what a session's tools gave back —
+  command output, files read, an API's answer — is where its secrets mostly are; so the exposure is bounded by
+  structure, not by the scan. In every transcript of a copy (the session's and its subagents'), each tool result's
+  content becomes one fixed line (`[tool output left out by bedrock-now — 12.3 KB; re-import with "Include tool
+  outputs" to bring it]`), and so do a tool's structured result beside it (`toolUseResult`), a running command's
+  output in a progress entry and every large output's file (`tool-results/*`: a `.json` one stays valid JSON). The
+  result keeps its type, its `tool_use_id` and `is_error`, so every tool call still has its result and the session
+  resumes (checked through the Agent SDK's own reading and fork, and resumed on Haiku in the end-to-end suite). What
+  is copied as it was, scanned: your prompts, Claude's text, thinking (by the rules below) and the tool calls' inputs.
+  Bringing the outputs is your choice per import — **Include tool outputs** on the sheet, `--with-tool-outputs` in a
+  terminal, `"outputs":"in"` in the helper's request (a fixed field it checks again) — and then they are scanned and
+  redacted like the rest. The sheet says how many outputs were left out and their size. The redaction below is a
+  safety net, never a guarantee.
 - [x] **Possible secrets redacted by default, and shown.** Before anything reaches the sandbox, the code container
-  scans every string of the transcript — values *and* keys, every message, the subagents' transcripts and the tool
-  results and JSON files beside it — for AWS key ids (even right after a letter) and secrets, Amazon Bedrock API keys,
+  scans every string of the transcript — values *and* keys, every message, the subagents' transcripts, the JSON files
+  beside it and, when included, the tool outputs — for AWS key ids (even right after a letter) and secrets, Amazon Bedrock API keys,
   GitHub, GitLab, Slack (and its app tokens), Anthropic, OpenAI, Google (API keys, OAuth tokens and client secrets),
   Stripe (and its webhook secrets), SendGrid, npm, PyPI, Hugging Face, DigitalOcean, Shopify, Linear and Atlassian
   tokens, Slack webhooks, Azure account keys and SAS signatures, age keys, private keys (PEM, SSH2, PuTTY, and PEM in

@@ -5,7 +5,9 @@
 // redacted but those kept), its folder's path rewritten where the copy runs elsewhere — the transcript and each file
 // beside it (subagents' transcripts, large tool results: in the order of their names) alike. Heavy for a large session
 // (up to 32 MiB of JSON), so the code container runs it in a worker thread, one job at a time (PlanQueue): the server
-// stays responsive, and memory stays within the container's limit.
+// stays responsive, and memory stays within the container's limit. Tool outputs are left out unless asked (outputs):
+// each tool result's content, a tool's structured result and a large output's file become one line saying so (its
+// size), the tool calls and their results' ids kept — the scan is best effort, and command output often holds secrets.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -13,7 +15,7 @@ import { isUtf8 } from 'node:buffer';
 import { Worker } from 'node:worker_threads';
 import { TOOLS, UUID } from './harness/claude.mjs';
 import { processEntries, scanEntries, redactText, TooDeep } from './secrets.mjs';
-import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewrites, rewritePaths, outsidePaths } from './transcript.mjs';
+import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewrites, rewritePaths, outsidePaths, leaveOutputs, outputLeft } from './transcript.mjs';
 
 export class ImportError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -83,17 +85,19 @@ function readPart({ part, data }) {
 // lines(entries, opts) -> a transcript's (or a subagent's) entries made what the copy will be: thinking out (strip), or
 // kept but every block that holds a finding or a path to rewrite left out whole; then scanned and redacted once; then
 // its paths rewritten — the kept thinking blocks left exactly as they were
-function lines(entries, { part, keep, key, strip, pairs }) {
+function lines(entries, { part, keep, key, strip, pairs, outputs }) {
+  const lo = outputs ? { entries, n: 0, bytes: 0 } : leaveOutputs(entries);
+  entries = lo.entries;
   const th = strip ? stripThinking(entries) : dropThinking(entries, (b) => scanEntries([b]).length > 0 || rewrites(b, pairs));
   const pr = processEntries(th.entries, { part, keep, key, skipThinking: true });
   const rw = rewritePaths(pr.entries, pairs, { skipThinking: true });
-  return { entries: rw.entries, findings: pr.findings, redacted: pr.redacted, kept: pr.kept, thinking: th.blocks, rewritten: rw.n };
+  return { entries: rw.entries, findings: pr.findings, redacted: pr.redacted, kept: pr.kept, thinking: th.blocks, rewritten: rw.n, outputs: lo.n, outputBytes: lo.bytes };
 }
 
 /** runJob(job) -> what a waiting session will be (job.kind 'preview': its findings and what becomes of it, and the
  *  transcript as the page's history events; 'copy': the bytes to write). job: {kind, stageDir, pid, id, root, host,
- *  store, sandboxStore, source, keep (tokens, or true: all), thinking (null | 'strip' | 'keep'), digest (a copy: the
- *  one the check step showed)} */
+ *  store, sandboxStore, source, keep (tokens, or true: all), thinking (null | 'strip' | 'keep'), outputs (true: tool
+ *  outputs included, scanned; else left out), digest (a copy: the one the check step showed)} */
 export async function runJob(job) {
   const s = readStaged(job.stageDir, job.pid, job.id);
   const digest = stageDigest(s.meta);
@@ -104,28 +108,37 @@ export async function runJob(job) {
   if (typeof s.meta.store === 'string' && job.storeName && job.sandboxName) pairs.push([`${s.meta.store}/${job.storeName}`, `${job.sandboxStore}/${job.sandboxName}`]);
   const strip = job.thinking === null || job.thinking === undefined ? !['bedrock-now', 'bedrock'].includes(job.source) : job.thinking === 'strip';
   const keep = job.keep === true ? true : new Set(Array.isArray(job.keep) ? job.keep : []);
+  // (tool outputs: left out unless asked)
+  const outputs = job.outputs === true;
   const { entries: raw, bad } = parseLines(s.main);
   let blocks = thinkingCount(raw);
   let main;
-  try { main = lines(raw, { part: 'main', keep, key, strip, pairs }); } catch (e) {
+  try { main = lines(raw, { part: 'main', keep, key, strip, pairs, outputs }); } catch (e) {
     if (e instanceof TooDeep) throw new ImportError(422, 'that session is too deeply nested to check: it is not copied');
     throw e;
   }
   let { redacted, kept, rewritten } = main;
-  let out = main.thinking;
+  let out = main.thinking, outputsLeft = main.outputs, outputBytes = main.outputBytes;
   const findings = [...main.findings];
   const parts = [], left = [];
   for (const pt of s.parts) {
+    // (a large tool output's file: one line saying it was left out, its size — or, asked, scanned as text)
+    if (!outputs && /^tool-results\//.test(pt.part)) {
+      const line = outputLeft(pt.data.length);
+      outputsLeft++; outputBytes += pt.data.length;
+      parts.push({ part: pt.part, data: Buffer.from(/\.json$/.test(pt.part) ? JSON.stringify(line) : line, 'utf8') });
+      continue;
+    }
     const r = readPart(pt);
     if (r.left) { left.push({ part: r.part, why: r.left }); continue; }
     if (r.kind === 'lines') {
       blocks += thinkingCount(r.entries);
       let l;
-      try { l = lines(r.entries, { part: r.part, keep, key, strip, pairs }); } catch (e) {
+      try { l = lines(r.entries, { part: r.part, keep, key, strip, pairs, outputs }); } catch (e) {
         if (e instanceof TooDeep) { left.push({ part: r.part, why: 'too deeply nested to check — not copied' }); continue; }
         throw e;
       }
-      redacted += l.redacted; kept += l.kept; rewritten += l.rewritten; out += l.thinking;
+      redacted += l.redacted; kept += l.kept; rewritten += l.rewritten; out += l.thinking; outputsLeft += l.outputs; outputBytes += l.outputBytes;
       findings.push(...l.findings);
       parts.push({ part: r.part, data: toJsonl(l.entries) });
       continue;
@@ -141,7 +154,8 @@ export async function runJob(job) {
     parts.push({ part: r.part, data: r.kind === 'json' ? Buffer.from(JSON.stringify(rw.entries[0]), 'utf8') : Buffer.from(rw.entries.join(''), 'utf8') });
   }
   const thinking = { blocks, removed: strip ? out : 0, left: strip ? 0 : out, strip, source: job.source };
-  const base = { digest, tool: s.meta.tool, size: s.main.length, bad, redacted, kept, rewritten, thinking, left, hidden: job.host !== job.root };
+  const base = { digest, tool: s.meta.tool, size: s.main.length, bad, redacted, kept, rewritten, thinking, left, hidden: job.host !== job.root,
+    outputs: { included: outputs, left: outputsLeft, bytes: outputBytes } };
   if (job.kind === 'copy') return { ...base, main: toJsonl(main.entries), parts, sourceSha: sha256(s.main) };
   // the preview: findings (never a whole secret), paths outside the project (scanned too), the transcript as the
   // page's history events (sandbox text)
