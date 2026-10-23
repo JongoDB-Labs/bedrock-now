@@ -320,7 +320,7 @@
     welcome: {
       title: "Welcome", info: true,
       body: () => [
-        p("bedrock-now is your AI workbench, every model call billed to your AWS Bedrock account. Where you work:"),
+        p("bedrock-now is your AI workbench: models run on Amazon Bedrock in your own AWS account (and on OpenRouter, if you turn it on). Where you work:"),
         list("ul", [
           CODE.here ? [b("Code"), ": Claude Code in the browser — a chat beside your files, Git, previews, Run & test — in a sandbox that sees one folder."]
             : [b("Code"), ": Claude Code in the browser, once it is on (its step says how)."],

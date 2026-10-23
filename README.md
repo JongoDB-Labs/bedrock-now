@@ -1,8 +1,11 @@
 # bedrock-now
 
 bedrock-now is a private, single-user AI workbench for your own Mac or Linux machine: a chat app, Claude Code
-and a shared file store, with every model call billed to **AWS Bedrock** under your team's AWS access key. You
-get modern models without sending your work to a consumer AI service, and you see what every answer costs.
+and a shared file store. Models run on **Amazon Bedrock** in your own AWS account (an IAM user's access key, or an
+EC2 instance role) and are billed there; the only other places a call can go are ones you turn on yourself —
+**OpenRouter** with your own key (billed by OpenRouter; some models are free) and speech-to-text through **OpenAI or
+Groq** with your own key. You get modern models without sending your work to a consumer AI service, and you see what
+every answer costs.
 Install it with one command; nothing listens beyond `127.0.0.1`.
 
 ![bedrock-now portal](docs/img/portal-home.png)
@@ -15,8 +18,8 @@ disable` the Code page alone; either stays off across updates).
 
 | Part | What it is | Default | On / off |
 |---|---|---|---|
-| [**Chat**](#chat-open-webui) | Open WebUI with the Bedrock models your key can use: the cost under every answer, documents and knowledge bases, images | on | — |
-| [**`claude-bedrock`**](#claude-code-claude-bedrock) | Claude Code in your own terminal, billed to Bedrock, with a lean config folder and each session's cost; any chat model of the catalog (`--models` lists them and how each works, `--model` picks one) | on (needs `claude`) | setup offers to put it on your `PATH` |
+| [**Chat**](#chat-open-webui) | Open WebUI with the Bedrock models your key can use (and OpenRouter's, once you turn it on): the cost under every answer, documents and knowledge bases, images | on | — |
+| [**`claude-bedrock`**](#claude-code-claude-bedrock) | Claude Code in your own terminal, billed to Bedrock (or to OpenRouter for its models), with a lean config folder and each session's cost; any chat model of the catalog (`--models` lists them and how each works, `--model` picks one) | on (needs `claude`) | setup offers to put it on your `PATH` |
 | [**Home, Admin, Files**](#the-portal-one-login-for-everything) | health, spend and budgets; LiteLLM's UI; the shared file store (also an MCP server for Claude Code) | on | — |
 | [**The API for your tools**](#the-models-from-your-own-code) | the same models for your own scripts and apps: OpenAI- and Anthropic-compatible, on `127.0.0.1`, a key and budget per tool (Admin › Virtual Keys) | on | — |
 | [**Activity & search**](#activity-and-search) | a bell for budget alerts, updates, Code sessions that need you and jobs; **Ctrl/⌘+K** finds pages, settings, Code sessions and workspace files, Chat conversations, the walkthrough and these docs | on (the docs part with Docker Compose 2.17+) | — |
