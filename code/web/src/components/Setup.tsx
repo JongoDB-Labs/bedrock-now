@@ -166,7 +166,7 @@ export function SetupSheet({ project: pid, tool: firstTool = null, onClose }: { 
           <RequestLine req={open.req} why={SETUP_WHY} cmd="./stack sessions config" testid="setup-request-2" />
         </div>
       )}
-      {view && step === 3 && <CheckStep view={view} onChanged={() => void load(3)} />}
+      {view && step === 3 && <CheckStep view={view} local={local} onChanged={() => void load(3)} />}
       <div class="dlg-actions">
         {step > 1 && <button type="button" class="btn" onClick={() => setStep(step === 3 ? 2 : 1)} data-testid="setup-back">Back</button>}
         {step === 2 && view?.staged.length ? <button type="button" class="btn" onClick={() => setStep(3)} data-testid="setup-to-check">Check the {view.staged.length} opened</button> : null}
@@ -275,8 +275,9 @@ async function follow(id: string) {
 }
 
 /** Step 3: each unit opened — what copying it will do — and Copy into the sandbox. A choice holds for the unit as it was
- *  checked: when what it depends on changes, it is checked again. */
-function CheckStep({ view, onChanged }: { view: SetupView; onChanged: () => void }) {
+ *  checked: when what it depends on changes, it is checked again. Through the portal, with the password: a unit that
+ *  keeps a possible secret — and, from another device, one that lets Claude act without asking (its grants). */
+function CheckStep({ view, local, onChanged }: { view: SetupView; local: boolean; onChanged: () => void }) {
   const units = useMemo(() => unitsOf(view.staged), [view.staged]);
   const [choices, setChoices] = useState<Record<string, Choice>>({});
   const [previews, setPreviews] = useState<Record<string, SetupPreview | null>>({});
@@ -291,7 +292,8 @@ function CheckStep({ view, onChanged }: { view: SetupView; onChanged: () => void
   // (a unit refused as it is — or an MCP server whose URL or arguments hold a secret not kept — is not sent)
   const copyable = (k: string[]) => { const p = previews[idOf(k)]; return Boolean(p) && (!p?.blocked || Boolean(p.needsKeep?.length && p.needsKeep.every((id) => ch(k).keep.includes(id)))); };
   const todo = units.filter((k) => !ch(k).skip && copyable(k));
-  const kept = todo.filter((k) => ch(k).keep.length > 0);
+  const granted = (k: string[]) => !local && (previews[idOf(k)]?.grants.length ?? 0) > 0;
+  const kept = todo.filter((k) => ch(k).keep.length > 0 || granted(k));
   const every = todo.reduce((n, k) => n + (previews[idOf(k)]?.tokens.every ?? 0), 0);
   const unknown = todo.some((k) => previews[idOf(k)]?.tokens.unknown);
   const go = async () => {
@@ -303,14 +305,14 @@ function CheckStep({ view, onChanged }: { view: SetupView; onChanged: () => void
       if (plain.length) out.push(...await api.setupCopy(plain.map((k) => ({ keys: k, mode: ch(k).mode, conflict: ch(k).conflict, digest: previews[idOf(k)]?.digest ?? '' }))));
       for (const k of kept) {
         const pv = previews[idOf(k)];
-        setPhase('Copying on the computer, with what you chose to keep…');
+        setPhase(ch(k).keep.length ? 'Copying on the computer, with what you chose to keep…' : 'Copying on the computer, with the portal password…');
         try {
           const req = await api.setupCopyKept({ keys: k, mode: ch(k).mode, conflict: ch(k).conflict, digest: pv?.digest ?? '', keep: ch(k).keep }, pw);
           const r = await follow(req);
           if (r?.results?.length) out.push(...r.results);
-          else out.push({ keys: k, ok: false, nothing: false, kind: pv?.kind ?? '', name: pv?.name ?? '', why: (r?.why && SETUP_WHY[r.why]) || 'it did not go through on the computer (./stack sessions config in a terminal there says why)', said: null, trashed: null, confirm: null, pluginId: null });
+          else out.push({ keys: k, ok: false, nothing: false, kind: pv?.kind ?? '', name: pv?.name ?? '', why: (r?.why && SETUP_WHY[r.why]) || 'it did not go through on the computer (./stack sessions config in a terminal there says why)', said: null, trashed: null, confirm: null, pluginId: null, note: null, disable: false, password: false });
         } catch (e) {
-          out.push({ keys: k, ok: false, nothing: false, kind: pv?.kind ?? '', name: pv?.name ?? '', why: e instanceof Error ? label(e.message, 300) : 'not asked', said: null, trashed: null, confirm: null, pluginId: null });
+          out.push({ keys: k, ok: false, nothing: false, kind: pv?.kind ?? '', name: pv?.name ?? '', why: e instanceof Error ? label(e.message, 300) : 'not asked', said: null, trashed: null, confirm: null, pluginId: null, note: null, disable: false, password: false });
         }
       }
       setPw('');
@@ -328,8 +330,13 @@ function CheckStep({ view, onChanged }: { view: SetupView; onChanged: () => void
     setBusy(true);
     try {
       const o = await api.pluginAction('install', r.pluginId, { scope: 'user', acceptCommand: r.confirm.sha256 });
-      if (o.ok) { toast(`${label(r.pluginId, 100)} installed in the sandbox.`, 'ok'); for (const k of r.keys) await api.setupDrop(k).catch(() => {}); onChanged(); }
-      else toast(`Not installed: ${o.message}`, 'error');
+      if (o.ok) {
+        // (off on the computer: turned off here too — said when it could not be)
+        const off = r.disable ? await api.pluginAction('disable', r.pluginId, { scope: 'user' }).then((d) => d.ok, () => false) : true;
+        toast(`${label(r.pluginId, 100)} installed in the sandbox${off ? (r.disable ? ', turned off as on your computer' : '') : ', but it could not be turned off: turn it off in Plugins'}.`, off ? 'ok' : 'error');
+        for (const k of r.keys) await api.setupDrop(k).catch(() => {});
+        onChanged();
+      } else toast(`Not installed: ${o.message}`, 'error');
     } catch (e) { toast(`Not installed: ${e instanceof Error ? e.message : 'it failed'}`, 'error'); }
     setConfirm(null);
     setBusy(false);
@@ -355,7 +362,8 @@ function CheckStep({ view, onChanged }: { view: SetupView; onChanged: () => void
         <>
           {kept.length > 0 && (
             <p class="small warn-text" data-testid="setup-keep-note">
-              Keeping a possible secret needs the portal password: the update helper on the computer makes that copy ({kept.length} item{kept.length === 1 ? '' : 's'}).
+              {todo.some(granted) ? 'From another device, what lets Claude act without asking (and keeping a possible secret) needs the portal password'
+                : 'Keeping a possible secret needs the portal password'}: the update helper on the computer makes that copy ({kept.length} item{kept.length === 1 ? '' : 's'}).
             </p>
           )}
           <div class="imp-ask">
@@ -381,7 +389,7 @@ function Results({ results, onConfirm }: { results: SetupResult[]; onConfirm: (r
       {results.map((r) => (
         <li key={r.keys.join('+')} data-testid="setup-result" data-ok={r.ok ? '1' : '0'}>
           <b>{r.name || r.kind}</b>:{' '}
-          {r.ok ? (r.nothing ? `not changed (${r.why || 'the sandbox has it already'})` : `copied${r.trashed ? ` — what was there is in the sandbox's ~/.claude/${r.trashed}` : ''}.`)
+          {r.ok ? (r.nothing ? `not changed (${r.why || 'the sandbox has it already'})` : `copied${r.trashed ? ` — what was there is in the sandbox's ~/.claude/${r.trashed}` : ''}${r.note ? ` — ${r.note}` : ''}.`)
             : r.confirm ? (
               <>its marketplace runs a command to install it: <button type="button" class="linkish" onClick={() => onConfirm(r)} data-testid="setup-confirm">read it first</button></>
             ) : (
@@ -440,10 +448,12 @@ function Unit({ keys, staged, choice, set, onPreview, onDropped }: { keys: strin
           )}
           {pv.conflict && (
             <div class="small setup-conflict" data-testid="setup-conflict">
-              <div class="warn-text"><Icon name="alert" size={13} /> {pv.conflict.dest}: {pv.conflict.why}.</div>
+              {(pv.conflicts.length ? pv.conflicts : [pv.conflict]).map((c) => (
+                <div key={c.dest} class="warn-text"><Icon name="alert" size={13} /> {c.dest}: {c.why}.</div>
+              ))}
               <div class="setup-choice" role="radiogroup" aria-label="What the sandbox has">
                 <label><input type="radio" checked={choice.conflict === 'leave'} onChange={() => set({ conflict: 'leave' })} /> Leave the sandbox's as it is</label>
-                <label><input type="radio" checked={choice.conflict === 'replace'} onChange={() => set({ conflict: 'replace' })} data-testid="setup-replace" /> Replace it (the sandbox's goes to its trash folder)</label>
+                <label><input type="radio" checked={choice.conflict === 'replace'} onChange={() => set({ conflict: 'replace' })} data-testid="setup-replace" /> Replace {(pv.conflicts.length || 1) > 1 ? 'them' : 'it'} (the sandbox's goes to its trash folder)</label>
               </div>
             </div>
           )}
@@ -468,7 +478,7 @@ function Unit({ keys, staged, choice, set, onPreview, onDropped }: { keys: strin
                       copy into the sandbox (Claude could read it there)
                     </label>{' '}
                     <b>{x.where}</b> <span class="muted">{x.label}</span> <code>{x.preview}</code>
-                    {x.drop === 'server' && <span class="muted"> — the server is not copied without it</span>}
+                    {x.drop === 'server' && <span class="muted"> — {first.kind === 'plugin' ? 'the plugin' : 'the server'} is not copied without it</span>}
                   </li>
                 ))}
               </ul>

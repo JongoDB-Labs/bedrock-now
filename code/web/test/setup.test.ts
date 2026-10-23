@@ -41,6 +41,7 @@ test('the list of a look: rows of known tools and kinds only, names as text, at 
 
 test('a preview: flags, findings and secrets as text by their own ids; writes of the known kinds only; a password never at the backend', async () => {
   answer({ digest: 'd'.repeat(64), tool: 'claude', kind: 'mcp', name: 'srv\u{2066}', action: 'mcp', blocked: null, needsKeep: ['v#0123456789abcdef', '../x'],
+    grants: ['Lets Claude run any shell command\u{202e}', 7], conflicts: [{ dest: 'settings.json › statusLine', why: 'own' }, 'x', { dest: 'settings.json › outputStyle', why: 'own' }],
     flags: [{ level: 'warn', text: 'uvx is not\u{202e} in the sandbox', items: ['a', 7, 'b'] }, { level: 'evil', text: 'x' }],
     tokens: { every: -1, when: 12, unknown: true },
     findings: [{ id: 'f0#0123456789abcdef', kind: 'github-token', label: 'a GitHub token', file: 'SKILL.md', preview: 'ghp_… (40)', context: 'x ••• \u{202e}', keepable: true }, { id: 'main#0123456789abcdef' }],
@@ -51,6 +52,8 @@ test('a preview: flags, findings and secrets as text by their own ids; writes of
   assert.match(sent.at(-1)?.url ?? '', /keys=s_0123456789abcdef%2Cs_fedcba9876543210&mode=append&conflict=replace/);
   assert.equal(pv.name, 'srv⟨U+2066⟩');
   assert.deepEqual(pv.needsKeep, ['v#0123456789abcdef']);
+  assert.deepEqual(pv.grants, ['Lets Claude run any shell command⟨U+202E⟩']);
+  assert.deepEqual(pv.conflicts.map((c) => c.dest), ['settings.json › statusLine', 'settings.json › outputStyle']);
   assert.deepEqual(pv.flags, [{ level: 'warn', text: 'uvx is not⟨U+202E⟩ in the sandbox', items: ['a', 'b'] }, { level: 'info', text: 'x', items: [] }]);
   assert.deepEqual(pv.tokens, { every: null, when: 12, unknown: true });
   assert.deepEqual(pv.findings.map((f) => f.id), ['f0#0123456789abcdef']);
@@ -60,20 +63,27 @@ test('a preview: flags, findings and secrets as text by their own ids; writes of
   await assert.rejects(setupPreview(['../x']), /bad items/);
   // a copy: units by their keys only, nothing kept — the keeps go to the portal with the password
   answer({ results: [{ keys: [K1], ok: true, kind: 'memory', name: 'CLAUDE.md', trashed: '.bedrock-now-trash/x/CLAUDE.md' },
-    { keys: [K2], ok: false, why: 'the sandbox refused it', said: 'Error: \u{202e} nope' }, { keys: ['../x'], ok: true }, { keys: [K1], ok: false, confirm: { id: 'fmt@acme', command: 'npm i', sha256: 'a'.repeat(64), kind: 'command' } }] });
+    { keys: [K2], ok: false, why: 'the sandbox refused it', said: 'Error: \u{202e} nope' }, { keys: ['../x'], ok: true }, { keys: [K1], ok: false, confirm: { id: 'fmt@acme', command: 'npm i', sha256: 'a'.repeat(64), kind: 'command' }, disable: true },
+    { keys: [K2], ok: true, note: 'it is installed, but it could not be turned off' }, { keys: [K1], ok: false, password: true, why: 'needs the password' }] });
   const res = await setupCopy([{ keys: [K1, '../x'], mode: 'replace', conflict: 'leave', digest: 'd'.repeat(64) }]);
   assert.deepEqual(sent.at(-1)?.body, { units: [{ keys: [K1], mode: 'replace', conflict: 'leave', digest: 'd'.repeat(64) }] });
   assert.equal(JSON.stringify(sent.at(-1)?.body).includes('password'), false);
-  assert.deepEqual(res.map((r) => [r.ok, r.why]), [[true, ''], [false, 'the sandbox refused it'], [false, '']]);
+  assert.deepEqual(res.map((r) => [r.ok, r.why]), [[true, ''], [false, 'the sandbox refused it'], [false, ''], [true, ''], [false, 'needs the password']]);
   assert.deepEqual(res[1].said, { by: 'sandbox', said: 'Error: ⟨U+202E⟩ nope' });
   assert.equal(res[2].pluginId, 'fmt@acme');
   assert.equal(res[2].confirm?.command, 'npm i');
+  assert.equal(res[2].disable, true);
+  assert.equal(res[3].note, 'it is installed, but it could not be turned off');
+  assert.deepEqual([res[4].password, res[0].password, res[0].note, res[0].disable], [true, false, null, false]);
   answer({ request: 'c'.repeat(32) }, 202);
   assert.equal(await setupCopyKept({ keys: [K1], mode: 'replace', conflict: 'leave', digest: 'd'.repeat(64), keep: ['v#0123456789abcdef', 'main#0123456789abcdef'] }, 'pw'), 'c'.repeat(32));
   assert.equal(sent.at(-1)?.url, '/.bn/sessions');
   assert.deepEqual(sent.at(-1)?.body, { action: 'setup-copy', units: [K1], digest: 'd'.repeat(64), mode: 'replace', conflict: 'leave', keep: ['v#0123456789abcdef'], password: 'pw' });
   await assert.rejects(setupCopyKept({ keys: [K1], mode: 'replace', conflict: 'leave', digest: 'x', keep: ['v#0123456789abcdef'] }, 'pw'), /bad request/);
-  await assert.rejects(setupCopyKept({ keys: [K1], mode: 'replace', conflict: 'leave', digest: 'd'.repeat(64), keep: [] }, 'pw'), /bad request/);
+  // (nothing kept: from another device, a copy that brings grants — through the portal too)
+  answer({ request: 'e'.repeat(32) }, 202);
+  assert.equal(await setupCopyKept({ keys: [K1], mode: 'replace', conflict: 'leave', digest: 'd'.repeat(64), keep: [] }, 'pw'), 'e'.repeat(32));
+  assert.deepEqual(sent.at(-1)?.body, { action: 'setup-copy', units: [K1], digest: 'd'.repeat(64), mode: 'replace', conflict: 'leave', keep: [], password: 'pw' });
 });
 
 test('a look and an open go to the portal; a request\'s state and a copy\'s results; a drop by key; the deep link', async () => {

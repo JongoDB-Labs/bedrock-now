@@ -2396,7 +2396,9 @@ export async function setupPreview(keys: string[], mode: 'replace' | 'append' = 
     keys: ks, digest: typeof o.digest === 'string' && /^[0-9a-f]{64}$/.test(o.digest) ? o.digest : '', tool: setupTool(o.tool) ?? 'claude', kind: setupKind(o.kind) ?? 'memory', name: label(o.name, 300),
     scope: label(o.scope, 10), action: ['none', 'file', 'dir', 'mcp', 'plugin', 'git'].includes(o.action as string) ? (o.action as SetupPreview['action']) : 'none',
     conflict: cf ? { dest: label(cf.dest, 300), why: label(cf.why, 200) } : null, blocked: o.blocked ? label(o.blocked, 400) : null,
+    conflicts: arr(o.conflicts, 10).map(obj).filter((c): c is Obj => c !== null).map((c) => ({ dest: label(c.dest, 300), why: label(c.why, 200) })),
     needsKeep: Array.isArray(o.needsKeep) ? arr(o.needsKeep, 64).filter((x): x is string => typeof x === 'string' && SETUP_KEEP.test(x)) : null,
+    grants: strs(o.grants, 20, 200),
     flags: arr(o.flags, 60).map(obj).filter((f): f is Obj => f !== null).map((f): SetupFlag => ({ level: f.level === 'warn' ? 'warn' : 'info', text: label(f.text, 600), items: strs(f.items, 20, 300) })),
     tokens: { every: N(tok?.every, 1e9), when: N(tok?.when, 1e9), unknown: tok?.unknown === true },
     findings: arr(o.findings, 500).map(obj).filter((f): f is Obj => f !== null && typeof f.id === 'string' && SETUP_KEEP.test(f.id))
@@ -2418,6 +2420,7 @@ function setupResults(list: unknown): SetupResult[] {
       why: x.ok === true ? (x.conflict ? `left as it is: ${label(x.conflict, 200)}` : '') : label(x.why, 400), said: x.ok !== true && typeof x.said === 'string' && x.said ? { by: 'sandbox', said: label(x.said, 300) } as SandboxWords : null,
       trashed: typeof x.trashed === 'string' ? label(x.trashed, 300) : null, confirm,
       pluginId: c && typeof c.id === 'string' && PLUGIN_ID.test(c.id) ? c.id : null,
+      note: typeof x.note === 'string' && x.note ? label(x.note, 300) : null, disable: x.disable === true, password: x.password === true,
     };
   }).filter((r) => r.keys.length);
 }
@@ -2426,10 +2429,11 @@ export async function setupCopy(units: { keys: string[]; mode: 'replace' | 'appe
   const o = await request('POST', '/api/setup/copy', { units: units.map((u) => ({ keys: u.keys.filter((k) => SETUP_KEY.test(k)).slice(0, 4), mode: u.mode, conflict: u.conflict, digest: u.digest })) });
   return setupResults(o.results);
 }
-/** A copy that keeps some secrets (their ids): it needs the portal password — asked of the portal, done by the helper. */
+/** A copy that keeps some secrets (their ids) — or, from another device, one that brings grants (nothing kept): it needs
+ *  the portal password — asked of the portal, done by the helper. */
 export async function setupCopyKept(unit: { keys: string[]; mode: 'replace' | 'append'; conflict: 'leave' | 'replace'; digest: string; keep: string[] }, password: string): Promise<string> {
   const keys = unit.keys.filter((k) => SETUP_KEY.test(k)).slice(0, 4), keep = [...new Set(unit.keep.filter((k) => SETUP_KEEP.test(k)))].slice(0, 64);
-  if (!keys.length || !/^[0-9a-f]{64}$/.test(unit.digest) || !keep.length) throw new ApiError(400, 'bad request');
+  if (!keys.length || !/^[0-9a-f]{64}$/.test(unit.digest)) throw new ApiError(400, 'bad request');
   return askComputer({ action: 'setup-copy', units: keys, digest: unit.digest, mode: unit.mode, conflict: unit.conflict, keep, password });
 }
 /** How a setup request went (a copy's: its results). */

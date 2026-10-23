@@ -5391,6 +5391,48 @@ def setup_remote_phone(browser):
     p.close()
 
 
+@check("setup: from another device, what lets Claude act without asking goes through the portal password; on the computer it is said in its own words")
+def setup_remote_grants(browser):
+    post(NORMAL + "/__mock/reset")
+    # opened on the computer: claude-bedrock's permissions (its whole Bash) and the Git name
+    p = Page(browser, NORMAL, "setup-grants", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-setup").click()
+    page.get_by_test_id("setup-password").fill("correct horse")
+    page.get_by_test_id("setup-look").click()
+    expect(page.get_by_test_id("setup-step-pick")).to_be_visible(timeout=15_000)
+    page.locator("section.setup-tool[data-tool=claude-bedrock] [data-testid=setup-row][data-kind=setting]").get_by_test_id("setup-pick").check()
+    page.locator("[data-testid=setup-row][data-kind=identity]").get_by_test_id("setup-pick").check()
+    page.get_by_test_id("setup-password-2").fill("correct horse")
+    page.get_by_test_id("setup-open").click()
+    st = page.locator("[data-testid=setup-unit][data-kind=setting]")
+    expect(st.get_by_test_id("setup-flags")).to_contain_text("Lets Claude run any shell command without asking, in every session", timeout=15_000)
+    # (on the computer: no password for it)
+    expect(page.get_by_test_id("setup-keep-note")).to_have_count(0)
+    p.assert_clean()
+    p.close()
+    # another device: the same unit needs the password; the Git name does not
+    post(NORMAL + "/__mock/bypass?remote=1")
+    p = Page(browser, NORMAL, "setup-grants-remote", **DESKTOP)
+    page = p.open()
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-setup").click()
+    expect(page.get_by_test_id("setup-step-check")).to_be_visible(timeout=15_000)
+    expect(page.locator("[data-testid=setup-unit][data-kind=setting]").get_by_test_id("setup-flags")).to_contain_text("any shell command", timeout=15_000)
+    expect(page.get_by_test_id("setup-keep-note")).to_contain_text("From another device, what lets Claude act without asking")
+    expect(page.get_by_test_id("setup-copy")).to_be_disabled()
+    page.get_by_test_id("setup-password-3").fill("correct horse")
+    page.get_by_test_id("setup-copy").click()
+    expect(page.get_by_test_id("setup-result")).to_have_count(2, timeout=20_000)
+    log = mock_get(NORMAL, "/__mock/import-log")["log"]
+    assert any(x.startswith("setup-copy ") and "keep=0" in x for x in log), log
+    assert "password-at-backend" not in log, log
+    p.assert_clean()
+    p.close()
+    post(NORMAL + "/__mock/bypass?remote=0")
+
+
 @check("setup: a hostile list (6,000 skills with markup and direction marks; a skill's text that says to run things) shown as text, capped")
 def setup_hostile(browser):
     post(HOSTILE + "/__mock/reset")

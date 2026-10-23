@@ -399,9 +399,14 @@ export interface SetupPreview {
   scope: string;
   action: 'none' | 'file' | 'dir' | 'mcp' | 'plugin' | 'git';
   conflict: { dest: string; why: string } | null;
+  /** every conflict of the unit (a settings unit may have more than one) */
+  conflicts: { dest: string; why: string }[];
   blocked: string | null;
-  /** an MCP server copied only with these kept */
+  /** an MCP server (or a plugin's marketplace) copied only with these kept */
   needsKeep: string[] | null;
+  /** what lets something act without asking (a whole tool allowed, a front matter's grant, hooks, a status line): from
+   *  another device such a copy needs the portal password */
+  grants: string[];
   flags: SetupFlag[];
   tokens: { every: number | null; when: number | null; unknown: boolean };
   findings: SetupFinding[];
@@ -410,7 +415,15 @@ export interface SetupPreview {
   left: { path: string; why: string }[];
   writes: SetupWrite[];
 }
-export interface SetupResult { keys: string[]; ok: boolean; nothing: boolean; kind: string; name: string; why: string; said: SandboxWords | null; trashed: string | null; confirm: Confirmation | null; pluginId: string | null }
+export interface SetupResult {
+  keys: string[]; ok: boolean; nothing: boolean; kind: string; name: string; why: string; said: SandboxWords | null; trashed: string | null; confirm: Confirmation | null; pluginId: string | null;
+  /** said beside a copy (a plugin installed but not turned off …) */
+  note: string | null;
+  /** a plugin to turn off once its install is accepted (off on the computer) */
+  disable: boolean;
+  /** refused from another device: it needs the portal password */
+  password: boolean;
+}
 
 export interface OpenSession {
   id: string;
