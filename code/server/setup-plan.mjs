@@ -290,7 +290,7 @@ export function planUnit(job) {
   };
   // a file's destination: new, bedrock-now's own copy (replaced), the same already, or the sandbox's own (a conflict)
   const fileTarget = (dest, text, cur, rec) => {
-    if (cur && cur.exists && cur.type !== 'file') { blocked = `${dest} in the sandbox is not a regular file: change it in the terminal`; return; }
+    if (cur && cur.exists && (cur.type !== 'file' || !/^[0-9a-f]{64}$/.test(String(cur.sha256)))) { blocked = `${dest} in the sandbox is not a regular file of at most 1 MiB: change it in the terminal`; return; }
     if (cur && cur.exists && cur.sha256 === sha256(Buffer.from(text, 'utf8'))) { action = 'none'; flags.push(flag('info', 'The sandbox has exactly this already: nothing to copy.')); return; }
     if (cur && cur.exists && !(rec && rec.sha === cur.sha256)) {
       conflict = { dest, why: rec ? 'it changed in the sandbox since bedrock-now copied it' : 'the sandbox has one of its own' };
