@@ -196,7 +196,8 @@ export function rebuild(entries, { outputs = false } = {}) {
     if (isObj(e.mcpMeta)) {
       if (outputs) out.mcpMeta = plain(e.mcpMeta);
       else {
-        const meta = isObj(e.mcpMeta._meta) ? Object.fromEntries(Object.entries(e.mcpMeta._meta).filter(([k]) => k.startsWith('claude/')).map(([k, v]) => [k, plain(v)])) : null;
+        // (of its metadata only Claude Code's two switches, booleans: claude/endTurn, claude/endTurnHonorsStopHooks)
+        const meta = isObj(e.mcpMeta._meta) ? Object.fromEntries(['claude/endTurn', 'claude/endTurnHonorsStopHooks'].filter((k) => typeof e.mcpMeta._meta[k] === 'boolean').map((k) => [k, e.mcpMeta._meta[k]])) : null;
         if (e.mcpMeta.structuredContent !== undefined || e.mcpMeta.resourceLinks !== undefined) body([e.mcpMeta.structuredContent, e.mcpMeta.resourceLinks]);
         out.mcpMeta = { ...(meta && Object.keys(meta).length ? { _meta: meta } : {}), structuredContentOmitted: true };
       }
@@ -319,29 +320,55 @@ export function rebuild(entries, { outputs = false } = {}) {
     for (const p of path) gone.set(p, v);
     return v;
   };
-  const here = new Set(kept.map((e) => e.uuid).filter((u) => typeof u === 'string'));
   const relinked = kept.map((e) => {
     const r = { ...e };
     for (const k of ['parentUuid', 'logicalParentUuid', 'leafUuid']) if (typeof e[k] === 'string' && gone.has(e[k])) r[k] = up(e[k]);
     const cm = r.compactMetadata;
     if (cm) {
       const c = { ...cm };
-      if (cm.preservedSegment) {
-        const seg = Object.fromEntries(Object.entries(cm.preservedSegment).map(([k, v]) => [k, gone.has(v) ? up(v) : v]));
-        if (['headUuid', 'anchorUuid', 'tailUuid'].every((k) => here.has(seg[k]))) c.preservedSegment = seg; else delete c.preservedSegment;
-      }
-      if (cm.preservedMessages) {
-        const pm = { ...cm.preservedMessages };
-        if (pm.uuids) pm.uuids = pm.uuids.filter((u) => here.has(u));
-        if (pm.allUuids) pm.allUuids = pm.allUuids.filter((u) => here.has(u));
-        if (typeof pm.anchorUuid === 'string' && gone.has(pm.anchorUuid)) pm.anchorUuid = up(pm.anchorUuid);
-        if (pm.uuids?.length && here.has(pm.anchorUuid)) c.preservedMessages = pm; else delete c.preservedMessages;
-      }
+      // (a partial compaction's preserved ids: set right once every change is made — fixPreserved, on what is written)
       r.compactMetadata = c;
     }
     return r;
   });
   return { entries: relinked, left, bytes, dropped };
+}
+
+/** fixPreserved(written, source) -> the entries as written, a partial compaction's preserved ids made true of them —
+ *  after every change (the allowlist, thinking taken out or left out, the scan): preservedMessages' ids filtered to the
+ *  entries written (none left, or its anchor gone: dropped); preservedSegment's head and tail the first and last of its
+ *  entries that were written — along the source's own chain from its tail to its head, never an ancestor —, dropped
+ *  when none was or its anchor is gone. The CLI refuses a resume whose preserved ids are not all there. */
+export function fixPreserved(written, source) {
+  if (!written.some((e) => isObj(e?.compactMetadata) && (e.compactMetadata.preservedSegment || e.compactMetadata.preservedMessages))) return written;
+  const present = new Set(written.map((e) => e?.uuid).filter((u) => typeof u === 'string'));
+  const src = new Map(source.filter((e) => isObj(e) && typeof e.uuid === 'string').map((e) => [e.uuid, e]));
+  return written.map((e) => {
+    const cm = e?.compactMetadata;
+    if (!isObj(cm) || (!cm.preservedSegment && !cm.preservedMessages)) return e;
+    const c = { ...cm };
+    if (isObj(cm.preservedMessages)) {
+      const pm = { ...cm.preservedMessages };
+      pm.uuids = (Array.isArray(pm.uuids) ? pm.uuids : []).filter((u) => present.has(u));
+      if (Array.isArray(pm.allUuids)) pm.allUuids = pm.allUuids.filter((u) => present.has(u));
+      if (pm.uuids.length && present.has(pm.anchorUuid)) c.preservedMessages = pm; else delete c.preservedMessages;
+    } else delete c.preservedMessages;
+    if (isObj(cm.preservedSegment)) {
+      const seg = cm.preservedSegment;
+      // (its entries, head to tail: from the source's tail up its own chain to its head)
+      const members = [];
+      let v = seg.tailUuid, found = false;
+      while (typeof v === 'string' && src.has(v) && members.length <= src.size) {
+        members.push(v);
+        if (v === seg.headUuid) { found = true; break; }
+        v = src.get(v).parentUuid;
+      }
+      const kept = found ? members.reverse().filter((u) => present.has(u)) : [];
+      if (kept.length && present.has(seg.anchorUuid)) c.preservedSegment = { headUuid: kept[0], anchorUuid: seg.anchorUuid, tailUuid: kept.at(-1) };
+      else delete c.preservedSegment;
+    } else delete c.preservedSegment;
+    return { ...e, compactMetadata: c };
+  });
 }
 
 /** sideJson(part, value, {outputs}) -> what a JSON file beside a transcript keeps (a subagent's meta: its kind and what it

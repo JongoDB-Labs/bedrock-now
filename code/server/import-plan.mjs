@@ -18,7 +18,7 @@ import { Worker } from 'node:worker_threads';
 import { TOOLS, UUID } from './harness/claude.mjs';
 import { processEntries, scanEntries, redactText, TooDeep } from './secrets.mjs';
 import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewrites, rewritePaths, outsidePaths, outputLeft } from './transcript.mjs';
-import { rebuild, sideJson } from './allowlist.mjs';
+import { rebuild, sideJson, fixPreserved } from './allowlist.mjs';
 
 export class ImportError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -93,13 +93,14 @@ function readPart({ part, data }) {
 // lines(entries, opts) -> a transcript's (or a subagent's) entries made what the copy will be: thinking out (strip), or
 // kept but every block that holds a finding or a path to rewrite left out whole; then scanned and redacted once; then
 // its paths rewritten — the kept thinking blocks left exactly as they were
-function lines(entries, { part, keep, key, strip, pairs, outputs }) {
-  const lo = rebuild(entries, { outputs });
-  entries = lo.entries;
+function lines(source, { part, keep, key, strip, pairs, outputs }) {
+  const lo = rebuild(source, { outputs });
+  const entries = lo.entries;
   const th = strip ? stripThinking(entries) : dropThinking(entries, (b) => scanEntries([b]).length > 0 || rewrites(b, pairs));
   const pr = processEntries(th.entries, { part, keep, key, skipThinking: true });
   const rw = rewritePaths(pr.entries, pairs, { skipThinking: true });
-  return { entries: rw.entries, findings: pr.findings, redacted: pr.redacted, kept: pr.kept, thinking: th.blocks, rewritten: rw.n, outputs: lo.left, outputBytes: lo.bytes, dropped: lo.dropped };
+  // (last, on what is written: a partial compaction's preserved ids true of it)
+  return { entries: fixPreserved(rw.entries, source), findings: pr.findings, redacted: pr.redacted, kept: pr.kept, thinking: th.blocks, rewritten: rw.n, outputs: lo.left, outputBytes: lo.bytes, dropped: lo.dropped };
 }
 
 /** runJob(job) -> what a waiting session will be (job.kind 'preview': its findings and what becomes of it, and the

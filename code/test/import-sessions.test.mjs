@@ -588,7 +588,7 @@ function everyPlace(id, cwd) {
   user([{ type: 'tool_result', tool_use_id: 'toolu_a2', content: [{ type: 'text', text: M('arr') }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'bGVha21hcmtlcg==' } }, { type: 'tool_reference', tool_name: 'mcp__srv__deferred' }] }]);
   asst([{ type: 'tool_use', id: 'toolu_a3', name: 'mcp__srv__get', input: {} }]);
   user([{ type: 'tool_result', tool_use_id: 'toolu_a3', content: [{ type: 'text', text: M('mcpresult') }] }],
-    { mcpMeta: { structuredContent: { x: M('struct') }, _meta: { 'claude/kept': 1, other: M('meta2') }, resourceLinks: [{ uri: M('link') }] } });
+    { mcpMeta: { structuredContent: { x: M('struct') }, _meta: { 'claude/endTurn': true, 'claude/deep': { x: M('claudedeep') }, 'claude/endTurnHonorsStopHooks': 'not a boolean', other: M('meta2') }, resourceLinks: [{ uri: M('link') }] } });
   for (const a of [
     { type: 'file', filename: `${cwd}/a.txt`, content: { type: 'text', file: { filePath: `${cwd}/a.txt`, content: M('file'), numLines: 1, startLine: 1, totalLines: 1 } } },
     { type: 'already_read_file', filename: `${cwd}/b.txt`, content: { type: 'text', file: { filePath: `${cwd}/b.txt`, content: M('already') } } },
@@ -658,7 +658,7 @@ test('allowlist: a marker in every place an output can be — none in the copy b
   }
   const text = fs.readFileSync(files[0], 'utf8');
   for (const k of ['OWNERKEPT', 'OWNERKEPT2', 'CLAUDEKEPT', 'CLAUDEKEPT2', 'CLAUDEKEPT3', 'INPUTKEPT', 'SUMMARYKEPT', 'TITLEKEPT', '<bash-input>ls</bash-input><bash-stdout>[tool output left out',
-    '"content":"[tool output left out by bedrock-now', '"type":"tool_reference","tool_name":"mcp__srv__deferred"', '"structuredContentOmitted":true', '"claude/kept":1', '"error_code":"unavailable"', '"snippet":""']) {
+    '"content":"[tool output left out by bedrock-now', '"type":"tool_reference","tool_name":"mcp__srv__deferred"', '"structuredContentOmitted":true', '"_meta":{"claude/endTurn":true}', '"error_code":"unavailable"', '"snippet":""']) {
     assert.ok(text.includes(k), k);
   }
   const lines = text.trim().split('\n').map((l) => JSON.parse(l));
@@ -759,4 +759,56 @@ test('what counts as yours, by allowlist too: Claude Code\'s wrapper tags (any, 
   const tail = (l) => l.slice(l.indexOf(u2));
   assert.deepEqual(tail(cp).slice(0, 4), tail(src).slice(0, 4), 'u2 a2 then what followed, in the copy as in the source');
   assert.deepEqual(lines.find((l) => l.subtype === 'compact_boundary').compactMetadata.preservedSegment, { headUuid: u2, anchorUuid: cs, tailUuid: a2 });
+});
+
+test('a partial compaction whose preserved turns hold a thinking-only entry: its ids made true of what is written — thinking taken out, or kept but one left out; the SDK reads and forks the copy as the source minus those', async () => {
+  const { getSessionMessages, forkSession } = await import('@anthropic-ai/claude-agent-sdk');
+  const make = (id, form, secretInThinking = false) => {
+    const out = [];
+    let parent = null, t = Date.parse('2026-10-04T10:00:00.000Z');
+    const base = { isSidechain: false, userType: 'external', cwd: APP, sessionId: id, version: '2.1.296', gitBranch: 'main' };
+    const push = (e) => { const u = e.uuid ?? uuid(); out.push({ ...base, parentUuid: parent, ...e, uuid: u, timestamp: new Date(t += 1000).toISOString() }); parent = u; return u; };
+    const asst = (msg, block, stop = null) => push({ type: 'assistant', message: { id: msg, type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [block], stop_reason: stop } });
+    push({ type: 'user', message: { role: 'user', content: 'U0 first' } });
+    asst('m0', { type: 'text', text: 'A0 ok' }, 'end_turn');
+    const u2 = push({ type: 'user', message: { role: 'user', content: 'U2 keep this turn' } });
+    const a2t = asst('m2', { type: 'thinking', thinking: secretInThinking ? `holds ${fake.github()}` : 'thinking about U2', signature: rand(40) });
+    const a2s = asst('m2', { type: 'text', text: 'A2 the answer' }, 'end_turn');
+    const cs = uuid();
+    const cm = { trigger: 'manual', preTokens: 99 };
+    if (form === 'messages') cm.preservedMessages = { uuids: [u2, a2t, a2s], anchorUuid: cs, allUuids: [u2, a2t, a2s] };
+    else cm.preservedSegment = { headUuid: a2t, anchorUuid: cs, tailUuid: a2s };
+    const cb = push({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', parentUuid: null, logicalParentUuid: a2s, compactMetadata: cm });
+    parent = cb;
+    push({ type: 'user', uuid: cs, message: { role: 'user', content: 'Summary of what came before.' }, isCompactSummary: true, isVisibleInTranscriptOnly: true });
+    push({ type: 'user', message: { role: 'user', content: 'U3 after' } });
+    asst('m3', { type: 'thinking', thinking: 'thinking about U3', signature: rand(40) });
+    asst('m3', { type: 'text', text: 'A3 done' }, 'end_turn');
+    return { out, a2t };
+  };
+  const store = (id, entries) => ({ async load(k) { return k?.sessionId === id ? entries : null; }, async append() {}, async listSessions() { return [{ sessionId: id, mtime: 1 }]; } });
+  for (const [form, thinking, secret] of [['messages', null, false], ['segment', null, false], ['messages', 'keep', true]]) {
+    const id = uuid();
+    const { out, a2t } = make(id, form, secret);
+    const dir = hostStore(APP, [[id, out]]);
+    const scan = nonce();
+    imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
+    await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
+    const pv = await preview(imports, 'p_00000001', id, { thinking });
+    const r = await copy(imports, call, 'p_00000001', [{ id, thinking, digest: pv.digest }]);
+    assert.equal(r[0].ok, true, JSON.stringify(r));
+    const lines = fs.readFileSync(path.join(storeOf(APP), `${id}.jsonl`), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const written = new Set(lines.map((l) => l.uuid));
+    assert.ok(!written.has(a2t), `${form}: the thinking-only entry left out`);
+    const cm = lines.find((l) => l.subtype === 'compact_boundary').compactMetadata;
+    for (const u of [...(cm.preservedMessages?.uuids ?? []), cm.preservedSegment?.headUuid, cm.preservedSegment?.tailUuid].filter(Boolean)) assert.ok(written.has(u), `${form}: ${u} is there`);
+    const src = (await getSessionMessages(id, { dir: APP, sessionStore: store(id, out) })).map((m) => m.uuid);
+    const cp = (await getSessionMessages(id, { dir: APP, sessionStore: store(id, lines) })).map((m) => m.uuid);
+    // (the source read as the SDK reads it, minus what was taken out: the copy)
+    const take = new Set(out.filter((e) => !written.has(e.uuid)).map((e) => e.uuid));
+    assert.deepEqual(cp.filter((u) => !take.has(u)), src.filter((u) => !take.has(u)), `${form} ${thinking}`);
+    assert.ok(cp.length >= 4, `${form}: ${cp.length} messages`);
+    const f = await forkSession(id, { dir: APP, sessionStore: { ...store(id, lines), written: null } }).catch((e) => e);
+    assert.ok(!(f instanceof Error) && typeof f?.sessionId === 'string', `${form}: forked (${f instanceof Error ? f.message : ''})`);
+  }
 });

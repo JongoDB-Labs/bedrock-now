@@ -916,9 +916,11 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   HS_OUT="$(printf '%s%s' glp at-)$(hs_rand 20 'A-Za-z0-9')"
   HS_S1="$(hs_uuid)"; HS_S2="$(hs_uuid)"; u1="$(hs_uuid)"; a1="$(hs_uuid)"; t1="$(hs_uuid)"; r1="$(hs_uuid)"; a2="$(hs_uuid)"; v1="$(hs_uuid)"; w1="$(hs_uuid)"
   u0="$(hs_uuid)"; a0="$(hs_uuid)"; b0="$(hs_uuid)"; m0="$(hs_uuid)"; f1="$(hs_uuid)"; h1="$(hs_uuid)"; t2="$(hs_uuid)"; r2="$(hs_uuid)"; bi="$(hs_uuid)"; bo="$(hs_uuid)"
-  tm="$(hs_uuid)"; hk="$(hs_uuid)"
+  tm="$(hs_uuid)"; hk="$(hs_uuid)"; a0t="$(hs_uuid)"
   HS_ID="$HS_S1"
-  # (its history as Claude Code writes it: a compaction (boundary, summary), the prompt to remember, a thinking block,
+  # (its history as Claude Code writes it: a partial compaction (boundary, summary; the turns it kept hold a
+  # thinking-only entry, taken out with the thinking — the copy's preserved ids must still all be there, or the CLI
+  # refuses the resume), the prompt to remember, a thinking block,
   # a Bash call whose output holds the third fake secret, a file attached and a hook's output after it, an MCP call
   # with its structured result, the answer, a teammate's message and a hook's (a reminder in your prompt too), then a
   # `!ls` of yours — the allowlist keeps your words, Claude's and the
@@ -926,9 +928,11 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   hs_asst() { printf '"type":"assistant","requestId":"%s","message":{"id":"%s","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[%s],"stop_reason":%s,"usage":{"input_tokens":20,"output_tokens":10}}' "$1" "$2" "$3" "$4"; }
   # (a block's JSON in a variable of its own: in a quoted argument inside $( ), braces and commas would be expanded)
   hs_think='{"type":"thinking","thinking":"The user wants me to remember a word.","signature":"'"$(hs_rand 64 'A-Za-z0-9')"'"}'
+  hs_think0='{"type":"thinking","thinking":"A greeting.","signature":"'"$(hs_rand 64 'A-Za-z0-9')"'"}'
   { hs_line "\"parentUuid\":null,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Let us start.\"},\"uuid\":\"$u0\"" 1 1
-    hs_line "\"parentUuid\":\"$u0\",$(hs_asst req_e2e0 msg_e2e0 '{"type":"text","text":"Sure."}' '"end_turn"'),\"uuid\":\"$a0\"" 1 2
-    hs_line "\"parentUuid\":null,\"logicalParentUuid\":\"$a0\",\"type\":\"system\",\"subtype\":\"compact_boundary\",\"content\":\"Conversation compacted\",\"isMeta\":false,\"level\":\"info\",\"compactMetadata\":{\"trigger\":\"manual\",\"preTokens\":120},\"uuid\":\"$b0\"" 1 3
+    hs_line "\"parentUuid\":\"$u0\",$(hs_asst req_e2e0 msg_e2e0 "$hs_think0" null),\"uuid\":\"$a0t\"" 1 2
+    hs_line "\"parentUuid\":\"$a0t\",$(hs_asst req_e2e0 msg_e2e0 '{"type":"text","text":"Sure."}' '"end_turn"'),\"uuid\":\"$a0\"" 1 2
+    hs_line "\"parentUuid\":null,\"logicalParentUuid\":\"$a0\",\"type\":\"system\",\"subtype\":\"compact_boundary\",\"content\":\"Conversation compacted\",\"isMeta\":false,\"level\":\"info\",\"compactMetadata\":{\"trigger\":\"manual\",\"preTokens\":120,\"preservedMessages\":{\"uuids\":[\"$u0\",\"$a0t\",\"$a0\"],\"anchorUuid\":\"$m0\",\"allUuids\":[\"$u0\",\"$a0t\",\"$a0\"]}},\"uuid\":\"$b0\"" 1 3
     hs_line "\"parentUuid\":\"$b0\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"This session is being continued from a previous conversation that ran out of context. Summary: the user said hello and Claude agreed to start.\"},\"isCompactSummary\":true,\"isVisibleInTranscriptOnly\":true,\"uuid\":\"$m0\"" 1 4
     hs_line "\"parentUuid\":\"$m0\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Remember the word PELICAN for later. My key is $HS_KEY.\\n<system-reminder>a reminder that quotes $HS_OUT</system-reminder>\"},\"uuid\":\"$u1\"" 1 5
     hs_line "\"parentUuid\":\"$u1\",$(hs_asst req_e2e1 msg_e2e1 "$hs_think" null),\"uuid\":\"$a1\"" 1 6
