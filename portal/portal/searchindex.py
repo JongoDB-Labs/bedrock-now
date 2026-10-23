@@ -24,7 +24,7 @@ EXCERPT = 160
 # the page's own rows (no .env key): what the Settings page calls them
 OWN_TITLES = {"+devices": "Signed-in devices", "+models": "Model check (Check again)", "+backups": "Backups (Back up now)",
               "+test": "Smoke test", "+check-aws": "AWS key check", "+report": "Status report", "+restart": "Restart a service",
-              "+git-hosts": "Git hosts (push, pull, clone)"}
+              "+git-hosts": "Git hosts (push, pull, clone)", "+subscriptions": "Your AI subscriptions (Claude, Codex, Gemini, Copilot, Cursor, Grok)"}
 
 
 # --- the Settings page ---

@@ -226,7 +226,8 @@ terminal_ids() {
 # terminal_build — the image (terminal/Dockerfile) with this week's Debian packages (the stt image's rule), and its
 # egress proxy's while that is its way out (terminal/egress: no packages, so no refresh)
 terminal_build() {
-  building "the terminal image" dc build -q --build-arg "APT_REFRESH=$(date -u +%G-%V)" terminal || return 1
+  # (TERMINAL_AI_TOOLS: which of your AI subscriptions' tools go in — lib/subscriptions.sh)
+  building "the terminal image" dc build -q --build-arg "APT_REFRESH=$(date -u +%G-%V)" --build-arg "BN_AI_TOOLS=$(subs_tools_arg)" terminal || return 1
   [ "$(terminal_egress_mode)" != internet ] || building "the egress proxy's image" dc build -q terminal-egress
 }
 _terminal_build_and_up() { terminal_build && _terminal_up; }
@@ -507,7 +508,10 @@ terminal_setup_hook() {
   fi
   out="$(mktemp)"; start="$(_now)"
   if _terminal_build_and_up > "$out" 2>&1; then
-    rm -f "$out"; log "$(phase_line "Terminal" $(($(_now) - start)))"; terminal_after_up; return 0
+    rm -f "$out"; log "$(phase_line "Terminal" $(($(_now) - start)))"; terminal_after_up
+    # (a new image: what its AI tools say now, for Settings — never fatal; lib/subscriptions.sh)
+    subs_refresh >/dev/null 2>&1 || true
+    return 0
   fi
   TERMINAL_SETUP_FAILED=1; TERMINAL_SETUP_WHY="the terminal's image did not build or its container did not start"
   projects_mount_hint "$out"   # lib/projects.sh: a project folder Docker could not mount, named
@@ -544,6 +548,7 @@ terminal_status() {
   if flag_on "$(get_env TERMINAL_AUTO_MODE)"; then printf '  Auto mode  on: Claude Code may run in auto mode here (a reviewer model on Sonnet 5.5; ~$0.13 per 5 minutes in use)\n'
   else printf '  Auto mode  off for claude here (Settings › Claude Code › Auto mode in the terminal, from this computer)\n'; fi
   printf '  Managed    terminal/managed/%s.json, read-only in the sandbox (Claude Code'"'"'s managed settings)\n' "$(claude_policy)"
+  subs_status_line   # lib/subscriptions.sh: your AI subscriptions' tools there (as last checked)
   if [ -n "$(get_env REMOTE_TERMINAL_HOST)" ]; then printf '  Remote     on: https://%s (REMOTE_TERMINAL=true)\n' "$(get_env REMOTE_TERMINAL_HOST)"
   elif terminal_remote_wanted; then printf '  Remote     REMOTE_TERMINAL is on, but remote access is off or not finished (./stack remote status)\n'
   else printf '  Remote     off (REMOTE_TERMINAL=true in .env, then ./stack up, adds it to remote access)\n'; fi

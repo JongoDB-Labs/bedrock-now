@@ -755,6 +755,26 @@
       },
       actions: () => [openApp("admin"), showOnHome("models", "Show models")],
     },
+    // Your AI subscriptions' own tools in the sandbox (answers.js, lib/subscriptions.sh), and keys
+    subscriptions: {
+      title: "Your AI subscriptions and keys", optional: true,
+      body: () => [
+        p("Your own plans work here too — each through its provider's own app, in the sandbox, signed in with that app's own sign-in:"),
+        list("ul", [
+          [b("Claude Code"), " on your Claude plan (", code("claude-sub"), "), ", b("Codex"), " on your ChatGPT plan, ", b("Copilot"), ", ", b("Cursor"), ", ",
+            b("Grok"), " (SuperGrok or the X Subscription) and ", b("Gemini CLI"), " (an organisation's Gemini Code Assist, or your own Gemini API key — Google AI Pro and Ultra no longer work in it)."],
+          [b("Signing in"), ": pick the tool in the terminal's ", b("Open"), " menu (or type its name there). It shows a link and a code: open the link in your browser, sign in with the provider, and it is done — Codex needs ",
+            b("device code login"), " turned on in ChatGPT's Security settings first."],
+          ["Each login stays in that tool's own file in the sandbox: ", b("bedrock-now never sees it"), ", and backups leave it out. Anything running in the sandbox could read it, so sign out (Settings) and revoke it at the provider if that ever worries you."]]),
+        p(b("Who answers"), ", on each page:"),
+        list("ul", [
+          [b("Terminal"), ": the ", b("Open"), " menu above it — Claude Code on Bedrock, a tool of yours, or a shell, each in a window of its own (the Code page's terminal panel has the same)."],
+          [b("Chat"), ": the ", b("Who answers"), " menu above it — a Bedrock or OpenRouter model in Open WebUI, or one of your tools ", b("itself"), ", right there, in the folder you pick. As Chat ", b("models"), ", your subscriptions are greyed out for now, each with the provider's reason; your own API keys (OpenAI, Anthropic, xAI, Google, Mistral) come next."]]),
+        note("Usage counts against each plan's own limits; bedrock-now shows no $ for it. ", settings("Claude Code", "+subscriptions"), " › ",
+          b("Your AI subscriptions"), " lists each tool, whether it says it is signed in, ", b("Sign out"), " and ", b("Check again"), "; ", code("./stack subscriptions"), " in a terminal."),
+      ],
+      actions: () => (TERM.here ? [openTerminal()] : []),
+    },
     shared: {
       title: "One store for both", optional: true,
       body: () => [
@@ -847,7 +867,7 @@
     { title: "Your apps (one sign-in)", steps: ["signin-portal", "signin-chat", "signin-admin", "signin-files"] },
     { title: "Chat", steps: ["chat", "voice-use", "docs"] },
     { title: "Code with Claude", steps: ["code-off", "code-open", "code-modes", "code-models", "code-workspace", "code-context", "code-clone", "code-review", "code-run", "terminal", "sandbox", "code-plugins"] },
-    { title: "Your own tools", steps: ["claude", "api", "shared"] },
+    { title: "Your own tools", steps: ["claude", "api", "subscriptions", "shared"] },
     { title: "Keep it running", steps: ["home", "activity", "admin", "updates", "phone", "done"] },
   ];
   // steps of apps this site does not offer (the terminal, the Code page) are left out, not shown as open

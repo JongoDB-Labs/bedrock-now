@@ -70,6 +70,9 @@ Usage: ./stack <command> [--yes]
                | scan | fetch | consent [--always|--once|--revoke] | suggest   (secrets redacted by default)
                config: your setup (CLAUDE.md, skills, agents, commands, MCP servers, plugins, four settings,
                your Git name and email) brought into the sandbox: config import | scan | open | consent
+  subscriptions   Your AI subscriptions' own tools in the sandbox: Claude Code on your Claude plan,
+               Codex, Gemini CLI, Copilot, Cursor, Grok — status | login TOOL | logout TOOL (each signs in
+               with its own flow there; bedrock-now never sees the login)
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
   config       Every setting in .env, secrets masked (the portal's Settings tab shows the same):
@@ -1870,5 +1873,7 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/sessions_config.sh"
 # Its Git hosts from a gh / glab login on this computer (./stack git-host import).
 . "$STACK_DIR/lib/githost.sh"
+# Your AI subscriptions' own tools in the sandbox (./stack subscriptions): what each says of its own login.
+. "$STACK_DIR/lib/subscriptions.sh"
 # claude-bedrock's own Claude Code config folder (./stack uninstall names it; bin/claude-bedrock uses it).
 . "$STACK_DIR/lib/claude_config.sh"

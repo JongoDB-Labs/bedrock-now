@@ -19,6 +19,9 @@
 .hint-close:hover { color: var(--ink); }
 :root { --hint-h: 44px; }
 .frames.hint-on iframe[data-app="chat"] { top: var(--hint-h); height: calc(100% - var(--hint-h)); }
+/* with the who-answers bar above Chat (answers.js): the tip below it */
+.frames.answers-on > .voice-hint { top: var(--answers-h); }
+.frames.answers-on.hint-on iframe[data-app="chat"] { top: calc(var(--answers-h) + var(--hint-h)); height: calc(100% - var(--answers-h) - var(--hint-h)); }
 
 /* Touch screens: every control at least 44 px tall. */
 @media (pointer: coarse) {

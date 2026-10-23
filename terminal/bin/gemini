@@ -1,0 +1,13 @@
+#!/bin/bash
+# gemini in the bedrock-now sandbox: Google's Gemini CLI as Google ships it (/usr/local/lib/bn-tools/gemini, pinned by
+# its lockfile; terminal/Dockerfile's ai-tools stage). Google AI Pro and Ultra stopped working in Gemini CLI on
+# 2026-06-18; it signs in with Login with Google for an organisation's Gemini Code Assist Standard or Enterprise, or uses
+# your own Gemini API key (GEMINI_API_KEY in this shell). Login with Google here prints a link and asks for the code
+# your browser shows (NO_BROWSER=true: no browser can open in the sandbox). Its login stays in ~/.gemini (its own
+# oauth_creds.json, which bedrock-now never opens); /auth signout in it signs out. Its auto-update is off in its system
+# settings (/etc/gemini-cli/settings.json): the image pins its version.
+set -euo pipefail
+bin="${BN_TOOLS_DIR:-/usr/local/lib/bn-tools}/gemini/node_modules/.bin/gemini"
+[ -x "$bin" ] || { echo "gemini: not in this sandbox (TERMINAL_AI_TOOLS in .env leaves it out: Settings › Claude Code › More)" >&2; exit 127; }
+export NO_BROWSER=true
+exec "$bin" "$@"

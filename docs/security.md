@@ -3038,6 +3038,85 @@ else, says what each item brings before it is copied, and never copies a secret-
   version it has now); the plugin's files on your computer are never copied. Linux dialogs (`zenity`, `kdialog`) were
   tested with a stub only.
 
+## Your AI subscriptions
+
+Your own AI plans in the sandbox (README: [Your AI subscriptions](../README.md#your-ai-subscriptions)): Claude Code on
+your Claude plan (`claude-sub`), Codex, Gemini CLI, Copilot CLI, Cursor CLI and Grok Build. The rule for every one of
+them: **only the provider's own, unmodified app uses your plan, signed in with that app's own sign-in, and bedrock-now
+never reads, copies, keeps, passes on or relays a login.**
+
+- [x] **Each provider's own app, as it ships.** Built into the sandbox's image on your computer (never pulled from a
+  registry, never published): Claude Code from npm by version and SHA-512 (its lockfile), Codex's and Copilot's
+  release files by the SHA-256 their GitHub releases list, Gemini CLI and Grok Build from npm by their lockfiles
+  (`npm ci --ignore-scripts`: none of their install scripts runs; Grok's binary is unpacked at build the way its own
+  postinstall would, into the read-only image rather than your home folder), Cursor's package by the SHA-256
+  bedrock-now recorded on 2026-10-23 — **Cursor publishes no checksum**, so that one is trust on first use: a file that
+  changed since stops the build. Read-only at run time. Nothing in any of them is changed, and no sign-in method is
+  removed: the launchers on `PATH` (`terminal/bin/`) only pick each app's config folder, keep its self-update off
+  (an update would install an unpinned copy into the home folder, first on `PATH`) and — for `claude-sub` alone —
+  start it without the stack's own `ANTHROPIC_*` variables (the gateway and the terminal's LiteLLM key, Bedrock's model
+  ids), so the unmodified Claude Code uses its own login in `~/.claude-subscription`. A key you export yourself in a
+  shell for another tool (`GH_TOKEN`, `GEMINI_API_KEY` …) stays: it is one of that tool's own sign-in methods.
+  `TERMINAL_AI_TOOLS` (`all`, `none` or a list) decides which are in the image.
+- [x] **Its own sign-in, in the sandbox.** Each signs in there with a flow that needs no callback into the sandbox:
+  Codex's and Grok's device codes, Copilot's GitHub device flow, Cursor's link that the app polls, Claude Code's and
+  Gemini CLI's link with the code pasted back. Your browser talks to the provider; the sandbox talks to the provider;
+  bedrock-now's other containers see none of it. Their logins stay in each app's own file in the `terminal-home`
+  volume: `~/.claude-subscription/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`,
+  `~/.copilot/` (plaintext once you agree, as the app asks: there is no keychain in the container),
+  `~/.config/cursor/auth.json`, `~/.grok/auth.json`. They survive restarts, updates, rollbacks and `./stack terminal
+  disable`; `./stack uninstall` (or `docker volume rm <project>_terminal-home`) removes them. **Backups never hold
+  them** (a backup is the databases, the buckets and `.env`): after a restore elsewhere you sign in again — a login
+  copied between computers is what Codex's own docs warn about.
+- [x] **Status without the login.** `./stack subscriptions` and Settings' *Check again* run, in the sandbox, each app's
+  own status command (`claude auth status`, `codex login status`, `cursor-agent status --format json`) and keep only
+  words — signed in yes / no / not known, and which kind from a fixed list (*ChatGPT*, *Claude Max*, *an API key* …):
+  `codex login status` prints part of an API key, and only "api-key" is kept of it. Gemini CLI and Grok have no status
+  command: whether their login file exists is looked at, never its content (and Gemini's own settings file for the
+  sign-in method it names). Copilot keeps its login in the file with its other state: not opened — "not known here".
+  The sandbox's answer is untrusted: `./stack` keeps a line only when every field is one of its words
+  (`lib/subscriptions.sh subs_parse`), the portal checks them again (`portal/portal/answers.py`), and a hostile sandbox
+  can at most claim "signed in".
+- [x] **Sign-in and sign-out where you are.** Signing in happens in the terminal like any terminal use (remotely only
+  with `REMOTE_TERMINAL`); `./stack subscriptions login TOOL` on this computer runs the same sign-in in the sandbox and
+  shows its words as plain text only — no terminal escape of the sandbox's reaches this computer's terminal. *Sign out* in Settings runs the app's own sign-out in the sandbox, through the update helper
+  with the password (a request of fixed fields: the action and a tool id among `claude`, `codex`, `cursor`, `grok` —
+  Gemini CLI and Copilot sign out inside their own screens); it does not revoke the login at the provider.
+- [x] **The pickers' words.** The Terminal tab's *Open*, the Code page's terminal panel and the Chat tab's embedded
+  tool load the terminal with `?arg=MODE&arg=TOOL&arg=NONCE[&arg=FOLDER]`; ttyd (`--url-arg`) hands them to
+  `bn-session` as arguments, never through a shell. `bn-session` takes only `open`/`chat`, a tool of its fixed list, a
+  16-32 hex nonce (each acts once) and a folder that resolves inside `/workspace` or a project folder; anything else is
+  the plain attach of before. A link from another site never reaches it: the terminal's unlock cookie is
+  `SameSite=Strict`, so such a link meets the unlock form, and the unlock and the Code page's hand-off keep only words
+  that pass the same rules (`answers.terminal_next`). What a word can do at most is open a window of one of those apps.
+- [x] **No subscription behind an API.** None of these logins is used by LiteLLM, Open WebUI or the Code page's
+  sessions in this release; Chat shows them as models greyed out, with each provider's reason. The Chat tab can show
+  the app itself (its own screen, in the terminal frame) — you type into the real app.
+- [ ] **Anything in the sandbox can read those files.** Claude, a command it runs, a web page it reads, a plugin or an
+  MCP server there runs as the same user and can copy a login out and use your plan elsewhere until you sign out **and
+  revoke it at the provider** (your account's settings at Anthropic, OpenAI, GitHub, Cursor or xAI). The sandbox
+  reaches the internet by default. Sign in only with plans you are comfortable using there; `TERMINAL_AI_TOOLS=none`
+  leaves the apps out. Each app also sends its provider what it sends from anywhere, telemetry included: `claude-sub`
+  runs with Anthropic's defaults (the Bedrock `claude` here turns non-essential traffic off), its updates off.
+
+What each provider says (read 2026-10-23; the design notes keep the quotes):
+
+| Provider | What applies | Where |
+|---|---|---|
+| Anthropic | *"Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription"*; developers *"may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow"*; and since 2026-10-07: *"You can still use the Claude Agent SDK, `claude -p`, and third-party apps with your subscription limits."* | [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance), [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) |
+| OpenAI | *"When you sign in to Codex using an existing ChatGPT account, the ChatGPT Terms of Use and Privacy Policy … apply"*; Codex's docs prefer device-code sign-in on remote and headless machines; *"Do not share the same file across concurrent jobs or multiple machines"* | [Using Codex with your ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan), [Codex authentication](https://learn.chatgpt.com/docs/auth), [Terms of Use](https://openai.com/policies/terms-of-use/) |
+| Google | Gemini CLI stopped serving Google AI Pro and Ultra (and Code Assist for individuals) on 2026-06-18; Standard and Enterprise logins remain; reusing Gemini CLI's sign-in from other software *"is a violation of applicable terms"* (bedrock-now runs the CLI itself) | [Deprecations](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals), [Gemini CLI terms](https://geminicli.com/docs/resources/tos-privacy/) |
+| GitHub | *"Your login may only be used by one person"*; Copilot CLI runs in containers by GitHub's own docs, with the device flow there | [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service), [Authenticate Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli) |
+| Cursor | no reproducing or modifying the service; nothing on containers; its CLI's own login | [Terms of service](https://cursor.com/terms-of-service), [CLI authentication](https://cursor.com/docs/cli/reference/authentication) |
+| xAI | *"You may not share your account credentials"*; no unauthorised automated use; Grok Build documents `grok login --device-auth` for containers | [Terms](https://x.ai/legal/terms-of-service), [Acceptable use](https://x.ai/legal/acceptable-use-policy), [Grok Build CLI](https://docs.x.ai/build/cli/reference) |
+
+Kiro CLI and Amp are not in the image (not asked for; both have their own CLI sign-in and could be added the same way).
+The names each app reaches, all public on port 443 — nothing to open with the default *Internet only*; with
+`TERMINAL_EGRESS_ALLOW` set, add them: `claude.ai`, `claude.com`, `platform.claude.com`, `api.anthropic.com`;
+`auth.openai.com`, `chatgpt.com`; `accounts.google.com`, `oauth2.googleapis.com`, `codeassist.google.com`,
+`cloudcode-pa.googleapis.com`; `github.com`, `githubcopilot.com`; `cursor.com`, `cursor.sh`; `x.ai` (also Cursor's
+sign-in from 2026-10-30, `accounts.x.ai`), `grok.com`. Each name covers the names under it there.
+
 ## Code provenance
 
 `./stack update` runs the code it downloads: on a release install, the newest `vX.Y.Z` tag of the `origin`
@@ -3070,5 +3149,7 @@ Every image version is pinned in `compose.yaml` (Caddy also by digest); the port
 dependencies are hash-locked, and the stt image's base (`python:3.12-alpine`) is pinned by digest (its ffmpeg
 comes from that Alpine release's repository). The optional terminal image's base (`node:…-trixie-slim`) is pinned
 by digest, Claude Code by version and SHA-512 (`npm ci` with `terminal/claude-code/package-lock.json`) and ttyd by
-SHA-256; its Debian packages refresh weekly like stt's ffmpeg (`APT_REFRESH`). LiteLLM is pinned to **1.105.0**. Never use LiteLLM **1.82.7 or 1.82.8**: those
+SHA-256; its Debian packages refresh weekly like stt's ffmpeg (`APT_REFRESH`). Your AI subscriptions' own apps are
+pinned the same ways in a build stage of their own ([above](#your-ai-subscriptions); Cursor's by the SHA-256 recorded
+here, as Cursor publishes none). LiteLLM is pinned to **1.105.0**. Never use LiteLLM **1.82.7 or 1.82.8**: those
 releases were compromised. Update only with `./stack update`.

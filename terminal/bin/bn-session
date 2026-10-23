@@ -2,4 +2,65 @@
 # What ttyd runs for each browser connection: attach to the one tmux session, "claude" — or create it, with
 # claude-bedrock in /workspace as its first window (a shell takes over once Claude Code exits). Closing the tab
 # only detaches; Ctrl-b c opens another shell window.
-exec tmux new-session -A -s claude -n claude -c /workspace "claude-bedrock; exec bash"
+#
+# The pickers ("who answers": the Terminal tab, the Code page's terminal panel, the Chat tab) add words to the address
+# (?arg=…, which ttyd's --url-arg hands over as arguments — never through a shell):
+#   open TOOL NONCE [DIR]   a window running TOOL (`subscriptions open TOOL`: its own sign-in first when it is not
+#                           signed in), named after it, made the current one of "claude" — or that window, if it is
+#                           there already
+#   chat TOOL NONCE [DIR]   the same window, shown alone in a session of its own grouped with "claude" (chat-TOOL…:
+#                           the Chat tab's embedded tool; "claude"'s current window stays what it was)
+# TOOL: bedrock (claude-bedrock), claude (claude-sub, your Claude plan), codex, gemini, copilot, cursor, grok, shell.
+# NONCE: 16-32 hex; each acts once (a reconnect, or the same address again, only attaches). DIR: /workspace or a folder
+# below it, or one of the project folders of your computer (BN_CODE_ROOTS); default /workspace. Anything else — more
+# words, other words, a folder elsewhere — is the plain attach above. A link from another site never gets here: the
+# terminal's unlock cookie is SameSite=Strict (the unlock form answers it), and the unlock keeps only words that pass
+# the portal's own check of these rules.
+set -uo pipefail
+S=claude
+STATE="${BN_SESSION_STATE:-/tmp/bn-session}"
+WS="${BN_CODE_WORKSPACE:-/workspace}"
+
+plain() { exec tmux new-session -A -s "$S" -n claude -c "$WS" "claude-bedrock; exec bash"; }
+ensure() { tmux has-session -t "=$S" 2>/dev/null || tmux new-session -d -s "$S" -n claude -c "$WS" "claude-bedrock; exec bash"; }
+
+[ $# -ge 3 ] && [ $# -le 4 ] || plain
+mode="$1" tool="$2" nonce="$3" dir="${4:-$WS}"
+case "$mode" in open | chat) ;; *) plain ;; esac
+case "$tool" in bedrock | claude | codex | gemini | copilot | cursor | grok | shell) ;; *) plain ;; esac
+[[ $nonce =~ ^[0-9a-f]{16,32}$ ]] || plain
+# the folder: as it resolves, inside the workspace or a project folder of your computer
+case "$dir" in /*) ;; *) plain ;; esac
+real="$(cd -- "$dir" 2>/dev/null && pwd -P)" || plain
+ok=0
+case "$real/" in "$WS"/*) ok=1 ;; esac
+if [ "$ok" = 0 ] && [ -n "${BN_CODE_ROOTS:-}" ]; then
+  while IFS= read -r r; do
+    case "$r" in /?*) case "$real/" in "$r"/*) ok=1 ;; esac ;; esac
+  done < <(printf '%s' "$BN_CODE_ROOTS" | jq -r 'if type == "array" then .[] | strings else empty end' 2>/dev/null)
+fi
+[ "$ok" = 1 ] || plain
+
+# the window: the tool's name, and the folder's when it is not the workspace
+name="$tool"
+if [ "$real" != "$WS" ]; then name="$tool-$(printf '%s' "${real##*/}" | LC_ALL=C tr -c 'A-Za-z0-9_.-' '-' | cut -c1-24)"; fi
+fresh=0
+mkdir -p "$STATE" 2>/dev/null && chmod 700 "$STATE" 2>/dev/null && mkdir "$STATE/$nonce" 2>/dev/null && fresh=1
+ensure
+if [ "$fresh" = 1 ]; then
+  # (-S: the window of that name if there is one; the command is fixed words — TOOL is one of the list above — and the
+  # image's own subscriptions by its full path: never one put in ~/.local/bin, which comes first on PATH)
+  tmux new-window -S -d -t "=$S:" -n "$name" -c "$real" "/usr/local/bin/subscriptions open $tool; exec bash" 2>/dev/null || plain
+fi
+if [ "$mode" = open ]; then
+  [ "$fresh" = 0 ] || tmux select-window -t "=$S:=$name" 2>/dev/null || true
+  exec tmux attach-session -t "=$S"
+fi
+view="chat-$name"
+if ! tmux has-session -t "=$view" 2>/dev/null; then
+  tmux new-session -d -t "=$S" -s "$view" 2>/dev/null || plain
+  tmux set-option -t "=$view" status off 2>/dev/null || true
+  fresh=1
+fi
+[ "$fresh" = 0 ] || tmux select-window -t "=$view:=$name" 2>/dev/null || true
+exec tmux attach-session -t "=$view"

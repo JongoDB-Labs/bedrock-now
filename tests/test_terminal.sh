@@ -129,7 +129,7 @@ test_enable_creates_the_default_workspace_its_key_and_secret() {
   case "$s1" in *[!0-9a-f]* | '') echo "secret not hex: $s1" >&2; return 1 ;; esac
   [ "${#s1}" -ge 32 ] || { echo "secret too short" >&2; return 1; }
   calls="$(cat "$TMP/dc")"
-  assert_contains "$calls" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) terminal"
+  assert_contains "$calls" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) --build-arg BN_AI_TOOLS=all terminal"
   assert_contains "$calls" "dc up -d --wait portal"
   assert_contains "$calls" "dc up -d --wait --force-recreate caddy"
   assert_contains "$calls" "dc up -d --wait --no-deps litellm shared-mcp"   # onto the gateway's network

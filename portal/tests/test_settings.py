@@ -230,8 +230,8 @@ def test_get_settings_needs_a_session_and_shows_the_snapshot(make, dirs):
     assert c.get("/api/settings").status_code == 400            # no X-Requested-With
     d = c.get("/api/settings", headers=API).json()
     assert d["available"] and d["snapshot"]["base"] == BASE
-    assert d["helper"] == {"running": False, "heartbeat_at": None, "settings": False, "diagnostics": [], "projects": [], "sessions": [], "screen": False,
-                           "in_progress": False, "job": None}
+    assert d["helper"] == {"running": False, "heartbeat_at": None, "settings": False, "diagnostics": [], "projects": [], "sessions": [], "subscriptions": [],
+                           "screen": False, "in_progress": False, "job": None}
     assert d["projects"] == {"written_at": None, "max": 16, "folders": [], "leaving": [], "running": False}
     assert d["here"] == {"remote": False, "allowed": True}
     assert "correct horse" not in json.dumps(d) and PASSWORD_HASH not in json.dumps(d)
@@ -796,12 +796,12 @@ def test_request_file_is_bounded():
 def test_capability_file_must_be_recent(dirs):
     sd, _ = dirs
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": 1}))
-    assert st.capability(sd) == {"settings": False, "diagnostics": [], "projects": [], "sessions": [], "screen": False}
+    assert st.capability(sd) == {"settings": False, "diagnostics": [], "projects": [], "sessions": [], "subscriptions": [], "screen": False}
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": ["test", "rm -rf"], "written_at": int(time.time())}))
-    assert st.capability(sd) == {"settings": True, "diagnostics": ["test"], "projects": [], "sessions": [], "screen": False}
+    assert st.capability(sd) == {"settings": True, "diagnostics": ["test"], "projects": [], "sessions": [], "subscriptions": [], "screen": False}
     (sd / "helper-settings.json").write_text(json.dumps({"settings": 1, "diagnostics": [], "projects": ["project-pick", "project-add"], "screen": "yes",
                                                         "sessions": ["sessions-revoke", "sessions-scan", "sessions-rm"], "written_at": int(time.time())}))
-    assert st.capability(sd) == {"settings": True, "diagnostics": [], "projects": ["project-pick"], "sessions": ["sessions-revoke", "sessions-scan"], "screen": False}
+    assert st.capability(sd) == {"settings": True, "diagnostics": [], "projects": ["project-pick"], "sessions": ["sessions-revoke", "sessions-scan"], "subscriptions": [], "screen": False}
 
 
 # --- Part 2: regenerate, pins, the backup list, the session length, the alert threshold ---

@@ -1,0 +1,199 @@
+#!/bin/bash
+# subscriptions: your AI subscriptions' tools in the bedrock-now sandbox — each provider's own, unmodified client (the
+# image's, pinned: terminal/Dockerfile), signed in with that client's own flow, its login kept in its own file in the
+# terminal-home volume. bedrock-now never opens those files: a status is what the tool's own status command says,
+# reduced to "signed in: yes / no / not known here" and which kind (ChatGPT, Claude Max, an API key …) — never more.
+#
+#   subscriptions [status]        each tool: in this sandbox (its version), signed in?
+#   subscriptions status --tsv    the same, a line per tool, for ./stack (Settings › Your AI subscriptions):
+#                                 id, installed (yes/no), version, signed in (yes/no/unknown), kind, how
+#   subscriptions login TOOL      the tool's own sign-in for a sandbox: a link and a code for your browser
+#   subscriptions logout TOOL     the tool's own sign-out (Gemini CLI and Copilot sign out inside them: said)
+#   subscriptions open TOOL       the tool itself, its sign-in first when it is not signed in (the pickers' windows)
+#   subscriptions ids             the tools in this sandbox, one id a line
+#
+# TOOL: claude (Claude Code on your Claude plan: claude-sub), codex, gemini, copilot, cursor, grok; for open also
+# bedrock (claude-bedrock: Claude Code on Bedrock) and shell.
+set -uo pipefail
+
+TOOLS_DIR="${BN_TOOLS_DIR:-/usr/local/lib/bn-tools}"
+BIN="${BN_SUBS_BIN:-/usr/local/bin}"
+LIMIT_S="${BN_SUBS_TIMEOUT:-25}"
+# id|launcher|name|whose plan
+TABLE='claude|claude-sub|Claude Code|your Claude plan (Pro, Max, Team, Enterprise)
+codex|codex|Codex|your ChatGPT plan
+gemini|gemini|Gemini CLI|an organisation'"'"'s Gemini Code Assist, or your Gemini API key
+copilot|copilot|GitHub Copilot CLI|your Copilot plan
+cursor|cursor-agent|Cursor CLI|your Cursor plan
+grok|grok|Grok Build|your SuperGrok or X Subscription'
+
+die() { printf 'subscriptions: %s\n' "$*" >&2; exit 2; }
+row() { printf '%s\n' "$TABLE" | awk -F'|' -v id="$1" '$1 == id { print; f = 1 } END { exit !f }'; }
+field() { row "$1" | cut -d'|' -f"$2"; }
+ids_all() { printf '%s\n' "$TABLE" | cut -d'|' -f1; }
+
+# version ID -> the pinned version in this image, empty when the tool is not here
+version() {
+  local v
+  case "$1" in
+    claude) v="$(timeout 10 "$BIN/claude-sub" --version </dev/null 2>/dev/null | head -n 1 | awk '{ print $1 }')" ;;
+    *) v="$(awk -v t="$1" '$1 == t { print $2; exit }' "$TOOLS_DIR/VERSIONS" 2>/dev/null)" ;;
+  esac
+  [[ $v =~ ^[0-9A-Za-z][0-9A-Za-z.+-]{0,39}$ ]] && printf '%s\n' "$v"
+}
+installed() { [ -n "$(version "$1")" ]; }
+
+# run_capped CMD… -> its output (stdout and stderr), at most 64 KiB, within LIMIT_S seconds; no input
+run_capped() { timeout "$LIMIT_S" "$@" </dev/null 2>&1 | head -c 65536; }
+
+# state ID -> "SIGNED KIND HOW": SIGNED yes|no|unknown; KIND a word (or -); HOW command (its status command said so),
+# file (its login file is there — never opened) or none (it has no way to say)
+state() {
+  local out rc kind sub t
+  case "$1" in
+    claude)
+      # `claude auth status`: JSON, exit 0 when signed in, 1 when not (authMethod, subscriptionType; no token)
+      out="$(timeout "$LIMIT_S" "$BIN/claude-sub" auth status </dev/null 2>/dev/null | head -c 65536; printf '\nrc=%s' "${PIPESTATUS[0]}")"
+      rc="${out##*rc=}"; out="${out%rc=*}"
+      kind="$(printf '%s' "$out" | jq -r 'if type == "object" then (.authMethod // "") else "" end' 2>/dev/null | head -n 1)"
+      sub="$(printf '%s' "$out" | jq -r 'if type == "object" then (.subscriptionType // "") else "" end' 2>/dev/null | head -n 1)"
+      case "$kind" in claude.ai) case "$sub" in pro | max | team | enterprise) kind="claude-$sub" ;; *) kind=claude.ai ;; esac ;;
+        api_key) kind=api-key ;; oauth_token) kind=oauth-token ;; api_key_helper) kind=api-key-helper ;; third_party) kind=third-party ;;
+        *) kind=- ;; esac
+      case "$rc" in 0) echo "yes $kind command" ;; 1) echo "no - command" ;; *) echo "unknown - command" ;; esac ;;
+    codex)
+      # `codex login status` on stderr: "Logged in using ChatGPT", "API key configured - sk-…" (part of a key: only the
+      # kind is kept), "Logged in using access token", "Not logged in"
+      out="$(run_capped "$BIN/codex" login status | head -n 3)"
+      case "$out" in
+        *'Logged in using ChatGPT'*) echo "yes chatgpt command" ;;
+        *'API key configured'*) echo "yes api-key command" ;;
+        *'Logged in using access token'*) echo "yes access-token command" ;;
+        *'Logged in using Amazon Bedrock'*) echo "yes bedrock-key command" ;;
+        *'Not logged in'*) echo "no - command" ;;
+        *) echo "unknown - command" ;;
+      esac ;;
+    cursor)
+      # `cursor-agent status --format json`: isAuthenticated, hasAccessToken (true/false) — no token in it
+      out="$(timeout "$LIMIT_S" "$BIN/cursor-agent" status --format json </dev/null 2>/dev/null | head -c 65536)"
+      case "$(printf '%s' "$out" | jq -r 'if type == "object" then (.isAuthenticated | tostring) else "" end' 2>/dev/null | head -n 1)" in
+        true) echo "yes cursor command" ;; false) echo "no - command" ;; *) echo "unknown - command" ;;
+      esac ;;
+    gemini)
+      # No status command: its settings' sign-in method (not a secret), and whether its login file is there (never opened)
+      t="$(head -c 1048576 "$HOME/.gemini/settings.json" 2>/dev/null | jq -r 'if type == "object" then (.security.auth.selectedType // "") else "" end' 2>/dev/null | head -n 1)"
+      case "$t" in
+        gemini-api-key) echo "unknown api-key file" ;;
+        vertex-ai) echo "unknown vertex-ai file" ;;
+        '' | oauth-personal) if [ -s "$HOME/.gemini/oauth_creds.json" ]; then echo "yes google file"; else echo "no - file"; fi ;;
+        *) echo "unknown - file" ;;
+      esac ;;
+    grok)
+      # No status command: whether its login file is there (never opened)
+      if [ -s "${GROK_HOME:-$HOME/.grok}/auth.json" ]; then echo "yes xai file"; else echo "no - file"; fi ;;
+    copilot)
+      # No status command, and its login sits in the file with its own state: not opened — /user in it says
+      echo "unknown - none" ;;
+    *) echo "unknown - none" ;;
+  esac
+}
+
+kind_words() {
+  case "$1" in
+    claude-pro) echo "Claude Pro" ;; claude-max) echo "Claude Max" ;; claude-team) echo "Claude Team" ;;
+    claude-enterprise) echo "Claude Enterprise" ;; claude.ai) echo "a Claude account" ;; chatgpt) echo "ChatGPT" ;;
+    api-key) echo "an API key" ;; oauth-token) echo "a long-lived token" ;; api-key-helper) echo "an API key helper" ;;
+    third-party) echo "a cloud provider" ;; access-token) echo "an access token" ;; bedrock-key) echo "an Amazon Bedrock key" ;;
+    google) echo "Google" ;; vertex-ai) echo "Vertex AI" ;; cursor) echo "Cursor" ;; xai) echo "xAI" ;; *) echo "" ;;
+  esac
+}
+
+cmd_status() {
+  local tsv=0 id v s k h
+  case "${1:-}" in --tsv) tsv=1 ;; '') ;; *) die "usage: subscriptions status [--tsv]" ;; esac
+  if [ "$tsv" = 1 ]; then
+    for id in $(ids_all); do
+      v="$(version "$id")"
+      if [ -n "$v" ]; then read -r s k h <<< "$(state "$id")"; printf '%s\tyes\t%s\t%s\t%s\t%s\n' "$id" "$v" "$s" "$k" "$h"
+      else printf '%s\tno\t-\tno\t-\tnone\n' "$id"; fi
+    done
+    return 0
+  fi
+  printf '%-20s %-19s %-34s %s\n' TOOL VERSION "SIGNED IN" COMMAND
+  for id in $(ids_all); do
+    v="$(version "$id")"
+    if [ -z "$v" ]; then printf '%-20s %-19s %-34s %s\n' "$(field "$id" 3)" - "not in this sandbox (TERMINAL_AI_TOOLS)" "$(field "$id" 2)"; continue; fi
+    read -r s k h <<< "$(state "$id")"
+    [ "$k" != - ] || k=''
+    case "$s" in
+      yes) s="yes${k:+ — $(kind_words "$k")}"; [ "$h" != file ] || s="$s (its login file is there)" ;;
+      no) s="no — subscriptions login $id" ;;
+      *) case "$id" in copilot) s="not known here — /user in it" ;; *) s="not known here${k:+ ($(kind_words "$k"))}" ;; esac ;;
+    esac
+    printf '%-20s %-19s %-34s %s\n' "$(field "$id" 3)" "$v" "$s" "$(field "$id" 2)"
+  done
+  printf '\nEach signs in with its own flow, here in the sandbox; its login stays in its own file, which bedrock-now never opens.\n'
+}
+
+need_tool() {
+  row "$1" >/dev/null || die "no tool called '$1' (one of: $(ids_all | tr '\n' ' '))"
+  installed "$1" || die "$(field "$1" 3) is not in this sandbox (TERMINAL_AI_TOOLS in .env leaves it out)"
+}
+
+# login ID — the tool's own sign-in that works in a sandbox (run, not exec'd, by open)
+login() {
+  local rc=0
+  case "$1" in
+    claude) printf 'Claude Code: open the link below in your browser, sign in, then paste the code it shows here.\n'
+            "$BIN/claude-sub" auth login || rc=$? ;;
+    codex) "$BIN/codex" login --device-auth || rc=$?
+           [ "$rc" = 0 ] || printf '\nNo sign-in? Turn on "device code login" in ChatGPT: Settings › Security (a workspace: its admin), then run this again.\n' ;;
+    gemini) printf 'Gemini CLI signs in inside it: choose "Login with Google" (an organisation'"'"'s Gemini Code Assist) — it prints a link and asks for the code your browser shows — or use your own key (GEMINI_API_KEY). Google AI Pro and Ultra no longer work in Gemini CLI.\n'
+            "$BIN/gemini" || rc=$? ;;
+    copilot) "$BIN/copilot" login --device-code || rc=$? ;;
+    cursor) "$BIN/cursor-agent" login || rc=$? ;;
+    grok) "$BIN/grok" login --device-auth || rc=$? ;;
+  esac
+  return "$rc"
+}
+
+logout() {
+  case "$1" in
+    claude) exec "$BIN/claude-sub" auth logout ;;
+    codex) exec "$BIN/codex" logout ;;
+    cursor) exec "$BIN/cursor-agent" logout ;;
+    grok) exec "$BIN/grok" logout ;;
+    gemini) printf 'Gemini CLI signs out inside it: run gemini, then /auth signout.\n' >&2; exit 3 ;;
+    copilot) printf 'Copilot signs out inside it: run copilot, then /logout (it keeps no other copy; revoke it on github.com › Settings › Applications too).\n' >&2; exit 3 ;;
+  esac
+}
+
+cmd_open() {
+  local id="${1:-}" s
+  case "$id" in
+    bedrock) exec "$BIN/claude-bedrock" ;;
+    shell) exec bash ;;
+  esac
+  need_tool "$id"
+  read -r s _ _ <<< "$(state "$id")"
+  # (Claude Code and Gemini CLI sign in inside their own screens; the others first, with their own sign-in)
+  if [ "$s" = no ]; then
+    case "$id" in
+      claude | gemini) ;;
+      *) printf '%s is not signed in here yet: its own sign-in first.\n\n' "$(field "$id" 3)"
+         login "$id" || printf '\n%s: not signed in. It starts anyway; `subscriptions login %s` tries again.\n\n' "$(field "$id" 3)" "$id" ;;
+    esac
+  fi
+  exec "$BIN/$(field "$id" 2)"
+}
+
+sub="${1:-status}"; [ $# -eq 0 ] || shift
+case "$sub" in
+  status) cmd_status "$@" ;;
+  ids) for id in $(ids_all); do ! installed "$id" || echo "$id"; done ;;
+  login) [ $# -eq 1 ] || die "usage: subscriptions login TOOL"; need_tool "$1"; login "$1"; exit $? ;;
+  logout) [ $# -eq 1 ] || die "usage: subscriptions logout TOOL"; need_tool "$1"; logout "$1" ;;
+  open) [ $# -eq 1 ] || die "usage: subscriptions open TOOL"; cmd_open "$1" ;;
+  -h | --help | help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown: subscriptions $sub (subscriptions --help)" ;;
+esac

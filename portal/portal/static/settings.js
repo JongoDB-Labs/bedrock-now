@@ -98,7 +98,7 @@
   function fallbackLayout() {
     const rows = Object.keys(keys).map((k) => (FALLBACK_WITH[k] && keys[FALLBACK_WITH[k]]
       ? { key: k, section: "all", place: "with", parent: FALLBACK_WITH[k], summary: "" } : { key: k, section: "all", place: "main", parent: "", summary: "" }));
-    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent", "+bring-setup"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
+    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent", "+bring-setup", "+subscriptions"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
     return { sections: [{ id: "all", title: "All settings", lede: "The page's layout (catalog/settings-layout.tsv) could not be read: every setting in one list.", doc: "" }], rows };
   }
 
@@ -420,7 +420,8 @@
   function rowFor(r) {
     const own = { "+devices": sessionsRow, "+models": modelsRow, "+backups": backupRow, "+test": actionRow, "+check-aws": actionRow,
       "+report": actionRow, "+restart": restartRow, "+git-hosts": gitHostsRow, "+project-folders": projectFoldersRow,
-      "+sessions-consent": sessionsConsentRow, "+bring-setup": bringSetupRow };
+      "+sessions-consent": sessionsConsentRow, "+bring-setup": bringSetupRow,
+      "+subscriptions": subscriptionsRow };
     if (r.key.startsWith("+")) return own[r.key] ? own[r.key](r) : null;
     const k = keys[r.key];
     if (!k) return null;
@@ -452,7 +453,7 @@
   // what a blank value means (the stack's own default), for the keys whose default is not .env.example's value
   const BLANK = { PORTAL_SESSION_DAYS: "30 days", BUDGET_ALERT_PCT: "80%", BACKUP_HOUR: hourRange(2), BACKUP_KEEP: "7",
     AUTO_UPDATE_HOUR: hourRange(3), OPENROUTER_MODELS: "all", OPENROUTER_MAX_MODELS: "1000", TERMINAL_EGRESS: "Internet only",
-    TERMINAL_MEM_LIMIT: "4g", REMOTE_MODE: "off", AWS_AUTH: "an access key", REMOTE_SUBNET: "10.255.255.248/29",
+    TERMINAL_MEM_LIMIT: "4g", TERMINAL_AI_TOOLS: "all", REMOTE_MODE: "off", AWS_AUTH: "an access key", REMOTE_SUBNET: "10.255.255.248/29",
     PORTAL_HOST: "bedrock-now.localhost", PORTAL_PORT: "80, else 8800", CHAT_HOST: "chat. + the portal's address",
     ADMIN_HOST: "admin. + the portal's address", FILES_HOST: "files. + the portal's address",
     TERMINAL_HOST: "terminal. + the portal's address", CODE_HOST: "code. + the portal's address",
@@ -1288,6 +1289,66 @@
     return rw;
   }
 
+  // Your AI subscriptions (lib/subscriptions.sh, answers.py): each tool in the sandbox — the provider's own client —
+  // with what it said of its own login at the last check (yes · which kind / no / not known here), never a login.
+  // Signing in happens in the terminal (Open in the terminal); Sign out runs the tool's own sign-out and Check again
+  // asks the sandbox again, both through the update helper with the password (narrowing: wherever Settings actions are).
+  function subscriptionsRow(r) {
+    const rw = ownFrame(r, "Your AI subscriptions");
+    const sb = data.subscriptions || { tools: [], sandbox: null, checked_at: null };
+    const can = (act) => canChange() && (data.helper.subscriptions || []).includes(act);
+    const list = el("ul", { class: "set-projects", id: "set-subscriptions" });
+    const termHere = Boolean(APP_URLS.terminal);
+    for (const t of sb.tools || []) {
+      const state = t.installed === false ? ["not in the sandbox", ""] : t.installed == null ? ["not checked yet", ""]
+        : t.signed_in === "yes" ? [`signed in${t.kind_words ? ` · ${t.kind_words}` : ""}${t.how === "file" ? " (its login file is there)" : ""}`, "badge-local"]
+          : t.signed_in === "no" ? ["not signed in", ""] : [t.id === "copilot" ? "not known here — /user in Copilot says" : "not known here", ""];
+      const li = el("li", { class: "set-project", "data-tool": t.id },
+        el("span", { class: "set-project-name", text: t.name }), " ",
+        el("span", { class: "note", text: `${t.provider} · ${t.plan}${t.version ? ` · ${t.version}` : ""} · ${t.command}` }), " ",
+        el("span", { class: `badge ${state[1]}`.trim(), text: state[0] }));
+      const acts = el("span", { class: "set-project-actions" });
+      if (t.installed !== false && termHere) {
+        const open = el("button", { type: "button", class: "action", text: t.signed_in === "yes" ? "Open in the terminal" : "Sign in in the terminal", "data-act": "subscriptions-open" });
+        open.addEventListener("click", () => {
+          showTab("terminal");
+          const f = document.querySelector('#frames iframe[data-app="terminal"]');
+          if (f && window.bnAnswers) f.src = window.bnAnswers._pure.terminalSrc(appUrl("terminal"), "open", t.id,
+            Array.from(crypto.getRandomValues(new Uint8Array(8)), (x) => x.toString(16).padStart(2, "0")).join(""));
+        });
+        acts.append(open);
+      }
+      if (t.signout === "cli" && t.installed !== false && t.signed_in !== "no") {
+        const out = el("button", { type: "button", class: "action", text: "Sign out", "data-act": "subscriptions-signout" });
+        out.disabled = !can("subscriptions-signout");
+        out.addEventListener("click", () => askPassword({ kind: "subscriptions", action: "subscriptions-signout", tool: t.id },
+          `Sign ${t.name} out in the sandbox?`,
+          `${t.name}'s own sign-out runs in the sandbox: its login there is removed. If anything in the sandbox may have read it, revoke it at ${t.provider} too.`, "Sign out"));
+        acts.append(out);
+      } else if (t.signout === "inside" && t.signed_in !== "no" && t.installed !== false) {
+        li.append(el("p", { class: "note set-project-pending", text: `${t.name} signs out inside it: ${t.id === "gemini" ? "/auth signout" : "/logout"} (Open in the terminal).` }));
+      }
+      li.append(acts);
+      list.append(li);
+    }
+    if (!(sb.tools || []).length) list.append(el("li", { class: "note", text: "No tools listed (catalog/ai-tools.tsv is missing)." }));
+    rw._main.append(list);
+    const when = sb.checked_at ? new Date(sb.checked_at * 1000).toLocaleString() : "";
+    const SB = { off: "The sandbox is off: ./stack terminal enable.", down: "The sandbox is not running: ./stack up.", error: "The sandbox did not answer at the last check." };
+    rw._main.append(el("p", { class: "note set-extra", text: `${SB[sb.sandbox] || ""}${SB[sb.sandbox] ? " " : ""}${when ? `Checked ${when}.` : "Not checked yet."} Each tool signs in with its own flow, in the terminal (a link and a code for your browser); its login stays in that tool's own file in the sandbox — bedrock-now never opens it, and backups leave it out. Anything in the sandbox can read those files: sign out (and revoke at the provider) if that worries you.` }));
+    const check = el("button", { type: "button", class: "action", text: "Check again", id: "set-subscriptions-check" });
+    check.disabled = !can("subscriptions-check");
+    check.addEventListener("click", () => askPassword({ kind: "subscriptions", action: "subscriptions-check" }, "Ask the sandbox's AI tools again?",
+      "Each tool's own status command runs in the sandbox (about a second each); only signed in or not, and which kind, is kept.", "Check again"));
+    rw._actions.append(check);
+    if (!can("subscriptions-check")) {
+      rw._main.append(el("p", { class: "note set-extra", text: !data.helper.running ? "Check again and Sign out need the update helper (./stack helper install)." : !canChange() ? "Settings changes are off for remote access (REMOTE_ADMIN_ACTIONS)." : "This update helper does not offer them yet: ./stack helper install refreshes it." }));
+    }
+    rw._main.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: "In a terminal on this computer: " }), el("code", { text: "./stack subscriptions" }), " ",
+      copyButton("./stack subscriptions")));
+    return rw;
+  }
+
   function sessionDays() { const k = keys.PORTAL_SESSION_DAYS; return k && /^\d+$/.test(k.value || "") ? Number(k.value) : 30; }
 
   function sessionsRow(r) {
@@ -1470,6 +1531,7 @@
       else if (what.kind === "reveal") [r, d] = await post("/api/settings/reveal", { password: pw, key: what.key });
       else if (what.kind === "action") [r, d] = await post("/api/settings/action", { password: pw, action: what.action });
       else if (what.kind === "sessions") [r, d] = await post("/api/settings/sessions", { password: pw, action: what.action, project: what.project, tool: what.tool });
+      else if (what.kind === "subscriptions") [r, d] = await post("/api/settings/subscriptions", { password: pw, action: what.action, ...(what.tool ? { tool: what.tool } : {}) });
       else if (what.kind === "project") {
         [r, d] = await post("/api/settings/project", { password: pw, action: what.action, when: what.when,
           ...(what.project ? { project: what.project } : { mode: what.mode, hide: what.hide }) });
@@ -1489,7 +1551,7 @@
       if (what.kind === "reveal") { showRevealed(what.key, d.value, what.show); return; }
       if (what.kind === "signout") { toast("Every other device is signed out"); return; }
       if (what.form) what.form.remove();
-      const label = what.kind === "action" || what.kind === "project" || what.kind === "sessions" ? what.action : "settings";
+      const label = ["action", "project", "sessions", "subscriptions"].includes(what.kind) ? what.action : "settings";
       watch({ id: d.id, kind: label, keys: d.keys, password: Boolean(what.values && "PORTAL_PASSWORD" in what.values), at: Date.now() });
       toast("Sent to the update helper");
     } catch (e) {

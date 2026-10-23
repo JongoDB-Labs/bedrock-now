@@ -6,6 +6,42 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Your AI subscriptions, in the sandbox.** Your own plans through each provider's own, unmodified app, signed in
+  with that app's own sign-in (a link and a code in your browser): **Claude Code on your Claude plan** (`claude-sub`:
+  the same Claude Code in its own config folder, `~/.claude-subscription`, started without the stack's `ANTHROPIC_*`
+  variables — `claude` and `claude-bedrock` stay on Bedrock), **Codex** (ChatGPT; `codex login --device-auth`),
+  **Gemini CLI** (an organisation's Code Assist, or your own Gemini API key — Google AI Pro and Ultra no longer work in
+  it), **GitHub Copilot CLI**, **Cursor CLI** and **Grok Build** (SuperGrok, the X Subscription). Each is in the
+  sandbox's image, pinned and checked when it is built (Codex's and Copilot's release files by SHA-256, Gemini CLI's and
+  Grok's npm lockfiles, Cursor's by a SHA-256 recorded here — Cursor publishes none), its self-update off;
+  `TERMINAL_AI_TOOLS` (all, none or a list) keeps fewer. Each login stays in its own app's file in the sandbox:
+  bedrock-now never reads, copies or passes one on, and backups leave them out. `subscriptions` in the terminal and
+  `./stack subscriptions status|login TOOL|logout TOOL` here.
+- **Who answers, on each page.** The Terminal tab's **Open** menu (Claude Code on Bedrock, a shell, one of your tools —
+  each in a window of its own, starting with its sign-in when it has none), the same **Open…** menu in the Code page's
+  terminal panel (in the project's folder), and Chat's **Who answers**: a Bedrock or OpenRouter model (a new chat with
+  it), or one of your tools **itself** in place of Open WebUI, in the workspace or a project folder — you type into the
+  real app. As Chat models your subscriptions are greyed out for now, each with the provider's reason; your own API
+  keys come next.
+- **Settings › Claude Code › Your AI subscriptions**: each tool, its version, whether it says it is signed in and which
+  kind (its own status command — never the login), **Sign out** (its own) and **Check again**, through the update
+  helper with the password. *Tools in the sandbox* (`TERMINAL_AI_TOOLS`) under More.
+- **Walkthrough**: *Your AI subscriptions and keys* in *Your own tools* (marked New for browsers that went through it).
+
+### Changed
+
+- Claude Code 2.1.309 in the sandbox, with the Agent SDK 0.3.309 (2.1.301 fixed sign-outs after a short `claude auth
+  status`). The sandbox's terminal takes the pickers' words from its address (ttyd `--url-arg`): `bn-session` checks
+  them against a fixed list — anything else is the plain attach as before — and the terminal's unlock and the Code
+  page's hand-off keep only words that pass the same check.
+
+### Security
+
+- A login made in the sandbox can be read by anything running there (Claude, a command it runs, a page it reads):
+  said wherever you sign in, with how to sign out and where to revoke it ([docs/security.md](docs/security.md#your-ai-subscriptions)).
+
 ## [0.22.1] - 2026-10-23
 
 ### Changed

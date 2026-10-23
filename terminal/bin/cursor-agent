@@ -1,0 +1,12 @@
+#!/bin/bash
+# cursor-agent in the bedrock-now sandbox: Cursor's CLI as Cursor ships it (/usr/local/lib/bn-tools/cursor, the package
+# its own installer downloads, pinned by version and the SHA-256 seen on 2026-10-23 — Cursor publishes no checksum;
+# terminal/Dockerfile's ai-tools stage). On your Cursor plan: `cursor-agent login` prints a link to open in your
+# browser and waits for it (NO_OPEN_BROWSER=1: no browser can open in the sandbox); `cursor-agent status`,
+# `cursor-agent logout`. It keeps the login in ~/.config/cursor (its own file, which bedrock-now never opens). Its
+# self-update stays off (--disable-auto-update): the image pins its version.
+set -euo pipefail
+bin="${BN_TOOLS_DIR:-/usr/local/lib/bn-tools}/cursor/cursor-agent"
+[ -x "$bin" ] || { echo "cursor-agent: not in this sandbox (TERMINAL_AI_TOOLS in .env leaves it out: Settings › Claude Code › More)" >&2; exit 127; }
+export NO_OPEN_BROWSER=1
+exec "$bin" --disable-auto-update "$@"

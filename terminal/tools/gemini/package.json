@@ -1,0 +1,8 @@
+{
+  "name": "bedrock-now-terminal-gemini-cli",
+  "private": true,
+  "description": "Google's Gemini CLI for the bedrock-now sandbox, pinned (npm ci checks every tarball against package-lock.json)",
+  "dependencies": {
+    "@google/gemini-cli": "0.65.0"
+  }
+}

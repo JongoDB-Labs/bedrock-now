@@ -13,7 +13,8 @@
 #            values: set and not off) — search and "Changed from default" show them anyway, saying so
 #   SUMMARY  one plain line (- for with rows)
 # Rows whose KEY starts with + are the page's own rows (no .env key): +devices, +models, +backups, +test, +check-aws,
-# +report, +restart, +git-hosts, +project-folders, +sessions-consent, +bring-setup. Sections are shown in this order; rows in file order.
+# +report, +restart, +git-hosts, +project-folders, +sessions-consent, +bring-setup, +subscriptions. Sections are shown
+# in this order; rows in file order.
 
 @account	Account & security	Your password, the owner email, how long sign-ins last, and what LiteLLM keeps of your prompts.	README.md#the-portal-one-login-for-everything
 PORTAL_PASSWORD	account	main	-	The one password for the portal, Chat, Admin and Files; it also unlocks the Terminal and the Code page.
@@ -67,6 +68,7 @@ CODE_AUTO_MODE	code	main	CODE_ENABLED	Offer Auto mode: a reviewer model approves
 +project-folders	code	main	CODE_ENABLED	Folders of this computer as Code page projects: mounted into its sandbox, read-write or read-only.
 +sessions-consent	code	main	CODE_ENABLED	What bedrock-now may read of your Claude Code and claude-bedrock sessions and setup on this computer.
 +bring-setup	code	main	CODE_ENABLED	Your Claude Code setup and Git name and email from this computer, copied into the Code page's sandbox.
++subscriptions	code	main	TERMINAL_ENABLED	Your plans' own tools in the sandbox (Claude, Codex, Gemini, Copilot, Cursor, Grok) and their sign-ins.
 TERMINAL_ENABLED	code	main	-	The Terminal tab: a shell with Claude Code in a sandbox container that sees one folder of yours.
 TERMINAL_WORKSPACE	code	with	TERMINAL_ENABLED	-
 TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	The sandbox's internet: public addresses only (the default), with this computer's services too, or off.
@@ -82,6 +84,7 @@ CLAUDE_BEDROCK_SONNET_MODEL	code	with	CLAUDE_MODEL_SONNET	-
 CLAUDE_MODEL_HAIKU	code	more	-	Claude Code's haiku slot: quick background tasks.
 CLAUDE_BEDROCK_HAIKU_MODEL	code	with	CLAUDE_MODEL_HAIKU	-
 TERMINAL_MEM_LIMIT	code	more	TERMINAL_ENABLED	The sandbox container's memory limit.
+TERMINAL_AI_TOOLS	code	more	TERMINAL_ENABLED	Which of your AI subscriptions' own tools the sandbox holds.
 GIT_GITHUB_CLIENT_ID	code	more	CODE_ENABLED	Sign in with GitHub (Git hosts): the GitHub App's client ID (blank: bedrock-now's own).
 GIT_GITHUB_APP_SLUG	code	with	GIT_GITHUB_CLIENT_ID	-
 GIT_GITLAB_CLIENT_ID	code	more	CODE_ENABLED	Sign in with GitLab (Git hosts): the gitlab.com application's ID (blank: none — yours, for gitlab.com).

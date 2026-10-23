@@ -2882,6 +2882,15 @@ function bn(req, res, url) {
     const id = url.searchParams.get('session') || '';
     return json(res, 200, { session: id, rows: spendRows.get(id) ?? [], key: { ...keyBudget, error: null } });
   }
+  if (url.pathname === '/.bn/answers') {
+    // your AI subscriptions' tools in the sandbox (the portal's answers.py): none signed in here; a hostile name in
+    // HOSTILE_MODE (the panel's Open menu shows it as text)
+    const tool = (id, name, command, signed) => ({ id, name: HOSTILE_MODE && id === 'grok' ? HOSTILE.script : name, command, plan: `${name}'s plan`,
+      installed: id !== 'cursor', signed_in: signed, kind_words: signed === 'yes' ? 'ChatGPT' : '' });
+    return json(res, 200, { terminal: { enabled: true, here: true }, tools: [tool('claude', 'Claude Code', 'claude-sub', 'no'),
+      tool('codex', 'Codex', 'codex', 'yes'), tool('gemini', 'Gemini CLI', 'gemini', 'no'), tool('copilot', 'GitHub Copilot CLI', 'copilot', 'unknown'),
+      tool('cursor', 'Cursor CLI', 'cursor-agent', 'no'), tool('grok', 'Grok Build', 'grok', 'no')] });
+  }
   if (url.pathname === '/.bn/terminal') {
     // the code host's hand-off to the terminal host (here: the mock terminal on this host)
     res.writeHead(303, { location: '/__terminal', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });

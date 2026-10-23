@@ -1,0 +1,13 @@
+#!/bin/bash
+# copilot in the bedrock-now sandbox: GitHub's Copilot CLI as GitHub ships it (/usr/local/lib/bn-tools/copilot/copilot,
+# pinned and checked when the image was built; terminal/Dockerfile's ai-tools stage). On your Copilot plan (Free
+# included): `copilot login` (in a container it uses GitHub's device flow: a one-time code for github.com/login/device),
+# or `subscriptions login copilot`. With no keychain here it asks before keeping the login in ~/.copilot (its own file,
+# which bedrock-now never opens); /logout in it signs out, /user shows who is signed in. A token you export in this
+# shell (COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN) comes first, as GitHub documents. Its self-update stays off
+# (COPILOT_AUTO_UPDATE=false): the image pins its version, and an update would run a copy downloaded into your home.
+set -euo pipefail
+bin="${BN_TOOLS_DIR:-/usr/local/lib/bn-tools}/copilot/copilot"
+[ -x "$bin" ] || { echo "copilot: not in this sandbox (TERMINAL_AI_TOOLS in .env leaves it out: Settings › Claude Code › More)" >&2; exit 127; }
+export COPILOT_AUTO_UPDATE=false
+exec "$bin" "$@"

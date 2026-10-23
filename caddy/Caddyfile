@@ -328,12 +328,13 @@ http://{$FILES_HOST} {
 }
 
 # After the check, the portal answers for the page what the code container must not hold: the models with this
-# stack's prices (/.bn/models), a session's spend from LiteLLM's logs (/.bn/spend; the master key stays in the
-# portal) and the hand-off of this unlock to the terminal host for the page's terminal panel (/.bn/terminal: a redirect
-# to that host's /.bn/unlock-callback, terminal_callback), a preview link for a port in the sandbox (/.bn/preview:
-# locally its capability, from this unlock, caddy/preview-on.caddy; remotely a single-use hand-off to the preview
-# host, remote_preview below) and the sandboxed artifact viewer's address (/.bn/artifact: its capability, from this
-# unlock; caddy/artifact-on.caddy; local only). Any other /.bn/ path is nobody's.
+# stack's prices (/.bn/models), your AI subscriptions' tools in the sandbox and what each says of its login
+# (/.bn/answers), a session's spend from LiteLLM's logs (/.bn/spend; the master key stays in the portal) and the
+# hand-off of this unlock to the terminal host for the page's terminal panel (/.bn/terminal: a redirect to that host's
+# /.bn/unlock-callback, terminal_callback; ?open=TOOL: a window of that tool there), a preview link for a port in the
+# sandbox (/.bn/preview: locally its capability, from this unlock, caddy/preview-on.caddy; remotely a single-use
+# hand-off to the preview host, remote_preview below) and the sandboxed artifact viewer's address (/.bn/artifact: its
+# capability, from this unlock; caddy/artifact-on.caddy; local only). Any other /.bn/ path is nobody's.
 (code_portal) {
 	@bn_code_preview path /.bn/preview
 	reverse_proxy @bn_code_preview portal:8000 {
@@ -345,7 +346,7 @@ http://{$FILES_HOST} {
 	}
 	@bn_code_terminal path /.bn/terminal
 	reverse_proxy @bn_code_terminal portal:8000 {
-		rewrite /auth/code-terminal
+		rewrite /auth/code-terminal?{query}
 	}
 	@bn_code_models path /.bn/models
 	reverse_proxy @bn_code_models portal:8000 {
@@ -354,6 +355,11 @@ http://{$FILES_HOST} {
 	@bn_code_spend path /.bn/spend
 	reverse_proxy @bn_code_spend portal:8000 {
 		rewrite /auth/code-spend?{query}
+	}
+	# (who answers: your AI subscriptions' tools in the sandbox, for its terminal panel's Open menu)
+	@bn_code_answers path /.bn/answers
+	reverse_proxy @bn_code_answers portal:8000 {
+		rewrite /auth/code-answers
 	}
 	# (the Import sheet's requests to the computer: the portal checks the password and writes the helper's request)
 	request_body /.bn/sessions {

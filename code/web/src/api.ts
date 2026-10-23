@@ -1690,6 +1690,43 @@ export interface BnModels {
   /** Settings › Claude Code › Models: all, anthropic or list, and how many of the models it lists (null: not said) */
   scope?: { mode: 'all' | 'anthropic' | 'list'; listed: number; total: number } | null;
 }
+/** Your AI subscriptions' tools in the sandbox, for the terminal panel's Open menu (/.bn/answers: the portal's
+ *  answers.py) — each the provider's own client, with what it said of its own login at the last check. */
+export interface BnTool {
+  id: string;
+  name: string;
+  command: string;
+  plan: string;
+  /** null: not checked yet */
+  installed: boolean | null;
+  signedIn: 'yes' | 'no' | 'unknown';
+  kindWords: string;
+}
+export interface BnAnswers {
+  here: boolean;
+  tools: BnTool[];
+}
+const TOOL_IDS = ['claude', 'codex', 'gemini', 'copilot', 'cursor', 'grok'];
+export async function getAnswers(): Promise<BnAnswers> {
+  return normAnswers(await request('GET', '/.bn/answers'));
+}
+/** /.bn/answers as the panel keeps it: the catalog's ids only, short plain texts (it shows them as text). */
+export function normAnswers(raw: unknown): BnAnswers {
+  const o = obj(raw) ?? {};
+  const plain = (v: unknown, n: number) => str(v).replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g, '').slice(0, n);
+  const tools: BnTool[] = [];
+  for (const t of Array.isArray(o.tools) ? o.tools.slice(0, 12) : []) {
+    const r = obj(t);
+    if (!r || !TOOL_IDS.includes(str(r.id)) || tools.some((x) => x.id === r.id)) continue;
+    const signed = str(r.signed_in);
+    tools.push({
+      id: str(r.id), name: plain(r.name, 60) || str(r.id), command: plain(r.command, 30), plan: plain(r.plan, 120),
+      installed: r.installed === true ? true : r.installed === false ? false : null,
+      signedIn: signed === 'yes' || signed === 'no' ? signed : 'unknown', kindWords: plain(r.kind_words, 40),
+    });
+  }
+  return { here: obj(o.terminal)?.here === true, tools };
+}
 export async function getModels(): Promise<BnModels> {
   return normModels(await request('GET', '/.bn/models'));
 }

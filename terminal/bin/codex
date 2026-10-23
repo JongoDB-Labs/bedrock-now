@@ -1,0 +1,11 @@
+#!/bin/bash
+# codex in the bedrock-now sandbox: OpenAI's Codex CLI as OpenAI ships it (/usr/local/lib/bn-tools/codex/codex, pinned
+# and checked when the image was built; terminal/Dockerfile's ai-tools stage). On your ChatGPT plan: sign in with
+# `codex login --device-auth` (a link and a one-time code for your browser — first turn on "device code login" in
+# ChatGPT's Settings › Security), or `subscriptions login codex`. Its default sign-in waits on localhost:1455 inside
+# the sandbox, which your browser cannot reach. Codex keeps the login in ~/.codex/auth.json (the terminal-home volume),
+# its own file: bedrock-now never opens it. Nothing is changed or added here; this file only says where it is.
+set -euo pipefail
+bin="${BN_TOOLS_DIR:-/usr/local/lib/bn-tools}/codex/codex"
+[ -x "$bin" ] || { echo "codex: not in this sandbox (TERMINAL_AI_TOOLS in .env leaves it out: Settings › Claude Code › More)" >&2; exit 127; }
+exec "$bin" "$@"

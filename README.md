@@ -27,6 +27,7 @@ disable` the Code page alone; either stays off across updates).
 | [**Settings**](#settings) | every setting of `.env`, shown in the portal | on (read-only until the update helper is installed) | `./stack helper install` makes it editable |
 | [**Terminal**](#claude-code-in-the-browser) | Claude Code in the browser, in a sandbox that sees one folder of yours (`~/bedrock-now-workspace`) and reaches public internet addresses through an egress proxy of its own — not this computer's services or your network | on, as the Code page's sandbox (internet: public addresses only) | `./stack terminal disable` / `enable` (disable turns the Code page off too); its internet: Settings › Claude Code › Sandbox internet access |
 | [**Code page**](#the-code-page) | Claude Code as an IDE-like page: chat with any chat model of the catalog, @-mentions of the terminal, the changes, failed runs and file lines, permission modes, comments on a plan's lines, editor, file and dev-server previews, review changes, Git with remotes (Git hosts: clone, fetch, pull, push), Run & test | on (Bypass, Auto and remote access to it: off) | `./stack code disable` / `enable`, or Settings › Claude Code; the Code tab stays and says how while it is off |
+| [**Your AI subscriptions**](#your-ai-subscriptions) | your own plans in the sandbox, each through its provider's own, unmodified app signed in with its own sign-in: Claude Code on your Claude plan (`claude-sub`), Codex (ChatGPT), Gemini CLI, Copilot, Cursor, Grok — a **who answers** menu above the Terminal and Chat (where the tool itself opens in place of Open WebUI) and in the Code page's terminal panel; bedrock-now never sees a login | on (the tools are in the sandbox; nothing is signed in) | `TERMINAL_AI_TOOLS` in `.env` (all, none or some); Settings › Claude Code › *Your AI subscriptions* |
 | [**Remote access**](#remote-access) | the portal from your phone or laptop over HTTPS ([on a phone](#using-it-on-your-phone)) | off | `./stack remote enable tailscale` / `disable` |
 | [**Voice**](#voice-speech-to-text) | speech-to-text for Chat's microphone and voice calls (Mistral Voxtral on Bedrock: AWS no longer accepts its audio since October 2026; your own OpenAI/Groq key, or the browser) | browser speech (Bedrock: on when your key can use Voxtral and AWS takes its audio) | `./stack stt set openai\|groq` / `bedrock` / `remove` |
 | [**OpenRouter**](#optional-openrouter) | hundreds of other models, some free | off | `./stack openrouter set` / `remove` |
@@ -226,7 +227,8 @@ phone it is under **More**.
    previews of dev servers, the browser terminal, what the sandbox can reach, plugins and MCP servers.
 5. **Your own tools:** `claude-bedrock` in your terminal, [the models from your own
    code](#the-models-from-your-own-code) (this install's API address, a key per tool, curl and Python examples to
-   copy) and the store Claude Code and Chat share.
+   copy), [your AI subscriptions and keys](#your-ai-subscriptions) (which tools, how each signs in, the *who answers*
+   menu on each page, what is greyed out and why) and the store Claude Code and Chat share.
 6. **Keep it running:** Home, Activity and search, where the money went, updates, backups and rollback, and the portal
    from your phone.
 
@@ -556,11 +558,64 @@ It is a sandbox, not a shell on your computer:
   open the folder. Treat what the terminal wrote like code from someone else.
 
 `./stack terminal disable` removes the container and turns the Code page off too; the folder, Claude Code's history
-(the `terminal-home` volume) and the key stay (delete the key in Admin to revoke it). Every `enable` and `disable`
+(the `terminal-home` volume, with your AI subscriptions' logins: [below](#your-ai-subscriptions)) and the key stay
+(delete the key in Admin to revoke it). Every `enable` and `disable`
 restarts the portal and Caddy (open apps reload), and the first `enable`, and `disable`, also LiteLLM and the shared
 MCP server (they join or leave the terminal's gateway network): Chat answers, `claude-bedrock` requests and MCP
 sessions in progress drop for a few seconds. Details and what was weighed:
 [docs/security.md](docs/security.md#the-browser-terminal).
+
+### Your AI subscriptions
+
+Your own AI plans work in the sandbox too, each through **its provider's own, unmodified app**, signed in with **that
+app's own sign-in** — a link and a code you open in your own browser. bedrock-now never reads, copies, keeps or
+passes on a login: each stays in its own app's file in the sandbox's home folder (the `terminal-home` volume), and
+backups leave it out.
+
+| Tool | Your plan | Type in the terminal | Sign in | Sign out |
+|---|---|---|---|---|
+| Claude Code (Anthropic) | Claude Pro, Max, Team or Enterprise | `claude-sub` | `/login` in it, or `claude-sub auth login`: a link, then paste the code your browser shows | `claude-sub auth logout` |
+| Codex (OpenAI) | your ChatGPT plan | `codex` | `codex login --device-auth` — turn on **device code login** in ChatGPT › Settings › Security first (a workspace: its admin) | `codex logout` |
+| Gemini CLI (Google) | an organisation's Gemini Code Assist Standard/Enterprise, or your own Gemini API key — **Google AI Pro and Ultra stopped working in Gemini CLI on 2026-06-18** | `gemini` | *Login with Google* in it: a link, then the code | `/auth signout` in it |
+| GitHub Copilot CLI | your Copilot plan (Free included) | `copilot` | `copilot login` (GitHub's device flow: a code for github.com/login/device) | `/logout` in it |
+| Cursor CLI | your Cursor plan | `cursor-agent` | `cursor-agent login`: a link, it waits | `cursor-agent logout` |
+| Grok Build (xAI) | SuperGrok or the X Subscription (or its free tier) | `grok` | `grok login --device-auth`: a link and a code | `grok logout` |
+
+`subscriptions` in the terminal (or `./stack subscriptions` on this computer) lists each with its version and whether
+it says it is signed in; `subscriptions login TOOL` runs its sign-in. Plain `claude` and `claude-bedrock` stay on
+Bedrock: `claude-sub` is the same, unmodified Claude Code in its own config folder (`~/.claude-subscription`), started
+without the stack's `ANTHROPIC_*` variables so it uses your login; only its updates stay off (the image pins it).
+
+**Who answers** — one menu on each page:
+
+- **Terminal**: *Open* above it — Claude Code on Bedrock, a shell, or one of your tools, each in a tmux window of its
+  own (one that is not signed in starts with its sign-in). The Code page's terminal panel has the same *Open…* menu,
+  in the project's folder.
+- **Chat**: *Who answers* above it — a Bedrock or OpenRouter model (a new chat with it in Open WebUI), or one of your
+  tools **itself**, in place of Open WebUI, in the folder you pick (the workspace or a project folder): you type into
+  the real app, with its own history (`/resume`) and its own usage display. *Open WebUI* brings Chat back. As Chat
+  *models*, the subscriptions are greyed out for now, each with the provider's reason (Claude's comes next — Anthropic
+  allows the Agent SDK and `claude -p` on a plan; the others' terms don't offer it, or no consumer plan works); your
+  own API keys (OpenAI, Anthropic, xAI, Google, Mistral) come next too.
+
+Settings › Claude Code › **Your AI subscriptions** shows each tool, whether it said it is signed in and which kind
+(*ChatGPT*, *Claude Max* …: its own status command, or for Gemini CLI and Grok whether their login file is there —
+never opened; Copilot has no way to say: `/user` in it), **Sign out** (its own sign-out) and **Check again** (both
+through the update helper, with the password). Usage counts against each plan's own limits: bedrock-now bills none of
+it and shows no $ for it.
+
+The tools are in the sandbox's image, each **pinned and checked** when it is built on your computer: Codex's and
+Copilot's release files by the SHA-256 their GitHub releases list, Gemini CLI and Grok Build by their npm lockfiles,
+Cursor's by the SHA-256 bedrock-now recorded (Cursor publishes none: a changed file stops the build). Together about
+1.1 GB; `TERMINAL_AI_TOOLS` in `.env` (`all`, `none`, or e.g. `codex,copilot`), then `./stack terminal enable`, keeps
+fewer. Their self-updates stay off. Each reaches its own provider through the sandbox's egress proxy (public
+addresses on port 443: nothing to open with the default *Internet only*; with `TERMINAL_EGRESS_ALLOW` set, add their
+names — [docs/security.md](docs/security.md#your-ai-subscriptions) lists them).
+
+**What it means for your logins**: anything running in the sandbox — Claude, a command it runs, a page it reads —
+can read those files and use your plan elsewhere until you sign out and revoke the login in your account's settings
+at the provider (Anthropic, OpenAI, GitHub, Cursor, xAI). Sign in only with plans you are comfortable using there. Which provider allows what, with links:
+[docs/security.md](docs/security.md#your-ai-subscriptions).
 
 ### The Code page
 
@@ -1486,7 +1541,7 @@ by what you came to do — a list on the left (on a phone, a section picker at t
 | **AWS & models** | the AWS key (with *Check*), region, **Re-check models** |
 | **Spending & budgets** | the budgets of Chat, `claude-bedrock` and the Terminal/Code page (with this period's spend), alert threshold and webhook; *More*: the setup key's budget, daily price updates |
 | **Chat & voice** | Chat's default model, models hidden from its picker, speech-to-text, OpenRouter; *More*: the title/tag model, OpenRouter's cap and aliases |
-| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code*, the *Default model for new sessions*, *Project folders* ([folders of this computer](#folders-of-this-computer)), *What bedrock-now may read on this computer* ([your sessions](#your-claude-code-and-claude-bedrock-sessions-from-this-computer) and setup: Take back) and *Bring your setup…* ([your setup](#your-claude-code-setup-from-this-computer)); *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
+| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code*, the *Default model for new sessions*, *Project folders* ([folders of this computer](#folders-of-this-computer)), *What bedrock-now may read on this computer* ([your sessions](#your-claude-code-and-claude-bedrock-sessions-from-this-computer) and setup: Take back) and *Bring your setup…* ([your setup](#your-claude-code-setup-from-this-computer)) and *Your AI subscriptions* ([each tool, signed in or not](#your-ai-subscriptions): Sign out, Check again); *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these), its memory and *Tools in the sandbox* (`TERMINAL_AI_TOOLS`) |
 | **Files & sharing** | the Files (RustFS) key pair and the shared MCP token (**Regenerate**) |
 | **Remote access** | status, allowed Tailscale login, remote admin actions, the Terminal and Code page remotely, previews remotely; *More*: Tailscale and own-domain details |
 | **Updates & backups** | daily release check (when it last checked, and **Check for updates**), automatic updates and their window, nightly backups (window, how many), **Back up now** and the list of backups; *More*: signed releases only, the helper's switches |
@@ -1896,6 +1951,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack terminal status\|enable [--workspace DIR]\|disable` | Claude Code in the browser, a sandbox that sees one folder; on by default with the Code page ([above](#claude-code-in-the-browser)) | none (its sessions: per token) |
 | `./stack code status\|enable [--workspace DIR]\|disable` | The Code tab, Claude Code with a chat, permission prompts and your files, in the terminal's sandbox; on by default, `disable` keeps it off ([above](#the-code-page)) | none (its sessions: per token) |
 | `./stack project add DIR [--read-only] [--hide-path] [--name N]\|remove N\|mode N ro\|rw\|list` | A folder of this computer as a Code page project, mounted into the sandbox (it restarts; [above](#folders-of-this-computer)) | none |
+| `./stack subscriptions [status\|login TOOL\|logout TOOL]` | Your AI subscriptions' own tools in the sandbox (Claude Code on your plan, Codex, Gemini CLI, Copilot, Cursor, Grok): whether each is signed in, its own sign-in with its words shown here as plain text (Gemini CLI: in the Terminal tab), its own sign-out ([above](#your-ai-subscriptions)) | none (each plan's own limits) |
 | `./stack sessions [list\|import --project N\|scan\|fetch\|consent\|suggest]` | Your Claude Code and `claude-bedrock` sessions of a project folder copied into the sandbox, after you allowed it here (secrets redacted by default; nothing written back; [above](#your-claude-code-and-claude-bedrock-sessions-from-this-computer)) | none (a resume: per token) |
 | `./stack sessions config [list\|import\|scan\|open\|consent]` | Bring your setup: items of your Claude Code setup (`CLAUDE.md`, skills, agents, commands, MCP servers, plugins, four settings) and your Git name and email copied into the sandbox, after you allowed it here (never env or logins; nothing written back; [above](#your-claude-code-setup-from-this-computer)) | none (what you bring: tokens in every request) |
 | `./stack git-host import gh\|glab [--host HOST]` | A login of the GitHub CLI or the GitLab CLI on this computer as a Git host of the Code page ([above](#remote-repositories-git-hosts-clone-push-and-pull)): the token goes to the code container on stdin (never a command line, a file or the browser); what it reaches is shown and confirmed first. glab: a personal access token only (an OAuth login of glab's is refused) | none |
@@ -2211,6 +2267,10 @@ stops working. Open the portal URL the update prints, sign in with `PORTAL_PASSW
   permissions* mode is off unless allowed in Settings (from this computer only) and asks in every session; in every
   mode it flags changes to files of your folder that run on your computer (git hooks, `.envrc`, editor and Claude
   Code settings …), with Revert.
+- Your AI subscriptions are used only by each provider's own, unmodified app in that sandbox, signed in with its own
+  sign-in; bedrock-now never reads, copies, keeps or passes on a login (status comes from each app's own status
+  command, as words), and backups leave them out. Anything running in the sandbox can read those logins: sign out and
+  revoke at the provider if that ever matters ([details](docs/security.md#your-ai-subscriptions)).
 - Remote access is off by default. When on, nothing is published on the host either: a Tailscale container
   connects outbound, terminates HTTPS and reaches Caddy's internal remote listener; the remote site uses
   host-only `Secure` cookies (one per host name, handed over by single-use tokens) and requires your Tailscale
@@ -2238,7 +2298,8 @@ caddy/Caddyfile               the reverse proxy (no secrets); caddy/remote-*.cad
 tailscale/                    the sidecar's serve config (written by ./stack remote)
 portal/                       login + Home service (Python; tests: portal/test.sh)
 terminal/                     the browser terminal's image: Claude Code (pinned), ttyd, tmux, the Code page's
-                              spawn server (bin/bn-coded.mjs); egress/ its egress proxy (bn-egress.mjs)
+                              spawn server (bin/bn-coded.mjs); egress/ its egress proxy (bn-egress.mjs); tools/ your
+                              AI subscriptions' apps (pins, install.sh) and bin/ their launchers and subscriptions
 code/                         the Code page: its backend (server/, Agent SDK pinned with Claude Code), the page
                               (web/: Preact + CodeMirror 6, built into the image; a mock backend in web/dev) and
                               a plain fallback page (plain/); tests: code/test.sh, code/web/e2e/run.sh
@@ -2248,7 +2309,7 @@ owui/functions/               the Open WebUI cost filter (tests in owui/tests)
 catalog/                      models, prices, display names, icons, AWS price map; settings.tsv: every setting
                               (the Settings page, ./stack config and the update helper's allowlist),
                               settings-layout.tsv where the page shows each; code-models.tsv: how each model works
-                              with Claude Code
+                              with Claude Code; ai-tools.tsv: your AI subscriptions' apps (the pickers, Settings)
 litellm/, postgres/           LiteLLM's rendered config (written by setup) and the databases' init script
 lib/*.sh                      the shell code (bash 3.2-compatible); lib/litellm-hooks/ LiteLLM's one hook (bn_hooks.py)
 tests/run.sh                  shell tests

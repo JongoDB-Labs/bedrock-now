@@ -312,7 +312,7 @@ test_enable_turns_the_terminal_on_first_then_builds_and_starts_the_code_page() {
   [ "${#s1}" -ge 32 ] || { echo "secret too short" >&2; return 1; }
   [ "$s1" != "$(get_env TERMINAL_PROXY_SECRET)" ] || return 1
   calls="$(cat "$TMP/dc")"
-  assert_contains "$calls" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) terminal"
+  assert_contains "$calls" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) --build-arg BN_AI_TOOLS=all terminal"
   assert_contains "$calls" "dc build -q code"
   # after the terminal's own steps: terminal, portal, Caddy, then the code container
   assert_eq "$(printf '%s\n' "$calls" | grep '^dc up' | tail -n 5 | tr '\n' '|')" \
@@ -338,7 +338,7 @@ test_enable_turns_the_terminal_on_first_then_builds_and_starts_the_code_page() {
   : > "$TMP/dc"
   code_enable > "$TMP/out" 2>&1 || { cat "$TMP/out" >&2; return 1; }
   assert_contains "$(cat "$TMP/out")" "the terminal container restarts once"
-  assert_contains "$(cat "$TMP/dc")" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) terminal"
+  assert_contains "$(cat "$TMP/dc")" "dc build -q --build-arg APT_REFRESH=$(date -u +%G-%V) --build-arg BN_AI_TOOLS=all terminal"
   assert_contains "$(cat "$TMP/dc")" "dc up -d --wait terminal"
   dc() { echo "dc $*" >> "$TMP/dc"; return 0; }
   # a weak secret in .env is replaced at the next ./stack up

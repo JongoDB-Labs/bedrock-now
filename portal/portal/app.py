@@ -23,7 +23,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import activity, admin, appicons, appsso, chatsearch, icons, prices, searchindex, settings_api, summary, updates, webapp
+from . import activity, admin, answers, appicons, appsso, chatsearch, icons, prices, searchindex, settings_api, summary, updates, webapp
 from . import code as codepage
 from . import settings as settings_mod
 from .config import CODE, TERMINAL, Settings
@@ -361,7 +361,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if unlocked(request, rem, app):
             return Response(status_code=200, headers={"X-Portal-User": settings.user_email, "Cache-Control": "no-store"})
         if method in ("GET", "HEAD") and "text/html" in request.headers.get("accept", ""):
-            nxt = codepage.deep_link(request.headers.get("x-forwarded-uri")) if app == CODE else None
+            # (the Code page: its deep links; the terminal: the pickers' words — answers.terminal_next)
+            nxt = codepage.deep_link(request.headers.get("x-forwarded-uri")) if app == CODE else answers.terminal_next(request.headers.get("x-forwarded-uri"))
             return _unlock_page(settings, rem, app=app, next_link=nxt)
         return _no_store(PlainTextResponse(f"{NAME[app]} locked: unlock it with the portal password", status_code=401))
 
@@ -399,7 +400,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             form = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True, max_num_fields=4)
         except ValueError:
             form = {}
-        nxt = codepage.deep_link((form.get("next") or [""])[0]) if app == CODE else None
+        nxt = codepage.deep_link((form.get("next") or [""])[0]) if app == CODE else answers.terminal_next((form.get("next") or [""])[0])
         if wait := throttle.retry_after():
             return _unlock_page(settings, rem, f"Too many wrong passwords. Try again in {wait} s.", 429, wait, app=app, next_link=nxt)
         password = (form.get("password") or [""])[0]
@@ -409,7 +410,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _unlock_page(settings, rem, "That password is not right. It is the portal password (PORTAL_PASSWORD in .env).", app=app, next_link=nxt)
         throttle.success()
         log.warning("%s unlocked%s", app, " (remote)" if rem else "")
-        # a deep link (rebuilt from what checks out: same host, the root path, ?session / ?prompt / ?git only) or the page
+        # a deep link (rebuilt from what checks out: same host, the root path, ?session / ?prompt / ?git only — the
+        # terminal's: ?arg= words of the pickers only) or the page
         resp = RedirectResponse(nxt or "/", status_code=303)
         c = unlock_cookie_params(app, rem)
         resp.set_cookie(c["key"], unlocks[app].issue(session_login(request.headers, settings)), max_age=TERMINAL_MAX_AGE,
@@ -454,7 +456,14 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _no_store(PlainTextResponse("locked", status_code=401))
         host = settings.app_host(TERMINAL, rem)
         token = unlock_handoff.issue(host, code["iat"], login, s=sess["iat"])
-        resp = RedirectResponse(f"{settings.origin(TERMINAL, rem)}/.bn/unlock-callback?t={quote(token, safe='')}", status_code=303)
+        # ?open=TOOL[&dir=FOLDER]: the terminal panel's Open menu — a window of that tool, after the hand-off (answers.py)
+        nxt = ""
+        if "open" in request.query_params:
+            link = answers.terminal_link(answers.terminal_args("open", request.query_params.get("open", ""), None, request.query_params.get("dir")))
+            if not link:
+                return _no_store(PlainTextResponse("no such tool, or a folder that is not one", status_code=400))
+            nxt = "&next=" + quote(link, safe="")
+        resp = RedirectResponse(f"{settings.origin(TERMINAL, rem)}/.bn/unlock-callback?t={quote(token, safe='')}{nxt}", status_code=303)
         resp.headers["Referrer-Policy"] = "no-referrer"
         return _no_store(resp)
 
@@ -555,7 +564,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if not unlocks[TERMINAL].valid(cookie, login):   # signed out, a new password, or the 12 hours are over
             return _error_page("The Code page's unlock has ended (Sign out, a new password, or 12 hours). Unlock it again.",
                                401, again, "Back to the Code page")
-        resp = RedirectResponse("/", status_code=303)
+        resp = RedirectResponse(answers.terminal_next(request.query_params.get("next")) or "/", status_code=303)
         if not authed(request):
             # remote: this host has no session cookie of its own yet — the token carries the portal session's start
             # (as the session hand-off does); locally the session cookie covers every app host already
@@ -769,6 +778,12 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if (deny := code_guard(request)) is not None:
             return deny
         return _no_store(JSONResponse(codepage.models(settings)))
+
+    # (who answers: your AI subscriptions' tools for the Code page's terminal panel — answers.py)
+    async def code_answers(request: Request) -> Response:
+        if (deny := code_guard(request)) is not None:
+            return deny
+        return _no_store(JSONResponse(answers.build(settings, remote(request))))
 
     async def code_spend(request: Request) -> Response:
         if (deny := code_guard(request)) is not None:
@@ -1034,6 +1049,13 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                           "url": settings.origin(remote=True) if settings.remote_on() else ""}
         return _no_store(JSONResponse(data))
 
+    # --- who answers (answers.py): the pickers of the Terminal and Chat tabs and Settings › Your AI subscriptions —
+    # --- the tools in the sandbox and whether each says it is signed in (never a login), and Chat's models
+    async def api_answers(request: Request) -> Response:
+        if (deny := api_guard(request)) is not None:
+            return deny
+        return _no_store(JSONResponse(answers.build(settings, remote(request), summary.models_with_openrouter(settings))))
+
     async def api_logins(request: Request) -> Response:
         if (deny := api_guard(request)) is not None:
             return deny
@@ -1258,6 +1280,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/code-unlock", code_unlock, methods=["POST"]),
             Route("/auth/code-models", code_models, methods=["GET"]),
             Route("/auth/code-spend", code_spend, methods=["GET"]),
+            Route("/auth/code-answers", code_answers, methods=["GET"]),
             Route("/auth/code-terminal", code_terminal, methods=["GET"]),
             Route("/auth/code-sessions", code_sessions, methods=["POST"]),
             Route("/auth/code-preview", code_preview, methods=["GET"]),
@@ -1269,6 +1292,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/logout", logout, methods=["POST"]),
             Route("/", index),
             Route("/api/summary", api_summary),
+            Route("/api/answers", api_answers, methods=["GET"]),
             Route("/api/logins", api_logins),
             Route("/api/admin/status", api_admin_status, methods=["GET"]),
             Route("/api/admin/request", api_admin_request, methods=["POST"]),

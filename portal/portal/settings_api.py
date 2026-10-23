@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from . import admin
+from . import admin, answers
 from . import settings as st
 from .security import NEXT_MAX_AGE, Sessions, cookie_params, hash_password, same_origin, verify_password
 
@@ -138,12 +138,15 @@ def routes(ctx: Ctx) -> list[Route]:
         return _no_store(JSONResponse({
             "available": snap is not None, "snapshot": snap, "layout": st.layout(s.catalog_dir),
             "helper": {"running": state["running"], "heartbeat_at": state["heartbeat_at"], "settings": cap["settings"],
-                       "diagnostics": cap["diagnostics"], "projects": cap["projects"], "sessions": cap["sessions"], "screen": cap["screen"],
+                       "diagnostics": cap["diagnostics"], "projects": cap["projects"], "sessions": cap["sessions"],
+                       "subscriptions": cap["subscriptions"], "screen": cap["screen"],
                        "in_progress": admin.job_in_progress(state), "job": state["job"]},
             # the folders of this computer the Code page's sandbox sees (./stack project; lib/projects.sh)
             "projects": st.project_folders(s.status_dir),
             # what bedrock-now may read of your Claude Code and claude-bedrock sessions here (lib/sessions.sh)
             "sessions": st.sessions_consent(s.status_dir),
+            # your AI subscriptions' tools in the sandbox and what each says of its own login (answers.py; never a login)
+            "subscriptions": answers.tools(s.catalog_dir, s.status_dir),
             "here": {"remote": rem, "allowed": allowed(request)},
             "apps": s.app_urls(ctx.remote(request)), "user": s.user_email, "backups": st.backups(s.status_dir),
             "remote": {"on": s.remote_on(), "mode": s.remote_mode if s.remote_on() else "off",
@@ -384,6 +387,36 @@ def routes(ctx: Ctx) -> list[Route]:
         log.warning("sessions consent taken back: %s %s%s", project, tool, " (remote)" if is_remote(request) else "")
         return _no_store(JSONResponse({"id": nonce, "action": act}, status_code=202))
 
+    async def subscriptions_action(request: Request) -> Response:
+        """Your AI subscriptions, through the helper: ask the sandbox again, or one tool's own sign-out (narrowing:
+        wherever Settings actions are allowed) — by the tool's id, never a path."""
+        st.sweep_requests(s.request_dir)
+        got = await front_door(request)
+        if isinstance(got, Response):
+            return got
+        data, password = got
+        act, tool = data.get("action"), data.get("tool")
+        if act not in st.SUBS_ACTIONS:
+            return err(400, "unknown action")
+        if act == "subscriptions-signout" and tool not in st.SUBS_SIGNOUT_TOOLS:
+            return err(400, "That tool signs out inside its own screen (Gemini CLI: /auth signout, Copilot: /logout).")
+        if (busy := helper_ready()) is not None:
+            return busy
+        if act not in st.capability(s.status_dir)["subscriptions"]:
+            return err(409, "This update helper does not offer that yet: ./stack helper install refreshes it, or ./stack subscriptions in a terminal.")
+        if wait := action_rate.retry_after():
+            return err(429, f"Please wait {wait} s before the next action.", wait)
+        try:
+            nonce = st.write_subs_action(s.request_dir, password, act, tool if act == "subscriptions-signout" else None)
+        except ValueError:
+            return err(413, f"The portal password is longer than {st.MAX_AUTH} bytes: set a shorter one with ./stack config set PORTAL_PASSWORD.")
+        except OSError as e:
+            log.warning("cannot write the %s request to %s (%s)", act, s.request_dir, e)
+            return err(500, "Could not hand the request to the helper (see ./stack logs portal).")
+        action_rate.hit()
+        log.warning("subscriptions: %s%s%s", act, f" {tool}" if act == "subscriptions-signout" else "", " (remote)" if is_remote(request) else "")
+        return _no_store(JSONResponse({"id": nonce, "action": act}, status_code=202))
+
     async def signout_others(request: Request) -> Response:
         """Every other browser and device signs in again; this one stays (its new session starts just after)."""
         got = await front_door(request)
@@ -413,6 +446,7 @@ def routes(ctx: Ctx) -> list[Route]:
         Route("/api/settings/action", action, methods=["POST"]),
         Route("/api/settings/project", project_action, methods=["POST"]),
         Route("/api/settings/sessions", sessions_action, methods=["POST"]),
+        Route("/api/settings/subscriptions", subscriptions_action, methods=["POST"]),
         Route("/api/settings/signout-others", signout_others, methods=["POST"]),
         Route("/api/settings/report", get_report, methods=["GET"]),
     ]

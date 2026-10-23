@@ -1,0 +1,66 @@
+#!/bin/bash
+# claude-sub in the bedrock-now sandbox: Claude Code on YOUR Claude plan (Pro, Max, Team or Enterprise) — the image's
+# own, unmodified Claude Code (/usr/local/bin/claude), signed in with Anthropic's own flow: /login in it, or
+# `claude-sub auth login` (it prints a link; you sign in in your browser and paste the code it shows back here). Its
+# config folder is its own, ~/.claude-subscription (the terminal-home volume): Claude Code keeps the login there
+# (.credentials.json, which bedrock-now never opens) next to its settings and history, apart from ~/.claude (Bedrock's).
+# The stack's own variables are left out of its environment — the gateway and the terminal's LiteLLM key
+# (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN), Bedrock's model ids, the switches made for Bedrock — so Claude Code uses
+# that login and Anthropic's own models; only its updates stay off (the image pins its version). claude and
+# claude-bedrock here stay on Bedrock. Every option of Claude Code works; `claude-sub auth status|logout` too.
+# Usage counts against your plan's limits (Anthropic: "You can still use the Claude Agent SDK, claude -p, and
+# third-party apps with your subscription limits" — support.claude.com/en/articles/15036540); bedrock-now bills none
+# of it and shows no $ for it.
+set -euo pipefail
+
+CLAUDE_BIN="${BN_CLAUDE_BIN:-/usr/local/bin/claude}"
+dir="$HOME/.claude-subscription"
+mcp="$HOME/.config/bedrock-now/mcp.json"
+
+# What the stack sets for Bedrock, or what would put another credential ahead of your login (Claude Code's own order:
+# a cloud provider switch, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, an OAuth token in the environment — then /login)
+for v in $(compgen -e); do
+  case "$v" in
+    ANTHROPIC_* | CLAUDE_CODE_USE_* | CLAUDE_CODE_OAUTH_* | CLAUDE_BEDROCK_* | CLAUDE_CODE_SIMPLE | \
+    CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS | CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC | CLAUDE_CONFIG_DIR | \
+    SHARED_MCP_TOKEN | BN_MCP_URL | AWS_*) unset "$v" ;;
+  esac
+done
+umask 077
+mkdir -p "$dir"
+export CLAUDE_CONFIG_DIR="$dir" DISABLE_AUTOUPDATER=1
+
+case "${1:-}" in
+  -h | --help)
+    cat <<'EOT'
+claude-sub: Claude Code on your own Claude plan (Pro, Max, Team or Enterprise), in this sandbox
+  Sign in  /login in Claude Code, or: claude-sub auth login (a link to open in your browser, then paste the code)
+  Check    claude-sub auth status          Sign out  claude-sub auth logout (or /logout)
+  Config   ~/.claude-subscription — your login stays there, in Claude Code's own file; bedrock-now never reads it
+  Usage    counts against your plan's limits; bedrock-now bills none of it
+  Bedrock  claude and claude-bedrock here stay on Bedrock, with the stack's key
+  Below    Claude Code's own help
+
+EOT
+    exec "$CLAUDE_BIN" "$@" ;;
+  -v | --version) exec "$CLAUDE_BIN" "$@" ;;
+esac
+
+# A session (not a subcommand, which refuses these flags): the shared MCP server (the shared store and Chat's knowledge
+# bases, through the sandbox's gateway — no login of yours goes there), and auto mode off unless Settings › Claude Code ›
+# Auto mode in the terminal is on (as claude and claude-bedrock here)
+subcmds="$("$CLAUDE_BIN" --help 2>/dev/null </dev/null | awk '/^Commands:/ { f = 1; next } f && /^[^ ]/ { f = 0 }
+  f && /^  [a-z]/ { n = split($1, a, "|"); for (i = 1; i <= n; i++) print a[i] }' || true)"
+session=1
+case "${1:-}" in '' | -*) ;; *) for c in $subcmds; do [ "$c" = "$1" ] && { session=0; break; }; done ;; esac
+extra=()
+if [ "$session" = 1 ]; then
+  [ ! -f "$mcp" ] || extra+=("--mcp-config=$mcp")
+  case "$(printf '%s' "${TERMINAL_AUTO_MODE:-}" | tr '[:upper:]' '[:lower:]')" in
+    true | 1 | yes | on) ;;
+    *) extra+=('--settings={"disableAutoMode":"disable"}') ;;
+  esac
+  [ "${CLAUDE_SUB_QUIET:-0}" = 1 ] || [ ! -t 2 ] ||
+    printf 'claude-sub · Claude Code on your Claude plan (config ~/.claude-subscription; /login signs in) — usage counts against your plan\n' >&2
+fi
+exec "$CLAUDE_BIN" ${extra[@]+"${extra[@]}"} "$@"

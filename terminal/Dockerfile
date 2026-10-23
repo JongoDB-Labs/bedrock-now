@@ -1,7 +1,30 @@
 # The optional browser terminal (./stack terminal; compose.terminal.yaml): Claude Code in a sandbox container,
 # shown in the portal by ttyd, inside a tmux session that outlives the browser. Built on your computer, never pulled
 # from a registry: Debian's packages, Claude Code from npm at the version and SHA-512 checksums in
-# claude-code/package-lock.json, and ttyd's and gh's release binaries checked against their SHA-256.
+# claude-code/package-lock.json, ttyd's and gh's release binaries checked against their SHA-256, and your AI
+# subscriptions' own tools (the ai-tools stage) pinned and checked the same ways.
+
+# Your AI subscriptions' own tools (tools/install.sh; README "Your AI subscriptions"): Codex, Gemini CLI, Copilot CLI,
+# Cursor CLI and Grok Build, each the provider's unmodified client at the version and checksum pinned below (npm ones by
+# their lockfiles in tools/). A stage of its own, with no APT_REFRESH: the weekly refresh of the image's packages never
+# downloads them again — only a new pin does. TERMINAL_AI_TOOLS in .env (BN_AI_TOOLS: all, none or a comma list)
+# chooses which go in; Claude Code is always there. Signing in happens later, in the sandbox, with each tool's own flow.
+FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS ai-tools
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+ARG BN_AI_TOOLS=all
+ARG CODEX_VERSION=0.163.0
+ARG CODEX_SHA256_AMD64=beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4
+ARG CODEX_SHA256_ARM64=a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4
+ARG COPILOT_VERSION=1.0.103
+ARG COPILOT_SHA256_AMD64=9aeb4430e9ac9523546db07b227c7aba179a4710a55f9ac29ad143b0f9e1b325
+ARG COPILOT_SHA256_ARM64=728a91dffb9a02817bd98c5b01bf2f9cb08c4fdac3c0ca8c48d7f1ccbfe282a1
+# (Cursor publishes no checksum: these are the SHA-256 of the files its installer pointed to on 2026-10-23)
+ARG CURSOR_VERSION=2026.10.22-27dcf5f
+ARG CURSOR_SHA256_AMD64=85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294
+ARG CURSOR_SHA256_ARM64=22a36df9720830668ccd4d707e5190204ab9c8a0efb2f068cc914895f804d3ec
+COPY tools/ /tmp/tools/
+RUN sh /tmp/tools/install.sh
+
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
 
 # ./stack passes the ISO week (lib/terminal.sh): a new value invalidates Docker's cache from here on, so Debian's
@@ -64,6 +87,13 @@ COPY claude-code/package.json claude-code/package-lock.json /opt/claude-code/
 RUN cd /opt/claude-code && npm ci --no-audit --no-fund --loglevel=error \
  && ln -s /opt/claude-code/node_modules/.bin/claude /usr/local/bin/claude && claude --version
 
+# The AI tools of the stage above, read-only like everything here; their commands on PATH are the launchers in bin/
+# (claude-sub, codex, gemini, copilot, cursor-agent, grok), which only choose each one's config folder, leave the
+# stack's own variables out and keep its self-updates off (the image pins it). Gemini CLI's system settings (they
+# outrank yours) only turn its auto-update off.
+COPY --from=ai-tools /out/ /usr/local/lib/bn-tools/
+COPY tools/gemini-settings.json /etc/gemini-cli/settings.json
+
 # The Code page's spawn server (bin/bn-coded.mjs: Node built-ins only) listens in /run/bn-code — the code-socket volume
 # (compose.terminal.yaml), shared with the code container alone while ./stack code is on; bn-terminal always starts it.
 # Its preview proxy (bin/bn-preview.mjs, likewise) listens in /run/bn-preview — the preview-socket volume, shared with
@@ -98,7 +128,9 @@ RUN chmod 755 /etc/claude-code && chmod 644 /etc/claude-code/managed-settings.js
  && chmod 644 /etc/tmux.conf /etc/bedrock-now.bashrc /etc/ssh/ssh_config.d/bedrock-now.conf /etc/gitconfig /etc/ssh/ssh_known_hosts \
  && chmod 755 /usr/local/bin/claude-bedrock /usr/local/bin/bn-terminal \
       /usr/local/bin/bn-session /usr/local/bin/bn-coded.mjs /usr/local/bin/bn-preview.mjs /usr/local/bin/bn-ssh-proxy /usr/local/bin/bn-git-credential \
-      /usr/local/bin/bn-gh \
+      /usr/local/bin/bn-gh /usr/local/bin/claude-sub /usr/local/bin/subscriptions /usr/local/bin/codex /usr/local/bin/gemini \
+      /usr/local/bin/copilot /usr/local/bin/cursor-agent /usr/local/bin/grok \
+ && chmod 755 /etc/gemini-cli && chmod 644 /etc/gemini-cli/settings.json \
  && ln -s bn-gh /usr/local/bin/gh && gh --version | grep -qF "gh version $GH_VERSION " \
  && make --version >/dev/null && test -x /usr/bin/nc.openbsd \
  && printf '\n# bedrock-now terminal\n[ -r /etc/bedrock-now.bashrc ] && . /etc/bedrock-now.bashrc\n' >> /etc/bash.bashrc

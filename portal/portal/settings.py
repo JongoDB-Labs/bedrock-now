@@ -52,7 +52,8 @@ GROUPS = ("account", "aws", "budgets", "voice", "openrouter", "files", "updates"
 # the page's sections, in catalog/settings-layout.tsv; a row's place in its section; the page's own rows (no .env key)
 SECTIONS = ("account", "aws", "spending", "chat", "code", "files", "remote", "updates", "diagnostics", "advanced", "about")
 PLACES = ("main", "more", "with")
-OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent", "+bring-setup")
+OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent", "+bring-setup",
+            "+subscriptions")
 DOC = re.compile(r"(README\.md|docs/[a-z0-9-]{1,40}\.md)(#[a-z0-9-]{1,80})?")
 EDITABLE = ("edit", "local", "on-only", "widen-local")
 REGEN = ("RUSTFS_ACCESS_KEY", "SHARED_MCP_TOKEN")   # what "Regenerate" asks for (the RustFS pair is one action)
@@ -81,6 +82,9 @@ DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 KEEP_RE = re.compile(r"(main|(subagents|tool-results)/[A-Za-z0-9][A-Za-z0-9._-]{0,199})#[0-9a-f]{16}")
 SESSIONS = "sessions.json"                     # what bedrock-now may read of your sessions here (lib/sessions.sh)
 SESSIONS_TOOLS = ("claude", "claude-bedrock")
+# Your AI subscriptions (lib/subscriptions.sh): ask the sandbox again, or a tool's own sign-out — by its id, never more
+SUBS_ACTIONS = ("subscriptions-check", "subscriptions-signout")
+SUBS_SIGNOUT_TOOLS = ("claude", "codex", "cursor", "grok")   # (Gemini CLI and Copilot sign out inside them)
 MAX_PROJECTS_FILE = 64 * 1024
 PROJECT_ID = re.compile(r"p_[0-9a-f]{8}")
 PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -215,7 +219,9 @@ def capability(status_dir: Path, now: float | None = None) -> dict:
     acts = [a for a in d.get("diagnostics") or [] if a in DIAG_ACTIONS] if ok else []
     projects = [a for a in d.get("projects") or [] if a in PROJECT_ACTIONS] if ok else []
     sessions = [a for a in d.get("sessions") or [] if a in SESSIONS_ACTIONS + SESSIONS_REQUESTS] if ok else []
-    return {"settings": ok, "diagnostics": acts, "projects": projects, "sessions": sessions, "screen": ok and d.get("screen") is True}
+    subs = [a for a in d.get("subscriptions") or [] if a in SUBS_ACTIONS] if ok else []
+    return {"settings": ok, "diagnostics": acts, "projects": projects, "sessions": sessions, "subscriptions": subs,
+            "screen": ok and d.get("screen") is True}
 
 
 def sessions_consent(status_dir: Path) -> dict:
@@ -700,6 +706,25 @@ def write_sessions_action(request_dir: Path, password: str, project: str, tool: 
     nonce = secrets.token_hex(16)
     raw = json.dumps({"action": "sessions-revoke", "requested_at": int(time.time() if now is None else now), "nonce": nonce, "auth": _b64(password),
                       "project": project, "tool": tool}, separators=(",", ":")).encode("ascii")
+    if len(raw) > 768:   # (the helper's limit: lib/settings_helper.sh ACT_MAX_BYTES)
+        raise ValueError("too large")
+    _write_atomic(request_dir, "act", f"act-{nonce}.json", raw)
+    return nonce
+
+
+def write_subs_action(request_dir: Path, password: str, action: str, tool: str | None = None, now: float | None = None) -> str:
+    """REQUEST_DIR/act-<nonce>.json: your AI subscriptions — ask the sandbox again (subscriptions-check), or one tool's
+    own sign-out (subscriptions-signout, by its id). Never a path, never more than these words. -> nonce"""
+    if action not in SUBS_ACTIONS or (action == "subscriptions-signout") != (tool is not None) \
+            or (tool is not None and tool not in SUBS_SIGNOUT_TOOLS):
+        raise ValueError("bad request")
+    if len(password.encode("utf-8", "surrogatepass")) > MAX_AUTH:
+        raise ValueError("password too long")
+    nonce = secrets.token_hex(16)
+    body = {"action": action, "requested_at": int(time.time() if now is None else now), "nonce": nonce, "auth": _b64(password)}
+    if tool is not None:
+        body["tool"] = tool
+    raw = json.dumps(body, separators=(",", ":")).encode("ascii")
     if len(raw) > 768:   # (the helper's limit: lib/settings_helper.sh ACT_MAX_BYTES)
         raise ValueError("too large")
     _write_atomic(request_dir, "act", f"act-{nonce}.json", raw)

@@ -16,7 +16,7 @@ STEP_IDS = ("welcome", "aws", "openrouter", "voice", "claude-setup", "git-hosts"
             "chat", "voice-use", "docs",
             "code-off", "code-open", "code-modes", "code-models", "code-workspace", "code-context", "code-clone", "code-review",
             "code-run", "terminal", "sandbox", "code-plugins",
-            "claude", "api", "shared",
+            "claude", "api", "subscriptions", "shared",
             "home", "activity", "admin", "updates", "phone", "done")
 SECTION_TITLES = ("Set up", "Your apps (one sign-in)", "Chat", "Code with Claude", "Your own tools", "Keep it running")
 

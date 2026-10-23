@@ -22,6 +22,9 @@
 #                                                        (narrowing: from anywhere; lib/sessions.sh) — setup-claude,
 #                                                        setup-claude-bedrock, setup-git, setup-all: of your setup
 #                                                        (Bring your setup; lib/sessions_config.sh)
+#                                        subscriptions-check {…}  ./stack subscriptions status (lib/subscriptions.sh)
+#                                        subscriptions-signout {…,"tool":"claude|codex|cursor|grok"}  that tool's own
+#                                                        sign-out in the sandbox (narrowing)
 #   .state/requests/ses-<nonce>.json   the Code page's Import sheet: a look, a read, suggestions, a copy that keeps a
 #                                      possible secret (lib/sessions.sh sessions_poll_once; the portal checked the password)
 # Each kind has its own rate limits (state in .state/helper/), separate from update/rollback/clean.
@@ -36,6 +39,7 @@ RECHECK_MIN_INTERVAL_S=3600   # ./stack models --recheck (< $0.01 each): at most
 # Project folders (lib/projects.sh): the folder chooser on this computer's screen at most once a minute, 10 a day
 PROJECT_ACTIONS="project-pick project-remove project-mode-ro"
 SESSIONS_REVOKE_ACTIONS="sessions-revoke"   # (the Code page's own requests: ses-<nonce>.json, lib/sessions.sh SESSIONS_ACTIONS)
+SUBS_HELPER_ACTIONS="subscriptions-check subscriptions-signout"   # your AI subscriptions (lib/subscriptions.sh)
 PICK_MIN_INTERVAL_S="${PICK_MIN_INTERVAL_S:-60}"
 PICK_MAX_PER_DAY="${PICK_MAX_PER_DAY:-10}"
 ACT_MAX_BYTES=768   # (a project action carries a few more fields than a diagnostic)
@@ -251,12 +255,18 @@ act_check_request() {
   elif _sv_re "$body" '^\{"action":"(sessions-revoke)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","project":"(p_[0-9a-f]{8}|all)","tool":"(claude|claude-bedrock|both|suggest|setup-claude|setup-claude-bedrock|setup-git|setup-all)"\}$'; then
     action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
     project="${BASH_REMATCH[5]}"; mode="${BASH_REMATCH[6]}"
+  # (your AI subscriptions: ask the sandbox again, or one tool's own sign-out — the tool in mode's place)
+  elif _sv_re "$body" '^\{"action":"(subscriptions-check)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})"\}$'; then
+    action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
+  elif _sv_re "$body" '^\{"action":"(subscriptions-signout)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","tool":"(claude|codex|cursor|grok)"\}$'; then
+    action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
+    mode="${BASH_REMATCH[5]}"
   else
     echo "not a valid request" >&2; return 1
   fi
   [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }
   [ "$n" = "$nonce" ] || { echo "nonce does not match the file name" >&2; return 1; }
-  case " $DIAG_ACTIONS $PROJECT_ACTIONS $SESSIONS_REVOKE_ACTIONS " in *" $action "*) ;; *) echo "action not allowed" >&2; return 1 ;; esac
+  case " $DIAG_ACTIONS $PROJECT_ACTIONS $SESSIONS_REVOKE_ACTIONS $SUBS_HELPER_ACTIONS " in *" $action "*) ;; *) echo "action not allowed" >&2; return 1 ;; esac
   now="$(date +%s)"
   [ "$ts" -le $((now + 30)) ] || { echo "dated in the future" >&2; return 1; }
   [ $((now - ts)) -le "$HELPER_MAX_AGE_S" ] || { echo "stale (older than ${HELPER_MAX_AGE_S}s)" >&2; return 1; }
@@ -332,6 +342,8 @@ _job_deadline() {
     # (the Code page's Import sheet, and Take back: a dialog of 2 minutes, a reader of 3, commands in the code
     # container with deadlines of their own — 15 minutes in all is generous; lib/sessions.sh)
     sessions-* | setup-*) echo "${HELPER_SESSIONS_MAX_S:-900} 0" ;;
+    # (the sandbox asked: each tool at most 15 s, lib/subscriptions.sh)
+    subscriptions-*) echo "${HELPER_SUBS_MAX_S:-300} 0" ;;
     settings) echo "${HELPER_LONG_MAX_S:-14400} $idle" ;;
     *) echo "0 0" ;;
   esac
@@ -430,6 +442,8 @@ helper_run_diag() {
         setup-*) set -- sessions config consent --tool "${mode#setup-}" --revoke ;;
         *) set -- sessions consent --revoke --project "$project" --tool "$mode" ;;
       esac ;;
+    subscriptions-check) helper_write_status running "Asking the sandbox's AI tools whether they are signed in"; set -- subscriptions status ;;
+    subscriptions-signout) helper_write_status running "Signing $(subs_name "$mode") out in the sandbox"; set -- subscriptions logout "$mode" ;;
   esac
   # in the background, the heartbeat going on (a model check takes about 2 minutes, a backup longer)
   read -r lim idle <<< "$(_job_deadline "$action")"
@@ -470,6 +484,8 @@ helper_run_diag() {
     report) msg="Status report ready" ;;
     restart-*) msg="${action#restart-} restarted" ;;
     sessions-revoke) msg="Taken back: bedrock-now no longer reads those sessions on this computer (what the Code page's container read is forgotten; sessions already copied into the sandbox stay there)" ;;
+    subscriptions-check) msg="Checked: $(subs_count '"signed_in":"yes"') of your AI tools in the sandbox say they are signed in" ;;
+    subscriptions-signout) msg="$(subs_name "$mode") signed out in the sandbox (its own sign-out; revoke it at the provider too if the sandbox may have been read)" ;;
     project-*)
       # (said as it is in the sandbox: done only once it restarted with it; else pending — ./stack logs it)
       local applied=0
@@ -643,10 +659,11 @@ settings_helper_tick() {
   fi
   ! backup_nightly_tick || ran=0
   if [ ! -f "$f" ] || [ -n "$(find "$f" -mmin +10 2>/dev/null)" ]; then
-    printf '{"settings": 1, "diagnostics": [%s], "projects": [%s], "sessions": [%s], "screen": %s, "written_at": %s}\n' \
+    printf '{"settings": 1, "diagnostics": [%s], "projects": [%s], "sessions": [%s], "subscriptions": [%s], "screen": %s, "written_at": %s}\n' \
       "$(for a in $DIAG_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" \
       "$(for a in $PROJECT_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" \
-      "$(for a in $SESSIONS_REVOKE_ACTIONS ${SESSIONS_ACTIONS:-}; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(helper_screen && echo true || echo false)" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
+      "$(for a in $SESSIONS_REVOKE_ACTIONS ${SESSIONS_ACTIONS:-}; do printf '"%s",' "$a"; done | sed 's/,$//')" \
+      "$(for a in $SUBS_HELPER_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')" "$(helper_screen && echo true || echo false)" "$(date +%s)" > "$f.tmp" 2>/dev/null &&
       chmod 644 "$f.tmp" && mv "$f.tmp" "$f"
   fi
   return "$ran"

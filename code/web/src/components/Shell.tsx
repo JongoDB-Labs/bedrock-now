@@ -43,6 +43,7 @@ import { CommandPalette, openPaletteFromMenu } from './CommandPalette';
 import { useReviewList } from './Review';
 import { shortcuts, keysFor } from '../shortcuts';
 import { BOUNDS } from '../prefs';
+import { getAnswers, type BnAnswers, type BnTool } from '../api';
 import { basename, label, perMtok } from '../text';
 import { modeName } from '../permission';
 import { ChatPane } from './Chat';
@@ -266,9 +267,60 @@ function SidePanel({ onOpenFile }: { onOpenFile?: () => void }) {
   );
 }
 
+/** The terminal panel's Open menu: Claude Code on Bedrock, a shell, or one of your AI subscriptions' tools (each the
+ *  provider's own client in the sandbox, signed in there with its own flow) — a window of its own in the project's
+ *  folder, through the terminal hand-off (/.bn/terminal?open=TOOL&dir=FOLDER: the portal and bn-session check both). */
+function ToolMenu({ onOpen }: { onOpen: (src: string) => void }) {
+  const [answers, setAnswers] = useState<BnAnswers | null>(null);
+  const folder = useSel(store, (s) => currentProject(s).path);
+  useEffect(() => {
+    getAnswers().then(setAnswers, () => setAnswers({ here: true, tools: [] }));
+  }, []);
+  const state = (t: BnTool) => (t.installed === false ? 'not in the sandbox' : t.signedIn === 'yes' ? `signed in${t.kindWords ? ` · ${t.kindWords}` : ''}`
+    : t.signedIn === 'no' ? 'sign in first' : t.installed === null ? 'not checked yet' : 'sign-in not known');
+  const pick = (id: string) => {
+    if (!id) return;
+    const q = new URLSearchParams({ open: id });
+    if (folder && folder !== '/workspace') q.set('dir', folder);
+    q.set('t', String(Date.now()));   // (the same tool again loads again: its window is selected anew)
+    onOpen(`/.bn/terminal?${q.toString()}`);
+  };
+  return (
+    <select
+      class="term-open"
+      aria-label="Open in the terminal: Claude Code on Bedrock, a shell, or one of your AI subscriptions' tools"
+      title="A window of its own, in this project's folder. Each tool signs in with its own flow there; bedrock-now never sees the login."
+      value=""
+      onChange={(e) => {
+        const v = (e.currentTarget as HTMLSelectElement).value;
+        (e.currentTarget as HTMLSelectElement).value = '';
+        pick(v);
+      }}
+      data-testid="terminal-open-tool"
+    >
+      <option value="">Open…</option>
+      <optgroup label="Claude Code on Bedrock, and a shell">
+        <option value="bedrock">Claude Code (Bedrock) — claude-bedrock</option>
+        <option value="shell">A shell</option>
+      </optgroup>
+      {answers && answers.tools.length > 0 && (
+        <optgroup label="Your AI subscriptions — each signs in with its own flow">
+          {answers.tools.map((t) => (
+            <option value={t.id} disabled={!answers.here || t.installed === false} title={`${t.plan}`}>
+              {`${t.name} (${t.command}) · ${state(t)}`}
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </select>
+  );
+}
+
 function TerminalPanel({ drawer }: { drawer?: boolean }) {
   const open = useSel(store, (s) => s.prefs.layout.terminal);
-  const url = useSel(store, (s) => terminalUrl(s));
+  const base = useSel(store, (s) => terminalUrl(s));
+  const [src, setSrc] = useState<string | null>(null);
+  const url = src ?? base;
   const [loaded, setLoaded] = useState(open);
   useEffect(() => {
     if (open) setLoaded(true);
@@ -280,6 +332,7 @@ function TerminalPanel({ drawer }: { drawer?: boolean }) {
         <Icon name="terminal" size={14} />
         <span class="pane-title">Terminal</span>
         <span class="muted small">sandbox · ttyd + tmux</span>
+        {base && <ToolMenu onOpen={setSrc} />}
         <span class="pane-actions">
           <button
             type="button"
@@ -291,8 +344,8 @@ function TerminalPanel({ drawer }: { drawer?: boolean }) {
           >
             <Icon name="at" size={15} />
           </button>
-          {url && (
-            <a class="icon-btn" href={url} target="_blank" rel="noopener noreferrer" title="Open in a new tab" aria-label="Open the terminal in a new tab">
+          {base && (
+            <a class="icon-btn" href={base} target="_blank" rel="noopener noreferrer" title="Open in a new tab" aria-label="Open the terminal in a new tab">
               <Icon name="external" size={15} />
             </a>
           )}

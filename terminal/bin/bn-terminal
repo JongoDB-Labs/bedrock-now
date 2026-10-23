@@ -36,13 +36,15 @@ fi
 ( ( set +e; while :; do env -u SHARED_MCP_TOKEN -u NODE_USE_ENV_PROXY -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
     node /usr/local/bin/bn-preview.mjs; sleep 2; done ) </dev/null & )
 # ttyd: -i on a path ending in .sock is a UNIX socket (no TCP port); -W lets keystrokes through; -O refuses a
-# WebSocket whose Origin is not this host (another website cannot drive the terminal with your cookies); URL
-# arguments stay off. --index: ttyd's page with a viewport for phones (Dockerfile). The DOM renderer draws crisply at
-# any pixel ratio; with tmux's mouse on, Shift-drag (Option-drag on a Mac) still selects text for the clipboard.
+# WebSocket whose Origin is not this host (another website cannot drive the terminal with your cookies); -a (URL
+# arguments: ?arg=…) hands the pickers' words to bn-session as its arguments, never through a shell — it checks them
+# against its fixed list and attaches as before otherwise. --index: ttyd's page with a viewport for phones
+# (Dockerfile). The DOM renderer draws crisply at any pixel ratio; with tmux's mouse on, Shift-drag (Option-drag on
+# a Mac) still selects text for the clipboard.
 # The MCP token is left out of the environment of the shells started here: a convenience, not a boundary —
 # anything in the sandbox runs as the same user and can read it (/proc/1/environ, mcp.json); it only opens what the
 # sandbox may use anyway.
-exec env -u SHARED_MCP_TOKEN ttyd --interface "$sock" --writable --check-origin \
+exec env -u SHARED_MCP_TOKEN ttyd --interface "$sock" --writable --check-origin --url-arg \
   --ping-interval 20 --index /usr/local/share/bedrock-now/ttyd.html \
   -t 'titleFixed=Terminal · bedrock-now' -t fontSize=14 -t disableLeaveAlert=true -t disableResizeOverlay=true \
   -t rendererType=dom -t macOptionClickForcesSelection=true \
