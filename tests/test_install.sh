@@ -46,6 +46,22 @@ test_target_decision() {
   assert_eq "$(target_decision "$TMP/foreign")" "refuse"
 }
 
+test_target_decision_knows_a_checkout_under_either_name() {
+  # the project's repository is being renamed (lib/brand.sh): a checkout of either name is an install to update
+  local url n=0
+  for url in https://github.com/JongoDB-Labs/bedrock-now.git https://github.com/JongoDB-Labs/devos-ade.git \
+             git@github.com:JongoDB-Labs/devos-ade.git ssh://git@github.com/JongoDB-Labs/devos-ade; do
+    n=$((n + 1)); mkdir -p "$TMP/c$n"; git -C "$TMP/c$n" init -q; : > "$TMP/c$n/stack"; chmod +x "$TMP/c$n/stack"
+    git -C "$TMP/c$n" remote add origin "$url"
+    assert_eq "$(target_decision "$TMP/c$n")" "update"
+  done
+  mkdir -p "$TMP/x"; git -C "$TMP/x" init -q; : > "$TMP/x/stack"; chmod +x "$TMP/x/stack"
+  git -C "$TMP/x" remote add origin https://github.com/someone/devops-ade.git
+  assert_eq "$(target_decision "$TMP/x")" "refuse"
+  mkdir -p "$TMP/y"; git -C "$TMP/y" init -q; git -C "$TMP/y" remote add origin https://github.com/JongoDB-Labs/devos-ade.git
+  assert_eq "$(target_decision "$TMP/y")" "refuse"   # no ./stack: not a checkout of the project
+}
+
 test_pick_ref() {
   assert_eq "$(pick_ref "" v0.2.0)" "v0.2.0"
   assert_eq "$(pick_ref main v0.2.0)" "main"

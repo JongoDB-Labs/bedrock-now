@@ -127,7 +127,7 @@ def test_no_update_when_installed_is_current(paths):
 
 @pytest.mark.parametrize("gh,err", [
     (GitHub(status=500), "HTTP 500"),
-    (GitHub(status=302), "HTTP 302"),  # redirects are not followed
+    (GitHub(status=302), "HTTP 302"),  # a redirect without a Location (any but GitHub's for the renamed repository) is not followed
     (GitHub(raw=b"not json"), "not JSON"),
     (GitHub(raw=b"x" * (updates.MAX_JSON + 10)), "larger than"),
     (GitHub(rel=release(tag="latest")), "has a vX.Y.Z tag"),
@@ -162,6 +162,106 @@ def test_untrusted_release_fields_are_bounded(paths):
     st = updates.status(paths, True)
     assert len(st["notes"]) == updates.MAX_NOTES
     assert st["url"] == "https://github.com/JongoDB-Labs/bedrock-now/releases"
+
+
+class Renamed:
+    """GitHub after the repository's rename (JongoDB-Labs/bedrock-now -> JongoDB-Labs/devos-ade): the old name answers
+    `status` with a Location — the API's to api_to, the raw host's to raw_to — and the new places answer. Records
+    requests; anything else is a 404."""
+
+    def __init__(self, api_to="https://api.github.com/repositories/123456/releases?per_page=30",
+                 raw_to="https://raw.githubusercontent.com/JongoDB-Labs/devos-ade/v0.3.0/compose.yaml", status=301,
+                 new_redirects_to=None):
+        self.api_to, self.raw_to, self.status, self.new_redirects_to = api_to, raw_to, status, new_redirects_to
+        self.seen = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append(request)
+        host, path = request.url.host, request.url.path
+        if host == "api.github.com" and path == "/repos/JongoDB-Labs/bedrock-now/releases":
+            return httpx.Response(self.status, headers={"location": self.api_to} if self.api_to is not None else {})
+        if host == "api.github.com" and path in ("/repositories/123456/releases", "/repos/JongoDB-Labs/devos-ade/releases"):
+            if self.new_redirects_to:
+                return httpx.Response(301, headers={"location": self.new_redirects_to})
+            return httpx.Response(200, json=[release(html_url="https://github.com/JongoDB-Labs/devos-ade/releases/tag/v0.3.0")])
+        if host == "raw.githubusercontent.com" and path == "/JongoDB-Labs/bedrock-now/v0.3.0/compose.yaml":
+            return httpx.Response(301, headers={"location": self.raw_to})
+        if host == "raw.githubusercontent.com" and path == "/JongoDB-Labs/devos-ade/v0.3.0/compose.yaml":
+            return httpx.Response(200, text=COMPOSE_NEW)
+        return httpx.Response(404)
+
+
+@pytest.mark.parametrize("api_to,status", [
+    ("https://api.github.com/repositories/123456/releases?per_page=30", 301),    # what GitHub's API answers
+    ("/repositories/123456/releases?per_page=30", 301),                          # ... relative
+    ("https://api.github.com/repositories/123456/releases?per_page=30", 307),
+    ("https://api.github.com/repos/JongoDB-Labs/devos-ade/releases?per_page=30", 301),  # the new name
+])
+def test_one_redirect_to_the_renamed_repository_is_followed(paths, api_to, status):
+    write_version(paths)
+    gh = Renamed(api_to=api_to, status=status)
+    rec = run_check(paths, gh)
+    assert rec["error"] is None and rec["tag"] == "v0.3.0"
+    assert [(r.url.host, r.url.path) for r in gh.seen] == [
+        ("api.github.com", "/repos/JongoDB-Labs/bedrock-now/releases"), ("api.github.com", httpx.URL(api_to).path),
+        ("raw.githubusercontent.com", "/JongoDB-Labs/bedrock-now/v0.3.0/compose.yaml"),
+        ("raw.githubusercontent.com", "/JongoDB-Labs/devos-ade/v0.3.0/compose.yaml")]
+    assert all(r.url.scheme == "https" for r in gh.seen)
+    st = updates.status(paths, True)
+    # the release page under the new name is kept (not replaced by the generic link)
+    assert st["url"] == "https://github.com/JongoDB-Labs/devos-ade/releases/tag/v0.3.0"
+    assert [r["url"] for r in st["releases"]] == ["https://github.com/JongoDB-Labs/devos-ade/releases/tag/v0.3.0"]
+    assert st["estimate"]["images"] == ["ghcr.io/berriai/litellm:1.106.0"]
+
+
+@pytest.mark.parametrize("api_to", [
+    "https://evil.example/repositories/123456/releases",                   # another host
+    "http://api.github.com/repositories/123456/releases",                  # not https
+    "https://api.github.com:8443/repositories/123456/releases",            # another port
+    "https://someone@api.github.com/repositories/123456/releases",         # credentials in it
+    "https://api.github.com/repos/someone/fork/releases",                  # another repository
+    "https://api.github.com/repos/JongoDB-Labs/bedrock-now-x/releases",    # ... a longer name
+    "https://api.github.com/repositories/123456/tags",                     # another resource
+    "https://api.github.com/repositories/123456/releases/../../user",      # ... by dot segments
+    "https://api.github.com/repositories/12ab/releases",                   # not a repository id
+    "https://raw.githubusercontent.com/JongoDB-Labs/devos-ade/releases",   # the raw host from the API
+    "javascript:alert(1)",
+    "",                                                                    # an empty Location
+    None,                                                                  # none at all
+])
+def test_any_other_redirect_is_refused_and_not_asked(paths, api_to):
+    write_version(paths)
+    gh = Renamed(api_to=api_to)
+    rec = run_check(paths, gh)
+    # (a malformed Location: some httpx versions refuse the answer themselves)
+    assert "HTTP 301" in rec["error"] or (api_to == "javascript:alert(1)" and "did not answer (InvalidURL)" in rec["error"])
+    assert rec.get("tag") is None
+    assert len(gh.seen) == 1  # the place it pointed to was never asked
+
+
+def test_a_second_redirect_is_not_followed(paths):
+    write_version(paths)
+    gh = Renamed(api_to="https://api.github.com/repos/JongoDB-Labs/devos-ade/releases?per_page=30",
+                 new_redirects_to="https://api.github.com/repositories/123456/releases?per_page=30")
+    rec = run_check(paths, gh)
+    assert "HTTP 301" in rec["error"]
+    assert [r.url.path for r in gh.seen] == ["/repos/JongoDB-Labs/bedrock-now/releases", "/repos/JongoDB-Labs/devos-ade/releases"]
+
+
+def test_a_refused_raw_redirect_only_loses_the_estimate(paths):
+    write_version(paths)
+    gh = Renamed(raw_to="https://raw.githubusercontent.com/someone/fork/v0.3.0/compose.yaml")
+    rec = run_check(paths, gh)
+    assert rec["tag"] == "v0.3.0"
+    assert len(gh.seen) == 3  # the fork's compose file was never asked for
+
+
+def test_release_pages_of_either_name_are_the_projects():
+    assert updates.repo_page("https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v1.0.0")
+    assert updates.repo_page("https://github.com/JongoDB-Labs/devos-ade/releases/tag/v1.0.0")
+    for url in ("https://github.com/JongoDB-Labs/devos-ade-x/releases", "https://github.com/someone/devos-ade/releases",
+                "http://github.com/JongoDB-Labs/devos-ade/releases", "https://github.com/JongoDB-Labs/devos-ade", None, 3):
+        assert not updates.repo_page(url), url
 
 
 def test_disabled_reports_nothing(paths):

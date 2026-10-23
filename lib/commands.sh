@@ -1510,6 +1510,7 @@ update_nothing_new() {
   setup_ran_on_head || return 1   # the last successful setup ran on other code (or none is recorded): every step
   _git fetch --quiet --tags origin 2>/dev/null || return 1
   _UPDATE_FETCHED=1   # update_checkout does not fetch a second time
+  origin_follow_rename   # lib/repo_rename.sh: origin to the repository's new name, once it exists
   head="$(_git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" || return 1
   branch="$(_git symbolic-ref -q --short HEAD || true)"
   if [ -n "$branch" ]; then
@@ -1540,8 +1541,10 @@ update_checkout() {
   if [ ! -e "$STACK_DIR/.git" ]; then warn "$STACK_DIR is not a git checkout — skipping the code update (images and setup still run)"; return 0; fi
   _require_clean_tree
   before="$(_git rev-parse HEAD)"; cur="$(_git describe --tags --always 2>/dev/null || echo "$before")"
-  [ "${_UPDATE_FETCHED:-0}" = 1 ] ||
+  if [ "${_UPDATE_FETCHED:-0}" != 1 ]; then
     _git fetch --quiet --tags origin || die "could not fetch updates from origin (network?) — the code was not changed"
+    origin_follow_rename   # lib/repo_rename.sh
+  fi
   branch="$(_git symbolic-ref -q --short HEAD || true)"
   if [ -n "$to" ]; then
     target="$to"
@@ -1840,6 +1843,8 @@ cmd_uninstall() {
 . "$STACK_DIR/lib/images.sh"
 # Installed version, the portal's release check, and the .state folders the portal mounts.
 . "$STACK_DIR/lib/version.sh"
+# origin follows the project's repository to its new name on GitHub (./stack update, once).
+. "$STACK_DIR/lib/repo_rename.sh"
 # ./stack rollback (back to the version before the last update).
 . "$STACK_DIR/lib/rollback.sh"
 # The optional host helper (one-click Update / Rollback / Clean from the portal): ./stack helper.

@@ -58,7 +58,8 @@ target_decision() {
   [ -n "$(ls -A "$d" 2>/dev/null)" ] || { echo clone; return; }
   url="$(git -C "$d" remote get-url origin 2>/dev/null || true)"
   if [ -d "$d/.git" ] && [ -x "$d/stack" ]; then
-    case "$url" in *bedrock-now*) echo update; return ;; esac
+    # a checkout of the project under its name or the name it is being renamed to (lib/brand.sh)
+    case "$url" in *bedrock-now* | *devos-ade*) echo update; return ;; esac
   fi
   echo refuse
 }

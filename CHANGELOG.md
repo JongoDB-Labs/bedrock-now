@@ -6,6 +6,17 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Ready for the project's rename on GitHub** (nothing you see changes now, and nothing breaks on the day): Home's
+  update check follows GitHub's redirect from the repository's old name to its new one — one redirect, on the same
+  host, for the same request, to the project's repository under its other name only; any other redirect is still
+  refused — and takes release links under either name. `./stack update` moves `origin` to the new address once, after
+  the rename: only when `origin` is exactly the project's GitHub address (`https://`, `ssh://` or `git@`, kept in the
+  same form), and only when the new address answers with every tag of the old one at the same commit; a fork, a
+  mirror or any other address is never touched, and until the rename it does nothing. The installer recognises a
+  checkout under either name, and `./stack open` finds the installed app under either name.
+
 ## [0.22.0] - 2026-10-23
 
 ### Added

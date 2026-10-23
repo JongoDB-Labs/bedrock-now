@@ -444,3 +444,97 @@ test_fix_checkout_modes_repairs_tracked_files_only() {
   assert_eq "$(_mode "$TMP/stack/.env")" 600
   assert_eq "$(_mode "$TMP/stack/.state")" 700
 }
+
+# --- the repository's rename on GitHub (lib/repo_rename.sh): origin follows it once, only from the exact old address ---
+
+_renamed() { # _fixture, origin stored as $1; the old and the new name's every form served by local repos through
+  # url.<path>.insteadOf (no network): the old name = $TMP/origin, the new = $TMP/new.git — a copy of it (the renamed
+  # repository) unless $2 = missing
+  local pre suf
+  _fixture
+  git -C "$STACK_DIR" remote set-url origin "$1"
+  [ "${2:-}" = missing ] || git clone -q --bare "$TMP/origin" "$TMP/new.git"
+  for pre in https://github.com/ ssh://git@github.com/ git@github.com:; do
+    for suf in "" .git; do
+      git -C "$STACK_DIR" config --add "url.$TMP/origin.insteadOf" "${pre}JongoDB-Labs/bedrock-now$suf"
+      git -C "$STACK_DIR" config --add "url.$TMP/new.git.insteadOf" "${pre}JongoDB-Labs/devos-ade$suf"
+    done
+  done
+}
+_origin() { git -C "$STACK_DIR" config --get-all remote.origin.url; }
+
+test_origin_follows_the_rename_in_the_same_form_once() {
+  local from to
+  for from in https://github.com/JongoDB-Labs/bedrock-now https://github.com/JongoDB-Labs/bedrock-now.git \
+              git@github.com:JongoDB-Labs/bedrock-now.git git@github.com:JongoDB-Labs/bedrock-now \
+              ssh://git@github.com/JongoDB-Labs/bedrock-now.git ssh://git@github.com/JongoDB-Labs/bedrock-now; do
+    rm -rf "$TMP/origin" "$TMP/stack" "$TMP/new.git"
+    _renamed "$from"
+    to="${from%%JongoDB-Labs/bedrock-now*}JongoDB-Labs/devos-ade${from##*JongoDB-Labs/bedrock-now}"
+    origin_follow_rename 2> "$TMP/err"
+    assert_eq "$(_origin)" "$to"
+    assert_contains "$(cat "$TMP/err")" "now fetches from $to (was $from)"
+    origin_follow_rename 2> "$TMP/err"   # said once: a second run finds origin moved
+    assert_eq "$(_origin)" "$to"; assert_eq "$(cat "$TMP/err")" ""
+  done
+}
+
+test_origin_stays_until_the_new_repository_exists() {
+  _renamed https://github.com/JongoDB-Labs/bedrock-now.git missing   # before rename day: the new name does not answer
+  origin_follow_rename 2> "$TMP/err"
+  assert_eq "$(_origin)" https://github.com/JongoDB-Labs/bedrock-now.git; assert_eq "$(cat "$TMP/err")" ""
+}
+
+test_origin_moves_only_when_the_new_repository_has_every_tag_at_the_same_commit() {
+  _renamed https://github.com/JongoDB-Labs/bedrock-now.git
+  git -C "$TMP/new.git" tag -d v0.1.0 >/dev/null                      # a tag missing
+  origin_follow_rename 2> "$TMP/err"
+  assert_eq "$(_origin)" https://github.com/JongoDB-Labs/bedrock-now.git; assert_eq "$(cat "$TMP/err")" ""
+  git -C "$TMP/new.git" tag v0.1.0 'v0.2.0^{commit}'                 # ... there, at another commit
+  origin_follow_rename 2> "$TMP/err"
+  assert_eq "$(_origin)" https://github.com/JongoDB-Labs/bedrock-now.git; assert_eq "$(cat "$TMP/err")" ""
+  # the same tag again (the same tag object), and one more: a superset is the same repository
+  git -C "$TMP/new.git" tag -f v0.1.0 "$(git -C "$TMP/origin" rev-parse v0.1.0)" >/dev/null
+  git -C "$TMP/new.git" tag v0.3.0 main
+  origin_follow_rename 2> "$TMP/err"
+  assert_eq "$(_origin)" https://github.com/JongoDB-Labs/devos-ade.git
+}
+
+test_forks_mirrors_and_other_spellings_are_never_touched_nor_asked() {
+  local url
+  for url in https://github.com/someone/bedrock-now.git git@github.com:someone/bedrock-now.git \
+             https://git.example.com/JongoDB-Labs/bedrock-now.git https://github.com/jongodb-labs/bedrock-now \
+             http://github.com/JongoDB-Labs/bedrock-now https://github.com/JongoDB-Labs/bedrock-now/ \
+             https://user@github.com/JongoDB-Labs/bedrock-now.git https://github.com/JongoDB-Labs/bedrock-now-fork \
+             "$TMP/origin" https://github.com/JongoDB-Labs/devos-ade.git; do
+    rm -rf "$TMP/origin" "$TMP/stack" "$TMP/new.git"
+    _renamed "$url"
+    ( _repo_tags() { echo "$1" >> "$TMP/asked"; return 1; }; origin_follow_rename ) 2> "$TMP/err"
+    assert_eq "$(_origin)" "$url"; assert_eq "$(cat "$TMP/err")" ""
+    [ ! -e "$TMP/asked" ] || { echo "asked the network for $url: $(cat "$TMP/asked")" >&2; return 1; }
+  done
+  # two origin URLs: never one of the exact forms
+  rm -rf "$TMP/origin" "$TMP/stack" "$TMP/new.git"; _renamed https://github.com/JongoDB-Labs/bedrock-now.git
+  git -C "$STACK_DIR" config --add remote.origin.url https://github.com/JongoDB-Labs/bedrock-now
+  origin_follow_rename 2>/dev/null
+  assert_eq "$(_origin | tr '\n' ' ')" "https://github.com/JongoDB-Labs/bedrock-now.git https://github.com/JongoDB-Labs/bedrock-now "
+}
+
+test_update_moves_origin_after_its_fetch() {
+  _renamed https://github.com/JongoDB-Labs/bedrock-now.git
+  update_checkout "" 2> "$TMP/err"
+  assert_eq "$(git -C "$STACK_DIR" describe --tags --exact-match)" "v0.2.0"
+  assert_eq "$(_origin)" https://github.com/JongoDB-Labs/devos-ade.git
+  assert_eq "$(grep -c 'now fetches from' "$TMP/err")" 1
+  git -C "$TMP/origin" tag -a v0.3.0 -m v0.3.0 main; git -C "$TMP/new.git" fetch -q "$TMP/origin" 'refs/tags/*:refs/tags/*'
+  update_checkout "" 2> "$TMP/err"   # the next update fetches from the new address, and says nothing more about it
+  assert_eq "$(git -C "$STACK_DIR" describe --tags --exact-match)" "v0.3.0"
+  assert_eq "$(grep -c 'now fetches from' "$TMP/err")" 0
+}
+
+test_brand_names_agree_with_the_portal() {
+  local py; py="$(cat "$T_ROOT/portal/portal/updates.py")"
+  assert_contains "$py" "REPO = \"$PRODUCT_REPO\""
+  assert_contains "$py" "REPO_NEXT = \"$PRODUCT_REPO_NEXT\""
+  assert_contains "$(cat "$T_ROOT/install.sh")" "BN_REPO_URL=\"https://github.com/$PRODUCT_REPO\""
+}

@@ -43,7 +43,9 @@ Back to the [README](../README.md#security-model).
   `LITELLM_STORE_PROMPTS=true` (Settings → Account & security, or `./stack config set LITELLM_STORE_PROMPTS`). Spend logs are kept for 90 days (LiteLLM's
   built-in cleanup job, `maximum_spend_logs_retention_period`).
 - The portal's daily update check asks GitHub's public releases API for the project's recent releases, one request
-  (unauthenticated, https only, no redirects followed, answers capped at 2 MB, release notes shown as plain text);
+  (unauthenticated, https only, answers capped at 2 MB, release notes shown as plain text; no redirect followed but
+  one: GitHub's for the project's renamed repository — the same host, the same request, the project's repository
+  under its other name or `api.github.com/repositories/<id>`);
   opening Home asks again when the last check is more than 3 hours old (at most every 15 minutes), and so does a
   click on **Check for updates** (`POST /api/update/check`: a session, `X-Requested-With` and the portal's own Origin;
   at most every 30 seconds and 20 times an hour, one check at a time, not within an hour of GitHub refusing one —
@@ -3041,6 +3043,13 @@ else, says what each item brings before it is copied, and never copies a secret-
 remote (never an older one); on a branch, whatever `git pull --ff-only` brings. That is the same trust you
 placed in the project when you cloned it, and it applies whether you run the update or the helper does (which is
 why the helper does not update branch checkouts unless you allow it).
+
+When the project's repository is renamed on GitHub, GitHub redirects the old address and `./stack update` keeps
+working. After a fetch, it moves `origin` to the new address once (`lib/repo_rename.sh`), and only when two things
+hold. First, `origin` is exactly the project's GitHub address: `https://github.com/…`, `ssh://git@github.com/…` or
+`git@github.com:…`, with or without `.git`, and the form is kept. Second, `git ls-remote` of the new address answers
+with every tag of the old one, each at the same commit. It never asks for a password. A fork, a mirror or any other
+address is never changed, and nothing is fetched for it. Until the new name exists, it does nothing.
 
 For more assurance, set `UPDATE_REQUIRE_SIGNED_TAGS=true` in `.env`. `./stack update` then only checks out a
 **tag** whose signature `git verify-tag` accepts, and refuses branches. Git must trust the signing key first:

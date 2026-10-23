@@ -40,23 +40,25 @@ open_headless() {
 #          Exec= starts the browser with --app-id= counts.
 open_installed_app() {
   local name d f
-  name="$(portal_app_name)"
-  if [ "$(open_os)" = Darwin ]; then
-    for d in "$HOME/Applications/"*" Apps.localized"; do
-      [ -d "$d/$name.app" ] && { printf '%s\n' "$d/$name.app"; return 0; }
-    done
-  else
-    for f in "${XDG_DATA_HOME:-$HOME/.local/share}/applications/"*.desktop; do
-      { [ -f "$f" ] && [ ! -L "$f" ]; } || continue
-      case "${f##*/}" in
-        chrome-*|msedge-*|brave-*|chromium-*|*.flextop.chrome-*|*.flextop.msedge-*|*.flextop.brave-*|*.flextop.chromium-*) ;;
-        *) continue ;;
-      esac
-      grep -qxF "Name=$name" "$f" || continue
-      grep -q '^Exec=.* --app-id=' "$f" || continue
-      printf '%s\n' "$f"; return 0
-    done
-  fi
+  # the app's name today, then the name the project is being renamed to (an app installed from a renamed portal)
+  for name in "$(portal_app_name)" "$(portal_app_name "$PRODUCT_NAME_NEXT")"; do
+    if [ "$(open_os)" = Darwin ]; then
+      for d in "$HOME/Applications/"*" Apps.localized"; do
+        [ -d "$d/$name.app" ] && { printf '%s\n' "$d/$name.app"; return 0; }
+      done
+    else
+      for f in "${XDG_DATA_HOME:-$HOME/.local/share}/applications/"*.desktop; do
+        { [ -f "$f" ] && [ ! -L "$f" ]; } || continue
+        case "${f##*/}" in
+          chrome-*|msedge-*|brave-*|chromium-*|*.flextop.chrome-*|*.flextop.msedge-*|*.flextop.brave-*|*.flextop.chromium-*) ;;
+          *) continue ;;
+        esac
+        grep -qxF "Name=$name" "$f" || continue
+        grep -q '^Exec=.* --app-id=' "$f" || continue
+        printf '%s\n' "$f"; return 0
+      done
+    fi
+  done
   return 1
 }
 

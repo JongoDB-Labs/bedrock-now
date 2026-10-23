@@ -1,7 +1,7 @@
 """Daily "is there a newer bedrock-now release?" check, for the update card on Home.
 
-Asks GitHub's public releases API (unauthenticated, https only, no redirects, a size cap and a timeout; the
-ETag makes repeat checks cheap) for the project's recent releases (one request: the list, newest PER_PAGE) and,
+Asks GitHub's public releases API (unauthenticated, https only, a size cap and a timeout; the ETag makes repeat
+checks cheap; no redirect but one: GitHub's, from the repository's old name to its new one — _redirect_target) for the project's recent releases (one request: the list, newest PER_PAGE) and,
 only when the newest is newer than the installed version, the new release's compose.yaml from
 raw.githubusercontent.com to estimate the download. The newest release is the highest vX.Y.Z tag — what
 ./stack update installs — and Home shows the notes of every release between the installed one and it, so a jump
@@ -45,6 +45,12 @@ from . import hostfiles
 log = logging.getLogger("portal.updates")
 
 REPO = "JongoDB-Labs/bedrock-now"
+# The name the repository is being renamed to (PRODUCT_REPO_NEXT in lib/brand.sh): GitHub then redirects REPO there —
+# followed once (_redirect_target) — and its release pages are under it.
+REPO_NEXT = "JongoDB-Labs/devos-ade"
+REPOS = (REPO, REPO_NEXT)
+REDIRECTS = (301, 302, 307, 308)
+API_REPO_ID = re.compile(r"/repositories/[0-9]{1,20}(/.*)", re.DOTALL)  # where GitHub's API sends a renamed repository
 PER_PAGE = 30  # the newest releases: a jump over more than this shows the newest PER_PAGE (and says so)
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases?per_page={PER_PAGE}"
 RAW_URL = "https://raw.githubusercontent.com/" + REPO + "/{tag}/compose.yaml"
@@ -193,35 +199,77 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
+def repo_page(url) -> bool:
+    """A page of the project's repository on github.com, under either of its names (REPOS)."""
+    return isinstance(url, str) and any(url.startswith(f"https://github.com/{repo}/") for repo in REPOS)
+
+
+def _repo_rest(host: str, path: str) -> str | None:
+    """The rest of a path on GitHub's API or raw host after the project's repository — under either name (REPOS), or
+    on api.github.com /repositories/<id> — else None."""
+    pre = "/repos/" if host == "api.github.com" else "/"
+    for repo in REPOS:
+        if path.startswith(f"{pre}{repo}/"):
+            return path[len(pre) + len(repo):]
+    m = API_REPO_ID.fullmatch(path) if host == "api.github.com" else None
+    return m.group(1) if m else None
+
+
+def _redirect_target(url: httpx.URL, location: str | None) -> httpx.URL | None:
+    """Where the one redirect a request may follow goes: GitHub's, for a renamed repository — the same https host, the
+    same resource (the rest of the path), another name of the project's repository only (its other name, or
+    api.github.com/repositories/<id>). None — not followed — for anything else."""
+    if not location or len(location) > 2048:
+        return None
+    try:
+        dst = url.join(location)
+    except (httpx.InvalidURL, ValueError, TypeError):
+        return None
+    if dst.scheme != "https" or dst.host != url.host or dst.port not in (None, 443) or dst.userinfo:
+        return None
+    rest = _repo_rest(url.host, url.path)
+    if rest is None or _repo_rest(dst.host, dst.path) != rest:
+        return None
+    return dst
+
+
 async def _get(client: httpx.AsyncClient, url: str, cap: int, headers: dict | None = None) -> tuple[int, bytes, dict]:
     if not url.startswith("https://"):
         raise CheckError("refusing a non-https URL")
     host = httpx.URL(url).host
+    target = httpx.URL(url)
     try:
         # identity only: the size cap counts the bytes on the wire, so no decompression bomb gets past it
         hdrs = {"User-Agent": "bedrock-now-update-check", **(headers or {}), "Accept-Encoding": "identity"}
-        async with client.stream("GET", url, headers=hdrs, timeout=TIMEOUT, follow_redirects=False) as r:
-            if r.status_code == 304:
-                return 304, b"", dict(r.headers)
-            if r.status_code in (403, 429):
-                # GitHub's rate limit (60 unauthenticated requests an hour per address): not again before it says;
-                # another refusal: not again within RETRY_AFTER_ERROR either
-                if _rate_limited(r.headers):
-                    raise CheckError(f"{host} refused: its limit of requests for this address is used up (HTTP {r.status_code})",
-                                     limited=True, retry_at=_limit_reset(r.headers, time.time()))
-                raise CheckError(f"{host} refused the request (HTTP {r.status_code})", refused=True)
-            if r.status_code != 200:
-                raise CheckError(f"{host} answered HTTP {r.status_code}")
-            enc = (r.headers.get("content-encoding") or "identity").strip().lower()
-            if enc != "identity":
-                raise CheckError(f"{host}: unexpected content encoding {enc}")
-            body = bytearray()
-            async for chunk in r.aiter_bytes():  # identity: nothing is decompressed
-                body += chunk
-                if len(body) > cap:
-                    raise CheckError(f"{host}: answer larger than {cap // 1024} KB")
-            return 200, bytes(body), dict(r.headers)
-    except httpx.HTTPError as e:
+        for hop in range(2):  # the request and at most one redirect (_redirect_target)
+            async with client.stream("GET", target, headers=hdrs, timeout=TIMEOUT, follow_redirects=False) as r:
+                if hop == 0 and r.status_code in REDIRECTS:
+                    nxt = _redirect_target(target, r.headers.get("location"))
+                    if nxt is not None:
+                        target = nxt
+                        continue
+                if r.status_code == 304:
+                    return 304, b"", dict(r.headers)
+                if r.status_code in (403, 429):
+                    # GitHub's rate limit (60 unauthenticated requests an hour per address): not again before it says;
+                    # another refusal: not again within RETRY_AFTER_ERROR either
+                    if _rate_limited(r.headers):
+                        raise CheckError(f"{host} refused: its limit of requests for this address is used up (HTTP {r.status_code})",
+                                         limited=True, retry_at=_limit_reset(r.headers, time.time()))
+                    raise CheckError(f"{host} refused the request (HTTP {r.status_code})", refused=True)
+                if r.status_code != 200:
+                    raise CheckError(f"{host} answered HTTP {r.status_code}")
+                enc = (r.headers.get("content-encoding") or "identity").strip().lower()
+                if enc != "identity":
+                    raise CheckError(f"{host}: unexpected content encoding {enc}")
+                body = bytearray()
+                async for chunk in r.aiter_bytes():  # identity: nothing is decompressed
+                    body += chunk
+                    if len(body) > cap:
+                        raise CheckError(f"{host}: answer larger than {cap // 1024} KB")
+                return 200, bytes(body), dict(r.headers)
+        raise CheckError(f"{host}: more than one redirect")  # (not reached: the second answer is never followed)
+    except (httpx.HTTPError, httpx.InvalidURL) as e:  # (InvalidURL: httpx reads a malformed Location even unfollowed)
         raise CheckError(f"{host} did not answer ({type(e).__name__})") from e
 
 
@@ -308,7 +356,7 @@ def _releases(d) -> list[dict]:
         url = r.get("html_url") if isinstance(r.get("html_url"), str) else ""
         out.append({
             "tag": tag, "name": name, "headline": headline(tag, name, body), "notes": body,
-            "url": url if url.startswith(f"https://github.com/{REPO}/") else f"https://github.com/{REPO}/releases",
+            "url": url if repo_page(url) else f"https://github.com/{REPO}/releases",
             "published_at": r.get("published_at") if isinstance(r.get("published_at"), str) else None,
         })
     if not out:
@@ -463,7 +511,7 @@ def _release_list(rec: dict) -> list[dict]:
         for r in rels[:PER_PAGE]:
             if not isinstance(r, dict) or not parse_release(r.get("tag") or ""):
                 continue
-            url = r.get("url") if isinstance(r.get("url"), str) and r["url"].startswith(f"https://github.com/{REPO}/") else None
+            url = r.get("url") if repo_page(r.get("url")) else None
             out.append({"tag": r["tag"], "name": r.get("name") if isinstance(r.get("name"), str) else r["tag"],
                         "headline": r.get("headline") if isinstance(r.get("headline"), str) else "",
                         "notes": r.get("notes") if isinstance(r.get("notes"), str) else "", "url": url,

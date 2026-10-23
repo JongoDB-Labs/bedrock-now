@@ -177,6 +177,9 @@ test_portal_app_name_matches_the_manifest_rule() {
   printf 'COMPOSE_PROJECT_NAME=bn-dev\nPORTAL_PORT=8800\n' > "$ENV_FILE"; assert_eq "$(portal_app_name)" "bedrock-now (bn-dev, port 8800)"
   printf 'PORTAL_PORT=8800\n' > "$ENV_FILE"; assert_eq "$(portal_app_name)" "bedrock-now (port 8800)"
   printf 'PORTAL_HOST=ai.example.com\n' > "$ENV_FILE"; assert_eq "$(portal_app_name)" "bedrock-now (ai.example.com)"
+  # the same rule for another name (the name the project is being renamed to)
+  assert_eq "$(portal_app_name "DevOS ADE")" "DevOS ADE (ai.example.com)"
+  : > "$ENV_FILE"; assert_eq "$(portal_app_name "DevOS ADE")" "DevOS ADE"
 }
 
 test_installed_app_mac_is_found_by_name_in_any_browser_apps_folder() {
@@ -188,6 +191,25 @@ test_installed_app_mac_is_found_by_name_in_any_browser_apps_folder() {
   assert_eq "$(open_installed_app)" "$HOME/Applications/Edge Apps.localized/bedrock-now.app"
   printf 'COMPOSE_PROJECT_NAME=bn-dev\n' > "$ENV_FILE"
   assert_eq "$(open_installed_app)" "$HOME/Applications/Chrome Apps.localized/bedrock-now (bn-dev).app"
+}
+
+test_installed_app_is_found_under_the_projects_next_name_too() {
+  # an app installed from a portal after the rename is named DevOS ADE[ (label)]; today's name comes first
+  : > "$ENV_FILE"; _mac
+  mkdir -p "$HOME/Applications/Chrome Apps.localized/DevOS ADE (bn-dev).app"
+  if open_installed_app >/dev/null; then echo "took bn-dev's app for the default project's" >&2; return 1; fi
+  mkdir -p "$HOME/Applications/Chrome Apps.localized/DevOS ADE.app"
+  assert_eq "$(open_installed_app)" "$HOME/Applications/Chrome Apps.localized/DevOS ADE.app"
+  mkdir -p "$HOME/Applications/Edge Apps.localized/bedrock-now.app"
+  assert_eq "$(open_installed_app)" "$HOME/Applications/Edge Apps.localized/bedrock-now.app"
+  printf 'COMPOSE_PROJECT_NAME=bn-dev\n' > "$ENV_FILE"
+  assert_eq "$(open_installed_app)" "$HOME/Applications/Chrome Apps.localized/DevOS ADE (bn-dev).app"
+  _linux; : > "$ENV_FILE"
+  local d="$HOME/.local/share/applications"; mkdir -p "$d"
+  printf '[Desktop Entry]\nName=DevOS ADE (bn-dev)\nExec=c --app-id=a\n' > "$d/chrome-aaa-Default.desktop"
+  if open_installed_app >/dev/null; then echo "took bn-dev's app for the default project's" >&2; return 1; fi
+  printf '[Desktop Entry]\nName=DevOS ADE\nExec=/opt/google/chrome/google-chrome --app-id=ddd %%U\n' > "$d/chrome-ddd-Default.desktop"
+  assert_eq "$(open_installed_app)" "$d/chrome-ddd-Default.desktop"
 }
 
 test_installed_app_linux_is_the_browser_desktop_entry_with_that_name() {
