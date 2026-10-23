@@ -6,6 +6,44 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Bring your setup: your Claude Code setup and Git name and email from this computer, in the Code page's sandbox.**
+  The ⋯ menu (also a project's ⋯, the command palette, Settings › Claude Code › **Bring your setup…**, and the Git
+  panel's *Use yours from this computer…*) › **Bring your setup from this computer…**: *Look on this computer* (the
+  update helper asks you on its screen first — *Allow once* or *Always*, per tool: Claude Code, `claude-bedrock`,
+  Git), which lists names and sizes only; *Pick and open* the items you want; *Check and copy* each one as it will
+  be. Offered, each its own choice: `CLAUDE.md` (replace the sandbox's, or add yours after it), skills, agents,
+  commands, output styles, key bindings, `settings.json`'s `permissions`, `statusLine`, `outputStyle` and `hooks`,
+  MCP servers (user scope, and a folder of this computer's local scope) and plugins (installed again from their
+  marketplace, a command it runs shown first), and `user.name`/`user.email` (Code page sessions and the Git panel then
+  commit as you). Before copying, each says about how many tokens it adds to every request on Bedrock, the programs it
+  brings that the sandbox does not have (`uvx`, Docker, a program of your computer), paths of your computer,
+  `permissions.allow` rules that run commands without asking, MCP servers on `localhost` or a private address, and
+  OAuth sign-ins to make again. The sandbox's own settings are kept (rules and hooks added to them); anything else of
+  its own is left as it is unless you choose to replace it (then into its trash folder). In a terminal:
+  `./stack sessions config import` (`list`, `scan`, `open`, `consent`).
+
+### Security
+
+- **Bring your setup offers an allowlist, nothing else**, and never reads `env`, the account and state in
+  `~/.claude.json`, credentials, a keychain, `~/.ssh`, Git's credential helpers, `~/.aws`, `~/.config/gh`, history
+  or sessions; an unknown key, kind, event or shape is dropped. Each offered item is mounted alone, read-only, into
+  the throwaway reader container (no network, read-only, no capabilities, as you, a time limit), never through a link
+  on the way from your home folder; a look reads names and sizes only, an open only the rows you picked (of the
+  helper's own record, never a path). Allowed only on this computer, per tool, and taken back from anywhere; a look
+  or an open is never started over remote access.
+- **Secrets are never copied silently**: in a copied file or setting they are redacted unless you keep one; an MCP
+  server's `env` and `headers` values that look like a secret (by name or shape; a long random value too) are each
+  left out unless you tick them; one in its URL, arguments or command keeps the server out unless kept. Keeping one
+  needs the portal password (through the portal and the update helper, as an import's keeps). A preview never holds
+  a secret; it is made from the same plan as the copy, whose digest (the items, your choices, the sandbox's
+  destination as it is) refuses a copy of anything that changed since the check.
+- bn-coded writes a setup item only into a fixed destination of the sandbox's `~/.claude` (or its `~/.gitconfig`
+  through `git config --file`), never through a link, only while it is as the page showed it, by a temporary file or
+  folder renamed into place; what it replaces is moved into `~/.claude/.bedrock-now-trash/`, never deleted. Which
+  programs the sandbox has is looked up, never run. Nothing is ever written back to the computer.
+
 ## [0.21.1] - 2026-10-23
 
 ### Security

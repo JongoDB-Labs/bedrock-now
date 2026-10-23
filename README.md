@@ -435,8 +435,8 @@ claude.ai plan that is invisible; billed per token it is not. So:
   and — like `~/.claude-bedrock` — owned by you and not writable by group or others (it holds settings that run
   commands), or the wrapper stops and says how to fix it. A `CLAUDE_CONFIG_DIR` you exported for plain `claude` is
   not used in lean mode: that is where the plugins live.
-- **Bring things in one by one.** `~/.claude-bedrock` is an ordinary Claude Code config folder, and subcommands
-  manage it: `claude-bedrock mcp add …`, `claude-bedrock plugin install …`. A personal
+- **Bring things in one by one.** (For the Code page's sandbox: [Bring your setup](#your-claude-code-setup-from-this-computer).)
+  `~/.claude-bedrock` is an ordinary Claude Code config folder, and subcommands manage it: `claude-bedrock mcp add …`, `claude-bedrock plugin install …`. A personal
   `~/.claude-bedrock/CLAUDE.md` is read as usual; to reuse yours, `ln -s ~/.claude/CLAUDE.md ~/.claude-bedrock/`
   (or copy it for a Bedrock-only version) — the wrapper says this once, at a terminal, and never copies it, as it may
   hold things you don't want sent to Bedrock. Settings are separate now too: permissions, status line, output style
@@ -909,6 +909,51 @@ written back to those folders.
 
 How it is read: [docs/security.md](docs/security.md#your-coding-tools-sessions-from-this-computer).
 
+##### Your Claude Code setup from this computer
+
+The sandbox starts lean, as [`claude-bedrock`](#a-lean-config-folder-for-bedrock) does: none of your `~/.claude` is
+there. **Bring your setup** copies the items you choose of it — and of `~/.claude-bedrock`, and your Git name and
+email — into the sandbox's own configuration, one way: nothing is ever written back.
+
+- **Where**: the ⋯ menu › **Bring your setup from this computer…** (also a project's ⋯, the command palette,
+  Settings › Claude Code › **Bring your setup…**, and the Git panel's *Use yours from this computer…* next to the
+  name its commits are made with), three steps as the Import sheet's. *Look on this computer* (the portal password
+  again; the [update helper](#updating) asks **you, on this computer's screen**, first — *Allow once* or
+  *Always*) lists names and sizes only. *Pick and open* the ones you want: only those are read. *Check and copy*:
+  each one as it will be, before anything reaches the sandbox. Without the helper: `./stack sessions config import`
+  in a terminal there. From a phone or another computer the sheet shows a look made here and copies what was opened
+  here, but never looks or opens.
+- **Offered, each its own choice**: `CLAUDE.md` (replace the sandbox's, or add yours after it — shown whole first),
+  skills (`skills/<name>/`, their text files), agents, commands, output styles, key bindings, four keys of
+  `settings.json` — `permissions` (allow, ask, deny), `statusLine`, `outputStyle`, `hooks` (command hooks of the
+  events Claude Code knows) —, MCP servers (user scope, and the project's local scope when you open the sheet from a
+  folder of this computer: added as `claude mcp add-json`, of user scope in the sandbox), plugins (installed again
+  from their marketplace — a GitHub repository or an https URL — never copied as files; a marketplace that runs a
+  command to install shows it first, as in *Plugins*), and `user.name` / `user.email` of `~/.gitconfig` (Code page
+  sessions and the Git panel then commit as you). **Never**: `env` and every other key of `settings.json`, the
+  account and state in `~/.claude.json`, `.credentials.json`, a keychain, `~/.ssh`, Git's credential helpers,
+  `~/.aws`, `~/.config/gh`, history, sessions; a link is never followed. Anything of another shape is dropped.
+- **What each one brings, said before you copy**: about how many tokens it adds to **every request** on Bedrock
+  (billed per token: a heavy `CLAUDE.md` of 40 KB is about 10,000 tokens each time; skills, agents and commands their
+  descriptions; MCP servers' tools once they connect), programs (a skill's scripts, hooks, the status line, an MCP
+  server's command) — each one the sandbox does not have said as *not in the sandbox* (`uvx`, Docker, a program of
+  your computer; `npx`, `node`, `python3` are there) —, paths of your computer, `permissions.allow` rules that let
+  commands run without asking (in the sandbox, in every mode but Plan), an MCP server on `localhost` or a private
+  address (not reachable with *Internet only*), one that signs in with OAuth (sign in again in the sandbox: `/mcp`).
+- **Possible secrets**: in a copied file or setting they are listed (as the Import sheet's) and redacted unless you
+  keep one; an MCP server's `env` and `headers` values that look like a secret — by their name or their shape — are
+  each **left out** unless you tick *copy into the sandbox (Claude could read it)*; one in its URL or arguments keeps
+  the server out unless you keep it. Keeping one needs the portal password (the update helper makes that copy).
+- **The sandbox's own is kept**: permission rules and hooks are added to its `settings.json` (a later copy replaces
+  only what bedrock-now added); any other file, a skill's folder, a server of the same name or a Git name the
+  sandbox has of its own is left as it is unless you choose *Replace* — and then it goes to
+  `~/.claude/.bedrock-now-trash/` in the sandbox, never deleted. A copy is refused when what it was checked against
+  changed meanwhile (check it again).
+- What may be read is listed in Settings › Claude Code › *What bedrock-now may read on this computer* (per tool:
+  Claude Code, `claude-bedrock`, Git), where **Take back** undoes it; `./stack sessions config consent --revoke`.
+
+How it is read: [docs/security.md](docs/security.md#your-claude-code-setup-from-this-computer).
+
 #### Models for Claude Code
 
 The model picker (top bar; on a phone ⋯ → *Model*; the status bar's model opens it) lists **every enabled chat model
@@ -1099,8 +1144,9 @@ maps to it).
   (`Ctrl/⌘+Enter`); **Write message** has Claude propose a message from the staged diff — in a helper process of its
   own that can use no tool at all (never your session, whatever its mode: a diff could carry instructions) — which
   lands in the box as a draft for you to read; it never commits by itself. The panel shows who the commit is by (the
-  repository's `user.name`/`user.email`, else the sandbox's `~/.gitconfig`, else "bedrock-now Code page"), and the last
-  20 commits. Commits made here run **no git hooks** (`pre-commit`, `commit-msg` …), no signing program and no editor,
+  repository's `user.name`/`user.email`, else the sandbox's `~/.gitconfig`, else "bedrock-now Code page" — *Use yours
+  from this computer…* there brings your own, [Bring your setup](#your-claude-code-setup-from-this-computer)), and the
+  last 20 commits. Commits made here run **no git hooks** (`pre-commit`, `commit-msg` …), no signing program and no editor,
   whatever the repository configures — your computer's git would run its hooks, so staged files that run on your
   computer are marked. Fetch, pull, push, clone and branches: [Remote repositories](#remote-repositories-git-hosts-clone-push-and-pull)
   below. [docs/security.md](docs/security.md#the-git-panel)
@@ -1434,7 +1480,7 @@ by what you came to do — a list on the left (on a phone, a section picker at t
 | **AWS & models** | the AWS key (with *Check*), region, **Re-check models** |
 | **Spending & budgets** | the budgets of Chat, `claude-bedrock` and the Terminal/Code page (with this period's spend), alert threshold and webhook; *More*: the setup key's budget, daily price updates |
 | **Chat & voice** | Chat's default model, models hidden from its picker, speech-to-text, OpenRouter; *More*: the title/tag model, OpenRouter's cap and aliases |
-| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code*, the *Default model for new sessions*, *Project folders* ([folders of this computer](#folders-of-this-computer)) and *What bedrock-now may read on this computer* ([your sessions](#your-claude-code-and-claude-bedrock-sessions-from-this-computer): Take back); *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
+| **Claude Code** | the Code page with *Allow Bypass permissions* and *Auto mode*, the browser terminal (folder, *Sandbox internet access*, *Auto mode in the terminal*), Claude Code's main model, *Models for Claude Code*, the *Default model for new sessions*, *Project folders* ([folders of this computer](#folders-of-this-computer)), *What bedrock-now may read on this computer* ([your sessions](#your-claude-code-and-claude-bedrock-sessions-from-this-computer) and setup: Take back) and *Bring your setup…* ([your setup](#your-claude-code-setup-from-this-computer)); *More*: its sonnet/haiku slots, the sandbox's internet name lists (only these, never these) and its memory |
 | **Files & sharing** | the Files (RustFS) key pair and the shared MCP token (**Regenerate**) |
 | **Remote access** | status, allowed Tailscale login, remote admin actions, the Terminal and Code page remotely, previews remotely; *More*: Tailscale and own-domain details |
 | **Updates & backups** | daily release check (when it last checked, and **Check for updates**), automatic updates and their window, nightly backups (window, how many), **Back up now** and the list of backups; *More*: signed releases only, the helper's switches |
@@ -1845,6 +1891,7 @@ troubleshooting: [docs/voice.md](docs/voice.md).
 | `./stack code status\|enable [--workspace DIR]\|disable` | The Code tab, Claude Code with a chat, permission prompts and your files, in the terminal's sandbox; on by default, `disable` keeps it off ([above](#the-code-page)) | none (its sessions: per token) |
 | `./stack project add DIR [--read-only] [--hide-path] [--name N]\|remove N\|mode N ro\|rw\|list` | A folder of this computer as a Code page project, mounted into the sandbox (it restarts; [above](#folders-of-this-computer)) | none |
 | `./stack sessions [list\|import --project N\|scan\|fetch\|consent\|suggest]` | Your Claude Code and `claude-bedrock` sessions of a project folder copied into the sandbox, after you allowed it here (secrets redacted by default; nothing written back; [above](#your-claude-code-and-claude-bedrock-sessions-from-this-computer)) | none (a resume: per token) |
+| `./stack sessions config [list\|import\|scan\|open\|consent]` | Bring your setup: items of your Claude Code setup (`CLAUDE.md`, skills, agents, commands, MCP servers, plugins, four settings) and your Git name and email copied into the sandbox, after you allowed it here (never env or logins; nothing written back; [above](#your-claude-code-setup-from-this-computer)) | none (what you bring: tokens in every request) |
 | `./stack git-host import gh\|glab [--host HOST]` | A login of the GitHub CLI or the GitLab CLI on this computer as a Git host of the Code page ([above](#remote-repositories-git-hosts-clone-push-and-pull)): the token goes to the code container on stdin (never a command line, a file or the browser); what it reaches is shown and confirmed first. glab: a personal access token only (an OAuth login of glab's is refused) | none |
 | `./stack password [--show]` | Where the portal password is (`PORTAL_PASSWORD` in this folder's `.env`); `--show` prints it, only to a terminal | none |
 | `./stack config [list\|get KEY\|set KEY…\|apply --stdin\|check-aws\|report\|regenerate rustfs\|mcp-token]` | Every setting, secrets masked; `set` asks for values (hidden for secrets) and applies them like the portal's [Settings](#settings) | none (`check-aws` is free; an AWS key change runs the test: ~$0.0001) |
