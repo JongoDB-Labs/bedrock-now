@@ -44,6 +44,7 @@ docker run --rm --name "$project-playwright" --init --shm-size=1g "${opts[@]}" \
   -e E2E_TERMINAL_HOSTILE="${E2E_TERMINAL_HOSTILE:-0}" -e E2E_CODE_HOSTILE="${E2E_CODE_HOSTILE:-0}" -e E2E_HELPER_ON="${E2E_HELPER_ON:-0}" \
   -e E2E_GIT_SERVER="${E2E_GIT_SERVER:-0}" -e E2E_GIT_TOKEN="${E2E_GIT_TOKEN:-}" -e E2E_GIT_CA_B64="${E2E_GIT_CA_B64:-}" -e E2E_GIT_ADMIN_PORT="${E2E_GIT_ADMIN_PORT:-}" \
   -e E2E_HOST_PASS="${E2E_HOST_PASS:-}" -e E2E_SESSIONS_PASS="${E2E_SESSIONS_PASS:-}" -e E2E_SESSIONS_REAL="${E2E_SESSIONS_REAL:-0}" -e E2E_CONFIG_PASS="${E2E_CONFIG_PASS:-}" \
+  -e E2E_SUBSCRIPTIONS="${E2E_SUBSCRIPTIONS:-0}" \
   -v "$stack/.env:/run/e2e/env:ro" \
   -v "$here/browser:/suite:ro" \
   -v "$out/browser:/out" \

@@ -76,6 +76,16 @@
 #                    Workspace); then no fake secret is anywhere in the sandbox's store, the stores on "this
 #                    computer" are unchanged, consent --revoke forgets what the code container read, and a read after
 #                    it is refused. The folder is removed at the end.
+#   --subscriptions  your AI subscriptions' own tools in the sandbox (E2E_SUBSCRIPTIONS=1 does the same; needs the
+#                    terminal): each at the version this checkout pins, each saying it is not signed in, ./stack
+#                    subscriptions status and its status file, each one's OWN sign-in run in the sandbox only until it
+#                    prints its link or code (Codex's and Grok's device codes, Copilot's github.com/login/device, Cursor's
+#                    link, Claude Code's authorize link, Gemini CLI's Google link after its trust question) — then
+#                    ended: no sign-in is ever completed, no account is used; claude-sub's environment without the
+#                    stack's ANTHROPIC_* variables; then browser/subscriptions-terminal-open (the Terminal tab's Open
+#                    menu starts Codex in a window of its own, at its sign-in) and browser/subscriptions-chat-embed
+#                    (Chat's Who answers shows Grok Build itself in place of Open WebUI, then Open WebUI again). These
+#                    requests reach OpenAI, GitHub, Cursor, xAI, Anthropic and Google (no model call, no cost).
 #                    E2E_HOST_SESSIONS_REAL=/abs/one-transcript.jsonl: ALSO one real transcript of yours (the check
 #                    that a session made on a Claude subscription resumes on Bedrock) — off by default; set it only
 #                    for a transcript you picked and agreed to use: it is copied into the fake store with its folder
@@ -126,6 +136,7 @@ GIT_SERVER=0; [ "${E2E_GIT_SERVER:-0}" != 1 ] || GIT_SERVER=1
 HOST_FOLDERS=0; [ "${E2E_HOST_FOLDERS:-0}" != 1 ] || HOST_FOLDERS=1
 HOST_SESSIONS=0; [ "${E2E_HOST_SESSIONS:-0}" != 1 ] || HOST_SESSIONS=1
 HOST_CONFIG=0; [ "${E2E_HOST_CONFIG:-0}" != 1 ] || HOST_CONFIG=1
+SUBSCRIPTIONS=0; [ "${E2E_SUBSCRIPTIONS:-0}" != 1 ] || SUBSCRIPTIONS=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -146,6 +157,7 @@ while [ $# -gt 0 ]; do
     --host-folders) HOST_FOLDERS=1; shift ;;
     --host-sessions) HOST_SESSIONS=1; shift ;;
     --host-config) HOST_CONFIG=1; shift ;;
+    --subscriptions) SUBSCRIPTIONS=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
@@ -1092,6 +1104,75 @@ elif [ "$HOST_CONFIG" = 1 ]; then
   rm -rf -- "$HC"
   rm -f "$OUT/browser/host-config-keep.txt"
   unset HC_SECRET HC_KEPT HC_CAP
+fi
+
+# --- 3a4. your AI subscriptions (--subscriptions): each tool at its pin, not signed in, its own sign-in until its link ---
+# No sign-in is ever completed: each flow runs in a pseudo-terminal in the sandbox until it printed its link (or for at
+# most 40 s) and is then ended; only whether the link appeared is recorded.
+subs_pin() { # subs_pin TOOL -> the version this checkout pins for it
+  case "$1" in
+    claude) sed -n 's/.*"@anthropic-ai\/claude-code": "\(.*\)".*/\1/p' "$STACK/terminal/claude-code/package.json" ;;
+    gemini) sed -n 's/.*"@google\/gemini-cli": "\(.*\)".*/\1/p' "$STACK/terminal/tools/gemini/package.json" ;;
+    grok) sed -n 's/.*"@xai-official\/grok": "\(.*\)".*/\1/p' "$STACK/terminal/tools/grok/package.json" ;;
+    *) sed -n "s/^ARG $(printf '%s' "$1" | tr a-z A-Z)_VERSION=//p" "$STACK/terminal/Dockerfile" ;;
+  esac
+}
+if [ "$SUBSCRIPTIONS" = 1 ] && [ "$TERMINAL" = 0 ]; then
+  record subscriptions tools SKIP 0 "--subscriptions needs the terminal"
+elif [ "$SUBSCRIPTIONS" = 1 ]; then
+  say "your AI subscriptions: each tool at its pin, not signed in, its own sign-in until its link (never completed)"
+  tc="$(svc_id terminal)"
+  t0="$(now)"; tsv="$(docker exec "$tc" subscriptions status --tsv 2>/dev/null)"; bad=''
+  for t in claude codex gemini copilot cursor grok; do
+    got="$(printf '%s\n' "$tsv" | awk -F'\t' -v t="$t" '$1 == t { print $2 " " $3 }')"
+    [ "$got" = "yes $(subs_pin "$t")" ] || bad="$bad $t: '$got' (pinned $(subs_pin "$t"));"
+  done
+  if [ -z "$bad" ]; then record subscriptions tools-pinned PASS "$(( $(now) - t0 ))" "every tool in the sandbox at the version this checkout pins"
+  else record subscriptions tools-pinned FAIL "$(( $(now) - t0 ))" "$bad"; fi
+  states="$(printf '%s\n' "$tsv" | awk -F'\t' '{ printf "%s:%s ", $1, $4 }')"
+  if [ "$states" = "claude:no codex:no gemini:no copilot:unknown cursor:no grok:no " ]; then
+    record subscriptions not-signed-in PASS 0 "each says it is not signed in (Copilot: not known here, as designed)"
+  else record subscriptions not-signed-in FAIL 0 "states: $states"; fi
+  cli subscriptions-status 0 'Codex +[0-9.]+ +no — \./stack subscriptions login codex' subscriptions status
+  sf="$STACK/.state/status/subscriptions.json"
+  if grep -q '"terminal":"running"' "$sf" 2>/dev/null && [ "$(grep -o '"installed":true' "$sf" | wc -l | tr -d ' ')" = 6 ]; then
+    record subscriptions status-file PASS 0 "the status file Settings reads: the sandbox answered, six tools in it"
+  else record subscriptions status-file FAIL 0 "$(head -c 300 "$sf" 2>/dev/null)"; fi
+  # each sign-in until its link, through the sandbox's egress proxy
+  for spec in 'codex|auth\.openai\.com/codex/device' 'copilot|github\.com/login/device' 'cursor|cursor\.com/loginDeepControl' \
+              'grok|x\.ai/oauth2/device' 'claude|claude\.(com|ai)/.*oauth/authorize'; do
+    t="${spec%%|*}"; pat="${spec#*|}"; t0="$(now)"
+    out="$(docker exec "$tc" timeout 40 script -qec "subscriptions login $t" /dev/null </dev/null 2>&1 | tr -d '\r' | head -c 20000)"
+    if printf '%s' "$out" | grep -Eq "$pat"; then record subscriptions "signin-$t" PASS "$(( $(now) - t0 ))" "its own sign-in printed its link in the sandbox; ended there, never completed"
+    else record subscriptions "signin-$t" FAIL "$(( $(now) - t0 ))" "no /$pat/ in: $(printf '%s' "$out" | sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g' | tr '\n' ' ' | tail -c 300)"; fi
+  done
+  # Gemini CLI signs in inside its own screen: its trust question answered "Don't trust", then its Google link
+  t0="$(now)"
+  out="$(docker exec -e TERM=xterm-256color "$tc" sh -c 'tmux -L e2e-gemini -f /dev/null new-session -d -s g -x 200 -y 60 gemini; sleep 12
+    tmux -L e2e-gemini send-keys -t g 3; sleep 1; tmux -L e2e-gemini send-keys -t g Enter; sleep 8
+    tmux -L e2e-gemini capture-pane -p -J -t g; tmux -L e2e-gemini kill-server' 2>/dev/null)"
+  if printf '%s' "$out" | grep -q 'accounts.google.com/o/oauth2'; then record subscriptions signin-gemini PASS "$(( $(now) - t0 ))" "its own sign-in (Login with Google, NO_BROWSER) printed its link; ended there, never completed"
+  else record subscriptions signin-gemini FAIL "$(( $(now) - t0 ))" "no Google link in: $(printf '%s' "$out" | tr '\n' ' ' | tail -c 300)"; fi
+  # still not signed in after the ended attempts
+  states="$(docker exec "$tc" subscriptions status --tsv 2>/dev/null | awk -F'\t' '$4 == "yes" { printf "%s ", $1 }')"
+  if [ -z "$states" ]; then record subscriptions still-not-signed-in PASS 0 "no tool signed in after its sign-in was ended"
+  else record subscriptions still-not-signed-in FAIL 0 "signed in: $states"; fi
+  # claude-sub: the image's claude without the stack's variables (a stand-in in the workspace prints its environment)
+  ws="$(get_env TERMINAL_WORKSPACE)"; t0="$(now)"
+  printf '#!/bin/sh\nenv | sort\n' > "$ws/.e2e-envstub"; chmod 755 "$ws/.e2e-envstub"
+  out="$(docker exec "$tc" env BN_CLAUDE_BIN=/workspace/.e2e-envstub claude-sub 2>/dev/null)"
+  inside="$(docker exec "$tc" sh -c 'env | grep -c "^ANTHROPIC_"' 2>/dev/null)"
+  rm -f "$ws/.e2e-envstub"
+  if ! printf '%s' "$out" | grep -q '^ANTHROPIC_' && printf '%s' "$out" | grep -qx 'CLAUDE_CONFIG_DIR=/home/claude/.claude-subscription' && [ "${inside:-0}" -gt 0 ]; then
+    record subscriptions claude-sub-env PASS "$(( $(now) - t0 ))" "claude-sub: none of the sandbox's $inside ANTHROPIC_* variables, its own config folder"
+  else record subscriptions claude-sub-env FAIL "$(( $(now) - t0 ))" "$(printf '%s' "$out" | grep -E '^(ANTHROPIC_|CLAUDE_CONFIG_DIR)' | cut -d= -f1 | tr '\n' ' ')"; fi
+  if part_on browser; then
+    E2E_SUBSCRIPTIONS=1 browser_run "your AI subscriptions: the pickers" 'browser/subscriptions-(terminal-open|chat-embed)$' subs runner-subs
+    wins="$(docker exec "$tc" tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | tr '\n' ' ')"
+    case " $wins " in *" claude:codex "*) case " $wins " in *" chat-grok:grok "*) wins="ok $wins" ;; esac ;; esac
+    case "$wins" in ok*) record subscriptions picker-windows PASS 0 "tmux: ${wins#ok }" ;;
+      *) record subscriptions picker-windows FAIL 0 "tmux: $wins (want claude:codex and chat-grok:grok)" ;; esac
+  fi
 fi
 
 # --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---
