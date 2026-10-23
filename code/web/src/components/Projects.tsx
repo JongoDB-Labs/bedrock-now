@@ -869,8 +869,8 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
     ['MCP servers (.mcp.json)', sm.mcpServers.map((m) => ({ text: `${m.name}: ${m.run}`, json: m.json, mixed: m.mixed, careful: m.careful })), 'settings-mcp'],
     ['MCP settings', sm.mcp.map((m) => ({ text: `${m.key}: ${m.value}` })), 'settings-mcp-keys'],
     ['Other settings', sm.other.map((o) => ({ text: `${o.key}: ${o.value}` })), 'settings-other'],
-    ['Skills, commands, agents … — this folder\'s .claude/ and the folders\' above it to the git root: what their front matter grants', sm.files.flatMap((f) => (f.grants.length
-      ? f.grants.map((g) => ({ text: `${f.name}: ${g.key}: ${g.value}` })) : [{ text: `${f.name}: grants nothing in its front matter` }])), 'settings-tree'],
+    ['Skills, commands, agents … — this folder\'s .claude/ and the folders\' above it to the git root: what their front matter grants, and the shell commands they run when used', sm.files.flatMap((f) => (f.grants.length
+      ? f.grants.map((g) => ({ text: `${f.name}: ${g.key}: ${g.value}` })) : [{ text: `${f.name}: grants nothing in its front matter, runs no shell command` }])), 'settings-tree'],
     ['Notes', sm.notes.map((n) => ({ text: `${n.file}: ${n.note}` })), 'settings-notes'],
   ] : [];
   const all = sections.flatMap(([title, rows]) => rowsOf(title, rows));

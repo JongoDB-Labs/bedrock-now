@@ -72,25 +72,48 @@ const PLAIN = /^(?![-?:,[\]{}#&*!|>'"%@`])(?!.*(?:: | #|\t))[^\t]*$/;
 // a value that changes the structure YAML reads (a flow collection, a block scalar, an anchor, an alias, a tag, an
 // explicit key) — never plain, whatever its key
 const STRUCTURAL = /^[{[|>&*!?]|\t/;
-/** frontMatter(text) -> {grants: [{key, value}], plain}: the grant keys of a .md file's front matter (matched in any
- *  case), each value as YAML gives it (a scalar, or a block list joined with ", "); plain false when the front matter
- *  is anything but top-level `key: value` lines and `key:` with `  - item` lines — flow style, block scalars, anchors,
- *  aliases, tags, explicit or quoted keys, multi-line scalars, a key twice, no closing --- — or a grant key's value is
- *  not a plain scalar (quoted, ": " or " #" inside): then what Claude Code reads cannot be told here */
-export function frontMatter(t) {
-  if (!/^\uFEFF?---[ \t]*\r?\n/.test(t)) return { grants: [], plain: true };
-  const m = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(t);
-  if (!m) return { grants: [], plain: false };
-  const keys = [];
+// --- Claude Code's own reading of a Markdown file's front matter, mirrored (2.1.296, its binary:
+// ---   function Gb(e){return e.charCodeAt(0)===65279?e.slice(1):e}
+// ---   Pv=/^---\s*\n([\s\S]*?)---\s*\n?/      used when e.indexOf("---",3) >= 0, on Gb(e)
+// --- ): one BOM off; "---"; any run of whitespace as JavaScript's \s knows it (spaces, tabs, CRs, \f, \v, NBSP, U+2028,
+// --- U+3000, blank lines …) that holds a line feed — the block starts after the last line feed of that run —; the
+// --- block ends at the FIRST "---" after it, wherever that is (inside a value too). Its YAML parser reads the block (a
+// --- CR alone is a line break there); a block it cannot read gives no front matter at all. Done here by a scan, not
+// --- that regular expression (whose \s* before an unclosed block is quadratic): the same block, in linear time. ---
+const WS_CHAR = /\s/;
+/** ccFrontMatterBlock(text) -> the front matter block Claude Code reads (its text), or null when it reads none */
+export function ccFrontMatterBlock(t) {
+  const s = t.charCodeAt(0) === 0xfeff ? t.slice(1) : t;
+  if (!s.startsWith('---') || s.indexOf('---', 3) < 0) return null;
+  let i = 3, lastNl = -1;
+  while (i < s.length && WS_CHAR.test(s[i])) { if (s[i] === '\n') lastNl = i; i++; }
+  if (lastNl < 0) return null;
+  const close = s.indexOf('---', lastNl + 1);
+  return close < 0 ? null : s.slice(lastNl + 1, close);
+}
+// the block as this page reads front matter plainly: "---" (spaces or tabs after it) on the first line, the block to a
+// line that is "---" (spaces or tabs after it)
+const STRICT = /^﻿?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+const BLOCK_MAX = 64 << 10;   // (Claude Code reads no front matter of more than 64 KiB in an untrusted folder)
+// readBlock(block) -> {keys: [{key, value, list}], plain}: top-level `key: value` lines and `key:` with `  - item`
+// lines, one pass; anything else is not plain (a key twice — told by a set —, a structural value, a continuation …)
+function readBlock(block) {
+  const keys = [], seen = new Set();
   let cur = null, plain = true;
-  for (const raw of m[1].split(/\r?\n/)) {
-    const line = raw.replace(/[ ]+$/, '');
+  // (a CR alone is a line break to YAML: split there too — and not plain, a page shows it differently)
+  if (/\r(?!\n)/.test(block)) plain = false;
+  for (const raw of block.split(/\r\n|\r|\n/)) {
+    let e = raw.length;
+    while (e > 0 && raw[e - 1] === ' ') e--;
+    const line = raw.slice(0, e);
     if (!line || /^[ ]*#/.test(line)) continue;
     const k = /^([A-Za-z][A-Za-z0-9_-]*):(?: (.*))?$/.exec(line);
     if (k) {
       const v = (k[2] ?? '').trim();
-      const grant = GRANT_KEYS.has(k[1].toLowerCase());
-      if (keys.some((x) => x.key.toLowerCase() === k[1].toLowerCase()) || STRUCTURAL.test(v) || (grant && v && !PLAIN.test(v))) plain = false;
+      const lower = k[1].toLowerCase();
+      const grant = GRANT_KEYS.has(lower);
+      if (seen.has(lower) || STRUCTURAL.test(v) || (grant && v && !PLAIN.test(v))) plain = false;
+      seen.add(lower);
       cur = { key: k[1], value: v, list: v === '' ? [] : null };
       keys.push(cur);
       continue;
@@ -100,8 +123,81 @@ export function frontMatter(t) {
     if (item && cur?.list && !STRUCTURAL.test(iv) && (!GRANT_KEYS.has(cur.key.toLowerCase()) || PLAIN.test(iv))) { cur.list.push(iv); continue; }
     plain = false;   // a continuation, an indented mapping, a tab, a flow collection …
   }
-  const grants = keys.filter((x) => GRANT_KEYS.has(x.key.toLowerCase())).map((x) => ({ key: x.key, value: x.list?.length ? x.list.join(', ') : x.value }));
+  return { keys, plain };
+}
+/** frontMatter(text) -> {grants: [{key, value}], plain}: the grant keys of a .md file's front matter (matched in any
+ *  case), each value as YAML gives it (a scalar, or a block list joined with ", ") — read in the block Claude Code reads
+ *  (ccFrontMatterBlock) and, where this page's plain reading finds another block, in that one too: a grant either way is
+ *  listed. plain false — what Claude Code reads cannot be told here, never trusted — when the text starts with --- (after
+ *  a BOM) and anything is off: no block Claude Code would read, not the same block both ways (another opener — a \f,
+ *  an NBSP, a U+2028, blank lines, a CR alone —, a "---" inside a value, a closer not on a line of its own), a block of
+ *  more than 64 KiB, or anything but top-level `key: value` lines and `key:` with `  - item` lines (flow style, block
+ *  scalars, anchors, aliases, tags, explicit or quoted keys, multi-line scalars, a key twice), or a grant key's value
+ *  not a plain scalar (quoted, ": " or " #" inside). Linear in the text. */
+export function frontMatter(t) {
+  const s = t.charCodeAt(0) === 0xfeff ? t.slice(1) : t;
+  if (!s.startsWith('---')) return { grants: [], plain: true };
+  const cc = ccFrontMatterBlock(t);
+  const strict = STRICT.exec(t);
+  let plain = cc !== null && strict !== null && cc.replace(/\r\n/g, '\n').trim() === strict[1].replace(/\r\n/g, '\n').trim() && cc.length <= BLOCK_MAX;
+  const grants = [], said = new Set();
+  for (const block of [cc, strict && strict[1] !== cc ? strict[1] : null]) {
+    if (block === null) continue;
+    const r = readBlock(block.length > BLOCK_MAX ? block.slice(0, BLOCK_MAX) : block);
+    if (!r.plain) plain = false;
+    for (const x of r.keys) {
+      if (!GRANT_KEYS.has(x.key.toLowerCase())) continue;
+      const g = { key: x.key, value: x.list?.length ? x.list.join(', ') : x.value };
+      const id = `${g.key.toLowerCase()}\0${g.value}`;
+      if (!said.has(id)) { said.add(id); grants.push(g); }
+    }
+  }
   return { grants, plain };
+}
+// --- the shell commands a skill's or command's text runs when it is used (Claude Code 2.1.296, its binary:
+// ---   gVn=/```!\s*\n?([\s\S]*?)\n?```/g          a fenced block opened by ```!
+// ---   hVn=/(?<=^|\s)!`([^`]+)`/gm               an inline !`…` after a line's start or whitespace — read on the text
+// ---                                               with inline code blanked first: /`[^`\n]+`/g not after ! or `
+// ---   each command trimmed, CRLF as LF; an empty one skipped)
+// --- — mirrored here by scans, in linear time (the fenced pattern's \s* before an unclosed block is quadratic): every
+// --- command Claude Code would run is listed; a fenced block with no closing ``` (which runs nothing there) is listed too.
+// blankInlineCode(text) -> the text with inline code spans (`…` on one line, not right after ! or `) as spaces
+function blankInlineCode(s) {
+  let out = '', from = 0;
+  for (let i = s.indexOf('`'); i >= 0; ) {
+    let j = i + 1;
+    while (j < s.length && s[j] !== '`' && s[j] !== '\n') j++;
+    if (j < s.length && s[j] === '`' && j > i + 1) {
+      if (s[i - 1] !== '!' && s[i - 1] !== '`') { out += `${s.slice(from, i + 1)}${' '.repeat(j - i - 1)}`; from = j; }
+      i = s.indexOf('`', j + 1);
+    } else i = s.indexOf('`', i + 1);
+  }
+  return out + s.slice(from);
+}
+/** shellBlocks(text) -> [{kind: 'fenced' | 'inline', command}]: the shell commands Claude Code runs (in the sandbox, as
+ *  the session) each time the skill or command is used, before the model reads its text — at most 200 of them, each
+ *  cut at 2,000 characters */
+export function shellBlocks(text) {
+  const s = String(text), out = [];
+  const add = (kind, c) => { const cmd = c.trim().replaceAll('\r\n', '\n'); if (cmd && out.length < 200) out.push({ kind, command: cmd.slice(0, 2000) }); };
+  for (let at = s.indexOf('```!'); at >= 0 && out.length < 200; ) {
+    const close = s.indexOf('```', at + 4);
+    add('fenced', s.slice(at + 4, close < 0 ? s.length : close));
+    if (close < 0) break;
+    at = s.indexOf('```!', close + 3);
+  }
+  if (s.includes('!`')) {
+    const b = blankInlineCode(s);
+    for (let at = b.indexOf('!`'); at >= 0 && out.length < 200; ) {
+      if (at > 0 && !WS_CHAR.test(b[at - 1])) { at = b.indexOf('!`', at + 1); continue; }
+      const end = b.indexOf('`', at + 2);
+      if (end < 0) break;
+      if (end === at + 2) { at = b.indexOf('!`', at + 1); continue; }
+      add('inline', b.slice(at + 2, end));
+      at = b.indexOf('!`', end + 1);
+    }
+  }
+  return out;
 }
 // canonical(v) -> JSON with sorted keys (every field, whatever the friendly line shows)
 const canonical = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
@@ -142,7 +238,11 @@ export function summarize(files) {
     if (!settings) {
       const fm = f.text !== null ? frontMatter(f.text) : { grants: [], plain: true };
       if (!fm.plain) { note('front matter this page cannot read the way Claude Code does (only `key: value` lines and `- item` lists)'); incomplete('front matter beyond plain key: value lines'); }
-      out.files.push({ name: text(f.name), size: f.size, grants: fm.grants.map((g) => ({ key: text(g.key), value: text(g.value) })) });
+      // (and the shell commands Claude Code runs each time a skill or command is used: !`…` and ```! blocks — listed with
+      // its grants, whatever the file)
+      const shell = f.text !== null ? shellBlocks(f.text) : [];
+      out.files.push({ name: text(f.name), size: f.size, grants: [...fm.grants.map((g) => ({ key: text(g.key), value: text(g.value) })),
+        ...shell.map((x) => ({ key: x.kind === 'fenced' ? 'runs in a shell when used (```!)' : 'runs in a shell when used (!`…`)', value: text(x.command) }))] });
     }
     if (f.type === 'link') note(`a link to ${f.target ?? '?'}${f.text === null ? ' (not read: outside the workspace, or not a file)' : ''}`);
     if (f.type === 'big') { note('too large to show (over 256 KiB)'); incomplete('a file too large to show'); continue; }

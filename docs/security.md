@@ -1278,10 +1278,16 @@ direction-changing character; a record that does not fit (a file someone changed
     worktree or a submodule (a `.git` that is a file, here or above: Claude Code reads another checkout's
     configuration then), or a file that cannot be read whole as text — a link out of the workspace, a link to a
     folder, a FIFO, a `.claude` that is a link — and it is *unverifiable*, never trusted. Front matter — of every text
-    file there, whatever its name — is read strictly: only top-level `key: value` lines and `- item` lists, a grant
-    key's value a plain scalar (its key in any case); anything a YAML parser could read differently — flow style,
-    quotes, anchors and aliases, tags, explicit keys, block scalars, a key twice, no closing `---` — leaves the
-    summary incomplete, never trusted. The settings files and `.mcp.json` are summarised whole or not at all: more
+    file there, whatever its name — is found where Claude Code finds it (2.1.296's own reading, mirrored: one BOM off,
+    `---`, any whitespace JavaScript's `\s` knows up to a line feed — a form feed, an NBSP, U+2028, blank lines … —,
+    the block up to its first `---`, wherever that is) and read strictly: only top-level `key: value` lines and `- item`
+    lists, a grant key's value a plain scalar (its key in any case). A grant found in Claude Code's block or in this
+    page's plain one is listed; anything off — a text that starts with `---` where the two do not read the same block
+    (another opener, a `---` inside a value, a closer not on a line of its own, no closing `---`), a CR alone, a block
+    over 64 KiB, or anything a YAML parser could read differently (flow style, quotes, anchors and aliases, tags,
+    explicit keys, block scalars, a key twice) — leaves the summary incomplete, never trusted. The shell commands a
+    skill or command runs each time it is used (``!`…` `` after whitespace and ```` ```! ```` blocks, read as Claude
+    Code reads them, inline code first blanked) are listed with the file's grants. The settings files and `.mcp.json` are summarised whole or not at all: more
     than 200 entries in a section, a value over 2,000 characters or invalid JSON leave no hash to trust. Each hook and
     MCP server is shown whole (its entry as JSON with sorted keys, beside a friendly line; one naming more than one of
     a command, a URL and a prompt is marked); every character but printable ASCII, a tab or a line break is shown as

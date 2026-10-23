@@ -6,6 +6,19 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **A project's front matter is found where Claude Code finds it.** The trust step (a project's ⋯ › *Claude Code
+  settings…*) looked for front matter only after a plain `---` line; Claude Code 2.1.296 also reads it after `---`
+  followed by other whitespace (a form feed, a vertical tab, an NBSP, U+2028, U+3000, CRs, blank lines …), and ends it at
+  the first `---` anywhere. A skill or agent of a cloned repository could so hide `allowed-tools: Bash(*)`,
+  `permissionMode: bypassPermissions` or hooks from the summary you trusted. The block Claude Code reads is now found
+  the way it does (one BOM off, its opener and closer); a grant found there or in the plain reading is listed, and a
+  text that starts with `---` and does not read the same block both ways leaves the summary incomplete — never trusted.
+  Reading front matter is linear in its length (a key twice was told by comparing every key with every other).
+- **The trust summary lists the shell commands a project's skills and commands run** each time they are used
+  (``!`…` `` and ```` ```! ```` blocks, read as Claude Code reads them), beside what their front matter grants.
+
 ## [0.21.0] - 2026-10-23
 
 ### Added

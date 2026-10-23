@@ -1,0 +1,1 @@
+trust-frontmatter.test.mjs

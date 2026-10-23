@@ -65,7 +65,10 @@ COPY --from=terminal ssh_known_hosts /opt/terminal/ssh_known_hosts
 COPY --from=terminal egress/bn-egress.mjs /opt/terminal/egress/
 COPY --from=terminal claude-code/package.json /opt/terminal/claude-code/package.json
 ENV BN_TERMINAL_DIR=/opt/terminal
-RUN node --test --test-reporter=spec test/*.test.mjs
+# (the files of test/one-at-a-time.txt check that parsing stays linear, by timing: run after the others, one at a time —
+# another file's work at the same moment is noise to them)
+RUN node --test --test-reporter=spec $(for f in test/*.test.mjs; do grep -qxF "${f#test/}" test/one-at-a-time.txt || echo "$f"; done) \
+ && node --test --test-concurrency=1 --test-reporter=spec $(sed 's|^|test/|' test/one-at-a-time.txt)
 
 FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
 WORKDIR /opt/code
