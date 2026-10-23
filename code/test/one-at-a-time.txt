@@ -1,1 +1,3 @@
 trust-frontmatter.test.mjs
+import-scan.test.mjs
+import-setup.test.mjs

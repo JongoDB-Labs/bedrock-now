@@ -9,16 +9,17 @@ import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewrit
 import { session, fake, rand, uuid } from './transcripts.mjs';
 
 // assertLinear(input, run, label, part) — does run take time in proportion to its input? Its time on the whole input
-// against its time on a quarter of it (part; for a text: its first quarter and its last 64 characters, so what ends a run
-// stays): about 4× for a linear shape, 16× or more for a quadratic one. Each the fastest of two runs taken in turn — a
-// busy machine slows both alike, where a limit in seconds would fail — and at most 6× passes (or the whole under 30 ms:
-// too short to tell); a miss is measured once more before it counts. (A scan that is not linear takes minutes on these
-// inputs: it fails either way.)
+// against its time on an eighth of it (part; for a text: its first eighth and its last 64 characters, so what ends a
+// run stays): about 8× for a linear shape, 64× for a quadratic one. Each the fastest of three runs taken in turn — a
+// busy machine slows both alike, where a limit in seconds would fail —, at most 16× passes; these texts are near the
+// scan's 8 MiB limit and cannot grow, so the eighth counts as at least 20 ms (a time a clock can tell). A miss is
+// measured once more before it counts. (test/linear.mjs grows its inputs instead; this file runs alone:
+// test/one-at-a-time.txt.)
 const assertLinear = (input, run, label, part = null) => {
-  const small = part ?? (input.length > 512 ? input.slice(0, input.length >> 2) + input.slice(-64) : input);
+  const small = part ?? (input.length > 1024 ? input.slice(0, input.length >> 3) + input.slice(-64) : input);
   let q = Infinity, w = Infinity;
   for (let round = 0; round < 2; round++) {
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 3; i++) {
       let t0 = performance.now();
       run(small);
       q = Math.min(q, performance.now() - t0);
@@ -26,9 +27,9 @@ const assertLinear = (input, run, label, part = null) => {
       run(input);
       w = Math.min(w, performance.now() - t0);
     }
-    if (w <= 6 * Math.max(q, 5)) return;
+    if (w <= 16 * Math.max(q, 20)) return;
   }
-  assert.fail(`${label}: ${Math.round(w)} ms for the whole, ${Math.round(q)} ms for a quarter — not linear`);
+  assert.fail(`${label}: ${Math.round(w)} ms for the whole, ${Math.round(q)} ms for an eighth — not linear`);
 };
 
 test('every kind of secret is found, said in plain words with its length (a token\'s public start only) — never whole', () => {
@@ -421,7 +422,7 @@ test('every shape stays linear on hostile 7 MiB text — runs of spaces and tabs
   }
   // keys and values together: a 7 MiB key with a secret's name, an environment item of spaces
   const kv = (m) => [{ [`password${' '.repeat(m - 20)}`]: 'x '.repeat(1000), env: [`TOKEN=${' '.repeat(m - 7)}x`] }];
-  assertLinear(kv(M), processEntries, 'processEntries: a 7 MiB key with a secret\'s name, an item of spaces', kv(M >> 2));
+  assertLinear(kv(M), processEntries, 'processEntries: a 7 MiB key with a secret\'s name, an item of spaces', kv(M >> 3));
 });
 
 test('thinking blocks kept: a block that holds a finding or a path to rewrite is left out whole; the others stay exactly as they were', () => {
@@ -556,7 +557,7 @@ test('every new shape stays linear on hostile 7 MiB text', () => {
   // names and values apart, at volume: 200,000 env items and --flag pairs
   const mk = (n) => ({ env: Array.from({ length: n }, (_, i) => ({ name: i % 2 ? 'DB_PASSWORD' : 'HOST', value: `v${i}-${'z'.repeat(8)}` })),
     args: Array.from({ length: n }, (_, i) => (i % 2 ? `val-${i}-xxxxxxxx` : '--api-key')) });
-  assertLinear(mk(100000), (b) => processEntries([b]), 'processEntries: 200,000 env items and --flag pairs', mk(25000));
+  assertLinear(mk(100000), (b) => processEntries([b]), 'processEntries: 200,000 env items and --flag pairs', mk(12500));
 });
 
 test('no exemption broader than its intent: counts are numbers under known count keys only; floors low; templates hold no assignment', () => {
@@ -867,7 +868,7 @@ test('M5: keys made equal by a redaction are numbered in linear time (40,000 in 
   const mk = (n) => { const o = {}; for (let i = 0; i < n; i++) o[fake.github()] = i; return o; };
   const obj = mk(40000);
   const r = redactEntries([{ type: 'user', toolUseResult: obj }]);
-  assertLinear(obj, (o) => redactEntries([{ type: 'user', toolUseResult: o }]), 'M5: 40,000 keys made equal', mk(10000));
+  assertLinear(obj, (o) => redactEntries([{ type: 'user', toolUseResult: o }]), 'M5: 40,000 keys made equal', mk(5000));
   const keys = Object.keys(r.entries[0].toolUseResult);
   assert.equal(keys.length, 40000);
   assert.equal(new Set(keys).size, 40000);
