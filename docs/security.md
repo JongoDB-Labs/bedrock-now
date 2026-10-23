@@ -2738,10 +2738,15 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   is a name and its value apart: a `value` (`Value`, `ParameterValue`, `SecretString` …) beside a `name` (`Name`, `Key`,
   `ParameterKey` …) that names a secret — Kubernetes' and ECS' env, SSM, CloudFormation — or under a key that does
   (Terraform's `{db_password: {value}}`), any item of a list under such a key (`{api_keys: […]}`, `{Cookie: […]}`), the
-  item after a `--flag` that names one (`["--api-key", v]`), and a list's `NAME=value` items. A value counts as a
-  placeholder (`${VAR}`, `<your-token>`, `changeme`, `string`) only when the WHOLE value is one — `${VAR:-default}` only
-  when its default is empty or one too — and an unquoted value ends only at a space, a quote or its line's end (never at
-  `;` `,` `&` `)`: `password=ab;REST` leaves nothing behind). Findings that overlap become one, their union. Each
+  item after a `--flag` that names one (`["--api-key", v]`), and a list's `NAME=value` items. Only a number under one of
+  the count keys Claude Code and its SDK write (`input_tokens`, `cache_read_input_tokens` …, a test run's
+  `numPassedTests`), by its exact name, is no finding — never a string or a list (`{"access_tokens": […]}` is one). A
+  value counts as a placeholder (`${VAR}`, `<your-token>`, `changeme`, `string`) only when the WHOLE value is one, and
+  no placeholder holds `=` or `:` (`{{ token=… }}` is none) — `${VAR:-default}` only when its default is empty or one
+  too; a value under a secret's name counts from 4 characters (`1234`, `abcd`); an unquoted value ends only at a space,
+  a quote or its line's end (never at `;` `,` `&` `)`: `password=ab;REST` leaves nothing behind). No finder steps over
+  text it did not redact: past a value only when it is a finding (or a placeholder), past a URL only up to the password
+  it redacts (or an authority with no `@`, where none can be), a command line read word by word to its end. Findings that overlap become one, their union. Each
   finding is listed with its kind, where and its length — and, only for a token whose start is everyone's (`ghp_`,
   `AKIA`, `sk-ant-` …), that start: nothing of a password, a value, a cookie, a header or a URL's password, on any
   device — and replaced by `[REDACTED:<kind>]`; redaction is idempotent. **Keeping one** needs the portal password (the

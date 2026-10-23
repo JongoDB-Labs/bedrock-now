@@ -116,7 +116,8 @@ export const SECRET_NAME = /pass(?:word|wd|phrase)?|secret|token|api[_-]?key|acc
 // … and, as a whole name only, auth (docker's config.json, an .npmrc's _auth): "author" is no secret's name
 const AUTH_NAME = /^-*_?auth$/i;
 // (a redaction in a key is no name: [REDACTED:github-token] does not make its value a secret)
-export const isSecretName = (k) => typeof k === 'string' && k.length <= 256 && (SECRET_NAME.test(k.replace(/\[REDACTED:[a-z-]*\]/g, '')) || AUTH_NAME.test(k));
+// (a name of any length: a long one is looked through once, as any text)
+export const isSecretName = (k) => typeof k === 'string' && (SECRET_NAME.test(k.replace(/\[REDACTED:[a-z-]*\]/g, '')) || (k.length <= 64 && AUTH_NAME.test(k)));
 const KEYWORD = new RegExp(`${SECRET_NAME.source}|(?<![A-Za-z0-9])_?auth(?![A-Za-z0-9_-])`, 'gi');
 // headers whose whole value (to the end of the line or the closing quote) is the secret
 const HEADER = /^(?:proxy-)?authorization$|^(?:set-)?cookie$/i;
@@ -131,16 +132,17 @@ const valueStop = (c) => isSpace(c) || c === 34 || c === 39 || c === 96;
 
 // a value that is a placeholder, not a secret — only when the WHOLE value is one (a value that merely starts like one,
 // "Test1234…" or "true-blue…", is a finding): a redaction already, a variable, a template, an example word, a type
-// name, one character repeated. Every alternative is anchored and bounded; the pattern sees at most 256 characters
+// name, one character repeated. Every alternative is anchored and bounded (the pattern sees at most 256 characters),
+// and none holds = or : — a template with an assignment in it ({{ token=… }}, $(echo password=…)) is no placeholder
 const PLACEHOLDER = new RegExp(`^(?:${[
   '\\[REDACTED(?::[a-z-]*)?\\]?',
   '\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?',
-  '\\$\\([^)]{0,200}\\)?',
-  '<[^<>]{0,80}>',
+  '\\$\\([^)=:]{0,200}\\)?',
+  '<[^<>=:]{0,80}>',
   '%[A-Za-z_][A-Za-z0-9_]*%',
-  '\\{\\{[^{}]{0,80}\\}\\}',
+  '\\{\\{[^{}=:]{0,80}\\}\\}',
   '(?:process\\.env|import\\.meta\\.env|os\\.environ|env)(?:\\.[A-Za-z_][A-Za-z0-9_]*|\\[[^\\]]{1,80}\\]?)',
-  '(?:os\\.)?getenv\\([^)]{0,80}\\)?',
+  '(?:os\\.)?getenv\\([^)=:]{0,80}\\)?',
   'your[-_][A-Za-z0-9_-]{1,40}',
   'example|changeme|change[-_]me|placeholder|dummy|test|none|null|nil|undefined|true|false|password|secret|redacted|hidden|todo|tbd',
   'string|str|number|int|integer|bool|boolean|bytes|any|object|required|optional',
@@ -160,7 +162,7 @@ export function placeholder(v) {
   if (d) {
     if (!v.endsWith('}')) return false;
     const rest = v.slice(d[0].length, -1);
-    return d[2] === '?' || rest === '' || placeholder(rest);
+    return (d[2] === '?' && !rest.includes('=') && !rest.includes(':')) || rest === '' || placeholder(rest);
   }
   return PLACEHOLDER.test(v);
 }
@@ -174,7 +176,9 @@ export function entropy(s) {
   return h;
 }
 // what a value under a secret's name must be to count: not a placeholder, long and varied enough
-const ASSIGN_MIN = 6, ASSIGN_ENTROPY = 2.3, NAMED_MIN = 6, NAMED_ENTROPY = 2.0, HEADER_MIN = 8;
+// (low floors: a value under a secret's name is one unless it is a placeholder or nearly one character repeated —
+// "abcd" and "123456" are passwords people use)
+const ASSIGN_MIN = 4, ASSIGN_ENTROPY = 1.5, NAMED_MIN = 4, NAMED_ENTROPY = 1.0, HEADER_MIN = 4;
 const named = (v) => v.length >= NAMED_MIN && !placeholder(v) && entropy(v) >= NAMED_ENTROPY;
 
 // assignments(text) -> [{kind, start, end}]: by hand, in one pass — a secret's name (SECRET_NAME anywhere in a name of
@@ -234,8 +238,16 @@ function assignments(text) {
     while (z > 0 && ';,)}]'.includes(val[z - 1])) z--;
     const core = z === val.length ? val : val.slice(0, z);
     const ph = placeholder(val) || (core !== val && placeholder(core));
-    if (kind === 'assignment' ? val.length >= ASSIGN_MIN && !ph && entropy(val) >= ASSIGN_ENTROPY : val.length >= HEADER_MIN && !ph) out.push({ kind, start, end });
+    // (a value holding = or : — another assignment, a URL — is one whatever its entropy: what is not a finding never
+    // holds one, so the scan may look on inside it)
+    const ok = kind === 'assignment' ? val.length >= ASSIGN_MIN && !ph && (entropy(val) >= ASSIGN_ENTROPY || val.includes('=') || val.includes(':')) : val.length >= HEADER_MIN && !ph;
+    if (ok) out.push({ kind, start, end });
+    // (a whole placeholder holds no assignment — none of its forms has = or : but a shell default, checked itself)
+    return ok || ph;
   };
+  // (past a value only when it is a finding — redacted whole — or a placeholder; else the scan goes on right after the
+  // name, into it)
+  const past = (skip, e, end) => { KEYWORD.lastIndex = skip ? Math.max(e, end) : e; };
   KEYWORD.lastIndex = 0;
   for (let m; (m = KEYWORD.exec(text)) !== null;) {
     let s = m.index, e = m.index + m[0].length;
@@ -249,8 +261,7 @@ function assignments(text) {
       const close = text.indexOf('<', e + 1), end = close < 0 ? n : close;
       let a = skipBlanks(text, e + 1), z = end;
       while (z > a && isSpace(text.charCodeAt(z - 1))) z--;
-      value('assignment', a, z);
-      KEYWORD.lastIndex = Math.max(e, end);
+      past(value('assignment', a, z), e, end);
       continue;
     }
     const i = text[e] === ']' ? e + 1 : skipQuote(text, e) + (text[skipQuote(text, e)] === ']' ? 1 : 0);
@@ -265,15 +276,15 @@ function assignments(text) {
     else if (j > i && j < n && !lineBreak(text.charCodeAt(j))) {
       // (no sign: a --flag's value; SQL's PASSWORD 'v'; a .netrc's password v)
       // (at a line's start: only blanks before it on its line — looked at back to the first other character; or after
-      // login or machine within the 256 characters before it on its line)
+      // login or machine within the 160 characters before it on its line)
       const netrc = NETRC_NAME.test(name) && (() => {
         let k = s;
         while (k > 0 && isBlank(text[k - 1])) k--;
         if (k === 0 || lineBreak(text.charCodeAt(k - 1))) return true;
-        let before = text.slice(Math.max(0, s - 256), s);
+        let before = text.slice(Math.max(0, s - 160), s);
         const nl = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r'));
         if (nl >= 0) before = before.slice(nl + 1);
-        return /(?:^|[ \t])(?:login|machine)[ \t]/.test(before);
+        return before.includes('login ') || before.includes('login\t') || before.includes('machine ') || before.includes('machine\t');
       })();
       if (text[s] === '-' || netrc || (NETRC_NAME.test(name) && QUOTE(text[j]))) v = j;
     }
@@ -291,7 +302,7 @@ function assignments(text) {
       k = skipBlanks(text, k);
       if (k >= n || lineBreak(text.charCodeAt(k))) {
         const b = blockScalar(text, s, k);
-        if (b) { value('assignment', b.start, b.end); KEYWORD.lastIndex = Math.max(e, b.end); }
+        if (b) past(value('assignment', b.start, b.end), e, b.end);
         continue;
       }
     }
@@ -308,14 +319,13 @@ function assignments(text) {
       if (text.startsWith('${', v)) { let k = v + 2; const lim = Math.min(n, v + 256); while (k < lim && text[k] !== '}' && !lineBreak(text.charCodeAt(k))) k++; if (text[k] === '}') end = k + 1; }
       while (end < n && !valueStop(text.charCodeAt(end))) end++;
     }
-    KEYWORD.lastIndex = Math.max(e, end);
     if (header) {
       const sm = SCHEME.exec(text.slice(v, Math.min(end, v + 40)));
       const from = sm ? v + sm[0].length : v;
-      value(/cookie$/i.test(name) ? 'cookie' : 'authorization', from, end);
+      past(value(/cookie$/i.test(name) ? 'cookie' : 'authorization', from, end), e, end);
       continue;
     }
-    value('assignment', v, end);
+    past(value('assignment', v, end), e, end);
   }
   return out;
 }
@@ -375,7 +385,7 @@ function bearers(text) {
 // such character before it); the user up to ":" (it may be empty: redis://:pw@host); the password up to the LAST "@"
 // before the query's "?" (it may hold "/", "#" and "@" itself) — or, with no "@" before a "?" (a password holding
 // one), the last "@" before a space or a quote: more is redacted rather than less. At least 1 character.
-const URL_SCHEME = cls('a-zA-Z0-9+.-'), USER_STOP = cls('/:@"\'`'), AUTH_STOP = cls('"\'`<>');
+const URL_SCHEME = cls('a-zA-Z0-9+.-'), USER_STOP = cls('/:@"\'`'), AUTH_STOP = cls(' \t\r\n"\'`<>');
 function urlPasswords(text) {
   const out = [];
   for (let at = text.indexOf('://'); at >= 0; at = text.indexOf('://', at + 3)) {
@@ -392,38 +402,29 @@ function urlPasswords(text) {
       else if (c === 64) { last = k; if (!query) beforeQuery = k; }
     }
     if (beforeQuery > 0) last = beforeQuery;
+    // (no "@" in this authority at all: no URL starting inside it can have a password either — its own authority ends
+    // at the same space or quote — so the next look starts after it; with one, past the password redacted only)
+    if (last < 0) { at = Math.max(at, stop - 3); continue; }
     if (last > ue + 1) {
       const v = text.slice(ue + 1, last);
-      if (!placeholder(v)) out.push({ start: ue + 1, end: last });
+      // (past this URL only up to the password it redacts: what follows is looked at as everything else is)
+      if (!placeholder(v)) { out.push({ start: ue + 1, end: last }); at = Math.max(at, last - 3); }
     }
-    // (the next URL starts after this one's authority: nothing is looked at twice)
-    at = Math.max(at, Math.min(stop, text.length) - 3);
   }
   return out;
 }
 // a password on a command line: curl -u user:pass (--user); mysql -pPASS (mariadb, mysqldump …); sshpass -p PASS;
-// docker / podman login -p PASS; aws configure set aws_secret_access_key VALUE; SQL's IDENTIFIED BY 'PASS'. A
-// command's words are read by hand up to its end (a line's end, ; | &); the next command word is looked for after it
-const CMD = /(?<![A-Za-z0-9_-])(?:mysql(?:dump|admin|import|sh|check)?|mariadb(?:-dump|-admin)?|sshpass|docker|podman|configure|identified)(?![A-Za-z0-9_-])/gi;
+// docker / podman login -p PASS; aws configure set aws_secret_access_key VALUE; SQL's IDENTIFIED BY 'PASS'. The text is
+// read once, command by command (a command ends at a line's end, ; | &), each word once: a command word sets what the
+// words after it in that command mean — nothing is skipped
 const USER_FLAG = /(?<![A-Za-z0-9_-])(?:-u|--user)(?=[ \t=])/g;
 const cmdEnd = (c) => c === 10 || c === 13 || c === 59 || c === 124 || c === 38;   // \n \r ; | &
-// words(text, at) -> [{start, end}] of a command's words from at to its end (quotes taken as part of a word), and that end
-function words(text, at) {
-  const out = [];
-  let i = at;
-  while (i < text.length && !cmdEnd(text.charCodeAt(i))) {
-    if (isSpace(text.charCodeAt(i))) { i++; continue; }
-    const s = i;
-    while (i < text.length && !isSpace(text.charCodeAt(i)) && !cmdEnd(text.charCodeAt(i))) i++;
-    out.push({ start: s, end: i });
-    if (out.length > 4096) break;
-  }
-  return { list: out, end: i };
-}
+const MYSQL = new Set(['mysql', 'mysqldump', 'mysqladmin', 'mysqlimport', 'mysqlsh', 'mysqlcheck', 'mariadb', 'mariadb-dump', 'mariadb-admin']);
 // unquote(text, w) -> the span inside a word's quotes, if it is quoted
 const unquote = (text, w) => (w.end - w.start >= 2 && QUOTE(text[w.start]) && text[w.end - 1] === text[w.start] ? { start: w.start + 1, end: w.end - 1 } : w);
 function commandPasswords(text) {
   const out = [];
+  const n = text.length;
   const add = (w) => { const x = unquote(text, w); const v = text.slice(x.start, x.end); if (v.length >= 1 && !placeholder(v)) out.push({ start: x.start, end: x.end }); };
   USER_FLAG.lastIndex = 0;
   for (let m; (m = USER_FLAG.exec(text)) !== null;) {
@@ -432,35 +433,42 @@ function commandPasswords(text) {
     const q = QUOTE(text[i]) ? text[i] : null;
     const a = q ? i + 1 : i;
     let e = a;
-    while (e < text.length && !(q ? text[e] === q || lineBreak(text.charCodeAt(e)) : valueStop(text.charCodeAt(e)))) e++;
+    while (e < n && !(q ? text[e] === q || lineBreak(text.charCodeAt(e)) : valueStop(text.charCodeAt(e)))) e++;
     let colon = -1;
     for (let k = a; k < e; k++) if (text.charCodeAt(k) === 58) { colon = k; break; }
     if (colon > a) {
-      const v = text.slice(colon + 1, e);
-      if (v.length >= 4 && !/^[0-9]+$/.test(v) && !placeholder(v)) out.push({ start: colon + 1, end: e });
+      const user = text.slice(a, colon), v = text.slice(colon + 1, e);
+      // (a user id and a group id, docker run -u 1000:1000, are no password; any other digits are)
+      if (v.length >= 1 && !(/^[0-9]+$/.test(user) && /^[0-9]+$/.test(v)) && !placeholder(v)) { out.push({ start: colon + 1, end: e }); USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, e); }
     }
-    USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, e);
   }
-  CMD.lastIndex = 0;
-  for (let m; (m = CMD.exec(text)) !== null;) {
-    const word = m[0].toLowerCase();
-    const { list, end } = words(text, m.index + m[0].length);
-    CMD.lastIndex = Math.max(CMD.lastIndex, end);
-    const w = (k) => (list[k] ? text.slice(list[k].start, list[k].end) : '');
-    if (word === 'identified') {
-      if (w(0).toLowerCase() === 'by' && list[1]) add(list[1]);
-      continue;
+  // (each command: its words, once)
+  let i = 0;
+  while (i < n) {
+    const ws = [];
+    while (i < n && !cmdEnd(text.charCodeAt(i))) {
+      if (isSpace(text.charCodeAt(i))) { i++; continue; }
+      const s = i;
+      while (i < n && !isSpace(text.charCodeAt(i)) && !cmdEnd(text.charCodeAt(i))) i++;
+      ws.push({ start: s, end: i });
     }
-    if (word === 'configure') {
-      if (w(0) === 'set' && list[2] && isSecretName(w(1))) add(list[2]);
-      continue;
-    }
-    if ((word === 'docker' || word === 'podman') && w(0) !== 'login') continue;
-    const glued = word.startsWith('mysql') || word.startsWith('mariadb') || word === 'sshpass';
-    for (let k = 0; k < list.length; k++) {
+    i++;
+    if (ws.length < 2) continue;
+    const w = (k) => (ws[k] && ws[k].end - ws[k].start <= 64 ? text.slice(ws[k].start, ws[k].end).toLowerCase() : '');
+    let ctx = '';
+    for (let k = 0; k < ws.length; k++) {
       const t = w(k);
-      if (t === '-p' || t === '--password') { if ((word === 'sshpass' || word === 'docker' || word === 'podman') && list[k + 1]) add(list[k + 1]); continue; }
-      if (glued && t.startsWith('-p') && t.length > 2 && !t.startsWith('-p=')) add({ start: list[k].start + 2, end: list[k].end });
+      if (MYSQL.has(t)) { ctx = 'mysql'; continue; }
+      if (t === 'sshpass') { ctx = 'sshpass'; continue; }
+      if ((t === 'docker' || t === 'podman') && w(k + 1) === 'login') { ctx = 'login'; k++; continue; }
+      if (t === 'identified' && w(k + 1) === 'by' && ws[k + 2]) { add(ws[k + 2]); continue; }
+      if (t === 'configure' && w(k + 1) === 'set' && ws[k + 3] && isSecretName(text.slice(ws[k + 2].start, Math.min(ws[k + 2].end, ws[k + 2].start + 256)))) { add(ws[k + 3]); continue; }
+      if (!ctx) continue;
+      if ((t === '-p' || t === '--password') && (ctx === 'sshpass' || ctx === 'login') && ws[k + 1]) { add(ws[k + 1]); continue; }
+      // (glued: -pPASS — mysql's and sshpass')
+      if ((ctx === 'mysql' || ctx === 'sshpass') && text[ws[k].start] === '-' && text[ws[k].start + 1] === 'p' && ws[k].end - ws[k].start > 2 && text[ws[k].start + 2] !== '=') {
+        add({ start: ws[k].start + 2, end: ws[k].end });
+      }
     }
   }
   return out.sort((x, y) => x.start - y.start);
@@ -618,12 +626,11 @@ export function scan(text, { named: isNamed = false, item: isItem = false } = {}
     const it = item(text);
     if (it && it.end > it.start && isSecretName(it.name) && named(text.slice(it.start, it.end))) all.push({ kind: 'named', start: it.start, end: it.end });
   }
-  if (text.length >= 8) {
-    for (const k of KINDS) {
-      const cands = candidates(k, text, 2 * MAX_FINDINGS, ctx);
-      if (cands === null) return [{ kind: 'too-many', start: 0, end: text.length }];
-      for (const c of cands) if (c.end > c.start) all.push({ kind: c.kind ?? k.kind, start: c.start, end: c.end });
-    }
+  // (every string, however short: pass=abc is a finding too)
+  for (const k of KINDS) {
+    const cands = candidates(k, text, 2 * MAX_FINDINGS, ctx);
+    if (cands === null) return [{ kind: 'too-many', start: 0, end: text.length }];
+    for (const c of cands) if (c.end > c.start) all.push({ kind: c.kind ?? k.kind, start: c.start, end: c.end });
   }
   if (!all.length) return [];
   // (the union of overlapping findings: sorted by start — n log n of at most a few thousand — then merged in one pass)
@@ -693,9 +700,18 @@ export class TooDeep extends Error { constructor() { super('too deeply nested to
 // the keys a name and its value come under in lists of settings (Kubernetes' and ECS' env, SSM, CloudFormation …)
 const NAME_KEY = /^(?:name|key|id|parameterkey|parametername|optionname|variable|var|envname|secretname|field)$/i;
 const VALUE_KEY = /^(?:value|values|parametervalue|secretstring|secretvalue|optionvalue|stringvalue|plaintext)$/i;
-// a count, not a secret: a number (or a list) under such a key is never named — Claude Code's own usage, input_tokens,
-// cache_read_input_tokens …, a test run's numPassedTests
-const COUNTLIKE = /tokens|counts?|total|limit|max|min|size|length|passed|failed/i;
+// a count, not a secret: a NUMBER under one of these keys exactly is never named — Claude Code's and the Agent SDK's
+// usage and budget fields, a test run's counts. Only numbers; never a string or a list; never another key.
+const COUNT_KEYS = new Set([
+  'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens',
+  'max_tokens', 'total_tokens', 'prompt_tokens', 'completion_tokens', 'reasoning_tokens', 'cached_tokens', 'context_tokens', 'estimated_tokens',
+  'estimated_tokens_delta', 'thinking_tokens', 'max_thinking_tokens', 'raw_max_tokens', 'pre_tokens', 'post_tokens', 'tokens', 'tokens_at_start',
+  'tokens_over', 'token_expires_at', 'inputtokens', 'outputtokens', 'cachecreationinputtokens', 'cachereadinputtokens', 'totaltokens', 'maxtokens',
+  'maxoutputtokens', 'maxthinkingtokens', 'rawmaxtokens', 'budgettokens', 'thinkingtokens', 'calltokens', 'toolcalltokens', 'toolresulttokens',
+  'resulttokens', 'attachmenttokens', 'assistantmessagetokens', 'usermessagetokens', 'unattributedtokens', 'redirectedcontexttokens',
+  'numpassedtests', 'numfailedtests', 'numtotaltests', 'numpendingtests', 'numtodotests', 'numpassedtestsuites', 'numfailedtestsuites',
+  'numtotaltestsuites', 'numpendingtestsuites', 'numruntimeerrortestsuites', 'passes', 'passed', 'passcount', 'passed_count',
+]);
 /** processEntries(entries, {part, keep, key, skipThinking}) -> {entries, findings, redacted, kept}: every string and key
  *  of every entry scanned ONCE — the findings (in order; id: the keep token) and a copy with each one replaced by
  *  [REDACTED:<kind>] but those kept (keep: a Set of tokens, or true for all — never a whole-text one). line: the line
@@ -741,7 +757,7 @@ export function processEntries(entries, { part = 'main', keep = new Set(), key =
     }
     if (Array.isArray(v)) {
       const thinkingHere = skipThinking && assistant && depth === 2 && key0 === 'content' && parent === 'message';
-      const under = ctx === 'named' || (isSecretName(key0) && !COUNTLIKE.test(key0));
+      const under = ctx === 'named' || isSecretName(key0);
       let flag = false;
       return v.map((x, i) => {
         if (thinkingHere && THINKING(x)) return x;
@@ -759,7 +775,7 @@ export function processEntries(entries, { part = 'main', keep = new Set(), key =
         const at = path ? `${path}.${k.slice(0, 40)}` : k.slice(0, 40);
         let nk = one(k, at, {}, true);
         if (nk !== k || Object.prototype.hasOwnProperty.call(o, nk)) { const base = nk; for (let i = 2; Object.prototype.hasOwnProperty.call(o, nk); i++) nk = `${base}#${i}`; }
-        const secretKey = isSecretName(k) && !((typeof x === 'number' || Array.isArray(x)) && COUNTLIKE.test(k));
+        const secretKey = isSecretName(k) && !(typeof x === 'number' && COUNT_KEYS.has(k.toLowerCase()));
         const c = secretKey || (VALUE_KEY.test(k) && (pair || under)) ? 'named' : '';
         Object.defineProperty(o, nk, { value: walk(x, at, k, c, key0, depth + 1), enumerable: true, writable: true, configurable: true });
       }

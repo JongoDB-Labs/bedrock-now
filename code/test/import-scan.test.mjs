@@ -455,7 +455,7 @@ test('a name and its value apart (M-a): env lists, SSM, CloudFormation, Terrafor
   // and counts: Claude Code's own usage, a test run's numbers, a tokenizer's list
   const r = processEntries([{ env: [{ name: 'HOST', value: 'db.internal.example' }], args: ['--verbose', 'deploy-everything-now'], passwordPolicy: { minLength: 12 },
     message: { usage: { input_tokens: 123456, output_tokens: 98765, cache_creation_input_tokens: 2648213, cache_read_input_tokens: 1093884 } },
-    result: { numPassedTests: 1234567, numFailedTests: 0 }, tokens: ['token-one', 'token-two-of-them'], max_tokens: 64000 }]);
+    result: { numPassedTests: 1234567, numFailedTests: 0 }, max_tokens: 64000 }]);
   assert.deepEqual(r.findings, []);
 });
 
@@ -546,4 +546,48 @@ test('every new shape stays linear on hostile 7 MiB text — never near a second
   const t0 = Date.now();
   processEntries([big]);
   assert.ok(Date.now() - t0 < 5000, `processEntries: ${Date.now() - t0} ms`);
+});
+
+test('no exemption broader than its intent: counts are numbers under known count keys only; floors low; templates hold no assignment', () => {
+  const r = processEntries([{ access_tokens: [`tok-${rand(12)}`], refresh_token_count: `rt-${rand(10)}`, api_tokens_list: [`a-${rand(10)}`], admin_password_max: 99887766,
+    input_tokens: 1234, cache_read_input_tokens: 1093884, usage: { output_tokens: 98765 } }]);
+  assert.deepEqual(r.findings.map((f) => f.path).sort(), ['access_tokens[0]', 'admin_password_max', 'api_tokens_list[0]', 'refresh_token_count']);
+  // short or plain values under a secret's name: findings (people use them)
+  assert.equal(processEntries([{ password: '1234' }, { pin_password: 'abcd' }]).findings.length, 2);
+  assert.equal(scan('password=abcd').length, 1);
+  assert.equal(scan('curl -u admin:123456 https://x').length, 1, 'digits are a password too');
+  // a template or a command substitution with an assignment in it is no placeholder
+  for (const t of [`token="$(echo password=${rand(10)})"`, `token: {{ password=${rand(10)} }}`, `secret=<password=${rand(10)}>`]) {
+    assert.ok(scan(t).length >= 1, t);
+  }
+});
+
+test('no cursor jumps past text that was not redacted: after a URL, inside a value that is no finding, the rest of a command', () => {
+  const x = rand(12);
+  for (const [t, secret] of [
+    [`https://host/x password=${x}`, x], [`https://u:p4ss@host\n${fake.awsKeyId()}`, null], [`docker run img mysql -p${x} db`, x],
+    [`password=--------------------------token=${x}`, x], [`run docker build . && sshpass -p ${x} ssh h`, x], [`https://host:443/x?next=https://u:${x}@h2`, x],
+    [`secret= token=${x}`, x], [`password: aaaa --api-key ${x}`, x],
+  ]) {
+    const out = redactText(t);
+    assert.ok(scan(t).length >= 1, t);
+    if (secret) assert.ok(!out.includes(secret), `${t} -> ${out}`);
+    else assert.match(out, /\[REDACTED:aws-key-id\]/);
+  }
+});
+
+test('the scan stays linear without its jumps: values that are no findings, nested names, commands word by word — on 7 MiB', () => {
+  const M = 7 << 20;
+  const fill = (head, unit, tail = '') => head + unit.repeat(Math.floor((M - head.length - tail.length) / unit.length)) + tail;
+  for (const [label, text] of [
+    ['pass= repeated', fill('password=', 'pass=')], ['pass: repeated', fill('', 'pass:')], ['a quoted value of a\'s and flags', fill('password="', 'aaaa --password aaaa ')],
+    ['{{ repeated', fill('token: ', '{{ ')], ['$( repeated', fill('token=', '$(')], ['= repeated after a name', fill('password', '=')],
+    ['mysql repeated', fill('', 'mysql ')], ['a long docker command', fill('docker run ', 'x ')], ['-u repeated', fill('', '-u a ')],
+    ['identified by repeated', fill('', 'identified by ')], ['configure set repeated', fill('', 'configure set ')], ['URLs, one after another', fill('', 'http://a:b ')],
+    ['URLs with no @', fill('', 'https://h:1/x ')], ['secret= then spaces', fill('', 'secret= ')], ['a low-entropy value with names', fill('password="', 'aaaaaaaaaa token aaaaaaaaa ')],
+  ]) {
+    const t0 = Date.now();
+    scan(text);
+    assert.ok(Date.now() - t0 < 1500, `${label}: ${Date.now() - t0} ms`);
+  }
 });
