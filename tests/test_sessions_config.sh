@@ -231,6 +231,11 @@ test_the_copy_and_the_whole_way_in_a_terminal_print_plain_text() {
   done
   export COPY_TSV="s_0123456789abcdef	ok	mcp	fetch	-	0	1	-	"
   sessions_config_copy --units "s_0123456789abcdef:$dig" --keep v#0123456789abcdef 2>"$TMP/err" || { cat "$TMP/err" >&2; return 1; }
+  # (a settings unit: its keys joined by +, matched as they are)
+  export COPY_TSV="s_0123456789abcdef+s_fedcba9876543210	ok	setting	settings.json	-	0	1	-	"
+  local out; out="$(sessions_config_copy --units "s_0123456789abcdef+s_fedcba9876543210:$dig" --keep f1#0123456789abcdef 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "copied into the sandbox, the possible secrets you chose kept"
+  export COPY_TSV="s_0123456789abcdef	ok	mcp	fetch	-	0	1	-	"
   assert_contains "$(cat "$TMP/dc")" "exec -T code node server/import-setup.mjs copy --units s_0123456789abcdef:$dig --mode replace --conflict leave --keep v#0123456789abcdef --request  --tsv"
   # the terminal: what the code container says is printed as plain ASCII, the sandbox's words apart
   sessions_config_consent --tool all --always 2>/dev/null

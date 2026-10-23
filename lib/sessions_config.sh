@@ -376,7 +376,8 @@ sessions_config_copy() {
   _ss_need_code
   _ss_tell copying
   res="$(_sc_code --secs "$SESSIONS_COPY_S" copy --units "$units" --mode "$mode" --conflict "$conflict" --keep "$keep" --request "${SS_REQ:-}" --tsv 2>/dev/null)" || true
-  line="$(printf '%s\n' "$res" | grep -E "^${units%%:*}"$'\t' | head -n 1)" || true
+  # (the unit's keys as they are: "+" joins them, never a pattern)
+  line="$(printf '%s\n' "$res" | awk -F'\t' -v k="${units%%:*}" '$1 == k { print; exit }')" || true
   [ -n "$line" ] || _ss_fail code "the Code page's container did not copy it"
   _ss_tell done
   case "$(printf '%s' "$line" | cut -f2)" in
