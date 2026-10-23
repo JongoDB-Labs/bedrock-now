@@ -725,73 +725,84 @@ function commandPasswords(text) {
     USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, eP);
     if (full()) return out;
   }
-  // (each command's words, once in each reading: a command word sets what the words after it in that command mean)
-  const pair = (ws) => {
-    // (a command word compared without quote marks around it: "mysql, sshpass')
-    const w = (k) => {
-      if (!ws[k]) return '';
-      let a = ws[k].start, b = ws[k].end;
-      while (a < b && QUOTE(text[a])) a++;
-      while (b > a && QUOTE(text[b - 1])) b--;
-      return b - a <= 64 ? text.slice(a, b).toLowerCase() : '';
-    };
-    // (a word as written, without its quote marks: a flag's case matters — sqlcmd's -P is its password, -p is not)
-    const raw = (k) => {
-      let a = ws[k].start, b = ws[k].end;
-      while (a < b && QUOTE(text[a])) a++;
-      while (b > a && QUOTE(text[b - 1])) b--;
-      return { a, b, t: b - a <= 64 ? text.slice(a, b) : '' };
-    };
+  // (each command's words, once in each reading: a command word sets what the words after it in that command mean —
+  // their bounds kept in one array, made again only to grow, two numbers a word)
+  let W = new Int32Array(1024), cnt = 0;
+  const has = (k) => k < cnt;
+  const span = (k) => ({ start: W[2 * k], end: W[2 * k + 1] });
+  // (a word without the quote marks around it: [a, b))
+  const bare = (k) => {
+    let a = W[2 * k], b = W[2 * k + 1];
+    while (a < b && QUOTE(text[a])) a++;
+    while (b > a && QUOTE(text[b - 1])) b--;
+    return [a, b];
+  };
+  // (a command word, compared lower case without its quote marks — "mysql, sshpass': only a word of 2 to 13 characters
+  // starting with a letter or a dash can be one; any other is not even read)
+  const w = (k) => {
+    if (k >= cnt) return '';
+    let a = W[2 * k], b = W[2 * k + 1];
+    if (b - a < 2) return '';
+    while (a < b && QUOTE(text[a])) a++;
+    while (b > a && QUOTE(text[b - 1])) b--;
+    const c = text.charCodeAt(a);
+    return b - a >= 2 && b - a <= 13 && (isLetter(c) || c === 45) ? text.slice(a, b).toLowerCase() : '';
+  };
+  // (a word as written, without its quote marks: a flag's case matters — sqlcmd's -P is its password, -p is not)
+  const raw = (k) => { const [a, b] = bare(k); return { a, b, t: b - a <= 64 ? text.slice(a, b) : '' }; };
+  const pair = () => {
     let ctx = '', flags = null;
-    for (let k = 0; k < ws.length; k++) {
+    for (let k = 0; k < cnt; k++) {
       const t = w(k);
       if (PASSWORD_FLAG.has(t)) { ctx = 'tool'; flags = PASSWORD_FLAG.get(t); continue; }
       if (t === 'smbclient') { ctx = 'smb'; continue; }
       if (ctx === 'tool') {
         const r = raw(k);
-        if (flags.includes(r.t) && ws[k + 1]) { add(ws[k + 1]); k++; continue; }
+        if (flags.includes(r.t) && has(k + 1)) { add(span(k + 1)); k++; continue; }
         const glued = flags.find((f) => f.length === 2 && r.t.length > 2 && r.t.startsWith(f) && r.t[2] !== '=');
-        if (glued) { add({ start: r.a + 2, end: ws[k].end }); continue; }
+        if (glued) add({ start: r.a + 2, end: W[2 * k + 1] });
+        if (full()) return;
         continue;
       }
       if (ctx === 'smb') {
         // (smbclient -U user%password, -Uuser%password, --user=user%password: what follows the %)
         const r = raw(k);
-        const word = r.t === '-U' && ws[k + 1] ? ws[k + 1] : (r.t.startsWith('-U') || r.t.startsWith('--user=')) ? ws[k] : null;
-        if (word) {
+        const next = r.t === '-U' && has(k + 1);
+        if (next || r.t.startsWith('-U') || r.t.startsWith('--user=')) {
+          const word = span(next ? k + 1 : k);
           let p = word.start;
           while (p < word.end && text[p] !== '%') p++;
           if (p < word.end - 1) add({ start: p + 1, end: word.end });
-          if (word !== ws[k]) k++;
+          if (next) k++;
         }
         continue;
       }
       if (MYSQL.has(t)) { ctx = 'mysql'; continue; }
       if (t === 'sshpass') { ctx = 'sshpass'; continue; }
       if ((t === 'docker' || t === 'podman') && w(k + 1) === 'login') { ctx = 'login'; k++; continue; }
-      if (t === 'identified' && w(k + 1) === 'by' && ws[k + 2]) { add(ws[k + 2]); continue; }
-      if (t === 'configure' && w(k + 1) === 'set' && ws[k + 3] && isSecretName(text.slice(ws[k + 2].start, ws[k + 2].end))) { add(ws[k + 3]); continue; }
+      if (t === 'identified' && w(k + 1) === 'by' && has(k + 2)) { add(span(k + 2)); continue; }
+      if (t === 'configure' && w(k + 1) === 'set' && has(k + 3) && isSecretName(text.slice(W[2 * k + 4], W[2 * k + 5]))) { add(span(k + 3)); continue; }
       if (!ctx) continue;
-      if ((t === '-p' || t === '--password') && (ctx === 'sshpass' || ctx === 'login') && ws[k + 1]) { add(ws[k + 1]); continue; }
+      if ((t === '-p' || t === '--password') && (ctx === 'sshpass' || ctx === 'login') && has(k + 1)) { add(span(k + 1)); continue; }
       // (glued: -pPASS — mysql's and sshpass')
-      if ((ctx === 'mysql' || ctx === 'sshpass') && text[ws[k].start] === '-' && text[ws[k].start + 1] === 'p' && ws[k].end - ws[k].start > 2 && text[ws[k].start + 2] !== '=') {
-        add({ start: ws[k].start + 2, end: ws[k].end });
-      }
+      const ws = W[2 * k], we = W[2 * k + 1];
+      if ((ctx === 'mysql' || ctx === 'sshpass') && text[ws] === '-' && text[ws + 1] === 'p' && we - ws > 2 && text[ws + 2] !== '=') add({ start: ws + 2, end: we });
       if (full()) return;
     }
   };
   for (const quoted of [false, true]) {
     let i = 0;
     while (i < n && !full()) {
-      const ws = [];
+      cnt = 0;
       while (i < n && !cmdEnd(text.charCodeAt(i))) {
         if (isSpace(text.charCodeAt(i)) || text.charCodeAt(i) === 96) { i++; continue; }
         const s = i;
         i = quoted ? quotedWord(text, i, true, matched) : plainWord(text, i, true);
-        ws.push({ start: s, end: i });
+        if (2 * cnt + 2 > W.length) { const bigger = new Int32Array(W.length * 2); bigger.set(W); W = bigger; }
+        W[2 * cnt] = s; W[2 * cnt + 1] = i; cnt++;
       }
       i++;
-      if (ws.length >= 2) pair(ws);
+      if (cnt >= 2) pair();
     }
   }
   return out.sort((x, y) => x.start - y.start);

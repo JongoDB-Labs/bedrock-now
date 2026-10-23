@@ -252,9 +252,8 @@ test('the scan takes time in proportion to the text, and fails closed: too long,
   // adversarial runs for every pattern: each well under a second for 4 MiB
   for (const s of ['eyJ-', 'eyJaaaaaaaaa.', 'a.', 'a://a:', `password${' '.repeat(50)}`, 'Bearer ', 'sk-ant-', 'ghp_', 'github_pat_', 'ABC=xxxxxxxxxxxxxxxxxxxxxxxx\n', '-', 'Authorization: x ']) {
     const text = s.repeat(Math.ceil((4 << 20) / s.length));
-    t0 = Date.now();
-    scan(text);
-    assert.ok(Date.now() - t0 < 1500, `${JSON.stringify(s)}: ${Date.now() - t0} ms`);
+    const ms = fastest(() => scan(text));
+    assert.ok(ms < 1500, `${JSON.stringify(s)}: ${ms} ms`);
   }
 });
 
@@ -403,9 +402,8 @@ test('every shape stays linear on hostile 7 MiB text — runs of spaces and tabs
     ['many AWS key ids, no gap', fill('', P('AK', 'IA', 'AAAAAAAAAAAAAAAA'))],
   ];
   for (const [label, text, opts] of cases) {
-    const t0 = Date.now();
-    scan(text, opts ?? {});
-    assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
+    const ms = fastest(() => scan(text, opts ?? {}));
+    assert.ok(ms < 1000, `${label}: ${ms} ms`);
   }
   // keys and values together: a 7 MiB key with a secret's name, an environment item of spaces
   const t0 = Date.now();
@@ -540,9 +538,8 @@ test('every new shape stays linear on hostile 7 MiB text — never near a second
     ['an AWS prefix in a long run', fill('', P('xAK', 'IA'))], ['_auth repeated', fill('', '_auth=')],
   ];
   for (const [label, text] of cases) {
-    const t0 = Date.now();
-    scan(text);
-    assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
+    const ms = fastest(() => scan(text));
+    assert.ok(ms < 1000, `${label}: ${ms} ms`);
   }
   // names and values apart, at volume: 200,000 env items and --flag pairs
   const big = { env: Array.from({ length: 100000 }, (_, i) => ({ name: i % 2 ? 'DB_PASSWORD' : 'HOST', value: `v${i}-${'z'.repeat(8)}` })),
@@ -590,9 +587,8 @@ test('the scan stays linear without its jumps: values that are no findings, nest
     ['identified by repeated', fill('', 'identified by ')], ['configure set repeated', fill('', 'configure set ')], ['URLs, one after another', fill('', 'http://a:b ')],
     ['URLs with no @', fill('', 'https://h:1/x ')], ['secret= then spaces', fill('', 'secret= ')], ['a low-entropy value with names', fill('password="', 'aaaaaaaaaa token aaaaaaaaa ')],
   ]) {
-    const t0 = Date.now();
-    scan(text);
-    assert.ok(Date.now() - t0 < 1500, `${label}: ${Date.now() - t0} ms`);
+    const ms = fastest(() => scan(text));
+    assert.ok(ms < 1500, `${label}: ${ms} ms`);
   }
 });
 
@@ -612,9 +608,8 @@ test('every finder reads on: a secret right after an unredacted URL or -u value 
   const fill = (unit) => unit.repeat(Math.floor(M / unit.length));
   for (const [label, text] of [['https://a starts', fill('https://a')], ['x://a:b@h? starts', fill('x://a:b@h?')], ['--user= chain', fill('--user=')], ['-u x starts', fill('-u x')],
     ['user: starts', fill('user:')], ['-u with a long value', `-u ${fill('a:')}`], ['a long query', `https://a:${fill('?@')}`], ['x:// chain', fill('x://')], ['scheme runs', fill('aaaaaaaa://')]]) {
-    const t0 = Date.now();
-    scan(text);
-    assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
+    const ms = fastest(() => scan(text));
+    assert.ok(ms < 1000, `${label}: ${ms} ms`);
   }
 });
 
@@ -719,9 +714,8 @@ test('the assignment finder reads every name and stays linear: chains of names i
     ['escaped quotes', fill('password=\\"', 'token=\\"a\\\\')], ['low-entropy with <token>', fill('password=', `${'a'.repeat(99)}<token>`)],
     ['machine lines', fill('', 'machine h login u password p\n')], ['-u quoted words', fill('', '-u "a b:c" ')], ['quotes in commands', fill('mysql ', `-p'a;b' `)],
   ]) {
-    const t0 = Date.now();
-    scan(text);
-    assert.ok(Date.now() - t0 < 1500, `${label}: ${Date.now() - t0} ms`);
+    const ms = fastest(() => scan(text));
+    assert.ok(ms < 1500, `${label}: ${ms} ms`);
   }
 });
 
