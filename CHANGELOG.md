@@ -25,6 +25,13 @@ All notable changes to bedrock-now are documented here. The format follows
   again (the page says so once per project: *bedrock-now reads Claude Code settings more strictly since v0.21.1 — look
   at them again*, with *Claude Code settings…*).
 
+### Fixed
+
+- **Importing sessions from the Code page: the update helper no longer throws the request away before reading it.**
+  Since v0.21.0 its tidying of the request folder kept update, settings and diagnostic requests but deleted the Import
+  sheet's (`ses-*.json`) before reading them, so a look, a read, suggestions or a copy keeping a possible secret asked
+  from the page did nothing on a running helper (`./stack sessions` in a terminal was not affected).
+
 ## [0.21.0] - 2026-10-23
 
 ### Added

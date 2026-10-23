@@ -972,18 +972,21 @@ _helper_auto_tick() {
 }
 
 # _sweep_requests — removes what is not a request in the request folder: the portal's temp files left by a
-# crash (.req-*.tmp, after a minute) and anything else that is not req-*.json
+# crash (.req-*.tmp, .cfg-*.tmp, .act-*.tmp, .ses-*.tmp, after a minute) and anything else that is not a request
+# (req-*.json, cfg-*.req, act-*.json, ses-*.json)
 _sweep_requests() {
   local rq f
   rq="$(request_dir)"
-  for f in "$rq"/.req-*.tmp "$rq"/.cfg-*.tmp "$rq"/.act-*.tmp; do
+  for f in "$rq"/.req-*.tmp "$rq"/.cfg-*.tmp "$rq"/.act-*.tmp "$rq"/.ses-*.tmp; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     [ -z "$(find "$f" -maxdepth 0 -mmin -1 2>/dev/null)" ] || continue
     rm -rf "$f" 2>/dev/null || true
   done
   for f in "$rq"/* "$rq"/.[!.]*; do
     [ -e "$f" ] || [ -L "$f" ] || continue
-    case "${f##*/}" in req-*.json | .req-*.tmp | cfg-*.req | .cfg-*.tmp | act-*.json | .act-*.tmp) ;; *) rm -rf "$f" 2>/dev/null || true ;; esac
+    # (every kind the portal writes — req: update/rollback/clean, cfg: settings, act: diagnostics and project actions, ses:
+    # the Code page's Import and Bring your setup sheets, read by lib/sessions.sh — and their temporary names)
+    case "${f##*/}" in req-*.json | .req-*.tmp | cfg-*.req | .cfg-*.tmp | act-*.json | .act-*.tmp | ses-*.json | .ses-*.tmp) ;; *) rm -rf "$f" 2>/dev/null || true ;; esac
   done
 }
 

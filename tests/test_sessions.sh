@@ -226,6 +226,31 @@ $BN_SESSIONS_WALK_ROOT/plain"
   # (app is a project already; via-link a link; gone not there; elsewhere outside the walk's root)
 }
 
+test_the_helpers_loop_keeps_the_code_pages_requests_through_its_sweep_and_hands_them_on() {
+  # (through helper_poll_once, as the running helper does: its sweep of the request folder comes first — a request of
+  # the Code page's Import sheet, ses-*.json, is kept and handled; so is its temp name while it is fresh)
+  _stubs
+  STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"
+  printf '#!/bin/sh\necho "$*" >> "$CALLS"\necho "sessions-result: done" >&2\n' > "$STACK_DIR/stack"; chmod +x "$STACK_DIR/stack"
+  export CALLS="$TMP/calls" HELPER_JOB_POLL_S=0 SESSIONS_JOB_MIN_INTERVAL_S=0
+  set_env_batch PORTAL_PASSWORD 'correct horse battery'
+  mkdir -p "$(helper_dir)" "$(request_dir)"; chmod 700 "$(helper_dir)"
+  ensure_portal_password_hash
+  printf '{"action":"sessions-scan","requested_at":%s,"nonce":"%s","auth":"%s","origin":"local","project":"p_0000aaaa","tool":"both"}\n' \
+    "$(date +%s)" 11111111111111111111111111111111 "$(printf 'correct horse battery' | openssl base64 -A)" > "$(request_dir)/ses-11111111111111111111111111111111.json"
+  : > "$(request_dir)/.ses-fresh.tmp"; : > "$(request_dir)/.ses-old.tmp"; touch -t 202001010000 "$(request_dir)/.ses-old.tmp"
+  helper_poll_once 2>/dev/null || true
+  assert_eq "$(cat "$CALLS")" "sessions scan --project p_0000aaaa --tool both --origin local --request 11111111111111111111111111111111 --screen"
+  assert_eq "$(ls -A "$(request_dir)" | tr '\n' ' ')" ".ses-fresh.tmp "
+  # (a copy that keeps a possible secret, the same way)
+  : > "$CALLS"
+  local dig; dig="$(printf 'd%.0s' $(seq 1 64))"
+  printf '{"action":"sessions-copy","requested_at":%s,"nonce":"%s","auth":"%s","origin":"local","project":"p_0000aaaa","session":"%s","digest":"%s","thinking":"default","outputs":"out","keep":"main#0123456789abcdef"}\n' \
+    "$(date +%s)" 22222222222222222222222222222222 "$(printf 'correct horse battery' | openssl base64 -A)" "$UUID_A" "$dig" > "$(request_dir)/ses-22222222222222222222222222222222.json"
+  helper_poll_once 2>/dev/null || true
+  assert_contains "$(cat "$CALLS")" "sessions copy --project p_0000aaaa --session $UUID_A --digest $dig --thinking default --outputs out --keep main#0123456789abcdef --origin local --request 22222222222222222222222222222222"
+}
+
 test_the_helper_takes_the_code_pages_requests_from_the_portal_only_in_their_fixed_shapes() {
   _stubs
   STACK_DIR="$TMP/stack"; mkdir -p "$STACK_DIR"

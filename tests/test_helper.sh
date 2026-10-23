@@ -443,6 +443,24 @@ test_portal_temp_files_and_junk_are_swept_but_requests_kept() {   # M11
   assert_eq "$(ls -A "$rq" | tr '\n' ' ')" ".req-new.tmp req-$NONCE.json "
 }
 
+test_every_kind_of_request_and_its_temp_name_outlives_the_sweep() {
+  # (each prefix the portal writes — req, cfg, act, ses — and its temp name while it is fresh; a temp name a minute old
+  # and anything else: gone)
+  local k rq; _checkout; rq="$(request_dir)"
+  for k in req cfg act ses; do : > "$rq/.$k-new.tmp"; : > "$rq/.$k-old.tmp"; touch -t 202001010000 "$rq/.$k-old.tmp"; done
+  : > "$rq/req-$NONCE.json"; : > "$rq/cfg-$NONCE.req"; : > "$rq/act-$NONCE.json"; : > "$rq/ses-$NONCE.json"
+  : > "$rq/ses-$NONCE.txt"; : > "$rq/sub-$NONCE.json"; : > "$rq/.ses-x"
+  _sweep_requests
+  assert_eq "$(ls -A "$rq" | LC_ALL=C sort | tr '\n' ' ')" ".act-new.tmp .cfg-new.tmp .req-new.tmp .ses-new.tmp act-$NONCE.json cfg-$NONCE.req req-$NONCE.json ses-$NONCE.json "
+}
+
+test_an_update_request_goes_through_the_helpers_loop() {
+  _checkout; _req clean
+  helper_poll_once 2>/dev/null || true
+  assert_eq "$(cat "$CALLS")" "clean --yes"
+  assert_eq "$(ls -A "$(request_dir)")" ""
+}
+
 test_status_text_is_utf8_safe_when_cut() {   # M9
   _checkout; JOB_ID=x; JOB_ACTION=clean
   helper_write_status failed "$(printf 'é%.0s' $(seq 1 200))"   # 400 bytes: cut at 300 must not split a character

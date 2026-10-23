@@ -989,12 +989,29 @@ test_helper_settings_rate_limit_is_its_own() {
   helper_limits update 2>/dev/null   # update/rollback/clean are not slowed down by settings
 }
 
+test_the_helpers_loop_keeps_settings_and_diagnostic_requests_through_its_sweep_and_runs_them() {
+  # (through helper_poll_once — its sweep first, then lib/settings_helper.sh: each kind the portal writes is kept)
+  _checkout
+  DIAG_MIN_INTERVAL_S=0
+  _cfg_req 0 local 'correct horse battery' "$NONCE" "$(_lines BUDGET_SETUP=6)"
+  : > "$(request_dir)/.cfg-fresh.tmp"; : > "$(request_dir)/.act-fresh.tmp"
+  : > "$(request_dir)/.cfg-old.tmp"; touch -t 202001010000 "$(request_dir)/.cfg-old.tmp"
+  helper_poll_once 2>/dev/null || true
+  assert_eq "$(cat "$CALLS")" "config apply --stdin --base $(env_sha256) --origin local --via portal --yes"
+  : > "$CALLS"
+  _act backup 0 11111111111111111111111111111111
+  helper_poll_once 2>/dev/null || true
+  assert_contains "$(cat "$CALLS")" "backup"
+  assert_eq "$(ls -A "$(request_dir)" | tr '\n' ' ')" ".act-fresh.tmp .cfg-fresh.tmp "
+}
+
 test_helper_sweep_keeps_settings_and_diagnostic_requests() {
   _checkout
   _cfg_req 0 local x "$NONCE" "$(_lines BUDGET_SETUP=6)"
   printf '{}' > "$(request_dir)/act-$NONCE.json"; : > "$(request_dir)/junk.txt"
+  printf '{}' > "$(request_dir)/ses-$NONCE.json"
   _sweep_requests
-  assert_eq "$(ls "$(request_dir)" | tr '\n' ' ')" "act-$NONCE.json cfg-$NONCE.req "
+  assert_eq "$(ls "$(request_dir)" | tr '\n' ' ')" "act-$NONCE.json cfg-$NONCE.req ses-$NONCE.json "
 }
 
 # --- the helper: diagnostics ---
