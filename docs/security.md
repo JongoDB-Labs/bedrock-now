@@ -2944,8 +2944,9 @@ else, says what each item brings before it is copied, and never copies a secret-
   —, hooks and their events, a skill's, command's or agent's front matter grants (read the way the trust step reads
   them, `trust.mjs`: `allowed-tools` — *runs shell commands without asking* when it names Bash —, `permissionMode:
   bypassPermissions` or `acceptEdits`, `hooks`, `mcpServers`, `tools`, `model`; front matter that is not plain `key:
-  value` lines is said as such), a command's or skill's ``!`…` `` lines (run each time it is used, before Claude reads
-  it), a stdio MCP server (it starts with every session: its command line shown, every possible secret in it masked,
+  value` lines is said as such), the shell commands a command or skill runs each time it is used, before Claude reads
+  it (``!`…` `` and ```` ```! ```` blocks, read as Claude Code reads them — the trust step's `shellBlocks` —; one that
+  puts in what you type after the command, `$ARGUMENTS` or `$1`, said apart), a stdio MCP server (it starts with every session: its command line shown, every possible secret in it masked,
   and what `npx`/`uvx` fetch), an MCP server on `localhost` or a private address (not reachable with *Internet only*),
   one that may sign in with OAuth (signed in again in the sandbox, `/mcp`: the computer's sign-in is never read), a
   plugin's hooks (and hooks of another kind, and files of hooks or MCP servers its manifest names: what they hold
@@ -2959,8 +2960,9 @@ else, says what each item brings before it is copied, and never copies a secret-
   a server's URL, arguments or command keeps that server out unless you keep it (a changed URL or argument would be a
   broken server, not a safer one). A URL is read part by part — a user or password, each part of its host and path,
   each query name and value, its fragment — and an argument piece by piece, each by name, by the scan, and by shape
-  alone: a UUID, 32 or more hex digits, a run of 24 or more base64url characters with letters and digits, a long
-  random value, anything longer than 4 KiB; so a capability URL (a secret path, no name saying so) and the URL an
+  alone: a UUID, 32 or more hex digits, a run of base64url characters (20 or more with a high entropy, 24 or more
+  with letters and digits), a whole base64 value (a query's value as it is written: a `+` stays a `+`), a long random
+  value, anything longer than 4 KiB; so a capability URL (a secret path, no name saying so) and the URL an
   `mcp-remote` argument carries keep their server out. A plugin's marketplace URL with a query, a fragment, a user or
   any of the above is not added unless you keep it. Every such URL is shown masked to every device (`https://host/…/•••
   /mcp?key=•••`). Keeping one needs the portal password: the page asks the portal (`setup-copy`: the units' keys, a
@@ -2982,7 +2984,8 @@ else, says what each item brings before it is copied, and never copies a secret-
 - [x] **The sandbox's own kept.** Permission rules and hooks are added to the sandbox's `settings.json`, every other
   key of it kept; a later copy removes only what bedrock-now added before **from the same tool** (recorded in the code
   container by tool, rule and hook group: Claude Code's copy never takes out a rule `claude-bedrock`'s brought, nor the
-  other way round; a rule both bring stays while either does) — and every rule and hook group it takes out is listed
+  other way round; a rule both bring stays while either does — what a copy wants is recorded even when it has nothing
+  to write) — and every rule and hook group it takes out is listed
   in a warning before you copy (*taken out of the sandbox's settings*: your computer no longer has it). Any other
   destination — a file, a skill's folder, `statusLine`, `outputStyle`, an MCP server of that name, the Git name and
   email — is replaced without asking only while it is exactly what bedrock-now wrote there (when that was the other
@@ -2999,7 +3002,8 @@ else, says what each item brings before it is copied, and never copies a secret-
   as shown, never through a link. An MCP server goes in through `claude mcp add-json --scope=user` (bn-coded's
   allowlisted shape); one that replaces the sandbox's own server of that name first has bn-coded copy the sandbox's
   definition into the trash folder (`setup.trash`: it reads it from the sandbox's `~/.claude.json` itself, never from
-  the request; `mcp__<name>.json`, mode 600), and puts it back when the new one is not taken. A plugin goes in through
+  the request; `mcp__<name>.json`, mode 600), and puts it back when the new one is not taken (refused, or the call
+  failing outright). A plugin goes in through
   Claude Code's own install from its marketplace (`plugin marketplace add`, `plugin install --scope=user`), a
   marketplace-declared command shown verbatim and accepted by its SHA-256 in the page, as *Plugins* does; never from a
   marketplace of the same name the sandbox added from another source (refused, said); one off on this computer is

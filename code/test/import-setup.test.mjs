@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { tmp, TERMINAL_DIR } from './helpers.mjs';
 import { fakeHome } from './setup-fixtures.mjs';
+import { assertLinear } from './linear.mjs';
 
 const ROOT = tmp('bnsp');
 const WS = path.join(ROOT, 'ws'), SOCKDIR = path.join(ROOT, 'sock'), SBX = path.join(ROOT, 'sbxhome'), CONF = path.join(SBX, '.claude'), BIN = path.join(ROOT, 'bin');
@@ -563,47 +564,104 @@ test('L8: a server of the sandbox\'s own replaced goes to its trash first, and c
   assert.equal(JSON.parse(fs.readFileSync(g, 'utf8')).mcpServers.fetch.command, 'uvx');
 });
 
-// assertLinear(make, run, label): run's time on make(4) against make(1) — about 4× for a linear shape, 16× for a quadratic
-// one — each the fastest of two runs taken in turn (a busy machine slows both alike): at most 6× passes (or the larger
-// under 30 ms); a miss is measured once more before it counts
-const assertLinear = (make, run, label) => {
-  const small = make(1), large = make(4);
-  let q = Infinity, w = Infinity;
-  for (let round = 0; round < 2; round++) {
-    for (let i = 0; i < 2; i++) {
-      let t0 = performance.now(); run(small); q = Math.min(q, performance.now() - t0);
-      t0 = performance.now(); run(large); w = Math.min(w, performance.now() - t0);
-    }
-    if (w <= 6 * Math.max(q, 5)) return;
-  }
-  assert.fail(`${label}: ${Math.round(w)} ms at 4×, ${Math.round(q)} ms at 1× — not linear`);
-};
-test('linear on hostile input: paths, programs, MCP secrets, URLs, front matter, !` commands and the reader\'s shapes, 2–8 MiB', () => {
+test('M-a: a command\'s ```! blocks and !`…` across lines, as Claude Code reads them (trust.mjs); $ARGUMENTS in one said', () => {
+  const item = (text) => ({ meta: { key: plan.itemKey('claude', 'command', '-', 'go'), tool: 'claude', kind: 'command', scope: '-', name: 'go', hmac: 'k', files: [] },
+    files: [{ path: 'go.md', text, exec: false }] });
+  // (as Claude Code reads it: a span of inline code is blanked first — `x !`y` z` runs nothing; a !` after it on a line of
+  // its own does)
+  const p = plan.planUnit({ items: [item('---\ndescription: Go\n---\n```!\nnpm test\n```\nThen !`git log\n-1`\nAnd !`echo $ARGUMENTS`, not `x !`y z`.\n')] });
+  const t = flagsText(p);
+  assert.match(t, /warn: It runs 3 shell commands in the sandbox each time it is used.*npm test \| git log\n-1 \| echo \$ARGUMENTS/s);
+  assert.match(t, /warn: What you type after it goes into a shell command it runs/);
+  assert.doesNotMatch(flagsText(plan.planUnit({ items: [item('!`echo $HOME`')] })), /What you type after it/);
+  assert.match(flagsText(plan.planUnit({ items: [item('!`echo ${1}`')] })), /What you type after it/);
+});
+
+test('M-c: a copy with nothing to write still records what it wants — A copies X; B wants X too (nothing to write); A again without X: X stays', async () => {
+  fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ permissions: { allow: ['Read'] } }));
+  const hs = JSON.parse(fs.readFileSync(path.join(F.claude, 'settings.json'), 'utf8'));
+  const hb = fs.readFileSync(path.join(F.bedrock, 'settings.json'), 'utf8');
+  const copyPerm = async (tool) => {
+    look();
+    await openRows([row('setting', 'permissions', tool)]);
+    return copyOne([keyOf(row('setting', 'permissions', tool))]);
+  };
+  const allow = () => JSON.parse(fs.readFileSync(path.join(CONF, 'settings.json'), 'utf8')).permissions.allow;
+  hs.permissions = { allow: ['Read', 'Bash(make:*)'] };
+  fs.writeFileSync(path.join(F.claude, 'settings.json'), JSON.stringify(hs));
+  fs.writeFileSync(path.join(F.bedrock, 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(make:*)'] } }));
+  assert.equal((await copyPerm('claude')).r.ok, true);
+  assert.deepEqual(allow(), ['Read', 'Bash(make:*)']);
+  const b = await copyPerm('claude-bedrock');
+  assert.deepEqual([b.r.ok, b.r.nothing], [true, true], 'nothing to write');
+  hs.permissions = { allow: ['Read'] };
+  fs.writeFileSync(path.join(F.claude, 'settings.json'), JSON.stringify(hs));
+  const a2 = await copyPerm('claude');
+  assert.equal(a2.r.ok, true);
+  assert.deepEqual(allow(), ['Read', 'Bash(make:*)'], 'claude-bedrock still wants it');
+  assert.ok(!a2.p.flags.some((f) => /taken out/.test(f.text)));
+  fs.writeFileSync(path.join(F.bedrock, 'settings.json'), hb);
+  for (const x of setup.staged()) setup.drop(x.key);
+});
+
+test('L-d: the add failing outright (the sandbox did not answer): the sandbox\'s own server put back all the same', async () => {
+  const g = path.join(CONF, '.claude.json');
+  const j = JSON.parse(fs.readFileSync(g, 'utf8'));
+  j.mcpServers.fetch = { type: 'stdio', command: 'my-fetch', args: ['--own'] };
+  fs.writeFileSync(g, JSON.stringify(j));
+  look();
+  await openRows([row('mcp', 'fetch')]);
+  const k = [keyOf(row('mcp', 'fetch'))];
+  const s2 = new Setup({ dir: STATE, stage: path.join(STAGE, 'setup'), stageRoot: STAGE, call, imports, egress: 'internet' });
+  const orig = s2.cli.bind(s2);
+  let once = true;
+  s2.cli = async (args, ms) => { if (args[1] === 'add-json' && once) { once = false; throw new Error('the sandbox did not answer'); } return orig(args, ms); };
+  const p = await s2.preview(k, { conflict: 'replace' });
+  const r = (await s2.copy([{ keys: k, digest: p.digest, conflict: 'replace' }]))[0];
+  assert.equal(r.ok, false);
+  assert.match(r.why, /the sandbox's own server is as it was/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(g, 'utf8')).mcpServers.fetch, { type: 'stdio', command: 'my-fetch', args: ['--own'] });
+  for (const x of setup.staged()) setup.drop(x.key);
+});
+
+test('L-a: a query read as written (a + stays a +), a whole base64 value, letters alone at a high entropy, 20 characters at a higher bar', () => {
+  const b64 = ['aB3+dE5/gH7', 'jK9/mN1+pQ3/sT5+vW7='].join('+');
+  assert.equal(plan.urlSecret(`https://h.example/x?v=${b64}`), true);
+  assert.equal(plan.maskUrl(`https://h.example/x?v=${b64}&w=1`), 'https://h.example/x?v=•••&w=•••');
+  assert.equal(plan.secretPiece('QwErTyUiOpAsDfGhJkLzXcVbNm'), true, 'letters alone, a high entropy');
+  assert.equal(plan.secretPiece('Zq8Lm2Xv9Rt4Wp7Kd3Hy'), true, '20 characters, a high entropy');
+  for (const w of ['modelcontextprotocol', 'server-sequential-thinking', 'playwright-mcp-server', 'perplexity-ask-mcp-server']) assert.equal(plan.argSecret(w), false, w);
+  assert.equal(plan.urlSecret('https://h.example/search?q=hello+world&page=2'), false);
+});
+
+// (assertLinear: the input grown until a run takes 20 ms, then 8 times it — at most 16× the time; ./linear.mjs)
+test('linear on hostile input: paths, programs, MCP secrets, URLs, the reader\'s shapes and a merge into long lists', () => {
   const big = (unit, n) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
-  const MB = 1 << 20;
+  const url = () => `https://h.example/${big('ab/', 7000)}?${big('a=b&', 1000)}`;
+  const it = (name, value) => ({ meta: { key: plan.itemKey('claude', 'setting', '-', name), tool: 'claude', kind: 'setting', scope: '-', name, value, hmac: 'k', files: [] }, files: [] });
   const cases = [
-    ['~/ runs', (k) => big('~/', 2 * k * MB), (t) => plan.hostPaths(t)], ['a macOS home runs', (k) => big('/Us' + 'ers/a', 2 * k * MB), (t) => plan.hostPaths(t, '/home/x', ['/Us' + 'ers/a'])],
-    ['$HOME/x', (k) => big('$HOME/x ', k * MB), (t) => plan.hostPaths(t)], ['pipes', (k) => big('a | ', k * MB / 4), plan.programsOf], ['quotes', (k) => big('"\\', k * MB / 4), plan.programsOf],
-    ['assignments', (k) => big('X=1 ', k * MB / 4), plan.programsOf],
-    ['MCP arguments and env', (k) => ({ type: 'stdio', command: 'npx', args: Array.from({ length: 16 * k }, () => big('--api-key=', 2000)), env: Object.fromEntries(Array.from({ length: 8 * k }, (_, i) => [`K${i}_KEY`, big('ab', 4000)])) }), (c) => plan.mcpSecrets(c, 'k')],
-    ['MCP arguments of pieces', (k) => ({ type: 'stdio', command: 'npx', args: Array.from({ length: 16 * k }, () => big('a/b=c:', 4000)) }), (c) => plan.mcpSecrets(c, 'k')],
-    ['URLs of many parts', (k) => Array.from({ length: 64 * k }, () => `https://h.example/${big('ab/', 7000)}?${big('a=b&', 1000)}`), (us) => us.map(plan.urlSecret)],
-    ['masked URLs', (k) => Array.from({ length: 64 * k }, () => `https://h.example/${big('ab/', 7000)}?${big('a=b&', 1000)}`), (us) => us.map(plan.maskUrl)],
-    ['!` with no end', (k) => big('!`', 2 * k * MB), plan.bangCommands], ['!`a` runs', (k) => big('!`a`', 2 * k * MB), plan.bangCommands],
-    ['front matter lines', (k) => `---\n${big('allowed-tools: Bash\n', 2 * k * MB)}---\n`, (t) => plan.grantsOf(t, 'skill')],
-    ['git identity', (k) => big('[user]\nname = "\\', k * MB), reader.identityOf], ['description blocks', (k) => big('---\ndescription: |\n  x\n', k * MB / 4), reader.frontmatter],
+    ['~/ runs', (n) => big('~/', 4 * n), (t) => plan.hostPaths(t)], ['a macOS home runs', (n) => big('/Us' + 'ers/a', 4 * n), (t) => plan.hostPaths(t, '/home/x', ['/Us' + 'ers/a'])],
+    ['$HOME/x', (n) => big('$HOME/x ', 4 * n), (t) => plan.hostPaths(t)], ['pipes', (n) => big('a | ', 4 * n), plan.programsOf], ['quotes', (n) => big('"\\', 4 * n), plan.programsOf],
+    ['assignments', (n) => big('X=1 ', 4 * n), plan.programsOf],
+    ['MCP arguments and env', (n) => ({ type: 'stdio', command: 'npx', args: Array.from({ length: Math.max(1, n >> 8) }, () => big('--api-key=', 2000)),
+      env: Object.fromEntries(Array.from({ length: Math.max(1, n >> 9) }, (_, i) => [`K${i}_KEY`, big('ab', 4000)])) }), (c) => plan.mcpSecrets(c, 'k')],
+    ['MCP arguments of pieces', (n) => ({ type: 'stdio', command: 'npx', args: Array.from({ length: Math.max(1, n >> 8) }, () => big('a/b=c:', 4000)) }), (c) => plan.mcpSecrets(c, 'k')],
+    ['URLs of many parts', (n) => Array.from({ length: Math.max(1, n >> 10) }, url), (us) => us.map(plan.urlSecret)],
+    ['masked URLs', (n) => Array.from({ length: Math.max(1, n >> 10) }, url), (us) => us.map(plan.maskUrl)],
+    ['queries of + and =', (n) => Array.from({ length: Math.max(1, n >> 10) }, () => `https://h.example/x?${big('k=a+b/c=&', 8000)}`), (us) => us.map(plan.urlSecret)],
+    ['git identity', (n) => big('[user]\nname = "\\', 4 * n), reader.identityOf], ['description blocks', (n) => big('---\ndescription: |\n  x\n', n), reader.frontmatter],
     // (the sandbox's own settings.json is the sandbox's to write: thousands of rules and hook groups merge in linear time)
-    ['a merge into long lists', (k) => {
+    ['a merge into long lists', (n) => {
+      const k = Math.max(1, n >> 12);
       const own = { permissions: { allow: Array.from({ length: 5000 * k }, (_, i) => `Bash(own-${i}:*)`), deny: Array.from({ length: 5000 * k }, (_, i) => `Read(./x${i})`) },
         hooks: { Stop: Array.from({ length: 1000 * k }, (_, i) => ({ hooks: [{ type: 'command', command: `own-${i}` }] })) } };
       const text = JSON.stringify(own);
-      const it = (name, value) => ({ meta: { key: plan.itemKey('claude', 'setting', '-', name), tool: 'claude', kind: 'setting', scope: '-', name, value, hmac: 'k', files: [] }, files: [] });
       return { items: [it('permissions', { allow: Array.from({ length: 1000 * k }, (_, i) => `Bash(mine-${i}:*)`) }), it('hooks', { Stop: Array.from({ length: 200 * k }, (_, i) => ({ hooks: [{ type: 'command', command: `mine-${i}` }] })) })],
         state: { file: { exists: true, type: 'file', sha256: sha(text), text } },
         records: { 'settings.json#permissions@claude': { added: { allow: Array.from({ length: 1000 * k }, (_, i) => `Bash(own-${i}:*)`) }, wanted: {} } } };
-    }, (job) => plan.planUnit(job)],
+    }, (job) => plan.planUnit(job), { max: 1 << 15 }],
   ];
-  for (const [label, make, run] of cases) assertLinear(make, run, label);
+  for (const [label, make, run, opts] of cases) assertLinear(make, run, label, opts);
   assert.deepEqual(plan.programsOf('FOO=1 env BAR=2 /home/a/x.sh --flag | tee log && "my prog" arg; cd /x'), ['/home/a/x.sh', 'tee', 'my prog', 'cd']);
   assert.deepEqual(plan.programKind('~/.claude/x.sh'), { kind: 'look', name: '~/.claude/x.sh' });
   assert.deepEqual(plan.programKind('$CLAUDE_PROJECT_DIR/hooks/a'), { kind: 'project' });

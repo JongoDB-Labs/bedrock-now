@@ -321,10 +321,10 @@ export class Setup {
     const v = readJsonFile(path.join(this.dir, 'setup-copied.json'), 16 << 20);
     return { dests: isObj(v?.dests) ? v.dests : {}, items: isObj(v?.items) ? v.items : {} };
   }
-  noteCopied(meta, record) {
+  noteCopied(meta, record, { item = true } = {}) {
     const r = this.records();
     for (const [k, v] of Object.entries(record)) r.dests[k] = { ...v, at: this.now() };
-    r.items[itemKey(meta.tool, meta.kind, meta.scope, meta.name)] = { at: this.now(), tool: meta.tool, kind: meta.kind, scope: meta.scope, name: meta.name };
+    if (item) r.items[itemKey(meta.tool, meta.kind, meta.scope, meta.name)] = { at: this.now(), tool: meta.tool, kind: meta.kind, scope: meta.scope, name: meta.name };
     for (const o of [r.dests, r.items]) {
       const keys = Object.keys(o);
       if (keys.length > LIMITS.records) for (const k of keys.sort((a, b) => (o[a].at || 0) - (o[b].at || 0)).slice(0, keys.length - LIMITS.records)) delete o[k];
@@ -435,7 +435,9 @@ export class Setup {
         const r = await this.cli(['mcp', 'remove', w.name, '--scope=user'], 60000);
         if (!r.ok) return { failed: r };
       }
-      const r = await this.cli(['mcp', 'add-json', w.name, JSON.stringify(w.config), '--scope=user'], 60000);
+      // (the add refused — or failed outright: the sandbox's own put back either way)
+      let r, threw = null;
+      try { r = await this.cli(['mcp', 'add-json', w.name, JSON.stringify(w.config), '--scope=user'], 60000); } catch (e) { threw = e; r = { ok: false, said: String(e?.message ?? e).slice(0, 300) }; }
       if (r.ok) return { trashed };
       if (w.replace && cur) {
         // (as Claude Code reads it: a server without a type is a stdio one; one bn-coded does not take stays in the trash, said)
@@ -443,6 +445,7 @@ export class Setup {
         const back = await this.cli(['mcp', 'add-json', w.name, JSON.stringify(own), '--scope=user'], 60000).catch(() => ({ ok: false }));
         return { failed: r, note: back.ok ? 'the sandbox\'s own server is as it was' : `the sandbox's own server is in its trash folder (~/.claude/${trashed}): add it again in MCP servers` };
       }
+      if (threw) throw threw;
       return { failed: r };
     }
     if (w.type === 'plugin') {
@@ -481,7 +484,17 @@ export class Setup {
         const pl = await this.plan(keys, { mode: u.mode, conflict: u.conflict, keep: u.keep }, { kind: 'copy', digest });
         if (pl.blocked) { out.push({ ...base, ok: false, why: pl.blocked }); continue; }
         if (remote && pl.grants?.length) { out.push({ ...base, ok: false, password: true, why: 'From another device, what lets Claude act without asking is copied only with the portal password: the sheet asks for it.' }); continue; }
-        if (pl.action === 'none') { out.push({ ...base, ok: true, nothing: true, conflict: pl.conflict ? pl.conflict.dest : null }); for (const k of keys) this.drop(k); continue; }
+        if (pl.action === 'none') {
+          // (nothing to write — but what this copy wants is recorded all the same: a rule the other tool added, wanted
+          // by this one too, is never taken out by the other's next copy; the item is "copied" when nothing conflicted)
+          if (Object.keys(pl.record ?? {}).length) {
+            this.noteCopied(metas[0], pl.record, { item: !pl.conflict });
+            for (const m of metas.slice(1)) this.noteCopied(m, {}, { item: !pl.conflict });
+          }
+          out.push({ ...base, ok: true, nothing: true, conflict: pl.conflict ? pl.conflict.dest : null });
+          for (const k of keys) this.drop(k);
+          continue;
+        }
         let trashed = null, confirm = null, failed = null, note = null, disable = false;
         const record = { ...pl.record };
         for (const w of pl.writes) {

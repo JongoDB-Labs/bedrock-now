@@ -25,7 +25,7 @@ import { isUtf8 } from 'node:buffer';
 import { processEntries, scan as scanText, isSecretName, masked, keepToken, redactText, entropy, LABELS } from './secrets.mjs';
 import { frontmatter, listed, tokens, mcpOf, keybindingsOf, SETTING_KEYS, SETTING_OF, PLAIN, FILE_PART, MCP_NAME, PLUGIN_ID } from './harness/claude-config.mjs';
 import { ImportError } from './import-plan.mjs';
-import { frontMatter } from './trust.mjs';
+import { frontMatter, shellBlocks } from './trust.mjs';
 
 // (the import's own error: a status and fixed words — the worker hands it back as it is)
 export const SetupError = ImportError;
@@ -201,21 +201,29 @@ const MORE_SECRET_HEADER = /(key|token|secret|auth|session|signature|cookie|pass
 // a long random-looking value: no space, a high entropy, not a path or a URL — when in doubt, a secret
 const looksRandom = (v) => v.length >= 20 && !/\s/.test(v) && !/^(https?:|\/|~|\.)/.test(v) && entropy(v.slice(0, 4096)) >= 3.5;
 // --- a value that may be a secret by its shape alone — a part of a URL (a capability URL's path, a query value), an
-// --- argument or a piece of one: a UUID, 32 or more hex digits, a run of 24 or more base64url characters with letters
-// --- and digits, a long random-looking one. Every test linear; anything longer than 4 KiB counts as one. ---
+// --- argument or a piece of one: a UUID, 32 or more hex digits, a run of base64url characters (20 or more with a high
+// --- entropy — letters alone will do —, 24 or more with letters, digits and a fair one), a whole base64 value (+ / =
+// --- too), a long random-looking one. Every test linear; anything longer than 4 KiB counts as one. ---
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HEX32 = /^[0-9a-f]{32,}$/i;
-const B64URL = /^[A-Za-z0-9_-]{24,}$/;
-const B64 = /^[A-Za-z0-9+/_-]{24,}={0,2}$/;
+const B64URL = /^[A-Za-z0-9_-]{20,}$/;
+const B64 = /^[A-Za-z0-9+/_-]{20,}={0,2}$/;
 const DIGIT = /[0-9]/, LETTER = /[A-Za-z]/;
+// (a token's run: high entropy, or letters and digits with a fair one)
+const tokenRun = (s) => { const e = entropy(s); return e >= 4.0 || (s.length >= 24 && DIGIT.test(s) && LETTER.test(s) && e >= 3.5); };
 export function secretPiece(v) {
   const s = String(v);
   if (s.length > LIMITS.piece) return true;
   if (s.length < 16) return false;
   if (UUID.test(s) || HEX32.test(s)) return true;
-  if (B64URL.test(s) && DIGIT.test(s) && LETTER.test(s) && entropy(s) >= 3.5) return true;
+  if (B64URL.test(s) && tokenRun(s)) return true;
   return s.length >= 32 && !/\s/.test(s) && entropy(s) >= 4.2;
 }
+// b64Secret(v) -> a whole value of base64 (+ / = and - _ too) that reads as a token — tested before it is cut in pieces
+const b64Secret = (s) => s.length >= 20 && s.length <= LIMITS.piece && B64.test(s) && LETTER.test(s) && tokenRun(s);
+// queryOf(u) -> the [name, value] pairs of a URL's query, from its raw text: split at & and =, each part decoded as it
+// is (a + stays a +: a base64 value is read whole, never as words)
+const queryOf = (u) => (u.search.length > 1 ? u.search.slice(1).split('&').filter(Boolean).map((p) => { const i = p.indexOf('='); return i < 0 ? [decoded(p), ''] : [decoded(p.slice(0, i)), decoded(p.slice(i + 1))]; }) : []);
 // (what splits an argument or a URL's part into pieces: separators no token holds)
 const PIECES = /[\s/=:@,;&?#'"`()[\]{}<>|\\.+]+/;
 const piecesOf = (v) => String(v).split(PIECES);
@@ -235,8 +243,8 @@ export function urlSecret(raw) {
   if (u.username || u.password) return true;
   if (u.hostname.split('.').some(secretPiece)) return true;
   if (u.pathname.split('/').some((seg) => secretPiece(decoded(seg)) || piecesOf(decoded(seg)).some(secretPiece))) return true;
-  for (const [k, v] of u.searchParams) {
-    if (isSecretName(k) || MORE_SECRET_NAME.test(k) || MORE_SECRET_HEADER.test(k) || secretPiece(k) || secretPiece(v) || piecesOf(v).some(secretPiece)) return true;
+  for (const [k, v] of queryOf(u)) {
+    if (isSecretName(k) || MORE_SECRET_NAME.test(k) || MORE_SECRET_HEADER.test(k) || secretPiece(k) || b64Secret(v) || secretPiece(v) || piecesOf(v).some(secretPiece)) return true;
   }
   if (u.hash.length > 1 && (secretPiece(decoded(u.hash.slice(1))) || piecesOf(decoded(u.hash.slice(1))).some(secretPiece))) return true;
   return scanText(raw).length > 0;
@@ -248,7 +256,7 @@ export function maskUrl(raw) {
   if (!u) return `a URL of ${String(raw).length} characters`;
   const host = u.hostname.split('.').map((l) => (secretPiece(l) ? '•••' : l)).join('.');
   const p = u.pathname.split('/').map((seg) => (secretPiece(decoded(seg)) || piecesOf(decoded(seg)).some(secretPiece) ? '•••' : seg)).join('/');
-  const keys = [...u.searchParams.keys()];
+  const keys = queryOf(u).map(([k]) => k);
   const q = keys.slice(0, 20).map((k) => `${secretPiece(k) ? '•••' : k}=•••`).join('&') + (keys.length > 20 ? '&…' : '');
   return redactText(`${u.protocol}//${u.username || u.password ? '•••@' : ''}${host}${u.port ? `:${u.port}` : ''}${p}${u.search ? `?${q}` : ''}${u.hash ? '#•••' : ''}`).slice(0, 600);
 }
@@ -257,7 +265,7 @@ export function argSecret(a) {
   const s = String(a);
   if (s.length > LIMITS.piece) return true;
   if (urlOf(s)) return urlSecret(s);
-  if (!/^[/~.@-]/.test(s) && B64.test(s) && DIGIT.test(s) && LETTER.test(s) && entropy(s) >= 3.5) return true;
+  if (!/^[/~.@-]/.test(s) && b64Secret(s)) return true;
   return piecesOf(s).some(secretPiece);
 }
 // (the words for a value that may be a secret by its shape alone)
@@ -345,22 +353,6 @@ export function grantsOf(text, kind) {
     } else if (k === 'model') flags.push(flag('info', `Runs on ${v || 'a model of its own'} (billed at that model's price per token).`));
   }
   return { flags, grants };
-}
-/** bangCommands(text) -> {count, list}: the !`…` commands of a command or a skill — Claude Code runs each in the sandbox
- *  every time it is used, before Claude reads it (one pass: each search stops at the next backtick) */
-export function bangCommands(text) {
-  const s = String(text);
-  const list = [];
-  let count = 0;
-  for (let at = s.indexOf('!`'); at >= 0; at = s.indexOf('!`', at + 2)) {
-    const end = s.indexOf('`', at + 2);
-    if (end < 0) break;
-    const cmd = s.slice(at + 2, end);
-    if (!cmd.trim() || cmd.includes('\n')) continue;
-    count++;
-    if (list.length < LIMITS.flagItems) list.push(cmd.slice(0, 300));
-  }
-  return { count, list };
 }
 // whole tools a permission rule allows: each said in its own words (from another device such a copy needs the password)
 const WHOLE_RULES = [
@@ -492,12 +484,16 @@ export function planUnit(job) {
     const g = grantsOf(texts[0] ?? '', kind);
     flags.push(...g.flags); grants.push(...g.grants);
     if (kind === 'command' || kind === 'skill') {
-      const cmds = [];
-      let count = 0;
-      for (const t of texts) { const b = bangCommands(t); count += b.count; cmds.push(...b.list); }
-      if (count) {
-        flags.push(flag('warn', `It runs ${count} shell command${count === 1 ? '' : 's'} in the sandbox each time it is used (!\`…\`), before Claude reads it.`, cmds.map((c) => redactText(c))));
+      // (Claude Code's own reading — trust.mjs: ```! blocks and !`…` after whitespace, across lines, inline code blanked)
+      const found = texts.map((t) => shellBlocks(t, 1000));
+      const cmds = found.flatMap((f) => f.list.map((x) => x.command));
+      if (found.some((f) => f.more)) flags.push(flag('warn', 'It runs more than 1,000 shell commands each time it is used: read them all below before you copy it.'));
+      if (cmds.length) {
+        flags.push(flag('warn', `It runs ${cmds.length} shell command${cmds.length === 1 ? '' : 's'} in the sandbox each time it is used (!\`…\`, \`\`\`!), before Claude reads it.`,
+          cmds.map((c) => redactText(c).slice(0, 300))));
         programFlags(cmds, 'They run');
+        // (what you type after the command is put in before they run)
+        if (cmds.some((c) => /\$\{?(ARGUMENTS|[0-9]+)\b/.test(c))) flags.push(flag('warn', 'What you type after it goes into a shell command it runs ($ARGUMENTS, $1 …): a typed argument can run anything there.'));
       }
     }
   };
