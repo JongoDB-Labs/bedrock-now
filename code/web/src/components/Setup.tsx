@@ -288,7 +288,9 @@ function CheckStep({ view, onChanged }: { view: SetupView; onChanged: () => void
   const idOf = (keys: string[]) => keys.join('+');
   const ch = (keys: string[]) => choices[idOf(keys)] ?? FRESH;
   const set = (keys: string[], v: Partial<Choice>) => setChoices((c) => ({ ...c, [idOf(keys)]: { ...(c[idOf(keys)] ?? FRESH), ...v } }));
-  const todo = units.filter((k) => !ch(k).skip && previews[idOf(k)] && !(previews[idOf(k)]?.blocked && !previews[idOf(k)]?.needsKeep));
+  // (a unit refused as it is — or an MCP server whose URL or arguments hold a secret not kept — is not sent)
+  const copyable = (k: string[]) => { const p = previews[idOf(k)]; return Boolean(p) && (!p?.blocked || Boolean(p.needsKeep?.length && p.needsKeep.every((id) => ch(k).keep.includes(id)))); };
+  const todo = units.filter((k) => !ch(k).skip && copyable(k));
   const kept = todo.filter((k) => ch(k).keep.length > 0);
   const every = todo.reduce((n, k) => n + (previews[idOf(k)]?.tokens.every ?? 0), 0);
   const unknown = todo.some((k) => previews[idOf(k)]?.tokens.unknown);
