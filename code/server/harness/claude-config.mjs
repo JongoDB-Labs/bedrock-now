@@ -22,9 +22,10 @@
 //   identity      user.name and user.email of ~/.gitconfig (no include followed)
 // Anything else — an unknown key, kind, event or shape, a name that is not a plain one — is dropped and counted.
 //
-// Two passes. scan: names and sizes only — no file's contents are read but the four JSON lists' keys (which settings,
-// which servers, which plugins) and whether a Git name and email are set; nothing of a value leaves. fetch: the items
-// you opened (rows of that scan), whole: their text files' bytes, or a structured item's allowlisted value.
+// Two passes. scan: names and sizes only — files and folders by lstat, and the JSON files and ~/.gitconfig parsed only
+// to say what they hold (which settings, servers and plugins; whether key bindings and a Git name and email are there;
+// each one's size); nothing of a value leaves. fetch: the items you opened (rows of that scan), whole: their text
+// files' bytes, or a structured item's allowlisted value.
 //
 // Everything is untrusted: no link is ever followed (O_NOFOLLOW on every open, regular files only, a FIFO or device never
 // read: O_NONBLOCK, then fstat; folders looked at with lstat), sizes, counts and depths are bounded, names must be plain

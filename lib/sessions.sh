@@ -455,7 +455,8 @@ sessions_scan() {
   if [ "${#ins[@]}" -eq 0 ]; then
     printf '{"t":"head","v":1,"tested":"2.1","tools":{}}\n{"t":"end","rows":0}\n' > "$tmp"
   elif ! _ss_reader "$tmp" index --path "$(_ss_b64 "$SS_HOST")" "${ins[@]}" || ! head -n 1 "$tmp" | grep -q '^{"t":"head"'; then
-    rm -f "$tmp" "$tmp.err"; _ss_fail reader "the reader could not read the store ($(plain_text "$(tail -n 1 "$tmp.err" 2>/dev/null | head -c 200)"))"
+    local why; why="$(plain_text "$(tail -n 1 "$tmp.err" 2>/dev/null | head -c 200)")"
+    rm -f "$tmp" "$tmp.err"; _ss_fail reader "the reader could not read the store ($why)"
   fi
   rm -f "$tmp.err"
   _ss_consent_bind "$tools" "$SS_ID" "$scan"

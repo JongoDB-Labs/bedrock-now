@@ -2912,8 +2912,9 @@ else, says what each item brings before it is copied, and never copies a secret-
   walks folders with `lstat`, bounds every size, count and depth (`CLAUDE.md` 1 MiB, an agent or command 256 KiB, a
   skill 300 files and 8 MiB, the global configuration 32 MiB, 500 items of a kind, 200 servers, 300 plugins), takes
   only plain names (letters, digits, `. _ -`), and rebuilds every structured item by the shapes above before it leaves.
-- [x] **Names and sizes first, contents only when you open an item.** A look reads names and sizes (and of the four
-  JSON lists their keys only: which settings, servers, plugins; whether a Git name and email are set) — nothing of a
+- [x] **Names and sizes first, contents only when you open an item.** A look lists names and sizes: files and folders
+  by `lstat`, and the JSON files and `~/.gitconfig` parsed in the reader only to say what they hold (which settings,
+  servers and plugins, whether key bindings and a Git name and email are there, each item's size) — nothing of a
   value leaves the reader then. Opening items (`setup-fetch`, `./stack sessions config open`) names rows of the
   helper's own record of that look (`.state/sessions/setup/<nonce>.tsv`: each row's tool, kind, scope and name, as
   the reader listed them), never a path or a name from a request, and mounts only what those kinds need (a skill:

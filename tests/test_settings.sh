@@ -98,7 +98,7 @@ test_the_layout_places_every_key_once() {
       if ($3 !~ /^(main|more|with)$/) print $1 " place " $3
       if ($3 == "with" && $4 == "-") print $1 " with no row"
       if ($3 != "with" && ($5 == "" || $5 == "-")) print $1 " no summary"
-      if ($1 ~ /^\+/ && $1 !~ /^\+(devices|models|backups|test|check-aws|report|restart|git-hosts|project-folders|sessions-consent)$/) print $1 " unknown own row"
+      if ($1 ~ /^\+/ && $1 !~ /^\+(devices|models|backups|test|check-aws|report|restart|git-hosts|project-folders|sessions-consent|bring-setup)$/) print $1 " unknown own row"
       s[$1] = $2; p[$1] = $4; pl[$1] = $3; o[++n] = $1 }
     END { for (i = 1; i <= n; i++) { k = o[i]; if (p[k] == "-") continue
             if (!(p[k] in s)) print k " parent " p[k] " unknown"; else if (s[p[k]] != s[k]) print k " parent in another section"
