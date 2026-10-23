@@ -506,23 +506,29 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if act in ("sessions-scan", "sessions-suggest") and rem:
             return sessions_err(403, "Only on the computer running bedrock-now: a look at its sessions is allowed in a dialog on its screen "
                                      "(or ./stack sessions in a terminal there).")
+        # (Bring your setup: a look and an open only on the computer itself — never started from another device)
+        if act in ("setup-scan", "setup-fetch") and rem:
+            return sessions_err(403, "Only on the computer running bedrock-now: your setup there is read only after you allowed it in a dialog on its "
+                                     "screen (or ./stack sessions config import in a terminal there).")
         state = admin.helper_state(settings.status_dir)
         if not state["running"]:
             return sessions_err(503, "The update helper is not running on the computer: in a terminal there, ./stack sessions "
                                      "(./stack helper install keeps it running).")
         cap = settings_mod.capability(settings.status_dir)
+        setup = act.startswith("setup-")
         if act not in cap["sessions"]:
-            return sessions_err(409, "This update helper does not read sessions yet: ./stack helper install refreshes it.")
-        if act in ("sessions-scan", "sessions-suggest") and not cap["screen"]:
+            return sessions_err(409, f"This update helper does not read {'your setup' if setup else 'sessions'} yet: ./stack helper install refreshes it.")
+        if act in ("sessions-scan", "sessions-suggest", "setup-scan") and not cap["screen"]:
             return sessions_err(409, "The update helper cannot show a dialog on this computer's screen: in a terminal there, "
-                                     "./stack sessions import --project NAME.")
+                                     + ("./stack sessions config import." if setup else "./stack sessions import --project NAME."))
         if wait := sessions_rate.retry_after():
             return sessions_err(429, f"Please wait {wait} s before the next request.", wait)
         try:
             nonce = settings_mod.write_sessions_request(
                 settings.request_dir, act, password, rem, project=data.get("project"), tool=data.get("tool", "both"), scan=data.get("scan"),
                 rows=data.get("rows"), session=data.get("session"), digest=data.get("digest"), thinking=data.get("thinking") or "default",
-                outputs=data.get("outputs") or "out", keep=data.get("keep"))
+                outputs=data.get("outputs") or "out", keep=data.get("keep"), units=data.get("units"), mode=data.get("mode") or "replace",
+                conflict=data.get("conflict") or "leave")
         except ValueError:
             return sessions_err(400, "bad request")
         except OSError as e:

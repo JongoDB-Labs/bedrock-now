@@ -747,6 +747,24 @@ def test_sessions_taken_back_from_anywhere_by_id_never_a_path(make, dirs):
     assert sessions(make(), project="all", tool="both").status_code == 409
 
 
+def test_setup_consent_listed_by_tool_and_taken_back_by_tool_only_for_all(make, dirs):
+    sd, rq = dirs
+    sessions_up(sd)
+    d = json.loads((sd / "sessions.json").read_text())
+    d["setup"] = [{"tool": "claude", "scope": "always", "at": 3}, {"tool": "git", "scope": "once", "at": 4}, {"tool": "codex", "scope": "always"},
+                  {"tool": "claude-bedrock", "scope": "forever"}]
+    (sd / "sessions.json").write_text(json.dumps(d))
+    assert st.sessions_consent(sd)["setup"] == [{"tool": "claude", "scope": "always", "at": 3}, {"tool": "git", "scope": "once", "at": 4}]
+    c = make()
+    assert [x["tool"] for x in c.get("/api/settings", headers=API).json()["sessions"]["setup"]] == ["claude", "git"]
+    r = sessions(c, project="all", tool="setup-claude")
+    assert r.status_code == 202, r.text
+    assert (rq / f"act-{r.json()['id']}.json").read_text().endswith('"project":"all","tool":"setup-claude"}')
+    assert sessions(make(), project="all", tool="setup-all").status_code == 202
+    for bad in ({"project": "p_0123abcd", "tool": "setup-claude"}, {"project": "all", "tool": "setup-ssh"}, {"project": "all", "tool": "setup"}):
+        assert sessions(make(), **bad).status_code == 400, bad
+
+
 def test_sign_out_other_devices_keeps_this_one(settings, dirs):
     sd, rq = dirs
     app = create_app(replace(settings, status_dir=sd, request_dir=rq), transport=httpx.MockTransport(offline))

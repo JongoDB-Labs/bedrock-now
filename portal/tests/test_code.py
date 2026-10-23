@@ -861,3 +861,78 @@ def test_sessions_requests_need_the_helper_and_over_remote_access_never_a_look(c
         r = _ses(c, {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": "a" * 32, "rows": [2], "password": PW}, tok, ut, **kw)
         assert r.status_code == 202, r.text
         assert '"origin":"remote"' in (rs.request_dir / f"ses-{r.json()['request']}.json").read_text()
+
+
+# --- Bring your setup: setup-scan, setup-fetch, setup-copy — the same door, fixed fields, never a path; a look and an
+# --- open only on the computer itself ---
+
+def test_setup_requests_each_field_checked_never_a_path(cs, tmp_path):
+    import time
+    acts = ("sessions-scan", "sessions-fetch", "sessions-suggest", "sessions-copy", "setup-scan", "setup-fetch", "setup-copy")
+    s = _sessions_dirs(cs, tmp_path, actions=acts)
+    with _client(s) as c:
+        tok, ut = unlocked(c)
+        dig, scan, k1, k2 = "d" * 64, "a" * 32, "s_0123456789abcdef", "s_fedcba9876543210"
+        good = [
+            ({"action": "setup-scan", "project": "-", "tool": "all"}, '"origin":"local","project":"-","tool":"all"}'),
+            ({"action": "setup-scan", "project": "p_0000aaaa", "tool": "git"}, '"project":"p_0000aaaa","tool":"git"}'),
+            ({"action": "setup-fetch", "scan": scan, "rows": [1, 7, 100]}, '"scan":"' + scan + '","rows":"1,7,100"}'),
+            ({"action": "setup-copy", "units": [k1, k2], "digest": dig, "mode": "append", "conflict": "replace", "keep": ["v#0123456789abcdef", "f12#fedcba9876543210"]},
+             f'"units":"{k1}+{k2}","digest":"{dig}","mode":"append","conflict":"replace","keep":"v#0123456789abcdef,f12#fedcba9876543210"}}'),
+        ]
+        for body, tail in good:
+            time.sleep(2.1)   # (one request every 2 s)
+            r = _ses(c, {**body, "password": PW}, tok, ut)
+            assert r.status_code == 202, (body, r.text)
+            line = (s.request_dir / f"ses-{r.json()['request']}.json").read_text()
+            assert line.endswith(tail + "\n"), line
+        bad = [
+            {"action": "setup-scan", "project": "/home/me", "tool": "all"}, {"action": "setup-scan", "project": "-", "tool": "ssh"},
+            {"action": "setup-scan", "project": "-"},
+            {"action": "setup-fetch", "scan": scan, "rows": []}, {"action": "setup-fetch", "scan": scan, "rows": list(range(1, 102))},
+            {"action": "setup-fetch", "scan": "../x", "rows": [1]}, {"action": "setup-fetch", "scan": scan, "rows": ["~/.ssh"]},
+            {"action": "setup-copy", "units": [k1], "digest": dig, "keep": []},
+            {"action": "setup-copy", "units": ["../x"], "digest": dig, "keep": ["v#0123456789abcdef"]},
+            {"action": "setup-copy", "units": [k1] * 2, "digest": dig, "keep": ["v#0123456789abcdef"]},
+            {"action": "setup-copy", "units": [k1, k2, "s_0000000000000000", "s_1111111111111111", "s_2222222222222222"], "digest": dig, "keep": ["v#0123456789abcdef"]},
+            {"action": "setup-copy", "units": [k1], "digest": dig, "keep": ["main#0123456789abcdef"]},
+            {"action": "setup-copy", "units": [k1], "digest": dig, "mode": "overwrite", "keep": ["v#0123456789abcdef"]},
+            {"action": "setup-copy", "units": [k1], "digest": dig, "conflict": "force", "keep": ["v#0123456789abcdef"]},
+            {"action": "setup-copy", "units": k1, "digest": dig, "keep": ["v#0123456789abcdef"]},
+        ]
+        before = _ses_files(s)
+        for body in bad:
+            r = _ses(c, {**body, "password": PW}, tok, ut)
+            assert r.status_code in (400, 429), (body, r.status_code)
+        assert _ses_files(s) == before
+
+
+def test_setup_over_remote_access_never_a_look_or_an_open_a_copy_said_remote(cs, tmp_path, settings):
+    acts = ("setup-scan", "setup-fetch", "setup-copy")
+    with _client(_sessions_dirs(cs, tmp_path / "old", actions=("sessions-scan",))) as c:
+        tok, ut = unlocked(c)
+        r = _ses(c, {"action": "setup-scan", "project": "-", "tool": "all", "password": PW}, tok, ut)
+        assert r.status_code == 409 and "your setup" in r.json()["error"]
+    with _client(_sessions_dirs(cs, tmp_path / "noscreen", actions=acts, screen=False)) as c:
+        tok, ut = unlocked(c)
+        r = _ses(c, {"action": "setup-scan", "project": "-", "tool": "all", "password": PW}, tok, ut)
+        assert r.status_code == 409 and "sessions config import" in r.json()["error"]
+    rs = replace(settings, terminal=True, code=True, remote_mode="tailscale", remote_host=R_PORTAL, proxy_secret=PROXY,
+                 remote_app_hosts={"terminal": f"bn-terminal.{TN}", "code": R_CODE_HOST}, remote_terminal=True)
+    rs = _sessions_dirs(rs, tmp_path / "remote", actions=acts)
+    with _client(rs) as c:
+        r = c.post("/login", data={"password": PW, "next": "/"}, headers={"Origin": f"https://{R_PORTAL}", "Host": R_PORTAL, **REMOTE})
+        tok = _cookie(r, "__Host-bn_session").split(";", 1)[0].split("=", 1)[1]
+        c.cookies.clear()
+        r = c.post("/auth/code-unlock", data={"password": PW}, headers={"Host": R_CODE_HOST, "Origin": f"https://{R_CODE_HOST}",
+                                                                      "Cookie": f"__Host-bn_session={tok}", **REMOTE})
+        c.cookies.clear()
+        ut = _cookie(r, REMOTE_CODE_COOKIE).split(";", 1)[0].split("=", 1)[1]
+        kw = {"host": R_CODE_HOST, "origin": f"https://{R_CODE_HOST}", "extra": {**REMOTE, "Cookie": f"__Host-bn_session={tok}; {REMOTE_CODE_COOKIE}={ut}"}}
+        for body in ({"action": "setup-scan", "project": "-", "tool": "all"}, {"action": "setup-fetch", "scan": "a" * 32, "rows": [1]}):
+            r = _ses(c, {**body, "password": PW}, tok, ut, **kw)
+            assert r.status_code == 403 and "Only on the computer" in r.json()["error"], r.text
+        assert _ses_files(rs) == []
+        r = _ses(c, {"action": "setup-copy", "units": ["s_0123456789abcdef"], "digest": "d" * 64, "keep": ["v#0123456789abcdef"], "password": PW}, tok, ut, **kw)
+        assert r.status_code == 202, r.text
+        assert '"origin":"remote"' in (rs.request_dir / f"ses-{r.json()['request']}.json").read_text()

@@ -52,7 +52,7 @@ GROUPS = ("account", "aws", "budgets", "voice", "openrouter", "files", "updates"
 # the page's sections, in catalog/settings-layout.tsv; a row's place in its section; the page's own rows (no .env key)
 SECTIONS = ("account", "aws", "spending", "chat", "code", "files", "remote", "updates", "diagnostics", "advanced", "about")
 PLACES = ("main", "more", "with")
-OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent")
+OWN_ROWS = ("+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent", "+bring-setup")
 DOC = re.compile(r"(README\.md|docs/[a-z0-9-]{1,40}\.md)(#[a-z0-9-]{1,80})?")
 EDITABLE = ("edit", "local", "on-only", "widen-local")
 REGEN = ("RUSTFS_ACCESS_KEY", "SHARED_MCP_TOKEN")   # what "Regenerate" asks for (the RustFS pair is one action)
@@ -65,8 +65,14 @@ DIAG_ACTIONS = ("check-aws", "models-recheck", "backup", "test", "report", "rest
 PROJECT_ACTIONS = ("project-pick", "project-remove", "project-mode-ro")
 PROJECTS = "projects.json"                     # ./stack's list of project folders (lib/projects.sh)
 SESSIONS_ACTIONS = ("sessions-revoke",)
-# what the Code page's Import sheet asks of the computer through the portal (ses-<nonce>.json: lib/sessions.sh)
-SESSIONS_REQUESTS = ("sessions-scan", "sessions-fetch", "sessions-suggest", "sessions-copy")
+# what the Code page's Import sheet asks of the computer through the portal (ses-<nonce>.json: lib/sessions.sh), and its
+# Bring your setup sheet (setup-*: lib/sessions_config.sh)
+SESSIONS_REQUESTS = ("sessions-scan", "sessions-fetch", "sessions-suggest", "sessions-copy", "setup-scan", "setup-fetch", "setup-copy")
+SETUP_TOOLS = ("claude", "claude-bedrock", "git")
+SETUP_KEY = re.compile(r"s_[0-9a-f]{16}")
+SETUP_KEEP = re.compile(r"(v|f[0-9]{1,3})#[0-9a-f]{16}")
+# Take back, by tool: the sessions' (a project's id, or all) and your setup's (setup-<tool>, project all)
+REVOKE_TOOLS = ("claude", "claude-bedrock", "both", "suggest", "setup-claude", "setup-claude-bedrock", "setup-git", "setup-all")
 SESSIONS_REQ_MAX = 8192                # bytes of a ses- request (lib/sessions.sh SESSIONS_REQ_MAX_BYTES)
 SESSIONS_KEEP_MAX = 64                 # findings one copy may keep
 NONCE32 = re.compile(r"[0-9a-f]{32}")
@@ -232,7 +238,12 @@ def sessions_consent(status_dir: Path) -> dict:
     for x in d.get("suggest") or []:
         if isinstance(x, dict) and x.get("tool") in SESSIONS_TOOLS and x.get("scope") in ("always", "once") and len(suggest) < 2:
             suggest.append({"tool": x["tool"], "scope": x["scope"], "at": x["at"] if isinstance(x.get("at"), int) else None})
-    return {"written_at": d.get("written_at") if isinstance(d.get("written_at"), int) else None, "folders": folders, "suggest": suggest}
+    # your setup (Bring your setup: lib/sessions_config.sh), by tool
+    setup = []
+    for x in d.get("setup") or []:
+        if isinstance(x, dict) and x.get("tool") in SETUP_TOOLS and x.get("scope") in ("always", "once") and len(setup) < 3:
+            setup.append({"tool": x["tool"], "scope": x["scope"], "at": x["at"] if isinstance(x.get("at"), int) else None})
+    return {"written_at": d.get("written_at") if isinstance(d.get("written_at"), int) else None, "folders": folders, "suggest": suggest, "setup": setup}
 
 
 def project_folders(status_dir: Path) -> dict:
@@ -681,7 +692,8 @@ def write_project_action(request_dir: Path, action: str, password: str, when: st
 def write_sessions_action(request_dir: Path, password: str, project: str, tool: str, now: float | None = None) -> str:
     """REQUEST_DIR/act-<nonce>.json: what bedrock-now may read of your sessions here, taken back — by a project's id (or
     all) and a tool (claude, claude-bedrock, both, or suggest: the folder names). Never a path. -> nonce"""
-    if not (project == "all" or (isinstance(project, str) and PROJECT_ID.fullmatch(project))) or tool not in ("claude", "claude-bedrock", "both", "suggest"):
+    if not (project == "all" or (isinstance(project, str) and PROJECT_ID.fullmatch(project))) or tool not in REVOKE_TOOLS \
+            or (tool.startswith("setup-") and project != "all"):
         raise ValueError("bad request")
     if len(password.encode("utf-8", "surrogatepass")) > MAX_AUTH:
         raise ValueError("password too long")
@@ -697,7 +709,7 @@ def write_sessions_action(request_dir: Path, password: str, project: str, tool: 
 def write_sessions_request(request_dir: Path, action: str, password: str, remote: bool, *, project: str | None = None,
                            tool: str = "both", scan: str | None = None, rows: list | None = None, session: str | None = None,
                            digest: str | None = None, thinking: str = "default", outputs: str = "out", keep: list | None = None,
-                           now: float | None = None) -> str:
+                           units: list | None = None, mode: str = "replace", conflict: str = "leave", now: float | None = None) -> str:
     """REQUEST_DIR/ses-<nonce>.json: what the Code page's Import sheet asks of the computer, for the helper — one line,
     its fields in a fixed order, every one checked here and again by the helper (lib/sessions.sh), never a path:
       sessions-scan     {…,"origin","project","tool"}               a look (asks on the computer's screen)
@@ -707,6 +719,11 @@ def write_sessions_request(request_dir: Path, action: str, password: str, remote
                                                                     a copy that keeps the findings named by keep, or
                                                                     brings its tool outputs ("outputs":"in", keep may
                                                                     be empty then) — from another device, only so
+      setup-scan        {…,"origin","project","tool"}               a look at your setup (project: a project's id or -)
+      setup-fetch       {…,"origin","scan","rows"}                  rows of that look opened
+      setup-copy        {…,"origin","units","digest","mode","conflict","keep"}
+                                                                    a copy of one unit (its items' keys joined by +) that
+                                                                    keeps what keep names
     origin: remote when the portal says the request came over remote access. -> nonce"""
     if action not in SESSIONS_REQUESTS:
         raise ValueError("action not allowed")
@@ -732,6 +749,22 @@ def write_sessions_request(request_dir: Path, action: str, password: str, remote
                 or not all(isinstance(k, str) and KEEP_RE.fullmatch(k) for k in keep) or len(set(keep)) != len(keep):
             raise ValueError("bad request")
         body.update({"project": project, "session": session, "digest": digest, "thinking": thinking, "outputs": outputs, "keep": ",".join(keep)})
+    elif action == "setup-scan":
+        if not (project == "-" or pid_ok) or tool not in SETUP_TOOLS + ("all",):
+            raise ValueError("bad request")
+        body.update({"project": project, "tool": tool})
+    elif action == "setup-fetch":
+        if not isinstance(scan, str) or not NONCE32.fullmatch(scan) or not isinstance(rows, list) or not 1 <= len(rows) <= 100 \
+                or not all(isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 5000 for n in rows) or len(set(rows)) != len(rows):
+            raise ValueError("bad request")
+        body.update({"scan": scan, "rows": ",".join(str(n) for n in rows)})
+    elif action == "setup-copy":
+        if not isinstance(units, list) or not 1 <= len(units) <= 4 or not all(isinstance(k, str) and SETUP_KEY.fullmatch(k) for k in units) or len(set(units)) != len(units) \
+                or not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest) or mode not in ("replace", "append") or conflict not in ("leave", "replace") \
+                or not isinstance(keep, list) or not 1 <= len(keep) <= SESSIONS_KEEP_MAX or not all(isinstance(k, str) and SETUP_KEEP.fullmatch(k) for k in keep) \
+                or len(set(keep)) != len(keep):
+            raise ValueError("bad request")
+        body.update({"units": "+".join(units), "digest": digest, "mode": mode, "conflict": conflict, "keep": ",".join(keep)})
     raw = json.dumps(body, separators=(",", ":")).encode("ascii")
     if len(raw) > SESSIONS_REQ_MAX:
         raise ValueError("too large")

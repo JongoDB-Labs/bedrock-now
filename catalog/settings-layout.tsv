@@ -13,7 +13,7 @@
 #            values: set and not off) — search and "Changed from default" show them anyway, saying so
 #   SUMMARY  one plain line (- for with rows)
 # Rows whose KEY starts with + are the page's own rows (no .env key): +devices, +models, +backups, +test, +check-aws,
-# +report, +restart, +git-hosts, +project-folders, +sessions-consent. Sections are shown in this order; rows in file order.
+# +report, +restart, +git-hosts, +project-folders, +sessions-consent, +bring-setup. Sections are shown in this order; rows in file order.
 
 @account	Account & security	Your password, the owner email, how long sign-ins last, and what LiteLLM keeps of your prompts.	README.md#the-portal-one-login-for-everything
 PORTAL_PASSWORD	account	main	-	The one password for the portal, Chat, Admin and Files; it also unlocks the Terminal and the Code page.
@@ -65,7 +65,8 @@ CODE_ALLOW_BYPASS	code	main	CODE_ENABLED	Offer Bypass permissions: Claude runs e
 CODE_AUTO_MODE	code	main	CODE_ENABLED	Offer Auto mode: a reviewer model approves routine actions and blocks risky ones (it costs extra).
 +git-hosts	code	main	CODE_ENABLED	Git hosts for the Code page's push, pull and clone: GitHub, GitLab or any git server — a sign-in, a token or an SSH key.
 +project-folders	code	main	CODE_ENABLED	Folders of this computer as Code page projects: mounted into its sandbox, read-write or read-only.
-+sessions-consent	code	main	CODE_ENABLED	What bedrock-now may read of your Claude Code and claude-bedrock sessions on this computer.
++sessions-consent	code	main	CODE_ENABLED	What bedrock-now may read of your Claude Code and claude-bedrock sessions and setup on this computer.
++bring-setup	code	main	CODE_ENABLED	Your Claude Code setup and Git name and email from this computer, copied into the Code page's sandbox.
 TERMINAL_ENABLED	code	main	-	The Terminal tab: a shell with Claude Code in a sandbox container that sees one folder of yours.
 TERMINAL_WORKSPACE	code	with	TERMINAL_ENABLED	-
 TERMINAL_EGRESS	code	main	TERMINAL_ENABLED	The sandbox's internet: public addresses only (the default), with this computer's services too, or off.

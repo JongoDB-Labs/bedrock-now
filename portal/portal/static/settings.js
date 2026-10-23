@@ -98,7 +98,7 @@
   function fallbackLayout() {
     const rows = Object.keys(keys).map((k) => (FALLBACK_WITH[k] && keys[FALLBACK_WITH[k]]
       ? { key: k, section: "all", place: "with", parent: FALLBACK_WITH[k], summary: "" } : { key: k, section: "all", place: "main", parent: "", summary: "" }));
-    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
+    for (const own of ["+devices", "+models", "+backups", "+test", "+check-aws", "+report", "+restart", "+git-hosts", "+project-folders", "+sessions-consent", "+bring-setup"]) rows.push({ key: own, section: "all", place: "main", parent: "", summary: "" });
     return { sections: [{ id: "all", title: "All settings", lede: "The page's layout (catalog/settings-layout.tsv) could not be read: every setting in one list.", doc: "" }], rows };
   }
 
@@ -420,7 +420,7 @@
   function rowFor(r) {
     const own = { "+devices": sessionsRow, "+models": modelsRow, "+backups": backupRow, "+test": actionRow, "+check-aws": actionRow,
       "+report": actionRow, "+restart": restartRow, "+git-hosts": gitHostsRow, "+project-folders": projectFoldersRow,
-      "+sessions-consent": sessionsConsentRow };
+      "+sessions-consent": sessionsConsentRow, "+bring-setup": bringSetupRow };
     if (r.key.startsWith("+")) return own[r.key] ? own[r.key](r) : null;
     const k = keys[r.key];
     if (!k) return null;
@@ -1214,7 +1214,9 @@
   // project's id, through the update helper. Names and folders are yours (folders.tsv); nothing of a session is here.
   function sessionsConsentRow(r) {
     const rw = ownFrame(r, "What bedrock-now may read on this computer");
-    const sc = data.sessions || { folders: [], suggest: [] };
+    const sc = data.sessions || { folders: [], suggest: [], setup: [] };
+    const setup = sc.setup || [];
+    const SETUP = { claude: "your Claude Code setup (~/.claude)", "claude-bedrock": "claude-bedrock's setup (~/.claude-bedrock)", git: "your Git name and email (~/.gitconfig)" };
     const can = canChange() && (data.helper.sessions || []).includes("sessions-revoke");
     const TOOL = { claude: "Claude Code (~/.claude)", "claude-bedrock": "claude-bedrock (~/.claude-bedrock)" };
     const take = (project, tool, what) => askPassword({ kind: "sessions", action: "sessions-revoke", project, tool },
@@ -1239,7 +1241,19 @@
         el("span", { class: "set-project-name", text: TOOL[x.tool] }), " ", el("span", { class: "note", text: "the names of the folders it keeps sessions for (Suggested projects)" }), " ",
         el("span", { class: "badge", text: x.scope === "always" ? "always" : "once" }), " ", el("span", { class: "set-project-actions" }, b)));
     }
-    if (!sc.folders.length && !sc.suggest.length) list.append(el("li", { class: "note", text: "Nothing: the Code page asks first, in a dialog on this computer's screen (or ./stack sessions import in a terminal there)." }));
+    // Bring your setup: its own consent, per tool (lib/sessions_config.sh)
+    for (const x of setup) {
+      const b = el("button", { type: "button", class: "action", text: "Take back", "data-act": "sessions-revoke" });
+      b.disabled = !can;
+      b.addEventListener("click", () => askPassword({ kind: "sessions", action: "sessions-revoke", project: "all", tool: `setup-${x.tool}` },
+        `Take back what bedrock-now may read: ${SETUP[x.tool]}?`,
+        "bedrock-now then reads none of it on this computer until you allow it again there; what the Code page's container read of it (the list, items waiting to be copied) is forgotten. What was copied into the sandbox stays there.",
+        "Take back"));
+      list.append(el("li", { class: "set-project", "data-tool": `setup-${x.tool}` },
+        el("span", { class: "set-project-name", text: "Bring your setup" }), " ", el("span", { class: "note", text: SETUP[x.tool] }), " ",
+        el("span", { class: "badge", text: x.scope === "always" ? "always" : "once (within the hour)" }), " ", el("span", { class: "set-project-actions" }, b)));
+    }
+    if (!sc.folders.length && !sc.suggest.length && !setup.length) list.append(el("li", { class: "note", text: "Nothing: the Code page asks first, in a dialog on this computer's screen (or ./stack sessions import in a terminal there)." }));
     rw._main.append(list);
     if (sc.folders.length || sc.suggest.length) {
       const all = el("button", { type: "button", class: "action", text: "Take back all", id: "set-sessions-revoke-all" });
@@ -1247,12 +1261,30 @@
       all.addEventListener("click", () => take("all", "both", "everything, for every folder"));
       rw._actions.append(all);
     }
-    rw._main.append(el("p", { class: "note set-extra", text: "Only on the computer running bedrock-now is anything allowed: the Code page asks in a dialog on its screen (Allow once, or Always for this folder). Nothing is ever written back to ~/.claude or ~/.claude-bedrock; logins, settings and plugins there are never read." }));
-    if (!can && (sc.folders.length || sc.suggest.length)) {
+    rw._main.append(el("p", { class: "note set-extra", text: "Only on the computer running bedrock-now is anything allowed: the Code page asks in a dialog on its screen (Allow once, or Always). Nothing is ever written back to ~/.claude, ~/.claude-bedrock or ~/.gitconfig; logins, credentials and env settings there are never read — your setup (memory, skills, MCP servers, plugins …) only under Bring your setup's own consent, above." }));
+    if (!can && (sc.folders.length || sc.suggest.length || setup.length)) {
       rw._main.append(el("p", { class: "note set-extra", text: !data.helper.running ? "Taking back from here needs the update helper (./stack helper install)." : "Taking back from here needs a newer update helper: ./stack helper install refreshes it." }));
     }
     rw._main.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: "In a terminal on this computer: " }), el("code", { text: "./stack sessions consent --revoke-all" }), " ",
       copyButton("./stack sessions consent --revoke-all")));
+    return rw;
+  }
+
+  // Bring your setup: items of your Claude Code setup and your Git name and email, from this computer into the Code page's
+  // sandbox — the Code page's sheet (?setup=1, or the Code tab's own); read only on this computer, after a dialog on its
+  // screen (lib/sessions_config.sh)
+  function bringSetupRow(r) {
+    const rw = ownFrame(r, "Bring your setup");
+    rw._main.append(el("p", { class: "note set-extra",
+      text: "Your CLAUDE.md, skills, agents, commands, output styles, key bindings, settings.json's permissions, status line, output style and hooks, MCP servers and plugins — and your Git name and email — copied into the sandbox, each your choice, after you see what it brings: its cost in every request on Bedrock, the programs and rules it brings, its possible secrets (left out unless you keep them). Never env, logins or credentials; nothing is written back. Read only on this computer, after a dialog on its screen." }));
+    const open = el("button", { type: "button", class: "action", text: "Bring your setup…", id: "set-bring-setup" });
+    open.addEventListener("click", () => {
+      if (window.bnCode && window.bnCode.openSetup) window.bnCode.openSetup();
+      else { try { const u = new URL(appUrl("code")); u.searchParams.set("setup", "1"); window.open(u.href, "_blank", "noopener"); } catch (_) { /* no Code page */ } }
+    });
+    rw._actions.append(open);
+    rw._main.append(el("p", { class: "set-cli" }, el("span", { class: "note", text: "Or in a terminal on this computer: " }), el("code", { text: "./stack sessions config import" }), " ",
+      copyButton("./stack sessions config import")));
     return rw;
   }
 

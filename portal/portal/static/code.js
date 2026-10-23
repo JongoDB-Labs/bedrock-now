@@ -206,6 +206,8 @@
     // Clone dialog (the walkthrough; empty: nothing is cloned by a link)
     openGitHosts: () => openGit("hosts"),
     openClone: () => openGit("clone"),
+    // Settings › Claude Code › Bring your setup: the Code page's sheet (it reads nothing by itself)
+    openSetup: () => openLink({ setup: "1" }),
     // how many Git hosts the Code page last said are connected, or null (it has not said: not loaded in this browser)
     gitHosts: () => (reported && Number.isInteger(reported.hosts) ? reported.hosts : null),
     // how many of its sessions have a turn running now (Settings › Claude Code › Project folders: what a restart ends),

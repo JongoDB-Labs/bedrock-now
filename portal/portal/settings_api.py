@@ -364,7 +364,8 @@ def routes(ctx: Ctx) -> list[Route]:
         act, project, tool = data.get("action"), data.get("project"), data.get("tool")
         if act not in st.SESSIONS_ACTIONS:
             return err(400, "unknown action")
-        if not (project == "all" or (isinstance(project, str) and st.PROJECT_ID.fullmatch(project))) or tool not in ("claude", "claude-bedrock", "both", "suggest"):
+        if not (project == "all" or (isinstance(project, str) and st.PROJECT_ID.fullmatch(project))) or tool not in st.REVOKE_TOOLS \
+                or (isinstance(tool, str) and tool.startswith("setup-") and project != "all"):
             return err(400, "bad request")
         if (busy := helper_ready()) is not None:
             return busy
