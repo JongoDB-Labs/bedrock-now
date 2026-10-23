@@ -72,13 +72,14 @@ const LABEL = cls('A-Z0-9 ');
 // markers(text, open) -> [{at, end}] of the BEGIN (open) or END markers, in order
 function markers(text, open) {
   const out = [];
-  const forms = open ? [['-----BEGIN ', '-----', /PRIVATE KEY(?: BLOCK)?$/], ['---- BEGIN SSH2 ', '----', /PRIVATE KEY $/]]
-    : [['-----END ', '-----', /PRIVATE KEY(?: BLOCK)?$/], ['---- END SSH2 ', '----', /PRIVATE KEY $/]];
-  for (const [head, tail, ends] of forms) {
+  // (pem: a PEM form — its body holds no quote mark; SSH2's headers may: Comment: "…")
+  const forms = open ? [['-----BEGIN ', '-----', /PRIVATE KEY(?: BLOCK)?$/, true], ['---- BEGIN SSH2 ', '----', /PRIVATE KEY $/, false]]
+    : [['-----END ', '-----', /PRIVATE KEY(?: BLOCK)?$/, true], ['---- END SSH2 ', '----', /PRIVATE KEY $/, false]];
+  for (const [head, tail, ends, pem] of forms) {
     for (let at = text.indexOf(head); at >= 0; at = text.indexOf(head, at + 1)) {
       const l = at + head.length, e = runEnd(text, l, LABEL);
       // (the label's last 18 characters are all the pattern looks at: bounded)
-      if (text.startsWith(tail, e) && ends.test(text.slice(Math.max(l, e - 18), e))) out.push({ at, end: e + tail.length, pem: head[1] === '-' });
+      if (text.startsWith(tail, e) && ends.test(text.slice(Math.max(l, e - 18), e))) out.push({ at, end: e + tail.length, pem });
     }
   }
   return out.length > 1 ? out.sort((x, y) => x.at - y.at) : out;
@@ -104,12 +105,16 @@ function pemBlocks(text) {
     if (j < ends.length) j++;
   }
   if (after < text.length) for (; j < ends.length; j++) if (ends[j] > after) { out.push({ start: after, end: ends[j] }); after = ends[j]; }
-  // PuTTY: its header to the end of the Private-MAC line after it (none: to the end of the text)
+  // PuTTY: its header to the end of the Private-MAC after it — its hex digits (in JSON-escaped text there is no line
+  // end to go by), else its line (none: to the end of the text)
   const putty = [];
   for (let at = text.indexOf('PuTTY-User-Key-File-'); at >= 0;) {
     const mac = text.indexOf('Private-MAC:', at);
     let end = text.length;
-    if (mac >= 0) { const nl = text.indexOf('\n', mac); end = nl < 0 ? text.length : nl; }
+    if (mac >= 0) {
+      const h = skipBlanks(text, mac + 12), he = runEnd(text, h, HEX);
+      if (he > h) end = he; else { const nl = text.indexOf('\n', mac); end = nl < 0 ? text.length : nl; }
+    }
     putty.push({ start: at, end });
     if (end >= text.length) break;
     at = text.indexOf('PuTTY-User-Key-File-', end);
@@ -146,20 +151,56 @@ function jwts(text) {
 
 // --- names that say a value is a secret: in a JSON key, a NAME=value item, an assignment in text (anywhere in the name,
 // any case: db_password, X-Api-Key, SecretAccessKey, GH_TOKEN, sessionToken, Set-Cookie) ---
-// (any case: each letter as [xX]; "pass" alone only as a whole segment of a name — db_pass, dbPass, DB_PASS, --pass —
-// never inside a word: bypass, compass, passport, passenger; pwd only after _ or - at a name's end — MYSQL_PWD, db-pwd,
-// PGPWD — never PWD or OLDPWD, a shell's working folder)
+// (any case: each letter as [xX]; "pass" and "pwd" alone where a word of the name ends with them — dbpass, smtp_pass,
+// DBPASS, MyPass, --pass, MYSQL_PWD, PGPWD — never where a longer word goes on, passport; and the known words that end
+// with them are left out by name, checked after the match: bypass, compass, trespass …, a shell's PWD and OLDPWD)
 const ci = (s) => s.replace(/[a-z]/g, (c) => `[${c}${c.toUpperCase()}]`);
 export const SECRET_NAME = new RegExp([
-  `${ci('pass')}(?:${ci('word')}|${ci('wd')}|${ci('phrase')})`, '(?<![A-Za-z])pass(?![a-z])', '(?<![A-Z])Pass(?![a-z])', '(?<![A-Za-z])PASS(?![A-Z])',
-  ...['secret', 'token', 'api[_-]?key', 'access[_-]?key', 'private[_-]?key', 'credential', 'authorization', 'account[_-]?key', 'session[_-]?token', 'cookie', 'pgpwd'].map(ci),
-  `[_-]${ci('pwd')}(?![A-Za-z0-9])`,
+  `${ci('pass')}(?:${ci('word')}|${ci('wd')}|${ci('phrase')})`, 'pass(?![a-z])', 'Pass(?![a-z])', 'PASS(?![A-Z])', 'pwd(?![a-z])', 'Pwd(?![a-z])', 'PWD(?![A-Z])',
+  ...['secret', 'token', 'api[_-]?key', 'access[_-]?key', 'private[_-]?key', 'credential', 'authorization', 'account[_-]?key', 'session[_-]?token', 'cookie'].map(ci),
 ].join('|'));
+const SECRET_NAMES = new RegExp(SECRET_NAME.source, 'g');
+// words that end with pass (or hold it before another word: passThrough), and names that are pwd: no secret's name
+const NOT_PASS = new Set(['bypass', 'compass', 'encompass', 'trespass', 'surpass', 'overpass', 'underpass', 'impass', 'passport', 'passenger', 'passive',
+  'passage', 'passthrough', 'passthru', 'passable', 'passer', 'passerby', 'passover', 'passing', 'passion', 'passcode']);
+const NOT_PWD = new Set(['pwd', 'oldpwd']);
+const isLetter = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+const isUpper = (c) => c >= 65 && c <= 90, isLower = (c) => c >= 97 && c <= 122;
+// knownWord(text, at, len) -> whether this "pass" or "pwd" (at, its length) is one of the words above: the word it is in
+// (its letters, split where a lower case letter meets an upper case one: bypassMode → bypass), or that word with the
+// next one (passThrough); for pwd, the whole name (PWD, OLDPWD — not DB_PWD)
+function knownWord(text, at, len) {
+  if (len !== 4 && len !== 3) return false;
+  const lower = text.slice(at, at + len).toLowerCase();
+  if (lower !== 'pass' && lower !== 'pwd') return false;
+  if (lower === 'pwd') {
+    let a = at, b = at + len;
+    while (a > 0 && isId(text.charCodeAt(a - 1))) a--;
+    while (b < text.length && isId(text.charCodeAt(b))) b++;
+    return NOT_PWD.has(text.slice(a, b).replace(/^[-_.$]+/, '').toLowerCase());
+  }
+  let a = at, b = at + len;
+  while (a > 0 && isLetter(text.charCodeAt(a - 1)) && !(isLower(text.charCodeAt(a - 1)) && isUpper(text.charCodeAt(a)))) a--;
+  while (b < text.length && isLetter(text.charCodeAt(b)) && !(isLower(text.charCodeAt(b - 1)) && isUpper(text.charCodeAt(b)))) b++;
+  const word = text.slice(a, b).toLowerCase();
+  if (NOT_PASS.has(word)) return true;
+  // (the next word glued to it: passThrough, PassPort)
+  let c = b;
+  while (c < text.length && isLetter(text.charCodeAt(c)) && !(c > b && isLower(text.charCodeAt(c - 1)) && isUpper(text.charCodeAt(c)))) c++;
+  return c > b && NOT_PASS.has((word + text.slice(b, c)).toLowerCase());
+}
 // … and, as a whole name only, auth (docker's config.json, an .npmrc's _auth): "author" is no secret's name
 const AUTH_NAME = /^-*_?auth$/i;
 // (a redaction in a key is no name: [REDACTED:github-token] does not make its value a secret)
 // (a name of any length: a long one is looked through once, as any text)
-export const isSecretName = (k) => typeof k === 'string' && (SECRET_NAME.test(k.replace(/\[REDACTED:[a-z-]+\]/g, '')) || AUTH_NAME.test(k));
+export const isSecretName = (k) => {
+  if (typeof k !== 'string') return false;
+  if (AUTH_NAME.test(k)) return true;
+  const t = k.replace(/\[REDACTED:[a-z-]+\]/g, '');
+  SECRET_NAMES.lastIndex = 0;
+  for (let m; (m = SECRET_NAMES.exec(t)) !== null;) if (!knownWord(t, m.index, m[0].length)) return true;
+  return false;
+};
 const KEYWORD = new RegExp(`${SECRET_NAME.source}|(?<![A-Za-z0-9])_?${ci('auth')}(?![A-Za-z0-9_-])`, 'g');
 // headers whose whole value (to the end of the line or the closing quote) is the secret
 const HEADER = /^(?:proxy-)?authorization$|^(?:set-)?cookie$/i;
@@ -306,7 +347,7 @@ function assignments(text) {
     const ph = placeholder(val) || (core !== val && placeholder(core));
     // (a value holding = or :, another assignment or a URL, or a space, is one whatever its entropy: what is not a
     // finding holds no other name's value — so no value is ever read again inside one that is not redacted)
-    const ok = kind === 'assignment' ? val.length >= ASSIGN_MIN && !ph && (entropy(val) >= ASSIGN_ENTROPY || /[=:\s]/.test(val)) : val.length >= HEADER_MIN && !ph;
+    const ok = kind === 'assignment' ? val.length >= ASSIGN_MIN && !ph && (/[=:\s]/.test(val) || entropy(val) >= ASSIGN_ENTROPY) : val.length >= HEADER_MIN && !ph;
     if (ok) out.push({ kind, start, end });
     if (!ok && ph) covered(cover.p, start, end);
     return ok;
@@ -344,6 +385,8 @@ function assignments(text) {
     while (s > 0 && isId(text.charCodeAt(s - 1))) s--;
     while (e < n && isId(text.charCodeAt(e))) e++;
     KEYWORD.lastIndex = e;
+    // (bypass, compass, PWD …: not a secret's name — unless the name holds another: bypass_token)
+    if (knownWord(text, m.index, m[0].length) && !isSecretName(text.slice(s, e))) continue;
     const tag = s > 0 && text[s - 1] === '<' && text[e] === '>';
     if (inside(cover.p, m.index) && !tag) continue;
     // (a redaction already made, [REDACTED:github-token]: its kind is no name — only a whole one, its ] there)

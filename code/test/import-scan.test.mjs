@@ -8,6 +8,10 @@ import { scan, scanEntries, redactEntries, processEntries, redactText, entropy, 
 import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewriteString, rewritePaths, rewrites, outsidePaths } from '../server/transcript.mjs';
 import { session, fake, rand, uuid } from './transcripts.mjs';
 
+// fastest(fn) -> the shorter of two runs, in ms: what the scan costs, not a pause of the collector or a busy machine
+// (a scan that is not linear takes minutes on these inputs, not a second)
+const fastest = (fn) => { let best = Infinity; for (let i = 0; i < 2; i++) { const t0 = Date.now(); fn(); best = Math.min(best, Date.now() - t0); } return best; };
+
 test('every kind of secret is found, said in plain words with its length (a token\'s public start only) — never whole', () => {
   const cases = {
     'aws-key-id': () => `aws_access_key_id = ${fake.awsKeyId()}`,
@@ -777,9 +781,8 @@ test('two readings stay linear: apostrophes, quotes with and without a match, gl
       ['=" quotes', fill('password=', '="')], ['double quotes, many lines', fill('', 'sshpass -p "a\n')], ['types', fill('', 'password: T = ')],
       ['markers', fill('', '[REDACTED:jwt]@')],
     ]) {
-      const t0 = Date.now();
-      scan(text);
-      assert.ok(Date.now() - t0 < 1000, `${label}, ${size >> 20} MiB: ${Date.now() - t0} ms`);
+      const ms = fastest(() => scan(text));
+      assert.ok(ms < 1000, `${label}, ${size >> 20} MiB: ${ms} ms`);
     }
   }
 });
@@ -885,8 +888,44 @@ test('the new finders stay linear on 8 MiB: name/value fields, quotes and braces
     ['- items', fill('', '\n- name: DB_PASSWORD\n  value: ')], ['<add', fill('', '<add key="password" value="')], ['comparisons', fill('', 'password == "')],
     ['redis-cli -a', fill('redis-cli', ' -a')], ['smbclient -U', fill('smbclient', ' -U a%')], ['escapes before tokens', fill('', '\\nghp_')], ['\\u escapes', fill('', '\\u0041sk-')],
   ]) {
-    const t0 = Date.now();
-    scan(text);
-    assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
+    const ms = fastest(() => scan(text));
+    assert.ok(ms < 1000, `${label}: ${ms} ms`);
+  }
+});
+
+test('every private key form, with and without its END, as plain text and inside a JSON string', () => {
+  const PK = ['PRIVATE', 'KEY'].join(' ');
+  const body = () => `${rand(64, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+')}\n${rand(40, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/+')}`;
+  const forms = [
+    ...['RSA', 'EC', 'OPENSSH', 'ENCRYPTED', 'DSA', ''].map((t) => (b, end) => `-----BEGIN ${t ? `${t} ` : ''}${PK}-----\n${b}${end ? `\n-----END ${t ? `${t} ` : ''}${PK}-----` : ''}`),
+    (b, end) => `---- BEGIN SSH2 ENCRYPTED ${PK} ----\nComment: "rsa-key-2026"\n${b}${end ? `\n---- END SSH2 ENCRYPTED ${PK} ----` : ''}`,
+    (b, end) => `PuTTY-User-Key-File-3: ssh-rsa\nEncryption: none\nComment: "rsa-key"\nPublic-Lines: 1\nAAAAB3Nza\nPrivate-Lines: 1\n${b}${end ? `\nPrivate-MAC: ${rand(64, '0123456789abcdef')}` : ''}`,
+  ];
+  for (const [i, form] of forms.entries()) {
+    for (const end of [true, false]) {
+      const b = body(), tail = `TAIL${rand(10)}`;
+      // (plain text: with END the key only; without, to the end of the text)
+      const plain = redactText(`before\n${form(b, end)}\nafter ${tail}`);
+      for (const line of b.split('\n')) assert.ok(!plain.includes(line), `form ${i}, END ${end}, plain: ${plain.slice(0, 120)}`);
+      assert.equal(plain.includes(tail), end, `form ${i}, END ${end}, plain: what follows`);
+      // (inside a JSON string: with END the key only; a PEM key without END to the string's closing quote; SSH2 and
+      // PuTTY, whose headers hold quote marks, to the end of the text)
+      const json = JSON.stringify({ key: form(b, end), note: `keep ${tail}` });
+      const out = redactText(json);
+      for (const line of b.split('\n')) assert.ok(!out.includes(line), `form ${i}, END ${end}, JSON: ${out.slice(0, 160)}`);
+      assert.equal(out.includes(tail), end || i < 6, `form ${i}, END ${end}, JSON: what follows the string`);
+    }
+  }
+});
+
+test('"pass" and "pwd" names: wherever a word of the name ends with them, but the known words that do', () => {
+  const x = `Zq${rand(14)}`;
+  for (const t of [`dbpass=${x}`, `DBPASS=${x}`, `smtp_pass: ${x}`, `MyPass=${x}`, `SMTP_PASS=${x}`, `export REDISPASS=${x}`, `dbpwd: ${x}`, `MYSQLPWD=${x}`, `bypass_token=${x}`]) {
+    assert.ok(!redactText(t).includes(x), t);
+  }
+  // (short values: a long random one after NAME= is an .env line's finding whatever the name)
+  const y = `Zq${rand(8)}`;
+  for (const t of [`bypass: ${y}`, `passport_id: ${y}`, `surpassedThreshold=${y}`, `compass=${y}`, `BYPASS=${y}`, `bypassMode: ${y}`, `passThrough=${y}`, `trespass: ${y}`, `cd $PWD ${y}`, `OLDPWD=x${y}`]) {
+    assert.ok(redactText(t).includes(y), t);
   }
 });
