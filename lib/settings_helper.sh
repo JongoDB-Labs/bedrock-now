@@ -471,6 +471,9 @@ helper_run_diag() {
     JOB_RESULT=failed
     case "$action" in
       test) msg="$(grep -c '^  FAIL' "$logf" | tr -d ' ') check(s) failed: $(grep '^  FAIL' "$logf" | head -n 2 | sed 's/^  FAIL  //' | tr '\n' ';' | sed 's/;$//')" ;;
+      # (this side's words only: the log holds the sandbox's output too, which never becomes the job's message)
+      subscriptions-check) msg="The sandbox's AI tools were not checked (exit $rc)" ;;
+      subscriptions-signout) msg="$(subs_name "$mode")'s sign-out did not finish (exit $rc)" ;;
       *) msg="$(_last_error "$logf")" ;;
     esac
     helper_write_status failed "$msg (full log: .state/helper/last-diag.log)"; return 0

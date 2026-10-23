@@ -1153,6 +1153,14 @@ elif [ "$SUBSCRIPTIONS" = 1 ]; then
     tmux -L e2e-gemini capture-pane -p -J -t g; tmux -L e2e-gemini kill-server' 2>/dev/null)"
   if printf '%s' "$out" | grep -q 'accounts.google.com/o/oauth2'; then record subscriptions signin-gemini PASS "$(( $(now) - t0 ))" "its own sign-in (Login with Google, NO_BROWSER) printed its link; ended there, never completed"
   else record subscriptions signin-gemini FAIL "$(( $(now) - t0 ))" "no Google link in: $(printf '%s' "$out" | tr '\n' ' ' | tail -c 300)"; fi
+  # what the tools run is the image's, root's alone: Copilot's own package unpacked at build (nothing of it in the home
+  # after its sign-in ran), Cursor without a compile cache there, every file of theirs root's and not writable by others
+  t0="$(now)"
+  home_code="$(docker exec "$tc" sh -c 'ls -d ~/.cache/copilot ~/.cache/cursor-compile-cache 2>/dev/null' | tr '\n' ' ')"
+  not_root="$(docker exec "$tc" sh -c 'find /usr/local/lib/bn-tools \( ! -user 0 -o -perm -g+w -o -perm -o+w \) -print 2>/dev/null | head -n 3')"
+  if [ -z "$home_code$not_root" ] && docker exec "$tc" test -e /usr/local/lib/bn-tools/copilot/cache/pkg; then
+    record subscriptions tools-code-in-image PASS "$(( $(now) - t0 ))" "the tools' code is the image's (root's, read-only); none unpacked into the home"
+  else record subscriptions tools-code-in-image FAIL "$(( $(now) - t0 ))" "in the home: ${home_code:-none}; not root's: ${not_root:-none}"; fi
   # still not signed in after the ended attempts
   states="$(docker exec "$tc" subscriptions status --tsv 2>/dev/null | awk -F'\t' '$4 == "yes" { printf "%s ", $1 }')"
   if [ -z "$states" ]; then record subscriptions still-not-signed-in PASS 0 "no tool signed in after its sign-in was ended"

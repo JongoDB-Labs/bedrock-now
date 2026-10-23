@@ -13,14 +13,21 @@ _stubs() {
   set_env_batch TERMINAL_ENABLED true
   stack_lock() { :; }
   stack_unlock() { :; }
-  export RUNNING=1 TSV=''
+  export RUNNING=1 TSV='' FOREVER=0 LONG=0
+  SX="exec -T -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   dc() {
     echo "dc $*" >> "$TMP/dc"
     case "$*" in
       "ps -q --status running terminal") [ "$RUNNING" != 1 ] || echo t3rm ;;
-      "exec -T -e BN_SUBS_TIMEOUT=15 terminal subscriptions status --tsv") printf '%s' "$TSV" ;;
-      "exec -T terminal subscriptions logout "*) echo "logged out" ;;
-      "exec -T terminal subscriptions login "*) printf '\033]0;owned\007\033]52;c;ZXZpbA==\007Open \033[1mhttps://auth.openai.com/codex/device\033[0m\r\nCode: ABCD-1234\n\033[?1049h\302\233x\n'; return 3 ;;
+      "$SX -e BN_SUBS_TIMEOUT=15 terminal /usr/local/bin/subscriptions status --tsv")
+        # (a sandbox that never stops printing: read up to the cap only)
+        if [ "$FOREVER" = 1 ]; then printf 'codex\tyes\t0.163.0\tyes\tchatgpt\tcommand\n'; yes 'more more more'; else printf '%s' "$TSV"; fi ;;
+      "$SX terminal /usr/local/bin/subscriptions logout "*) echo "logged out" ;;
+      "$SX terminal /usr/local/bin/subscriptions login "*)
+        # (what reaches its stdin: this terminal's only for the two that ask something back)
+        if IFS= read -r typed; then echo "STDIN: $typed" >> "$TMP/dc"; fi
+        if [ "$LONG" = 1 ]; then local i=0; while [ "$i" -lt 600 ]; do printf 'xx %0900d\n' "$i"; i=$((i + 1)); done; return 0; fi
+        printf '\033]0;owned\007\033]52;c;ZXZpbA==\007Open \033[1mhttps://auth.openai.com/codex/device\033[0m\r\nCode: ABCD-1234\n\033[?1049h\302\233x\n'; return 3 ;;
     esac
     return 0
   }
@@ -48,6 +55,8 @@ EOF
 EOF
   for t in claude-sub codex cursor-agent timeout; do chmod +x "$b/$t"; done
   export PATH="$b:$PATH" BN_SUBS_BIN="$b" BN_TOOLS_DIR="$TMP/tools" BN_SUBS_TIMEOUT=5
+  # (the script's own PATH for status: the sandbox's system folders there; this computer's here, with the stubs)
+  export BN_SUBS_PATH="$PATH"
 }
 
 test_what_the_sandbox_says_is_kept_only_as_words() {
@@ -61,9 +70,13 @@ test_what_the_sandbox_says_is_kept_only_as_words() {
     "$(printf 'grok\tyes\t1.0.67\tmaybe\txai\tfile')" \
     "$(printf 'copilot\tyes\t1.0.103\tunknown\t-\tnone\textra')" \
     "$(printf 'evil\tyes\t1\tyes\t-\tnone')" \
-    "$(printf 'copilot\tno\t-\tyes\tgoogle\tnone')" | subs_parse)"
+    "$(printf 'copilot\tno\t-\tyes\tgoogle\tnone')" \
+    "$(printf 'grok\tyes\t1.0.67\tyes\tchatgpt\tfile')" \
+    "$(printf 'cursor\tyes\t2026.10.22-27dcf5f\tyes\tcursor\tfile')" \
+    "$(printf 'copilot\tno\t-\tyes\t-\tnone')" | subs_parse)"
+  # (a kind another tool would say — Google for Copilot, ChatGPT for Grok — or another way of telling: not taken)
   assert_eq "$out" '{"id":"codex","installed":true,"version":"0.163.0","signed_in":"yes","kind":"chatgpt","how":"command"}
-{"id":"copilot","installed":false,"version":"","signed_in":"no","kind":"google","how":"none"}'
+{"id":"copilot","installed":false,"version":"","signed_in":"no","kind":"","how":"none"}'
 }
 
 test_the_status_file_says_what_passed_and_whether_the_sandbox_answered() {
@@ -86,6 +99,12 @@ test_the_status_file_says_what_passed_and_whether_the_sandbox_answered() {
   set_env TERMINAL_ENABLED false
   if subs_refresh; then return 1; fi
   assert_contains "$(cat "$f")" '"terminal":"off"'
+  # a sandbox that prints forever: its first 16 KiB read, inside the deadline — never the whole of it
+  set_env TERMINAL_ENABLED true; export RUNNING=1 FOREVER=1
+  SUBS_DEADLINE_S=20 subs_refresh || true
+  assert_contains "$(cat "$f")" '"terminal":"running","tools":[{"id":"codex","installed":true'
+  # by its path, with the system's PATH: never a program of that name the sandbox's home put first
+  assert_contains "$(cat "$TMP/dc")" "dc exec -T -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin -e BN_SUBS_TIMEOUT=15 terminal /usr/local/bin/subscriptions status --tsv"
 }
 
 test_stack_subscriptions_prints_its_own_words_and_signs_out_by_tool() {
@@ -97,7 +116,7 @@ test_stack_subscriptions_prints_its_own_words_and_signs_out_by_tool() {
   assert_contains "$out" "not known here (/user in Copilot says)"
   assert_contains "$out" "Grok Build                       -                    not in the sandbox (TERMINAL_AI_TOOLS)"
   cmd_subscriptions logout codex >/dev/null
-  assert_contains "$(cat "$TMP/dc")" "dc exec -T terminal subscriptions logout codex"
+  assert_contains "$(cat "$TMP/dc")" "dc exec -T -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin terminal /usr/local/bin/subscriptions logout codex"
   # a tool that signs out inside itself, an unknown one, a path: refused before the sandbox is asked
   : > "$TMP/dc"
   out="$( (cmd_subscriptions logout copilot) 2>&1)" && return 1
@@ -110,12 +129,26 @@ test_stack_subscriptions_prints_its_own_words_and_signs_out_by_tool() {
 test_a_sign_in_here_shows_the_sandboxs_words_as_plain_text_only() {
   _stubs
   local out rc=0
-  out="$(cmd_subscriptions login codex 2>&1)" || rc=$?
+  # (codex: nothing of this terminal's reaches the sandbox — what is typed here stays here)
+  out="$(printf 'typed\n' | cmd_subscriptions login codex 2>&1)" || rc=$?
   assert_eq "$rc" 3
-  assert_eq "$out" "Open https://auth.openai.com/codex/device
-Code: ABCD-1234
-x"
+  assert_eq "$out" "sandbox│ Open https://auth.openai.com/codex/device
+sandbox│ Code: ABCD-1234
+sandbox│ x"
   ! printf '%s' "$out" | LC_ALL=C grep -q "$(printf '[\001-\010\013-\037\177]')" || { echo "a control reached this terminal" >&2; return 1; }
+  assert_not_contains "$(cat "$TMP/dc")" "STDIN:"
+  # Claude Code reads the code you paste (said first), and only it and Copilot get this terminal's input
+  : > "$TMP/dc"
+  out="$(printf 'the-code\n' | cmd_subscriptions login claude 2>&1)" || true
+  assert_contains "$out" "(What you type here now goes to Claude Code (your Claude plan)'s own sign-in in the sandbox, and nowhere else.)"
+  assert_contains "$(cat "$TMP/dc")" "STDIN: the-code"
+  # long lines cut, and after 400 lines no more is read
+  export LONG=1
+  out="$(cmd_subscriptions login cursor 2>&1)" || true
+  assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" 401
+  assert_eq "$(printf '%s\n' "$out" | head -n 1 | sed 's/^sandbox│ //' | LC_ALL=C awk '{ print length($0) }')" 300
+  assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "sandbox│ (more not shown)"
+  export LONG=0
   # Gemini CLI signs in inside its own screen: said, the sandbox not asked
   : > "$TMP/dc"
   out="$( (cmd_subscriptions login gemini) 2>&1)" && return 1
@@ -197,8 +230,16 @@ EOF
   assert_contains "$out" "DISABLE_AUTOUPDATER=1"
   assert_contains "$out" "HTTPS_PROXY=http://egress:3128"
   assert_contains "$out" "MY_OWN=kept"
-  assert_contains "$out" "ARGS: --mcp-config=$HOME/.config/bedrock-now/mcp.json --settings={\"disableAutoMode\":\"disable\"} hello"
+  # the stack's shared MCP server: not given (Chat's knowledge bases, the shared bucket would reach your plan) …
+  assert_contains "$out" "ARGS: --settings={\"disableAutoMode\":\"disable\"} hello"
+  assert_not_contains "$out" "mcp-config"
   [ -d "$HOME/.claude-subscription" ] || return 1
+  # … unless you ask for it in that shell, said each time
+  out="$(CLAUDE_SUB_STACK_MCP=1 BN_CLAUDE_BIN="$stub" bash "$STACK_DIR/terminal/bin/claude-sub" hello 2>&1)"
+  assert_contains "$out" "ARGS: --mcp-config=$HOME/.config/bedrock-now/mcp.json --settings={\"disableAutoMode\":\"disable\"} hello"
+  assert_contains "$out" "claude-sub: CLAUDE_SUB_STACK_MCP=1 — the stack's shared MCP server"
+  # what it writes (its folder made here) is private
+  assert_eq "$(stat -c %a "$HOME/.claude-subscription" 2>/dev/null || stat -f %Lp "$HOME/.claude-subscription")" 700
   # a subcommand (auth status, login, logout) gets nothing added; auto mode on: not turned off
   out="$(BN_CLAUDE_BIN="$stub" bash "$STACK_DIR/terminal/bin/claude-sub" auth status)"
   assert_contains "$out" "ARGS: auth status"
@@ -211,22 +252,34 @@ test_the_other_launchers_keep_updates_off_and_say_when_a_tool_is_left_out() {
   for t in codex copilot cursor gemini grok; do mkdir -p "$b/$t"; done
   mkdir -p "$b/gemini/node_modules/.bin"
   for f in codex/codex copilot/copilot cursor/cursor-agent gemini/node_modules/.bin/gemini grok/grok; do
-    printf '#!/bin/sh\necho "ARGS: $*"\nenv | grep -E "^(COPILOT_AUTO_UPDATE|NO_BROWSER|NO_OPEN_BROWSER|GH_TOKEN)=" | sort\n' > "$b/$f"; chmod +x "$b/$f"
+    printf '#!/bin/sh\necho "ARGS: $*"\nenv | grep -E "^(COPILOT_[A-Z_]*|NO_BROWSER|NO_OPEN_BROWSER|NODE_DISABLE_COMPILE_CACHE|GROK_DISABLE_AUTOUPDATER|GH_TOKEN|ANTHROPIC_[A-Z_]*|CLAUDE_CODE_[A-Z_]*|CLAUDE_BEDROCK_[A-Z_]*|CLAUDE_CONFIG_DIR|SHARED_MCP_TOKEN|BN_MCP_URL|AWS_[A-Z_]*)=" | sort\necho "umask $(umask)"\n' > "$b/$f"; chmod +x "$b/$f"
   done
   export BN_TOOLS_DIR="$b"
-  out="$(GH_TOKEN=yours bash "$STACK_DIR/terminal/bin/copilot" login)"
+  # the stack's own variables never reach them (a key of yours for the tool itself does); what they write is private
+  local stack_env=(ANTHROPIC_BASE_URL=http://gateway:8091 ANTHROPIC_AUTH_TOKEN=sk-terminal CLAUDE_BEDROCK_OPUS_MODEL=b CLAUDE_CODE_USE_BEDROCK=1
+    CLAUDE_CONFIG_DIR=/x SHARED_MCP_TOKEN=s BN_MCP_URL=http://gateway:8091/mcp AWS_SECRET_ACCESS_KEY=a)
+  out="$(env "${stack_env[@]}" GH_TOKEN=yours bash "$STACK_DIR/terminal/bin/copilot" login)"
   assert_eq "$out" "ARGS: login
 COPILOT_AUTO_UPDATE=false
-GH_TOKEN=yours"
-  assert_eq "$(bash "$STACK_DIR/terminal/bin/cursor-agent" status)" "ARGS: --disable-auto-update status
-NO_OPEN_BROWSER=1"
-  assert_eq "$(bash "$STACK_DIR/terminal/bin/grok" logout)" "ARGS: --no-auto-update logout"
-  assert_eq "$(bash "$STACK_DIR/terminal/bin/gemini" --version)" "ARGS: --version
-NO_BROWSER=true"
-  assert_eq "$(bash "$STACK_DIR/terminal/bin/codex" login --device-auth)" "ARGS: login --device-auth"
+COPILOT_PKG_CACHE_HOME=$b/copilot/cache
+GH_TOKEN=yours
+umask 0077"
+  assert_eq "$(env "${stack_env[@]}" bash "$STACK_DIR/terminal/bin/cursor-agent" status)" "ARGS: --disable-auto-update status
+NODE_DISABLE_COMPILE_CACHE=1
+NO_OPEN_BROWSER=1
+umask 0077"
+  assert_eq "$(env "${stack_env[@]}" bash "$STACK_DIR/terminal/bin/grok" logout)" "ARGS: --no-auto-update logout
+GROK_DISABLE_AUTOUPDATER=1
+umask 0077"
+  assert_eq "$(env "${stack_env[@]}" bash "$STACK_DIR/terminal/bin/gemini" --version)" "ARGS: --version
+NO_BROWSER=true
+umask 0077"
+  assert_eq "$(env "${stack_env[@]}" bash "$STACK_DIR/terminal/bin/codex" login --device-auth)" "ARGS: login --device-auth
+umask 0077"
   rm "$b/codex/codex"
   out="$(bash "$STACK_DIR/terminal/bin/codex" 2>&1)" && return 1
-  assert_contains "$out" "not in this sandbox (TERMINAL_AI_TOOLS"
+  assert_contains "$out" "not in this sandbox (left out by TERMINAL_AI_TOOLS in .env"
+  assert_contains "$out" "or its download failed when the image was built: $b/SKIPPED"
   # the Gemini CLI's system settings (they outrank the user's) only turn its auto-update off
   assert_eq "$(tr -d ' \n' < "$STACK_DIR/terminal/tools/gemini-settings.json")" '{"general":{"enableAutoUpdate":false,"enableAutoUpdateNotification":false}}'
 }
@@ -239,10 +292,16 @@ test_bn_session_takes_only_its_words() {
   # tmux: records what it was asked; "claude" exists once made
   printf '#!/bin/sh\necho "tmux $*" >> "%s/tmux"\ncase "$1" in has-session) [ "$3" = =claude ] && [ -f "%s/made" ]; exit $? ;; new-session) [ "$2" = -d ] && touch "%s/made"; exit 0 ;; esac\nexit 0\n' "$TMP" "$TMP" "$TMP" > "$b/tmux"
   chmod +x "$b/tmux"
+  # (the sandbox's sha256sum; here whichever this computer has)
+  local real_sum; real_sum="$(command -v sha256sum || true)"
+  if [ -n "$real_sum" ]; then printf '#!/bin/sh\nexec "%s" "$@"\n' "$real_sum" > "$b/sha256sum"; else printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$b/sha256sum"; fi
+  chmod +x "$b/sha256sum"
   _run() { : > "$TMP/tmux"; env PATH="$b:$PATH" BN_SESSION_STATE="$TMP/state" BN_CODE_WORKSPACE="$ws" BN_CODE_ROOTS="[\"$proj\"]" bash "$STACK_DIR/terminal/bin/bn-session" "$@"; cat "$TMP/tmux"; }
   # (a launch token's form: <iat>-<16 hex>-<32 hex>; whether one is valid is the portal's gate's to say)
-  local M=0123456789abcdef0123456789abcdef
-  local N1="1792760000-0123456789abcdef-$M" N2="1792760001-fedcba9876543210-$M" N3="1792760002-00112233445566aa-$M" out
+  local M=0123456789abcdef0123456789abcdef now; now="$(date +%s)"
+  local N1="$now-0123456789abcdef-$M" N2="$((now - 1))-fedcba9876543210-$M" N3="$((now - 2))-00112233445566aa-$M" out
+  local OLD="$((now - 700))-0123456789abcdef-$M" AHEAD="$((now + 120))-0123456789abcdef-$M"
+  local N1x="$now-1111111111111111-$M" N4="$now-4444444444444444-$M"
   # no words, wrong words, a nonce that is not one, a folder elsewhere, too many: the plain attach
   for args in "" "evil codex $N1" "open evil $N1" "open codex nothex" "open codex 0123456789abcdef" "open codex 1792760000-0123456789abcdef-short" \
     "open codex $N1 $TMP/elsewhere" "open codex $N1 $ws/../elsewhere" "open codex $N1 relative" "open codex $N1 $ws extra"; do
@@ -251,6 +310,12 @@ test_bn_session_takes_only_its_words() {
     assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "tmux new-session -A -s claude -n claude -c $ws claude-bedrock; exec bash"
   done
   [ ! -d "$TMP/state/$N1" ] || { echo "a refused request used its nonce" >&2; return 1; }
+  # a token made more than 10 minutes ago (or ahead of this clock): nothing starts, the terminal is only attached
+  for tok in "$OLD" "$AHEAD"; do
+    out="$(_run open codex "$tok")"
+    assert_not_contains "$out" "new-window"
+    assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "tmux attach-session -t =claude"
+  done
   # open: a window of the tool, made current; the same nonce again only attaches
   out="$(_run open codex "$N1")"
   assert_contains "$out" "tmux new-window -S -d -t =claude: -n codex -c $ws /usr/local/bin/subscriptions open codex; exec bash"
@@ -258,15 +323,25 @@ test_bn_session_takes_only_its_words() {
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "tmux attach-session -t =claude"
   out="$(_run open codex "$N1")"
   assert_not_contains "$out" "new-window"
-  # a folder below the workspace, a project folder (its own name in the window's)
+  # a folder below the workspace, a project folder (its own name in the window's, and a short hash of its path)
+  local h; h="$(printf '%s' "$proj/inner" | "$b/sha256sum" | cut -c1-6)"
   out="$(_run open grok "$N2" "$proj/inner")"
-  assert_contains "$out" "-n grok-inner -c $proj/inner /usr/local/bin/subscriptions open grok"
+  assert_contains "$out" "-n grok-inner-$h -c $proj/inner /usr/local/bin/subscriptions open grok"
+  # Claude on your plan's window is claude-sub (the first window, claude, is claude-bedrock's)
+  out="$(_run open claude "$N1x")"
+  assert_contains "$out" "-n claude-sub -c $ws /usr/local/bin/subscriptions open claude"
+  # a folder with "#" (tmux reads -c as a format) and a "." in its name (a pane in a target): doubled, mapped
+  mkdir -p "$ws/a#b.c"
+  out="$(_run open codex "$N4" "$ws/a#b.c")"
+  h="$(printf '%s' "$ws/a#b.c" | "$b/sha256sum" | cut -c1-6)"
+  assert_contains "$out" "-n codex-a-b-c-$h -c $ws/a##b.c /usr/local/bin/subscriptions open codex"
   # chat: a session of its own grouped with "claude", without a status line
+  h="$(printf '%s' "$ws/sub" | "$b/sha256sum" | cut -c1-6)"
   out="$(_run chat gemini "$N3" "$ws/sub")"
-  assert_contains "$out" "tmux new-session -d -t =claude -s chat-gemini-sub"
-  assert_contains "$out" "tmux set-option -t =chat-gemini-sub: status off"
-  assert_contains "$out" "tmux select-window -t =chat-gemini-sub:=gemini-sub"
-  assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "tmux attach-session -t =chat-gemini-sub"
+  assert_contains "$out" "tmux new-session -d -t =claude -s chat-gemini-sub-$h"
+  assert_contains "$out" "tmux set-option -t =chat-gemini-sub-$h: status off"
+  assert_contains "$out" "tmux select-window -t =chat-gemini-sub-$h:=gemini-sub-$h"
+  assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "tmux attach-session -t =chat-gemini-sub-$h"
 }
 
 test_the_helper_takes_check_and_sign_out_by_tool_never_more() {
@@ -294,6 +369,18 @@ subscriptions logout codex"
   settings_helper_tick 2>/dev/null || true
   assert_contains "$(cat "$(settings_capability_file)")" '"subscriptions": ["subscriptions-check","subscriptions-signout"]'
   assert_eq "$(_job_deadline subscriptions-check)" "300 0"
+}
+
+test_the_sandboxs_managed_settings_never_set_a_login_an_environment_or_a_hook() {
+  command -v jq >/dev/null 2>&1 || { echo "jq is not installed here" >&2; return 77; }
+  local f
+  for f in "$STACK_DIR"/terminal/managed/*.json; do
+    jq -e 'type == "object"' "$f" >/dev/null || { echo "$f: not a JSON object" >&2; return 1; }
+    # (they outrank every other settings tier, claude-sub's too: an env, a key helper, a hook or a forced login there
+    # would reach your plan's Claude Code)
+    [ -z "$(jq -r '[paths | map(tostring) | join(".")] | .[]' "$f" | grep -E '(^|\.)(env|apiKeyHelper|hooks|forceLoginMethod|forceLoginOrgUUID|awsAuthRefresh|awsCredentialExport)(\.|$)')" ] ||
+      { echo "$f sets an env, a key helper, a hook or a login" >&2; return 1; }
+  done
 }
 
 test_one_list_of_tools_everywhere() {
@@ -327,6 +414,20 @@ test_the_image_pins_every_tool_it_downloads() {
     [ "$(grep -c '"resolved"' "$STACK_DIR/terminal/tools/$t/package-lock.json")" = "$(grep -c '"integrity": "sha512-' "$STACK_DIR/terminal/tools/$t/package-lock.json")" ] || return 1
     grep -Eq '": "[0-9]+\.[0-9]+\.[0-9]+"$' "$STACK_DIR/terminal/tools/$t/package.json" || return 1
   done
+  # every npm package from the npm registry itself (the lockfiles of the tools, the sandbox's Claude Code, the Code page's)
+  local lf
+  for lf in terminal/tools/gemini terminal/tools/grok terminal/claude-code code; do
+    [ -z "$(grep -o '"resolved": "[^"]*"' "$STACK_DIR/$lf/package-lock.json" | grep -v '"resolved": "https://registry.npmjs.org/')" ] ||
+      { echo "$lf/package-lock.json: a package from elsewhere than registry.npmjs.org" >&2; return 1; }
+  done
+  # everything of theirs root's in the image (whatever owner a tarball recorded), checked at the build's end; one tool
+  # that fails is left out (said), not the image
+  assert_contains "$(cat "$d")" "COPY --from=ai-tools --chown=0:0 /out/ /usr/local/lib/bn-tools/"
+  assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'chown -R 0:0 /out'
+  [ "$(grep -c 'tar ' "$STACK_DIR/terminal/tools/install.sh")" = "$(grep -c 'tar --no-same-owner ' "$STACK_DIR/terminal/tools/install.sh")" ] || return 1
+  assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'is LEFT OUT of this image'
+  # Copilot's own package unpacked into the image at build (never run from the writable home)
+  assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'COPILOT_PKG_CACHE_HOME=/out/copilot/cache'
   # downloads only from the providers' own places, each checked before it is kept; no install script runs
   assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'sha256sum -c -'
   assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'npm ci --ignore-scripts'

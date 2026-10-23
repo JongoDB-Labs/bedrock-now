@@ -15,7 +15,7 @@ set -euo pipefail
 
 CLAUDE_BIN="${BN_CLAUDE_BIN:-/usr/local/bin/claude}"
 dir="$HOME/.claude-subscription"
-mcp="$HOME/.config/bedrock-now/mcp.json"
+mcp="$HOME/.config/bedrock-now/mcp.json"   # (the stack's shared MCP server: only with CLAUDE_SUB_STACK_MCP=1, below)
 
 # What the stack sets for Bedrock, or what would put another credential ahead of your login (Claude Code's own order:
 # a cloud provider switch, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, an OAuth token in the environment — then /login)
@@ -39,6 +39,7 @@ claude-sub: Claude Code on your own Claude plan (Pro, Max, Team or Enterprise), 
   Config   ~/.claude-subscription — your login stays there, in Claude Code's own file; bedrock-now never reads it
   Usage    counts against your plan's limits; bedrock-now bills none of it
   Bedrock  claude and claude-bedrock here stay on Bedrock, with the stack's key
+  MCP      the stack's shared MCP server is not given to it (CLAUDE_SUB_STACK_MCP=1 gives it, said each time)
   Below    Claude Code's own help
 
 EOT
@@ -46,16 +47,20 @@ EOT
   -v | --version) exec "$CLAUDE_BIN" "$@" ;;
 esac
 
-# A session (not a subcommand, which refuses these flags): the shared MCP server (the shared store and Chat's knowledge
-# bases, through the sandbox's gateway — no login of yours goes there), and auto mode off unless Settings › Claude Code ›
-# Auto mode in the terminal is on (as claude and claude-bedrock here)
+# A session (not a subcommand, which refuses these flags): auto mode off unless Settings › Claude Code › Auto mode in the
+# terminal is on (as claude and claude-bedrock here). The stack's shared MCP server (Chat's knowledge bases and the
+# shared bucket, which it can write too) is NOT given to Claude on your plan: what it reads would go to Anthropic under
+# your plan's terms. CLAUDE_SUB_STACK_MCP=1 in this shell gives it anyway, said each time.
 subcmds="$("$CLAUDE_BIN" --help 2>/dev/null </dev/null | awk '/^Commands:/ { f = 1; next } f && /^[^ ]/ { f = 0 }
   f && /^  [a-z]/ { n = split($1, a, "|"); for (i = 1; i <= n; i++) print a[i] }' || true)"
 session=1
 case "${1:-}" in '' | -*) ;; *) for c in $subcmds; do [ "$c" = "$1" ] && { session=0; break; }; done ;; esac
 extra=()
 if [ "$session" = 1 ]; then
-  [ ! -f "$mcp" ] || extra+=("--mcp-config=$mcp")
+  if [ "${CLAUDE_SUB_STACK_MCP:-0}" = 1 ] && [ -f "$mcp" ]; then
+    extra+=("--mcp-config=$mcp")
+    printf '%s\n' "claude-sub: CLAUDE_SUB_STACK_MCP=1 — the stack's shared MCP server (Chat's knowledge bases, the shared bucket, which it can write) is open to Claude on your plan in this session: what it reads goes to Anthropic under your plan's terms." >&2
+  fi
   case "$(printf '%s' "${TERMINAL_AUTO_MODE:-}" | tr '[:upper:]' '[:lower:]')" in
     true | 1 | yes | on) ;;
     *) extra+=('--settings={"disableAutoMode":"disable"}') ;;

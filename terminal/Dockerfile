@@ -91,7 +91,7 @@ RUN cd /opt/claude-code && npm ci --no-audit --no-fund --loglevel=error --cache 
 # (claude-sub, codex, gemini, copilot, cursor-agent, grok), which only choose each one's config folder, leave the
 # stack's own variables out and keep its self-updates off (the image pins it). Gemini CLI's system settings (they
 # outrank yours) only turn its auto-update off.
-COPY --from=ai-tools /out/ /usr/local/lib/bn-tools/
+COPY --from=ai-tools --chown=0:0 /out/ /usr/local/lib/bn-tools/
 COPY tools/gemini-settings.json /etc/gemini-cli/settings.json
 
 # The Code page's spawn server (bin/bn-coded.mjs: Node built-ins only) listens in /run/bn-code — the code-socket volume

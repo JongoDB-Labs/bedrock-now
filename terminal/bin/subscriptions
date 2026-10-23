@@ -15,6 +15,7 @@
 # TOOL: claude (Claude Code on your Claude plan: claude-sub), codex, gemini, copilot, cursor, grok; for open also
 # bedrock (claude-bedrock: Claude Code on Bedrock) and shell.
 set -uo pipefail
+umask 077
 
 TOOLS_DIR="${BN_TOOLS_DIR:-/usr/local/lib/bn-tools}"
 BIN="${BN_SUBS_BIN:-/usr/local/bin}"
@@ -143,6 +144,7 @@ need_tool() {
 # login ID — the tool's own sign-in that works in a sandbox (run, not exec'd, by open)
 login() {
   local rc=0
+  printf '(%s keeps its login in its own file here: anything running in this sandbox can read it. Sign out, and revoke it in your account at the provider, if that ever worries you.)\n' "$(field "$1" 3)"
   case "$1" in
     claude) printf 'Claude Code: open the link below in your browser, sign in, then paste the code it shows here.\n'
             "$BIN/claude-sub" auth login || rc=$? ;;
@@ -188,6 +190,9 @@ cmd_open() {
 }
 
 sub="${1:-status}"; [ $# -eq 0 ] || shift
+# (what ./stack and the Code page ask — status, sign-in, sign-out — runs the system's programs only, never one of the
+# same name in a folder of the home on PATH; open keeps your PATH: the tool you open uses it)
+case "$sub" in status | ids | login | logout) export PATH="${BN_SUBS_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" ;; esac
 case "$sub" in
   status) cmd_status "$@" ;;
   ids) for id in $(ids_all); do ! installed "$id" || echo "$id"; done ;;

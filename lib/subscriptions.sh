@@ -19,8 +19,14 @@
 SUBS_TOOLS="claude codex gemini copilot cursor grok"
 SUBS_OPTIONAL="codex gemini copilot cursor grok"
 SUBS_SIGNOUT="claude codex cursor grok"   # the ones with a sign-out command (the others: inside their own screens)
-SUBS_KINDS="claude-pro claude-max claude-team claude-enterprise claude.ai api-key oauth-token api-key-helper third-party chatgpt access-token bedrock-key google vertex-ai cursor xai"
 subs_status_file() { printf '%s/subscriptions.json\n' "$(status_dir)"; }
+# The sandbox's own command, by its path in the image (never a program of the same name its home put ahead on PATH),
+# run with the system's PATH only
+SUBS_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SUBS_CMD=/usr/local/bin/subscriptions
+# what of the sandbox's answer is read at most: the status (16 KiB), a sign-in's or sign-out's words (lines of 300
+# characters at most, 400 lines)
+SUBS_TSV_MAX=16384 SUBS_LINE_MAX=300 SUBS_LINES_MAX=400
 
 subscriptions_usage() {
   cat <<'EOF'
@@ -72,21 +78,32 @@ subs_tools_arg() {
 }
 
 # subs_parse < TSV -> one JSON object per line that passes: id (one of SUBS_TOOLS, once), installed yes/no, version
-# (letters, digits . + -, at most 40, or -), signed in yes/no/unknown, kind (one of SUBS_KINDS, or -), how
-# command/file/none. The sandbox's word is never more than one of these: anything else is dropped.
+# (letters, digits . + -, at most 40, or -), signed in yes/no/unknown, kind (one of the tool's own, or -), how (the
+# tool's own: command, file or none). The sandbox's word is never more than one of these: anything else is dropped.
+# Each tool's kinds and its way of telling are its own (terminal/bin/subscriptions' state; the portal's answers.py
+# TOOL_KINDS, TOOL_HOW): a kind another tool would say, or another way, is not taken.
+SUBS_TOOL_KINDS="claude:claude-pro,claude-max,claude-team,claude-enterprise,claude.ai,api-key,oauth-token,api-key-helper,third-party codex:chatgpt,api-key,access-token,bedrock-key cursor:cursor gemini:google,vertex-ai,api-key grok:xai copilot:"
+SUBS_TOOL_HOW="claude:command codex:command cursor:command gemini:file grok:file copilot:none"
 subs_parse() {
-  LC_ALL=C awk -F'\t' -v ids="$SUBS_TOOLS" -v kinds="$SUBS_KINDS" '
+  LC_ALL=C awk -F'\t' -v ids="$SUBS_TOOLS" -v kinds="$SUBS_TOOL_KINDS" -v hows="$SUBS_TOOL_HOW" '
     BEGIN { n = split(ids, a, " "); for (i = 1; i <= n; i++) okid[a[i]] = 1
-            n = split(kinds, a, " "); for (i = 1; i <= n; i++) okkind[a[i]] = 1 }
+            n = split(kinds, a, " "); for (i = 1; i <= n; i++) { split(a[i], p, ":"); m = split(p[2], k, ","); for (j = 1; j <= m; j++) okkind[p[1] "/" k[j]] = 1 }
+            n = split(hows, a, " "); for (i = 1; i <= n; i++) { split(a[i], p, ":"); okhow[p[1]] = p[2] } }
     NF != 6 || !($1 in okid) || ($1 in seen) { next }
     $2 != "yes" && $2 != "no" { next }
     $3 != "-" && ($3 !~ /^[0-9A-Za-z][0-9A-Za-z.+-]*$/ || length($3) > 40) { next }
     $4 != "yes" && $4 != "no" && $4 != "unknown" { next }
-    $5 != "-" && !($5 in okkind) { next }
-    $6 != "command" && $6 != "file" && $6 != "none" { next }
+    $5 != "-" && !(($1 "/" $5) in okkind) { next }
+    $6 != okhow[$1] && !($2 == "no" && $6 == "none") { next }
     { seen[$1] = 1
       printf "{\"id\":\"%s\",\"installed\":%s,\"version\":\"%s\",\"signed_in\":\"%s\",\"kind\":\"%s\",\"how\":\"%s\"}\n",
         $1, ($2 == "yes" ? "true" : "false"), ($3 == "-" ? "" : $3), ($2 == "yes" ? $4 : "no"), ($5 == "-" ? "" : $5), $6 }'
+}
+
+# _subs_tsv — the sandbox's status lines, at most SUBS_TSV_MAX bytes (cut inside the deadline: a sandbox that prints
+# forever is stopped there, never read whole); nothing on this side's stdin
+_subs_tsv() {
+  dc exec -T -e "PATH=$SUBS_PATH" -e BN_SUBS_TIMEOUT=15 terminal "$SUBS_CMD" status --tsv </dev/null 2>/dev/null | head -c "$SUBS_TSV_MAX"
 }
 
 # subs_running -> 0 while the sandbox's container runs
@@ -101,8 +118,8 @@ subs_refresh() {
   if ! terminal_on; then state=off
   elif ! subs_running; then state=down
   else
-    out="$(PROBE_DEADLINE_S="${SUBS_DEADLINE_S:-150}" _probe dc exec -T -e BN_SUBS_TIMEOUT=15 terminal subscriptions status --tsv 2>/dev/null)"
-    rows="$(printf '%s\n' "$out" | head -c 16384 | subs_parse)"
+    out="$(PROBE_DEADLINE_S="${SUBS_DEADLINE_S:-150}" _probe _subs_tsv)"
+    rows="$(printf '%s\n' "$out" | subs_parse)"
     [ -n "$rows" ] || state=error
   fi
   SUBS_LAST_ROWS="$rows"
@@ -134,11 +151,16 @@ subs_print() {
   done <<< "$SUBS_LAST_ROWS"
 }
 
-# subs_plain_stream — the sandbox's output as it comes, line by line, as plain text: terminal escapes (CSI, OSC — a
-# clipboard write, a title) taken out, every other byte that is not printable ASCII dropped. Nothing the sandbox prints
-# reaches this computer's terminal as a control (its own screen is the browser's terminal, never this one).
+# subs_plain_stream — the sandbox's output as it comes, line by line, as plain text marked as the sandbox's
+# ("sandbox│ "): terminal escapes (CSI, OSC — a clipboard write, a title) taken out, every other byte that is not
+# printable ASCII dropped, each line cut at SUBS_LINE_MAX characters, and after SUBS_LINES_MAX lines no more is read
+# (the sandbox's command then stops). Nothing the sandbox prints reaches this computer's terminal as a control, or
+# passes for a line of ./stack's own.
 subs_plain_stream() {
-  LC_ALL=C awk '{ gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, ""); gsub(/\033\][^\007\033]*(\007|\033\\)?/, ""); gsub(/[^ -~]/, ""); print; fflush() }'
+  LC_ALL=C awk -v max="$SUBS_LINE_MAX" -v lines="$SUBS_LINES_MAX" '
+    NR > lines { print "sandbox│ (more not shown)"; exit }
+    { gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, ""); gsub(/\033\][^\007\033]*(\007|\033\\)?/, ""); gsub(/[^ -~]/, "")
+      print "sandbox│ " substr($0, 1, max); fflush() }'
 }
 
 subs_need_sandbox() {
@@ -171,17 +193,25 @@ cmd_subscriptions() {
       subs_need_sandbox
       if [ "$sub" = logout ]; then
         case " $SUBS_SIGNOUT " in
-          *" $1 "*) dc exec -T terminal subscriptions logout "$1" 2>&1 | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
+          *" $1 "*) dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" logout "$1" </dev/null 2>&1 | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
           *) [ "$1" = gemini ] && die "Gemini CLI signs out inside it: in the Terminal tab, gemini, then /auth signout"
              die "Copilot signs out inside it: in the Terminal tab, copilot, then /logout (and revoke it on github.com › Settings › Applications)" ;;
         esac
       else
-        # Its own sign-in, its words shown here as plain text (subs_plain_stream): a link and a code to open in your
-        # browser; Claude Code then reads the code you paste (its stdin is this terminal's). The login stays in the
-        # sandbox. Gemini CLI signs in inside its own screen: the Terminal tab's.
+        # Its own sign-in, its words shown here as plain text marked as the sandbox's (subs_plain_stream): a link and a
+        # code to open in your browser. What you type here reaches the sandbox only for the two tools whose own sign-in
+        # asks something back — Claude Code (the code your browser shows) and Copilot (whether to keep its login in a
+        # file) — and is said first; the others get nothing of this terminal's. The login stays in the sandbox. Gemini
+        # CLI signs in inside its own screen: the Terminal tab's.
         [ "$1" != gemini ] || die "Gemini CLI signs in inside its own screen: open it in the Terminal tab (Open › Gemini CLI), or gemini in a shell window there"
-        [ "$1" != claude ] || printf 'Claude Code: open the link below in your browser, sign in, then paste the code it shows here and press Enter.\n'
-        dc exec -T terminal subscriptions login "$1" 2>&1 | subs_plain_stream; rc="${PIPESTATUS[0]}"
+        case "$1" in
+          claude | copilot)
+            [ "$1" != claude ] || printf 'Claude Code: open the link below in your browser and sign in; then paste the code it shows here and press Enter.\n'
+            [ "$1" != copilot ] || printf 'Copilot: open the link below in your browser and enter the code; it may then ask here whether to keep its login in a file (answer y).\n'
+            printf '(What you type here now goes to %s'"'"'s own sign-in in the sandbox, and nowhere else.)\n' "$(subs_name "$1")"
+            dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" login "$1" 2>&1 | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
+          *) dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" login "$1" </dev/null 2>&1 | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
+        esac
       fi
       subs_refresh >/dev/null 2>&1 || true
       return "$rc" ;;

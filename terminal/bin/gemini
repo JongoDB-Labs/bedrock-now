@@ -8,6 +8,14 @@
 # settings (/etc/gemini-cli/settings.json): the image pins its version.
 set -euo pipefail
 bin="${BN_TOOLS_DIR:-/usr/local/lib/bn-tools}/gemini/node_modules/.bin/gemini"
-[ -x "$bin" ] || { echo "gemini: not in this sandbox (TERMINAL_AI_TOOLS in .env leaves it out: Settings › Claude Code › More)" >&2; exit 127; }
+[ -x "$bin" ] || { echo "gemini: not in this sandbox (left out by TERMINAL_AI_TOOLS in .env — Settings › Claude Code › More — or its download failed when the image was built: ${BN_TOOLS_DIR:-/usr/local/lib/bn-tools}/SKIPPED)" >&2; exit 127; }
+umask 077
+# The stack's own variables are not this tool's — the gateway and the terminal's LiteLLM key, Bedrock's models and
+# switches, the shared MCP server's token, AWS's: left out of its environment, as claude-sub leaves them out
+for v in $(compgen -e); do
+  case "$v" in
+    ANTHROPIC_* | CLAUDE_CODE_* | CLAUDE_BEDROCK_* | CLAUDE_CONFIG_DIR | SHARED_MCP_TOKEN | BN_MCP_URL | AWS_*) unset "$v" ;;
+  esac
+done
 export NO_BROWSER=true
 exec "$bin" "$@"
