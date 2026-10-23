@@ -163,42 +163,55 @@ export function frontMatter(t) {
 // ---     n.length-2)+"`"})}  — a span after ! or ` is kept as it is, and consumed all the same)
 // --- — mirrored here by scans, in linear time (the fenced pattern's \s* before an unclosed block is quadratic): every
 // --- command Claude Code would run is listed; a fenced block with no closing ``` (which runs nothing there) is listed too.
-// blankInlineCode(text) -> cOe(text): each inline code span (`…` on one line, matched left to right as that regular
-// expression does) as spaces — but one right after ! or `, kept as it is (and passed over, as there)
-function blankInlineCode(s) {
+// --- And read a second way, the union listed: with a span right after ! or ` not matched at all (a reading by a
+// --- lookbehind, /(?<![!`])`[^`\n]+`/g — the scan goes on inside it) — a command that reading finds and Claude Code's
+// --- does not is an extra line; one a later Claude Code would run, were its blanking to change so, is never missed.
+// blankInlineCode(text, passOver) -> the text with each inline code span (`…` on one line, matched left to right as a
+// regular expression does) as spaces, but one right after ! or ` kept as it is — passOver true: that span consumed all
+// the same (cOe(text), Claude Code's); false: not matched there, the scan going on at the next backtick
+function blankInlineCode(s, passOver = true) {
   let out = '', from = 0;
   for (let i = s.indexOf('`'); i >= 0; ) {
+    const after = s[i - 1] === '!' || s[i - 1] === '`';
+    if (after && !passOver) { i = s.indexOf('`', i + 1); continue; }
     let j = i + 1;
     while (j < s.length && s[j] !== '`' && s[j] !== '\n') j++;
     if (j < s.length && s[j] === '`' && j > i + 1) {
-      if (s[i - 1] !== '!' && s[i - 1] !== '`') { out += `${s.slice(from, i + 1)}${' '.repeat(j - i - 1)}`; from = j; }
+      if (!after) { out += `${s.slice(from, i + 1)}${' '.repeat(j - i - 1)}`; from = j; }
       i = s.indexOf('`', j + 1);
     } else i = s.indexOf('`', i + 1);
   }
   return out + s.slice(from);
 }
-/** shellBlocks(text, max) -> {list: [{kind: 'fenced' | 'open' | 'inline', command}], more}: the shell commands Claude
- *  Code runs (in the sandbox, as the session) each time the skill or command is used, before the model reads its text —
- *  each whole (never cut: a caller that cannot show one whole says so); the first max of them, more when there are more
- *  (a caller says so). 'open': a ```! block with no closing ``` — Claude Code runs nothing there; listed all the same */
+/** shellBlocks(text, max) -> {list: [{kind: 'fenced' | 'open' | 'inline', command, at}], more}: the shell commands
+ *  Claude Code runs (in the sandbox, as the session) each time the skill or command is used, before the model reads its
+ *  text — inline ones by both readings of inline code, the union (one found both ways at the same place, once); each
+ *  whole (never cut: a caller that cannot show one whole says so); the first max of them, more when there are more (a
+ *  caller says so). 'open': a ```! block with no closing ``` — Claude Code runs nothing there; listed all the same */
 export function shellBlocks(text, max = 1000) {
-  const s = String(text), out = [];
+  const s = String(text), out = [], seen = new Set();
   let more = false;
-  const add = (kind, c) => { const cmd = c.trim().replaceAll('\r\n', '\n'); if (!cmd) return; if (out.length < max) out.push({ kind, command: cmd }); else more = true; };
+  const add = (kind, c, at) => {
+    const cmd = c.trim().replaceAll('\r\n', '\n');
+    if (!cmd || seen.has(`${at}\0${cmd}`)) return;
+    seen.add(`${at}\0${cmd}`);
+    if (out.length < max) out.push({ kind, command: cmd, at }); else more = true;
+  };
   for (let at = s.indexOf('```!'); at >= 0 && !more; ) {
     const close = s.indexOf('```', at + 4);
-    add(close < 0 ? 'open' : 'fenced', s.slice(at + 4, close < 0 ? s.length : close));
+    add(close < 0 ? 'open' : 'fenced', s.slice(at + 4, close < 0 ? s.length : close), at);
     if (close < 0) break;
     at = s.indexOf('```!', close + 3);
   }
-  if (s.includes('!`')) {
-    const b = blankInlineCode(s);
+  // (each reading's blanked text keeps the text's length: a command's place is the same in both)
+  for (const passOver of s.includes('!`') ? [true, false] : []) {
+    const b = blankInlineCode(s, passOver);
     for (let at = b.indexOf('!`'); at >= 0 && !more; ) {
       if (at > 0 && !WS_CHAR.test(b[at - 1])) { at = b.indexOf('!`', at + 1); continue; }
       const end = b.indexOf('`', at + 2);
       if (end < 0) break;
       if (end === at + 2) { at = b.indexOf('!`', at + 1); continue; }
-      add('inline', b.slice(at + 2, end));
+      add('inline', b.slice(at + 2, end), at);
       at = b.indexOf('!`', end + 1);
     }
   }

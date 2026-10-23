@@ -76,22 +76,30 @@ test('shell commands Claude Code runs each time a skill or command is used: ```!
 
 // Claude Code 2.1.296's own code, copied from its binary (the oracle — never used by the server; its fenced pattern is
 // quadratic on some inputs, so only small ones here): cOe blanks inline code, gVn and hVn find the commands, Gtr lists them
-function ccShellCommands(e) {
-  const cOe = (x) => x.replace(/`[^`\n]+`/g, (n, r) => { const s = x[r - 1]; return s === '!' || s === '`' ? n : `\`${' '.repeat(n.length - 2)}\``; });
+// (with their places). blank: cOe — or, for the second reading, the lookbehind one (a span right after ! or ` not matched)
+const CC_BLANK = (x) => x.replace(/`[^`\n]+`/g, (n, r) => { const s = x[r - 1]; return s === '!' || s === '`' ? n : `\`${' '.repeat(n.length - 2)}\``; });
+const LB_BLANK = (x) => x.replace(/(?<![!`])`[^`\n]+`/g, (n) => `\`${' '.repeat(n.length - 2)}\``);
+function ccShellCommands(e, blank = CC_BLANK) {
   const gVn = /```!\s*\n?([\s\S]*?)\n?```/g, hVn = /(?<=^|\s)!`([^`]+)`/gm;
   const s5r = (x) => x.trim().replaceAll('\r\n', '\n');
-  const n = e.matchAll(gVn), r = e.includes('!`') ? cOe(e).matchAll(hVn) : [], out = [];
-  for (const h of [...n, ...r]) { const y = s5r(h[1] ?? ''); if (y) out.push(y); }
+  const n = e.matchAll(gVn), r = e.includes('!`') ? blank(e).matchAll(hVn) : [], out = [];
+  for (const h of [...n, ...r]) { const y = s5r(h[1] ?? ''); if (y) out.push(`${h.index}\0${y}`); }
   return out;
 }
+const sorted = (l) => [...new Set(l)].sort();
 
-test('the shell commands found are exactly Claude Code\'s own: its code as the oracle, on crafted and random texts', () => {
-  const mine = (t) => shellBlocks(t).list.filter((x) => x.kind !== 'open').map((x) => x.command);
-  // (one that a reading by a lookbehind would get wrong: the span after ! is passed over, as Claude Code does)
+test('the shell commands found: every one Claude Code\'s own code finds (the oracle), and those of the lookbehind reading — the union', () => {
+  const mine = (t) => shellBlocks(t).list.filter((x) => x.kind !== 'open').map((x) => `${x.at}\0${x.command}`);
+  const check = (t) => {
+    const m = new Set(mine(t)), cc = ccShellCommands(t);
+    for (const c of cc) assert.ok(m.has(c), `${JSON.stringify(t)}: Claude Code runs ${JSON.stringify(c.split('\0')[1])}, not listed`);
+    assert.deepEqual(sorted(mine(t)), sorted([...cc, ...ccShellCommands(t, LB_BLANK)]), JSON.stringify(t));
+  };
+  // (the reviewer's: Claude Code runs only a — the lookbehind reading finds cmd too: both listed)
+  assert.deepEqual(shellBlocks('!`a` b` !`cmd`').list.map((x) => x.command), ['a', 'cmd']);
+  assert.deepEqual(ccShellCommands('!`a` b` !`cmd`').map((c) => c.split('\0')[1]), ['a']);
   for (const t of ['!`a` b` !`cmd`', '``!`x` !`y`', '!`a` `b !`c` d`', 'x `a` !`b` `c`', '`!`a`` !`b`', '!``a` !`b`', '```!\nls\n``` !`pwd` `q !`r` s`',
-    '`a\n!`b` `c`', '!`a\r\nb` !`c`', ' !`a`!`b` !`c`', '`` !`a` ``', '!`a` !`b` !`c`']) {
-    assert.deepEqual(mine(t), ccShellCommands(t), JSON.stringify(t));
-  }
+    '`a\n!`b` `c`', '!`a\r\nb` !`c`', ' !`a`!`b` !`c`', '`` !`a` ``', '!`a` !`b` !`c`']) check(t);
   // random texts of the characters that matter
   const parts = ['`', '!', '!`', '```!', '```', ' ', '\n', '\r\n', 'a', 'ls', '\t', ' ', '$1'];
   let seed = 7;
@@ -100,8 +108,8 @@ test('the shell commands found are exactly Claude Code\'s own: its code as the o
     let t = '';
     const n = 1 + (next() % 24);
     for (let k = 0; k < n; k++) t += parts[next() % parts.length];
-    // (a ```! block with no closing ```: Claude Code runs nothing, this page lists it — the rest the same)
-    assert.deepEqual(mine(t), ccShellCommands(t), JSON.stringify(t));
+    // (a ```! block with no closing ```: Claude Code runs nothing, this page lists it — the rest exactly the union)
+    check(t);
   }
 });
 

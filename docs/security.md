@@ -1287,7 +1287,9 @@ direction-changing character; a record that does not fit (a file someone changed
     over 64 KiB, or anything a YAML parser could read differently (flow style, quotes, anchors and aliases, tags,
     explicit keys, block scalars, a key twice) — leaves the summary incomplete, never trusted. The shell commands a
     skill or command runs each time it is used (``!`…` `` after whitespace and ```` ```! ```` blocks, read as Claude
-    Code reads them, inline code first blanked) are listed with the file's grants. The settings files and `.mcp.json` are summarised whole or not at all: more
+    Code reads them, inline code first blanked — and read a second way, a span right after `!` not taken as code: the
+    union listed) are listed with the file's grants, each whole: a file with more than 200 of them, or one longer than
+    2,000 characters, leaves the summary incomplete. The settings files and `.mcp.json` are summarised whole or not at all: more
     than 200 entries in a section, a value over 2,000 characters or invalid JSON leave no hash to trust. Each hook and
     MCP server is shown whole (its entry as JSON with sorted keys, beside a friendly line; one naming more than one of
     a command, a URL and a prompt is marked); every character but printable ASCII, a tab or a line break is shown as

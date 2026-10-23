@@ -17,7 +17,8 @@ All notable changes to bedrock-now are documented here. The format follows
   text that starts with `---` and does not read the same block both ways leaves the summary incomplete — never trusted.
   Reading front matter is linear in its length (a key twice was told by comparing every key with every other).
 - **The trust summary lists the shell commands a project's skills and commands run** each time they are used
-  (``!`…` `` and ```` ```! ```` blocks, read as Claude Code reads them), beside what their front matter grants.
+  (``!`…` `` and ```` ```! ```` blocks, read as Claude Code reads them and a second, more cautious way — the union),
+  beside what their front matter grants; one too many or too long to show leaves the summary incomplete.
 
 ## [0.21.0] - 2026-10-23
 
