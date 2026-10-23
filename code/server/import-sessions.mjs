@@ -390,7 +390,9 @@ export class Imports {
   }
 }
 export const REQUEST_STATES = Object.freeze(['sent', 'asking', 'reading', 'copying', 'done', 'refused', 'cancelled', 'failed']);
-export const HELPER_ACTIONS = Object.freeze(['sessions-scan', 'sessions-fetch', 'sessions-suggest', 'sessions-copy']);
+// (and Bring your setup's: a look at your Claude Code setup, an open of items of it, a copy that keeps a possible secret —
+// import-setup.mjs; their requests are kept here with the sessions' ones)
+export const HELPER_ACTIONS = Object.freeze(['sessions-scan', 'sessions-fetch', 'sessions-suggest', 'sessions-copy', 'setup-scan', 'setup-fetch', 'setup-copy']);
 // why a request did not go through (lib/sessions.sh and the helper say one of these words; the page says them in
 // sentences of its own: never a store's or a request's text)
 export const REQUEST_WHY = Object.freeze(['password', 'busy', 'limit', 'denied', 'no-screen', 'remote', 'no-consent', 'no-project', 'no-store',

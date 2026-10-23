@@ -24,6 +24,8 @@ import { Projects, ProjectError, projectIdOk, WS, absOf } from './projects.mjs';
 import { makeTrust } from './trust.mjs';
 import { Imports, ImportError } from './import-sessions.mjs';
 import { makeImportsApi } from './imports-api.mjs';
+import { Setup } from './import-setup.mjs';
+import { makeSetupApi } from './setup-api.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // what a failed WebSocket message was (its type): the sentence of ours its failure is told with — the operation, never
@@ -119,11 +121,12 @@ export function ownOrigin(req) {
 // sandboxTunnel (a Git host sign-in's requests to its provider, TLS here: oauth.mjs), gitApps: Settings' application IDs
 // ({github: {clientId, appSlug}, gitlab: {clientId}}; blank: the project's own). projects: the project records
 // (projects.mjs; made on first use: /var/lib/bn-code). imports: sessions of this computer copied into the sandbox
-// (import-sessions.mjs; made on first use).
+// (import-sessions.mjs; made on first use). setup: your Claude Code setup of this computer copied into the sandbox
+// (import-setup.mjs; made on first use).
 export function createServer({ secret, query, spawn, call, distDir = path.join(HERE, '../web/dist'), plainDir = path.join(HERE, '../plain'), versions = {}, logger = log,
   reloadPollMs, reloadMaxMs, maxBufferedBytes = LIMITS.wsMaxBufferedBytes, maxSocketAgeMs = LIMITS.wsMaxAgeHours * 3600000, broker: brokerOpts = {},
   allowBypass = false, allowAuto = false, sandbox = {}, watch = true, gitHosts = null, openBroker = null, gitConnect = null, gitApps = {}, gitOAuthDelay = null,
-  projects = null, imports = null }) {
+  projects = null, imports = null, setup = null }) {
   if (!/^[0-9a-f]{32,}$/.test(secret || '')) throw new Error('CODE_PROXY_SECRET missing or weak (32+ hex characters)');
   const want = Buffer.from(secret);
   const proxied = (req) => {
@@ -240,6 +243,15 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   const imp = () => (importStore ??= new Imports({ call, projects: { get: (id) => proj().get(id), list: () => proj().list() }, worker: true }).startSweeper());
   let importsApi = null;
   const impApi = () => (importsApi ??= makeImportsApi({ imports: imp(), call, projects: { list: () => proj().list() }, cwdFor: (id) => api.cwdFor(id), rootFor }));
+  // your setup of this computer (Bring your setup): import-setup.mjs, setup-api.mjs — a plugin goes through the page's own
+  // install flow (its sessions reload their plugins), each item's plan in the import's worker thread
+  let setupStore = setup;
+  const stp = () => (setupStore ??= new Setup({ call, imports: imp(), worker: true,
+    egress: sandboxInfo.egressHost ? 'host' : sandboxInfo.egress === false ? 'off' : 'internet',
+    plugins: { list: () => api.plugins(), addMarketplace: (source) => api.marketplaceAdd({ source }), install: (id) => api.pluginAction('install', { name: id, scope: 'user' }),
+      disable: (id) => api.pluginAction('disable', { name: id, scope: 'user' }) } }));
+  let setupApi = null;
+  const stpApi = () => (setupApi ??= makeSetupApi({ setup: stp(), imports: imp() }));
   // importedOf(id) -> {tool, at, forked} of a session copied from this computer (the page's CC / CB badge), else null
   const importedOf = (all, id) => (all[id] ? { tool: all[id].tool, at: all[id].at, forked: Boolean(all[id].forkedFrom) } : null);
   // the sessions of /api/state, each with the project it is shown in
@@ -291,6 +303,11 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
       let all = {};
       try { all = imp().imported(); } catch { all = {}; }
       return send(res, 200, { ...out, sessions: out.sessions.map((s) => (all[s.id] ? { ...s, imported: importedOf(all, s.id) } : s)) });
+    }
+    // your setup of this computer: Bring your setup (setup-api.mjs)
+    if (p === '/api/setup' || p.startsWith('/api/setup/')) {
+      const r = await stpApi().route({ m, p, q, remote: req.headers['x-bn-remote'] === '1', readJson: (max) => readJson(req, max), send: (code, body) => send(res, code, body) });
+      if (r !== false) return r;
     }
     // sessions of this computer: the Import sheet, suggestions, Continue in this project (imports-api.mjs)
     if (p.startsWith('/api/imports') || /^\/api\/sessions\/[^/]+\/continue$/.test(p)) {

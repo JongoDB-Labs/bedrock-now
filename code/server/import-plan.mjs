@@ -183,8 +183,14 @@ export async function runJob(job) {
 // a job past its deadline: the worker is ended (and made anew for the next job), the job refused in fixed words — the
 // session is not copied (fail closed)
 export const TOO_SLOW = 'that session could not be checked in time: it is not copied (in a terminal on the computer, ./stack sessions import copies it)';
-/** PlanQueue: runJob in a worker thread, one job at a time, each within deadlineMs (inline: in this thread — tests, the
- *  command line, which has a process of its own) */
+export const SETUP_TOO_SLOW = 'that item could not be checked in time: it is not copied';
+/** dispatch(job) -> a session's plan (runJob), or an item of your setup's (setup-plan.mjs runSetupJob: Bring your setup) */
+export async function dispatch(job) {
+  if (job?.what === 'setup') { const { runSetupJob } = await import('./setup-plan.mjs'); return runSetupJob(job); }
+  return runJob(job);
+}
+/** PlanQueue: runJob (or a setup item's plan: dispatch) in a worker thread, one job at a time, each within deadlineMs
+ *  (inline: in this thread — tests, the command line, which has a process of its own) */
 export class PlanQueue {
   constructor({ inline = false, maxOldGenerationSizeMb = 640, deadlineMs = 120000 } = {}) {
     Object.assign(this, { inline, maxOldGenerationSizeMb, deadlineMs });
@@ -194,7 +200,7 @@ export class PlanQueue {
     this.seq = 0;
   }
   run(job) {
-    const next = this.tail.then(() => (this.inline ? runJob(job) : this.inWorker(job)));
+    const next = this.tail.then(() => (this.inline ? dispatch(job) : this.inWorker(job)));
     this.tail = next.catch(() => {});
     return next;
   }
@@ -214,7 +220,7 @@ export class PlanQueue {
       });
       const gone = () => {
         if (this.worker === w) this.worker = null;
-        for (const [seq, p] of mine()) { this.waiting.delete(seq); p.reject(new ImportError(507, 'checking that session took more memory than the Code page has: copy it in a terminal on the computer (./stack sessions import)')); }
+        for (const [seq, p] of mine()) { this.waiting.delete(seq); p.reject(new ImportError(507, p.setup ? 'checking that item took more memory than the Code page has: it is not copied' : 'checking that session took more memory than the Code page has: copy it in a terminal on the computer (./stack sessions import)')); }
       };
       w.on('error', gone);
       w.on('exit', gone);
@@ -229,10 +235,10 @@ export class PlanQueue {
         this.waiting.delete(seq);
         if (this.worker === w) this.worker = null;
         w.terminate().catch(() => {});
-        reject(new ImportError(504, TOO_SLOW));
+        reject(new ImportError(504, job?.what === 'setup' ? SETUP_TOO_SLOW : TOO_SLOW));
       }, this.deadlineMs);
       timer.unref?.();
-      this.waiting.set(seq, { w, resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
+      this.waiting.set(seq, { w, setup: job?.what === 'setup', resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
       w.postMessage({ seq, job });
     });
   }
