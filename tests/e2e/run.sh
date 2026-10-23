@@ -65,13 +65,14 @@
 #                    tests/e2e/work/<project>-host-sessions (or E2E_HOST_SESSIONS_DIR, a new folder: never one of
 #                    yours, never a temporary one) added with ./stack project add, and a FAKE home folder beside it whose ~/.claude and
 #                    ~/.claude-bedrock stores the suite writes (synthetic transcripts: a word to remember, a thinking
-#                    block, fake secrets made at run time — in a prompt, and in a subagent's transcript), read with
+#                    block, fake secrets made at run time — in a prompt, in a subagent's transcript and in a tool's
+#                    output, which the import leaves out by default), read with
 #                    BN_SESSIONS_HOME pointing there — never your real ~/.claude. ./stack sessions scan without
 #                    consent refused; consent --always; scan (the reader container: gone afterwards), fetch --all; then
 #                    browser/code-host-sessions-a: the Import sheet's check step (2 possible secrets, the thinking
-#                    block taken out), Copy into the sandbox (the CC and CB badges), the imported session resumed on
+#                    block taken out, the tool output left out), Copy into the sandbox (the CC and CB badges), the imported session resumed on
 #                    Haiku (it answers the word from the copied history), Continue in this project (a fork in the
-#                    Workspace); then neither fake secret is anywhere in the sandbox's store, the stores on "this
+#                    Workspace); then no fake secret is anywhere in the sandbox's store, the stores on "this
 #                    computer" are unchanged, consent --revoke forgets what the code container read, and a read after
 #                    it is refused. The folder is removed at the end.
 #                    E2E_HOST_SESSIONS_REAL=/abs/one-transcript.jsonl: ALSO one real transcript of yours (the check
