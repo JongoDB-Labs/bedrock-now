@@ -6,6 +6,8 @@ All notable changes to bedrock-now are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-23
+
 ### Added
 
 - **Your Claude Code and claude-bedrock sessions from this computer, in the Code page.** A folder of this computer's
@@ -2151,7 +2153,8 @@ Initial public release.
 - `bin/claude-bedrock`: runs Claude Code against Bedrock through LiteLLM without touching plain `claude`.
 - Cost transparency: Bedrock prices in `./stack costs` and the Open WebUI model picker, spend per key.
 
-[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.20.2...HEAD
+[Unreleased]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.20.2...v0.21.0
 [0.20.2]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/JongoDB-Labs/bedrock-now/compare/v0.19.0...v0.20.0
