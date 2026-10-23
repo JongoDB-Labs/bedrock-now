@@ -238,7 +238,7 @@ running); the others have **Mark as done** or **Skip**. Progress is kept in this
 leaves the button with your progress, and **Start over** at the end resets it.
 
 **After an update** the walkthrough does not open again. A browser that went through an earlier one finds the steps
-it has not opened yet marked **New**, and the button says how many (*15 new* beside **Walkthrough**; under More, *15
+it has not opened yet marked **New**, and the button says how many (*16 new* beside **Walkthrough**; under More, *16
 new steps since you last looked*) until each one is opened. On a first visit nothing is marked new.
 
 ### Activity and search
@@ -608,7 +608,7 @@ it and shows no $ for it.
 The tools are in the sandbox's image, each **pinned and checked** when it is built on your computer: Codex's and
 Copilot's release files by the SHA-256 their GitHub releases list, Gemini CLI and Grok Build by their npm lockfiles,
 Cursor's by the SHA-256 bedrock-now recorded (Cursor publishes none: a changed file stops the build). Together about
-1.1 GB; `TERMINAL_AI_TOOLS` in `.env` (`all`, `none`, or e.g. `codex,copilot`), then `./stack terminal enable`, keeps
+1.3 GB; `TERMINAL_AI_TOOLS` in `.env` (`all`, `none`, or e.g. `codex,copilot`), then `./stack terminal enable`, keeps
 fewer. Their self-updates stay off. Each reaches its own provider through the sandbox's egress proxy (public
 addresses on port 443: nothing to open with the default *Internet only*; with `TERMINAL_EGRESS_ALLOW` set, add their
 names — [docs/security.md](docs/security.md#your-ai-subscriptions) lists them).

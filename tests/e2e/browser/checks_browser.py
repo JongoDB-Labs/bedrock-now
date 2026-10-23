@@ -1843,17 +1843,18 @@ def sidebar_collapse(ctx):
 
 # --- the walkthrough (tour.js): desktop sidebar section, tablet card, phone sheet ---
 
-# 23 steps everywhere; where the Code page is on, its 9 steps and Connect a git host (else one on how to turn it on);
-# with the browser terminal, its step and What the sandbox can reach (tour.js: when)
+# 24 steps everywhere (Your AI subscriptions and keys among them); where the Code page is on, its 9 steps and Connect a
+# git host (else one on how to turn it on); with the browser terminal, its step and What the sandbox can reach
+# (tour.js: when)
 TOUR_TERM = ENV.get("TERMINAL_ENABLED") == "true"
 TOUR_CODE = TOUR_TERM and (ENV.get("CODE_ENABLED") or "").lower() == "true"
-TOUR_STEPS = 23 + (10 if TOUR_CODE else 1) + (2 if TOUR_TERM else 0)
+TOUR_STEPS = 24 + (10 if TOUR_CODE else 1) + (2 if TOUR_TERM else 0)
 # The walkthrough as a browser that went through it before this version left it (the step ids of v0.4–v0.12): the steps
-# it never saw are New — the Code page's (or the step on turning it on), What the sandbox can reach, the API step,
-# Activity and search, Updates, From your phone.
+# it never saw are New — the Code page's (or the step on turning it on), What the sandbox can reach, the API step, Your
+# AI subscriptions and keys, Activity and search, Updates, From your phone.
 OLD_TOUR_IDS = ["welcome", "aws", "openrouter", "voice", "claude-setup", "budgets", "extras", "signin-portal", "signin-chat",
                 "signin-admin", "signin-files", "home", "chat", "voice-use", "docs", "claude", "terminal", "code", "shared", "admin", "done"]
-TOUR_NEW = 4 + (11 if TOUR_CODE else 1) + (1 if TOUR_TERM and not TOUR_CODE else 0)
+TOUR_NEW = 5 + (11 if TOUR_CODE else 1) + (1 if TOUR_TERM and not TOUR_CODE else 0)
 # What the app frames may log by themselves while they load, before their own sign-in (as in the Chat and Files
 # checks): not the walkthrough's doing.
 FRAME_NOISE = [r"^401 GET " + re.escape(origin("files")) + r"/rustfs/admin/v3/",

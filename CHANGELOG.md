@@ -16,7 +16,7 @@ All notable changes to bedrock-now are documented here. The format follows
   it), **GitHub Copilot CLI**, **Cursor CLI** and **Grok Build** (SuperGrok, the X Subscription). Each is in the
   sandbox's image, pinned and checked when it is built (Codex's and Copilot's release files by SHA-256, Gemini CLI's and
   Grok's npm lockfiles, Cursor's by a SHA-256 recorded here — Cursor publishes none), its self-update off;
-  `TERMINAL_AI_TOOLS` (all, none or a list) keeps fewer. The update downloads them once (about 500 MB, 1.1 GB
+  `TERMINAL_AI_TOOLS` (all, none or a list) keeps fewer. The update downloads them once (about 500 MB, 1.3 GB
   unpacked); `TERMINAL_AI_TOOLS=none` in `.env` before updating leaves them out. Each login stays in its own app's file in the sandbox:
   bedrock-now never reads, copies or passes one on, and backups leave them out. `subscriptions` in the terminal and
   `./stack subscriptions status|login TOOL|logout TOOL` here.

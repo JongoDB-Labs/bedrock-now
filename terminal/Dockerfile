@@ -84,7 +84,7 @@ RUN set -eu; ttyd -p 7682 -i lo true >/dev/null 2>&1 & pid=$!; \
 # Claude Code: npm ci refuses any tarball whose checksum differs from the lockfile (the platform's native binary
 # included). No auto-update in the container (read-only); ./stack update rebuilds with the next pinned version.
 COPY claude-code/package.json claude-code/package-lock.json /opt/claude-code/
-RUN cd /opt/claude-code && npm ci --no-audit --no-fund --loglevel=error \
+RUN cd /opt/claude-code && npm ci --no-audit --no-fund --loglevel=error --cache /tmp/npm-cache && rm -rf /tmp/npm-cache \
  && ln -s /opt/claude-code/node_modules/.bin/claude /usr/local/bin/claude && claude --version
 
 # The AI tools of the stage above, read-only like everything here; their commands on PATH are the launchers in bin/

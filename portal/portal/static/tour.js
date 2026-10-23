@@ -8,7 +8,7 @@
 // Loaded after app.js, mobile.js and code.js (all deferred); uses app.js's globals ($, el, api, showTab, appUrl, copy,
 // toast, usd, loadLogins, logins, lastSummary). Progress is a per-browser convenience in localStorage (bn.tour), with the
 // steps this browser has opened (seen): a browser that went through an older walkthrough sees the steps it never opened
-// marked New, and the Walkthrough button says how many ("15 new") until they are opened — a first visit
+// marked New, and the Walkthrough button says how many ("16 new") until they are opened — a first visit
 // sees none. With storage blocked it works for the session. Every node is built with el()/textContent: nothing is
 // parsed as HTML. What it reads: /api/summary (as Home does) and, for a few steps, /api/settings (the same masked
 // snapshot the Settings page shows: the LiteLLM port, the workspace folder, the sandbox's internet, the update helper) —
