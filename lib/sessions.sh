@@ -47,7 +47,7 @@ SESSIONS_EXEC_S="${SESSIONS_EXEC_S:-180}"; SESSIONS_COPY_S="${SESSIONS_COPY_S:-1
 SESSIONS_ROWS_MAX=50              # sessions one read may name
 SESSIONS_SUGGEST_MAX=500          # store folders looked at for suggestions, per tool
 SESSIONS_WALK_MAX=400             # folders listed to turn store folder names into paths, per suggest
-SESSIONS_ACTIONS="sessions-scan sessions-fetch sessions-suggest sessions-copy"   # what the Code page may ask the helper for
+SESSIONS_ACTIONS="sessions-scan sessions-fetch sessions-suggest sessions-copy setup-scan setup-fetch setup-copy"   # what the Code page may ask the helper for (setup-*: lib/sessions_config.sh)
 SESSIONS_REQ_MAX_BYTES=8192       # a ses- request (the portal's limit: portal/portal/settings.py SESSIONS_REQ_MAX)
 SESSIONS_JOB_MIN_INTERVAL_S="${SESSIONS_JOB_MIN_INTERVAL_S:-5}"; SESSIONS_JOB_MAX_PER_DAY="${SESSIONS_JOB_MAX_PER_DAY:-200}"
 SESSIONS_DIALOG_MIN_INTERVAL_S="${SESSIONS_DIALOG_MIN_INTERVAL_S:-60}"; SESSIONS_DIALOG_MAX_PER_DAY="${SESSIONS_DIALOG_MAX_PER_DAY:-10}"
@@ -87,6 +87,8 @@ Usage: ./stack sessions <command>
                                 already copied into the sandbox stay there)
   suggest                       The folders your tools kept sessions for, as suggested projects on the Code page
                                 (store folder names only: no session is read)
+  config                        Your Claude Code setup (memory, skills, agents, commands, MCP servers, plugins, four
+                                settings) and your Git name and email, copied into the sandbox: ./stack sessions config help
 
   T: claude (Claude Code, ~/.claude), claude-bedrock (~/.claude-bedrock) or both (the default).
   From the Code page: a project's ⋯ › Import sessions from this computer… (the update helper asks you in a dialog
@@ -104,6 +106,7 @@ cmd_sessions() {
     copy) sessions_copy "$@" ;;
     consent) sessions_consent "$@" ;;
     suggest) sessions_suggest "$@" ;;
+    config) cmd_sessions_config "$@" ;;   # (Bring your setup: lib/sessions_config.sh)
     help | -h | --help) sessions_usage ;;
     *) sessions_usage >&2; die "unknown: ./stack sessions $sub" ;;
   esac
@@ -154,7 +157,7 @@ _ss_code() {
 _ss_tell() {
   [ -n "$SS_REQ" ] || return 0
   local act="${SS_REQ_ACTION:-}" pid="${SS_REQ_PROJECT:-${SS_ID:-}}"
-  case "$act" in sessions-scan | sessions-fetch | sessions-suggest | sessions-copy) ;; *) act='' ;; esac
+  case "$act" in sessions-scan | sessions-fetch | sessions-suggest | sessions-copy | setup-scan | setup-fetch | setup-copy) ;; *) act='' ;; esac
   case "$pid" in p_[0-9a-f]*) ;; *) pid='' ;; esac
   _ss_code --secs 30 request --id "$SS_REQ" --state "$1" ${2:+--why "$2"} ${act:+--action "$act"} ${pid:+--project "$pid"} >/dev/null 2>&1 || true
   case "$1" in done | refused | cancelled | failed) printf 'sessions-result: %s\n' "$1" >&2 ;; esac
@@ -180,7 +183,10 @@ _ss_consent_lines() {
   f="$(_ss_consent_file)"; now="$(_ss_now)"
   [ -f "$f" ] && [ ! -L "$f" ] || return 0
   while IFS=$'\t' read -r k t p s a n h; do
-    case "$k:$t:$s" in folder:claude:always | folder:claude:once | folder:claude-bedrock:always | folder:claude-bedrock:once | suggest:claude:always | suggest:claude:once | suggest:claude-bedrock:always | suggest:claude-bedrock:once) ;; *) continue ;; esac
+    case "$k:$t:$s" in folder:claude:always | folder:claude:once | folder:claude-bedrock:always | folder:claude-bedrock:once | suggest:claude:always | suggest:claude:once | suggest:claude-bedrock:always | suggest:claude-bedrock:once) ;;
+      # (Bring your setup: lib/sessions_config.sh — your Claude Code setup, claude-bedrock's, your Git name and email)
+      setup:claude:always | setup:claude:once | setup:claude-bedrock:always | setup:claude-bedrock:once | setup:git:always | setup:git:once) ;;
+      *) continue ;; esac
     case "$a" in '' | *[!0-9]*) continue ;; esac
     # (an Allow once lasts an hour)
     [ "$s" = always ] || [ $((now - a)) -lt "$SESSIONS_ONCE_S" ] || continue
@@ -250,8 +256,9 @@ _ss_forget_pending() {
   [ -s "$f" ] && [ ! -L "$f" ] || return 0
   code_on && [ -n "$(dc ps -q --status running code 2>/dev/null)" ] || return 0
   while IFS=$'\t' read -r p t; do
-    case "$p:$t" in all:* | p_[0-9a-f]*:*) ;; *) continue ;; esac
-    res="$(_ss_code --secs 60 forget --project "$p" --tool "$t" 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true
+    case "$p:$t" in all:* | p_[0-9a-f]*:* | setup:claude | setup:claude-bedrock | setup:git | setup:all) ;; *) continue ;; esac
+    if [ "$p" = setup ]; then res="$(_sc_code --secs 60 forget --tool "$t" 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true
+    else res="$(_ss_code --secs 60 forget --project "$p" --tool "$t" 2>/dev/null | grep '^{"ok":' | tail -n 1)" || true; fi
     case "$res" in '{"ok":true'*) ;; *) left="$left$p	$t"$'\n' ;; esac
   done < "$f"
   if [ -n "$left" ]; then printf '%s' "$left" > "$f.tmp" && mv -f "$f.tmp" "$f"; else rm -f "$f"; fi
@@ -259,25 +266,27 @@ _ss_forget_pending() {
 # sessions_status_sync — .state/status/sessions.json for Settings: what bedrock-now may read here (always, and an Allow
 # once while it holds), by project (its name and folder) — no session, no title
 sessions_status_sync() {
-  local k t p s a n h rows='' sug='' name host rec
+  local k t p s a n h rows='' sug='' setup='' name host rec
   mkdir -p "$(status_dir)" 2>/dev/null || return 0
   while IFS=$'\t' read -r k t p s a n h; do
     if [ "$k" = suggest ]; then sug="$sug${sug:+,}{\"tool\":\"$t\",\"scope\":\"$s\",\"at\":$a}"; continue; fi
+    if [ "$k" = setup ]; then setup="$setup${setup:+,}{\"tool\":\"$t\",\"scope\":\"$s\",\"at\":$a}"; continue; fi
     rec="$(project_find "$p" 2>/dev/null)"
     name="$(printf '%s' "$rec" | cut -f2)"; host="$(printf '%s' "$rec" | cut -f7)"
     [ -n "$name" ] && [ "$host" = "$h" ] || continue   # (a folder removed, or added again: its consent no longer holds)
     rows="$rows${rows:+,}{\"tool\":\"$t\",\"project\":\"$p\",\"name\":$(_pj_json "$name"),\"host\":$(_pj_json "$h"),\"scope\":\"$s\",\"at\":$a}"
   done < <(_ss_consent_lines)
-  _pj_write_file "$(sessions_status_file)" "{\"version\":1,\"written_at\":$(_ss_now),\"folders\":[$rows],\"suggest\":[$sug]}" 644 || true
+  _pj_write_file "$(sessions_status_file)" "{\"version\":1,\"written_at\":$(_ss_now),\"folders\":[$rows],\"suggest\":[$sug],\"setup\":[$setup]}" 644 || true
 }
 
 # --- asking you: in this terminal, or in a dialog on this computer's screen (the helper), never over remote access ---
 SS_TEXT_FOLDER='The Code page asks to read your session history of %s for this folder:\n\n%s\n\nOnly a list of them is made now (titles, dates, sizes); you pick the sessions to copy next, and see them first. Transcripts can hold secrets that passed through them. Nothing is ever written back.'
 SS_TEXT_SUGGEST='The Code page asks to read the names of the folders %s keep sessions for on this computer, to suggest them as projects. No session is read.'
-# _ss_dialog TEXT -> once | always on this computer's screen (nothing: Don't allow, closed, or no answer in 2 minutes);
-# 3: no dialog can be shown here. The text is fixed but the folder's path (yours: folders.tsv); nothing of a request's.
+# _ss_dialog TEXT [ALWAYS] -> once | always on this computer's screen (nothing: Don't allow, closed, or no answer in 2
+# minutes); 3: no dialog can be shown here. The text is fixed but the folder's path (yours: folders.tsv); nothing of a
+# request's. ALWAYS: the third button's words (Always for this folder; Bring your setup's: Always).
 _ss_dialog() {
-  local out='' t
+  local out='' t al="${2:-Always for this folder}"
   helper_screen || return 3
   # (every dialog under a deadline here: kdialog has no timeout of its own, and none must hold the helper — past it,
   # Don't allow)
@@ -286,22 +295,22 @@ _ss_dialog() {
   else
     t="$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
     case "$(_helper_os)" in
-      Darwin) out="$(_with_deadline "$SESSIONS_DIALOG_S" osascript -e "button returned of (display dialog \"$t\" with title \"bedrock-now\" buttons {\"Don't allow\", \"Allow once\", \"Always for this folder\"} default button \"Don't allow\" cancel button \"Don't allow\" with icon caution giving up after 120)" 2>/dev/null)" || out='' ;;
+      Darwin) out="$(_with_deadline "$SESSIONS_DIALOG_S" osascript -e "button returned of (display dialog \"$t\" with title \"bedrock-now\" buttons {\"Don't allow\", \"Allow once\", \"$al\"} default button \"Don't allow\" cancel button \"Don't allow\" with icon caution giving up after 120)" 2>/dev/null)" || out='' ;;
       *) if command -v zenity >/dev/null 2>&1; then
-           out="$(_with_deadline "$SESSIONS_DIALOG_S" zenity --question --title bedrock-now --no-wrap --text "$1" --ok-label 'Allow once' --cancel-label "Don't allow" --extra-button 'Always for this folder' --timeout 120 2>/dev/null)" || rc=$?
+           out="$(_with_deadline "$SESSIONS_DIALOG_S" zenity --question --title bedrock-now --no-wrap --text "$1" --ok-label 'Allow once' --cancel-label "Don't allow" --extra-button "$al" --timeout 120 2>/dev/null)" || rc=$?
            [ "$rc" != 0 ] || out='Allow once'
            [ "$rc" != 124 ] || out=''
          else
-           _with_deadline "$SESSIONS_DIALOG_S" kdialog --title bedrock-now --yesnocancel "$1" --yes-label 'Allow once' --no-label 'Always for this folder' --cancel-label "Don't allow" >/dev/null 2>&1 || rc=$?
-           case "$rc" in 0) out='Allow once' ;; 1) out='Always for this folder' ;; *) out='' ;; esac
+           _with_deadline "$SESSIONS_DIALOG_S" kdialog --title bedrock-now --yesnocancel "$1" --yes-label 'Allow once' --no-label "$al" --cancel-label "Don't allow" >/dev/null 2>&1 || rc=$?
+           case "$rc" in 0) out='Allow once' ;; 1) out="$al" ;; *) out='' ;; esac
          fi ;;
     esac
   fi
-  case "$out" in 'Allow once') echo once ;; 'Always for this folder' | 'Always') echo always ;; esac
+  case "$out" in 'Allow once') echo once ;; "$al" | 'Always for this folder' | 'Always') echo always ;; esac
   return 0
 }
-# _ss_ask TEXT ORIGIN SCREEN [ALWAYS_WORDS] -> once | always: asked in this terminal, or (SCREEN 1, a local request of the
-# helper's) in a dialog on this computer's screen; else this command ends saying how to allow it
+# _ss_ask TEXT ORIGIN SCREEN [ALWAYS_WORDS] [ALWAYS_BUTTON] -> once | always: asked in this terminal, or (SCREEN 1, a local
+# request of the helper's) in a dialog on this computer's screen; else this command ends saying how to allow it
 _ss_ask() {
   local ans rc
   [ "$2" != remote ] || _ss_fail remote "only on the computer running bedrock-now: a request over remote access may read sessions of a look already allowed there, never allow one"
@@ -318,7 +327,7 @@ _ss_ask() {
     _ss_fail limit "the helper asks you at most once a minute, ${SESSIONS_DIALOG_MAX_PER_DAY} times a day: try again later"
   _kind_count sessions-dialogs dialog
   _ss_tell asking
-  rc=0; ans="$(_ss_dialog "$(printf '%b' "$1")")" || rc=$?
+  rc=0; ans="$(_ss_dialog "$(printf '%b' "$1")" "${5:-}")" || rc=$?
   [ "$rc" != 3 ] || _ss_fail no-screen "no dialog can be shown on this computer (no screen): in a terminal there, ./stack sessions import --project NAME"
   [ -n "$ans" ] || _ss_fail denied "not allowed on this computer: nothing was read"
   echo "$ans"
@@ -336,13 +345,15 @@ _ss_reader_user() {
   printf '%s:%s\n' "$u" "$g"
 }
 SS_MOUNTS=()
+# (the reader's script: the sessions' — server/harness/claude.mjs —, or Bring your setup's: lib/sessions_config.sh)
+SS_READER_SCRIPT=''
 # _ss_reader OUT ARGS… — node server/harness/claude.mjs ARGS… in the reader container (SS_MOUNTS: its folders), its
 # output into OUT; at most SESSIONS_READER_TIMEOUT_S (then the container is removed by its name). 0 when it ran.
 _ss_reader_run() {   # _ss_reader_run NAME USER ARGS… — the reader's container (its output: stdout)
   local name="$1" user="$2"
   shift 2
   docker run --rm --name "$name" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 768m \
-    --tmpfs /tmp:size=8m --user "$user" --entrypoint node ${SS_MOUNTS[@]+"${SS_MOUNTS[@]}"} "$(_ss_image)" server/harness/claude.mjs "$@" </dev/null
+    --tmpfs /tmp:size=8m --user "$user" --entrypoint node ${SS_MOUNTS[@]+"${SS_MOUNTS[@]}"} "$(_ss_image)" "${SS_READER_SCRIPT:-server/harness/claude.mjs}" "$@" </dev/null
 }
 _ss_reader() {
   local out="$1" name rc=0 user
@@ -899,12 +910,18 @@ _ss_check_request() {
   body="${body%x}"; body="${body%$'\n'}"
   case "$body" in *$'\n'* | *$'\r'*) echo "more than one line" >&2; return 1 ;; esac
   # (each whole line one pattern, held in a variable: a quoted part of =~ would be taken literally)
-  local head='^\{"action":"(sessions-scan|sessions-fetch|sessions-suggest|sessions-copy)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","origin":"(local|remote)"'
+  local head='^\{"action":"(sessions-scan|sessions-fetch|sessions-suggest|sessions-copy|setup-scan|setup-fetch|setup-copy)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","origin":"(local|remote)"'
   local re_scan="$head"',"project":"(p_[0-9a-f]{8})","tool":"(claude|claude-bedrock|both)"\}$'
   local re_fetch="$head"',"project":"(p_[0-9a-f]{8})","scan":"([0-9a-f]{32})","rows":"([0-9]{1,5}(,[0-9]{1,5}){0,49})"\}$'
   local re_suggest="$head"'\}$'
   local tokre='(main|(subagents|tool-results)/[A-Za-z0-9][A-Za-z0-9._-]*)#[0-9a-f]{16}'
   local re_copy="$head"',"project":"(p_[0-9a-f]{8})","session":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})","digest":"([0-9a-f]{64})","thinking":"(default|strip|keep)","outputs":"(out|in)","keep":"(('"$tokre"'(,'"$tokre"')*)?)"\}$'
+  # (Bring your setup: lib/sessions_config.sh — a look by tool, with a project or none; an open by rows of a look; a copy
+  # of one unit as its check showed it, with what it keeps)
+  local re_sscan="$head"',"project":"(p_[0-9a-f]{8}|-)","tool":"(claude|claude-bedrock|git|all)"\}$'
+  local re_sfetch="$head"',"scan":"([0-9a-f]{32})","rows":"([0-9]{1,5}(,[0-9]{1,5}){0,99})"\}$'
+  local stok='(v|f[0-9]{1,3})#[0-9a-f]{16}'
+  local re_scopy="$head"',"units":"(s_[0-9a-f]{16}(\+s_[0-9a-f]{16}){0,3})","digest":"([0-9a-f]{64})","mode":"(replace|append)","conflict":"(leave|replace)","keep":"('"$stok"'(,'"$stok"'){0,63})"\}$'
   if [[ $body =~ $re_scan ]] && [ "${BASH_REMATCH[1]}" = sessions-scan ]; then
     project="${BASH_REMATCH[6]}"; tool="${BASH_REMATCH[7]}"
   elif [[ $body =~ $re_fetch ]] && [ "${BASH_REMATCH[1]}" = sessions-fetch ]; then
@@ -914,11 +931,19 @@ _ss_check_request() {
     project="${BASH_REMATCH[6]}"; session="${BASH_REMATCH[7]}"; digest="${BASH_REMATCH[8]}"; thinking="${BASH_REMATCH[9]}"; outputs="${BASH_REMATCH[10]}"; keep="${BASH_REMATCH[11]}"
     # (nothing kept: only a copy that brings the tool outputs — from another device, they come only this way)
     if [ -z "$keep" ]; then [ "$outputs" = in ] || { echo "a copy that keeps nothing and brings no outputs is not the helper's" >&2; return 1; }; keep=-; fi
+  # (setup-*: the project and tool in theirs; the look and rows in theirs; the units in session's, mode in thinking's,
+  # conflict in outputs')
+  elif [[ $body =~ $re_sscan ]] && [ "${BASH_REMATCH[1]}" = setup-scan ]; then
+    project="${BASH_REMATCH[6]}"; tool="${BASH_REMATCH[7]}"
+  elif [[ $body =~ $re_sfetch ]] && [ "${BASH_REMATCH[1]}" = setup-fetch ]; then
+    scan="${BASH_REMATCH[6]}"; rows="${BASH_REMATCH[7]}"
+  elif [[ $body =~ $re_scopy ]] && [ "${BASH_REMATCH[1]}" = setup-copy ]; then
+    session="${BASH_REMATCH[6]}"; digest="${BASH_REMATCH[8]}"; thinking="${BASH_REMATCH[9]}"; outputs="${BASH_REMATCH[10]}"; keep="${BASH_REMATCH[11]}"
   else echo "not a valid request" >&2; return 1; fi
   action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"; origin="${BASH_REMATCH[5]}"
   [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }
   # (a part's name 200 characters at most, 64 tokens at most — the portal's limits, checked again)
-  if [ "$keep" != - ]; then
+  if [ "$keep" != - ] && [ "$action" != setup-copy ]; then
     local t k=0 IFS=,
     for t in $keep; do k=$((k + 1)); [ "${#t}" -le 220 ] || { echo "a keep too long" >&2; return 1; }; done
     [ "$k" -le 64 ] || { echo "more than 64 findings kept at once" >&2; return 1; }
@@ -966,6 +991,10 @@ sessions_poll_once() {
       sessions-fetch) set -- sessions fetch --project "$project" --scan "$scan" --rows "$rows" --origin "$origin" --request "$nonce" ;;
       sessions-suggest) set -- sessions suggest --origin "$origin" --request "$nonce" --screen ;;
       sessions-copy) set -- sessions copy --project "$project" --session "$session" --digest "$digest" --thinking "$thinking" --outputs "$outputs" --keep "$keep" --origin "$origin" --request "$nonce" ;;
+      # (Bring your setup: lib/sessions_config.sh)
+      setup-scan) set -- sessions config scan --tool "$tool" --project "$project" --origin "$origin" --request "$nonce" --screen ;;
+      setup-fetch) set -- sessions config open --scan "$scan" --rows "$rows" --origin "$origin" --request "$nonce" ;;
+      setup-copy) set -- sessions config copy --units "$session:$digest" --mode "$thinking" --conflict "$outputs" --keep "$keep" --origin "$origin" --request "$nonce" ;;
     esac
     logf="$(helper_dir)/last-sessions.log"
     : > "$logf"; chmod 600 "$logf"
@@ -994,7 +1023,7 @@ sessions_helper_tick() {
   if mkdir -p "$pub" 2>/dev/null && chmod 700 "$(projects_dir)" 2>/dev/null && chmod 755 "$pub" 2>/dev/null; then
     f="$pub/helper.json"
     if [ ! -f "$f" ] || [ -L "$f" ] || [ -n "$(find "$f" -mmin +1 2>/dev/null)" ]; then
-      _pj_write_file "$f" "{\"sessions\": [\"sessions-scan\", \"sessions-fetch\", \"sessions-suggest\", \"sessions-copy\"], \"screen\": $(helper_screen && echo true || echo false), \"written_at\": $(date +%s)}" 644 || true
+      _pj_write_file "$f" "{\"sessions\": [$(for a in $SESSIONS_ACTIONS; do printf '"%s",' "$a"; done | sed 's/,$//')], \"screen\": $(helper_screen && echo true || echo false), \"written_at\": $(date +%s)}" 644 || true
     fi
   fi
   _ss_forget_pending 2>/dev/null || true
@@ -1002,6 +1031,6 @@ sessions_helper_tick() {
 # sessions_uninstall_cleanup — ./stack uninstall: the shared folder and the status file go (consent.tsv stays, like .env)
 sessions_uninstall_cleanup() {
   rm -f "$(projects_public_dir)/helper.json" 2>/dev/null || true; rmdir "$(projects_public_dir)" 2>/dev/null || true
-  rm -rf "$(_ss_scans_dir)" 2>/dev/null || true
+  rm -rf "$(_ss_scans_dir)" "$(sessions_dir)/setup" 2>/dev/null || true
   rm -f "$(sessions_status_file)" "$(_ss_forget_file)" 2>/dev/null || true
 }

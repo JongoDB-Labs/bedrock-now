@@ -311,10 +311,10 @@ test_the_helper_takes_the_code_pages_requests_from_the_portal_only_in_their_fixe
   [ ! -s "$CALLS" ] || { echo "replayed: $(cat "$CALLS")" >&2; return 1; }
   # what it offers the Code page: in ./stack's folder for the code container (read-only there)
   sessions_helper_tick
-  assert_contains "$(cat "$(projects_public_dir)/helper.json")" '"sessions": ["sessions-scan", "sessions-fetch", "sessions-suggest", "sessions-copy"]'
+  assert_contains "$(cat "$(projects_public_dir)/helper.json")" '"sessions": ["sessions-scan","sessions-fetch","sessions-suggest","sessions-copy","setup-scan","setup-fetch","setup-copy"]'
   # and in the capability file the portal reads (it refuses a request the helper does not take)
   settings_helper_tick 2>/dev/null || true
-  assert_contains "$(cat "$(settings_capability_file)")" '"sessions": ["sessions-revoke","sessions-scan","sessions-fetch","sessions-suggest","sessions-copy"]'
+  assert_contains "$(cat "$(settings_capability_file)")" '"sessions": ["sessions-revoke","sessions-scan","sessions-fetch","sessions-suggest","sessions-copy","setup-scan","setup-fetch","setup-copy"]'
 }
 
 test_nothing_on_this_computer_waits_for_ever_a_dialog_a_command_in_the_code_container_a_helper_job() {
@@ -392,7 +392,7 @@ sessions consent --suggest --revoke"
   if settings_poll_once 2>/dev/null; then return 1; fi
   assert_eq "$(cat "$CALLS" | wc -l | tr -d ' ')" 3
   settings_helper_tick 2>/dev/null || true
-  assert_contains "$(cat "$(settings_capability_file)")" '"sessions": ["sessions-revoke","sessions-scan","sessions-fetch","sessions-suggest","sessions-copy"]'
+  assert_contains "$(cat "$(settings_capability_file)")" '"sessions": ["sessions-revoke","sessions-scan","sessions-fetch","sessions-suggest","sessions-copy","setup-scan","setup-fetch","setup-copy"]'
 }
 
 test_what_a_store_said_is_printed_as_plain_ascii() {

@@ -17,9 +17,11 @@
 #                                                        made there: origin local), then ./stack project add <chosen>
 #                                        project-remove / project-mode-ro  {…,"when":"now|idle","project":"p_<8 hex>"}
 #                                                        by the project's id in folders.tsv (narrowing: from anywhere)
-#                                        sessions-revoke {…,"project":"p_<8 hex>|all","tool":"claude|claude-bedrock|both|suggest"}
+#                                        sessions-revoke {…,"project":"p_<8 hex>|all","tool":"claude|claude-bedrock|both|suggest|setup-…"}
 #                                                        what bedrock-now may read of your sessions here, taken back
-#                                                        (narrowing: from anywhere; lib/sessions.sh)
+#                                                        (narrowing: from anywhere; lib/sessions.sh) — setup-claude,
+#                                                        setup-claude-bedrock, setup-git, setup-all: of your setup
+#                                                        (Bring your setup; lib/sessions_config.sh)
 #   .state/requests/ses-<nonce>.json   the Code page's Import sheet: a look, a read, suggestions, a copy that keeps a
 #                                      possible secret (lib/sessions.sh sessions_poll_once; the portal checked the password)
 # Each kind has its own rate limits (state in .state/helper/), separate from update/rollback/clean.
@@ -245,7 +247,8 @@ act_check_request() {
     action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
     when="${BASH_REMATCH[5]}"; project="${BASH_REMATCH[6]}"
   # (what bedrock-now may read of your sessions here: taken back by the project's id, or all — the tool in mode's place)
-  elif _sv_re "$body" '^\{"action":"(sessions-revoke)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","project":"(p_[0-9a-f]{8}|all)","tool":"(claude|claude-bedrock|both|suggest)"\}$'; then
+  # (setup-*: what may be read of your setup — Bring your setup, lib/sessions_config.sh —, by tool, with project all)
+  elif _sv_re "$body" '^\{"action":"(sessions-revoke)","requested_at":([0-9]{1,12}),"nonce":"([0-9a-f]{32})","auth":"([A-Za-z0-9+/]{4,}={0,2})","project":"(p_[0-9a-f]{8}|all)","tool":"(claude|claude-bedrock|both|suggest|setup-claude|setup-claude-bedrock|setup-git|setup-all)"\}$'; then
     action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"
     project="${BASH_REMATCH[5]}"; mode="${BASH_REMATCH[6]}"
   else
@@ -328,7 +331,7 @@ _job_deadline() {
     project-*) echo "${HELPER_PROJECT_MAX_S:-2700} 0" ;;
     # (the Code page's Import sheet, and Take back: a dialog of 2 minutes, a reader of 3, commands in the code
     # container with deadlines of their own — 15 minutes in all is generous; lib/sessions.sh)
-    sessions-*) echo "${HELPER_SESSIONS_MAX_S:-900} 0" ;;
+    sessions-* | setup-*) echo "${HELPER_SESSIONS_MAX_S:-900} 0" ;;
     settings) echo "${HELPER_LONG_MAX_S:-14400} $idle" ;;
     *) echo "0 0" ;;
   esac
@@ -422,7 +425,11 @@ helper_run_diag() {
     project-remove) helper_write_status running "Removing the folder from the sandbox"; set -- project remove "$project" "$flag" ;;
     project-mode-ro) helper_write_status running "Making the folder read-only in the sandbox"; set -- project mode "$project" ro "$flag" ;;
     sessions-revoke) helper_write_status running "Taking back what bedrock-now may read of your sessions"
-      if [ "$mode" = suggest ]; then set -- sessions consent --suggest --revoke; else set -- sessions consent --revoke --project "$project" --tool "$mode"; fi ;;
+      case "$mode" in
+        suggest) set -- sessions consent --suggest --revoke ;;
+        setup-*) set -- sessions config consent --tool "${mode#setup-}" --revoke ;;
+        *) set -- sessions consent --revoke --project "$project" --tool "$mode" ;;
+      esac ;;
   esac
   # in the background, the heartbeat going on (a model check takes about 2 minutes, a backup longer)
   read -r lim idle <<< "$(_job_deadline "$action")"

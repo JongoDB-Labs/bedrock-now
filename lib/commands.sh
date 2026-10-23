@@ -68,6 +68,8 @@ Usage: ./stack <command> [--yes]
   sessions     Your Claude Code and claude-bedrock sessions on this computer, copied into a project's sandbox
                (only after you allow it here; nothing is written back): list | import --project NAME
                | scan | fetch | consent [--always|--once|--revoke] | suggest   (secrets redacted by default)
+               config: your setup (CLAUDE.md, skills, agents, commands, MCP servers, plugins, four settings,
+               your Git name and email) brought into the sandbox: config import | scan | open | consent
   password     Where the portal password is (PORTAL_PASSWORD in this folder's .env)
                --show prints it (only to a terminal)
   config       Every setting in .env, secrets masked (the portal's Settings tab shows the same):
@@ -1858,6 +1860,9 @@ cmd_uninstall() {
 # Your Claude Code and claude-bedrock sessions on this computer, copied into the sandbox (./stack sessions; the helper's
 # Code page requests).
 . "$STACK_DIR/lib/sessions.sh"
+# Bring your setup: your Claude Code setup and Git name and email on this computer, copied into the sandbox (./stack
+# sessions config).
+. "$STACK_DIR/lib/sessions_config.sh"
 # Its Git hosts from a gh / glab login on this computer (./stack git-host import).
 . "$STACK_DIR/lib/githost.sh"
 # claude-bedrock's own Claude Code config folder (./stack uninstall names it; bin/claude-bedrock uses it).
