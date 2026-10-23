@@ -81,6 +81,18 @@
 #                    for a transcript you picked and agreed to use: it is copied into the fake store with its folder
 #                    rewritten, imported (redacted) and resumed with one Haiku prompt; nothing of it is kept or sent
 #                    anywhere but this throwaway, which is removed afterwards
+#   --host-config    Bring your setup (E2E_HOST_CONFIG=1 does the same; needs the Code page and the browser part): a FAKE
+#                    home in tests/e2e/work/<project>-host-config (or E2E_HOST_CONFIG_DIR, a new folder) with a skill, a
+#                    small CLAUDE.md, a permission rule, an npx MCP server whose env holds a fake secret made at run
+#                    time, a second one to keep, a uvx one, and a Git name and email — read with BN_SESSIONS_HOME
+#                    pointing there, never your real home. ./stack sessions config scan without consent refused; consent
+#                    --always; scan (its reader container gone afterwards); open --all; then browser/code-host-config-a:
+#                    the sheet's check step (the secret left out by default, uvx not in the sandbox, the tokens), Copy
+#                    of all but the server to keep, then a new Haiku session whose start lists the skill and the npx
+#                    server; ./stack sessions config copy keeps the second server's secret (the helper's command for a
+#                    copy that keeps one). From inside the sandbox: the first secret nowhere, the kept one in its MCP
+#                    configuration, the skill there, the Git name and email its ~/.gitconfig's; the fake home
+#                    unchanged; consent --revoke forgets; an open after it refused. The fake home goes at the end.
 #   --helper         also run the throwaway's update helper (E2E_HELPER=1 does the same), so the settings/* checks run:
 #                    its own bin/bedrock-now-helper in the foreground, as a background child of this run (never
 #                    ./stack helper install: no launchd agent, no systemd unit), SETTINGS_MIN_INTERVAL_S=5, log in
@@ -113,6 +125,7 @@ HELPER=0; [ "${E2E_HELPER:-0}" != 1 ] || HELPER=1
 GIT_SERVER=0; [ "${E2E_GIT_SERVER:-0}" != 1 ] || GIT_SERVER=1
 HOST_FOLDERS=0; [ "${E2E_HOST_FOLDERS:-0}" != 1 ] || HOST_FOLDERS=1
 HOST_SESSIONS=0; [ "${E2E_HOST_SESSIONS:-0}" != 1 ] || HOST_SESSIONS=1
+HOST_CONFIG=0; [ "${E2E_HOST_CONFIG:-0}" != 1 ] || HOST_CONFIG=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift 2 ;;
@@ -132,6 +145,7 @@ while [ $# -gt 0 ]; do
     --git-server) GIT_SERVER=1; shift ;;
     --host-folders) HOST_FOLDERS=1; shift ;;
     --host-sessions) HOST_SESSIONS=1; shift ;;
+    --host-config) HOST_CONFIG=1; shift ;;
     --only) ONLY="${2:?--only needs a list (cli,browser,voice,claude,mutating)}"; shift 2 ;;
     -h | --help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (tests/e2e/run.sh --help)" >&2; exit 2 ;;
@@ -179,6 +193,13 @@ if [ "$HOST_SESSIONS" = 1 ]; then
     echo "--host-sessions: ./stack project would refuse a folder in $HS_PARENT: $why — set E2E_HOST_SESSIONS_DIR=/abs/new-folder somewhere it accepts" >&2
     exit 2
   fi
+fi
+
+# --host-config: its fake home's parent (host_config_parent), new
+if [ "$HOST_CONFIG" = 1 ]; then
+  HC_PARENT="$(host_config_parent)"
+  case "$HC_PARENT" in /*) ;; *) echo "E2E_HOST_CONFIG_DIR must be an absolute path" >&2; exit 2 ;; esac
+  [ ! -e "$HC_PARENT" ] || { echo "--host-config: $HC_PARENT is there already (an earlier run's? remove it), or set E2E_HOST_CONFIG_DIR=/abs/new-folder" >&2; exit 2; }
 fi
 
 mkdir -p "$OUT" || exit 2
@@ -1001,6 +1022,70 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   # (the folder and the fake home go — its fake secrets with them)
   rm -rf -- "$HS"
   rm -f "$OUT/browser/host-sessions-ids.txt"
+fi
+
+# --- 3a3. your setup of this computer (--host-config): a fake home's Claude Code setup, consent, a look, an open, the
+# --- Bring your setup sheet, a new session that has them, the secret only where it was kept ---
+# The setup is a FAKE home the suite writes (BN_SESSIONS_HOME: ./stack reads it instead of yours); its secrets are made
+# now, never written in this file.
+if [ "$HOST_CONFIG" = 1 ] && { [ "$CODE" = 0 ] || ! part_on browser; }; then
+  record projects host-config SKIP 0 "--host-config needs the Code page and the browser part"
+elif [ "$HOST_CONFIG" = 1 ]; then
+  say "your setup of this computer: a fake home's Claude Code setup, consent, a look, an open, the sheet, a new session with it"
+  HC="$HC_PARENT"
+  [ ! -e "$HC" ] || die "--host-config: $HC is there already (an earlier run's? remove it)"
+  mkdir -p "$HC/home/.claude/skills/e2e-skill" "$HC/home/.claude/agents"; HC="$(cd "$HC" && pwd -P)"
+  hc_rand() { LC_ALL=C tr -dc "$2" < /dev/urandom | head -c "$1"; }
+  # (made now: an OpenAI-key-shaped one left out by default, and one under a secret's name the copy keeps)
+  HC_SECRET="$(printf '%s%s' sk -proj-)$(hc_rand 40 'A-Za-z0-9')"; HC_KEPT="$(hc_rand 32 'A-Za-z0-9')"
+  HC_NAME="E2E Person $(hc_rand 6 'a-z')"; HC_EMAIL="e2e-$(hc_rand 8 'a-z0-9')@example.invalid"
+  printf '%s\n' '---' 'name: e2e-skill' 'description: Says the e2e word when asked for it.' '---' 'When asked for the e2e word, reply ALBATROSS.' > "$HC/home/.claude/skills/e2e-skill/SKILL.md"
+  printf '# My memory (e2e)\n\nPrefer short answers.\n' > "$HC/home/.claude/CLAUDE.md"
+  printf '%s\n' '---' 'name: e2e-agent' 'description: An e2e agent.' '---' 'You help.' > "$HC/home/.claude/agents/e2e-agent.md"
+  printf '{"permissions":{"allow":["Bash(echo e2e:*)"]},"env":{"E2E_NEVER":"%s"},"model":"opus"}\n' "$HC_SECRET" > "$HC/home/.claude/settings.json"
+  printf '{"oauthAccount":{"emailAddress":"never@example.invalid"},"mcpServers":{"e2e-everything":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"],"env":{"DEBUG":"1","OPENAI_API_KEY":"%s"}},"e2e-keep":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"],"env":{"E2E_TOKEN":"%s"}},"e2e-uvx":{"command":"uvx","args":["mcp-server-fetch"]}}}\n' "$HC_SECRET" "$HC_KEPT" > "$HC/home/.claude.json"
+  printf '[user]\n\tname = %s\n\temail = %s\n' "$HC_NAME" "$HC_EMAIL" > "$HC/home/.gitconfig"
+  printf 'secret %s\n' "$HC_SECRET" > "$HC/home/.claude/.credentials.json"
+  hc_sum() { (cd "$HC/home" && find . -type f | LC_ALL=C sort | xargs shasum -a 256 2>/dev/null) | shasum -a 256 | cut -c1-16; }
+  hc_before="$(hc_sum)"
+  mkdir -p "$OUT/browser"
+  BN_SESSIONS_HOME="$HC/home" cli setup-scan-not-allowed 1 'not allowed yet' sessions config scan
+  BN_SESSIONS_HOME="$HC/home" cli setup-consent 0 'without asking again' sessions config consent --always
+  BN_SESSIONS_HOME="$HC/home" cli setup-scan 0 'item\(s\) of Claude Code, claude-bedrock, Git listed' sessions config scan
+  t0="$(now)"
+  readers="$(docker ps -a --filter name=bn-reader- --format '{{.Names}}' | grep -c . || true)"
+  if [ "${readers:-0}" = 0 ]; then record projects host-config-reader-gone PASS "$(( $(now) - t0 ))" "the reader's throwaway container is gone after the look"
+  else record projects host-config-reader-gone FAIL 0 "$readers reader container(s) left"; fi
+  BN_SESSIONS_HOME="$HC/home" cli setup-open 0 'read into the Code page' sessions config open --all
+  # (the browser pass writes the unit to keep and its tokens here: OUT/browser/host-config-keep.txt)
+  E2E_CONFIG_PASS=a browser_run "your setup of this computer: the Bring your setup sheet" 'browser/code-host-config-a$' config-a runner-config-a
+  t0="$(now)"
+  keep="$(cat "$OUT/browser/host-config-keep.txt" 2>/dev/null)"
+  units="${keep%% *}"; toks="${keep#* }"
+  if [ -n "$keep" ]; then BN_SESSIONS_HOME="$HC/home" cli setup-copy-kept 0 'copied into the sandbox, the possible secrets you chose kept' sessions config copy --units "$units" --keep "$toks"
+  else record cli setup-copy-kept FAIL 0 "the browser pass left no unit to keep"; fi
+  tc="$(svc_id terminal)"; cc_id="$(svc_id code)"
+  # from inside the sandbox: the left-out secret nowhere, the kept one in its MCP configuration, the skill, Git's name
+  leak="$(docker exec -e S="$HC_SECRET" "$tc" sh -c 'grep -rlF -e "$S" /home/claude/.claude /home/claude/.claude.json /home/claude/.gitconfig 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
+  kept="$(docker exec -e K="$HC_KEPT" "$tc" sh -c 'grep -c -F -e "$K" /home/claude/.claude.json 2>/dev/null' 2>/dev/null | tr -d ' ')"
+  skill="$(docker exec "$tc" sh -c 'test -f /home/claude/.claude/skills/e2e-skill/SKILL.md && echo yes' 2>/dev/null)"
+  gname="$(docker exec "$tc" git config --file /home/claude/.gitconfig user.name 2>/dev/null)"
+  gmail="$(docker exec "$tc" git config --file /home/claude/.gitconfig user.email 2>/dev/null)"
+  never="$(docker exec "$tc" sh -c 'grep -lF -e E2E_NEVER -e never@example.invalid /home/claude/.claude/settings.json /home/claude/.claude.json 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
+  if [ "${leak:-1}" = 0 ] && [ "${kept:-0}" -ge 1 ] && [ "$skill" = yes ] && [ "$gname" = "$HC_NAME" ] && [ "$gmail" = "$HC_EMAIL" ] && [ "${never:-1}" = 0 ] && [ "$(hc_sum)" = "$hc_before" ]; then
+    record projects host-config-in-the-sandbox PASS "$(( $(now) - t0 ))" "the skill and the Git name and email there; the left-out secret nowhere, the kept one in the MCP configuration; env and the account never; the fake home unchanged"
+  else record projects host-config-in-the-sandbox FAIL "$(( $(now) - t0 ))" "leak=$leak kept=$kept skill=$skill name=$([ "$gname" = "$HC_NAME" ] && echo ok || echo no) email=$([ "$gmail" = "$HC_EMAIL" ] && echo ok || echo no) never=$never home unchanged: $([ "$(hc_sum)" = "$hc_before" ] && echo yes || echo no)"; fi
+  BN_SESSIONS_HOME="$HC/home" cli setup-revoke 0 'no longer reads your' sessions config consent --revoke
+  t0="$(now)"
+  if docker exec "$cc_id" sh -c 'ls /var/lib/bn-code/imports/' 2>/dev/null | grep -q '^setup-index'; then
+    record projects host-config-forgotten FAIL 0 "the code container still has the look after the consent was taken back"
+  else record projects host-config-forgotten PASS "$(( $(now) - t0 ))" "taken back: the code container's look is forgotten (what was copied stays in the sandbox)"; fi
+  BN_SESSIONS_HOME="$HC/home" cli setup-open-after-revoke 1 'no look at your setup|that look is gone|not allowed' sessions config open --all
+  # (tidy: the throwaway's later checks start without these MCP servers; the fake home and its secrets go)
+  for n in e2e-everything e2e-keep e2e-uvx; do docker exec "$tc" claude mcp remove "$n" --scope user >/dev/null 2>&1 || true; done
+  rm -rf -- "$HC"
+  rm -f "$OUT/browser/host-config-keep.txt"
+  unset HC_SECRET HC_KEPT
 fi
 
 # --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---

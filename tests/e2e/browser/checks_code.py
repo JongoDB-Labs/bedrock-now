@@ -3319,6 +3319,72 @@ def host_folders_c(ctx):
     return f"the session resumed in {app['root']} after the sandbox restarted twice"
 
 
+# --- your setup of this computer (tests/e2e/run.sh --host-config): run.sh wrote a fake home's Claude Code setup,
+# --- allowed it with ./stack sessions config consent, looked and opened every item; this pass checks and copies ---
+CONFIG_PASS = os.environ.get("E2E_CONFIG_PASS", "")
+CONFIG_KEEP = Path("/out/host-config-keep.txt")
+
+
+@check("browser", "code-host-config-a")
+@saved
+def host_config_a(ctx):
+    """run.sh opened a fake home's setup into the Code page's container (./stack sessions config consent, scan, open
+    --all). The Bring your setup sheet opens on Check and copy: the npx MCP server's secret-shaped env value left out by
+    default (never shown), the uvx one not in the sandbox, CLAUDE.md's tokens in every request, settings.json's env never
+    copied. Every unit is copied but one server (its unit, digest and secret's token go to run.sh, which copies it with
+    that secret kept, as the helper would). A new Haiku session then starts with the skill and the npx server."""
+    need_haiku()
+    need_on()
+    if CONFIG_PASS != "a":
+        raise Skip("runs in a pass of its own after ./stack sessions config scan and open (tests/e2e/run.sh --host-config)")
+    page, rec = ui_page(ctx, "code-host-config-a")
+    c = Code.on(page, rec, goto=False)
+    v = c.api("GET", "/api/setup")["json"]
+    kinds = sorted({x["kind"] for x in v["staged"]})
+    expect({"skill", "mcp", "memory", "setting", "identity", "agent"} <= set(kinds), f"opened: {kinds}")
+    page.get_by_test_id("more-menu").click()
+    page.get_by_test_id("menu-setup").click()
+    see(page.get_by_test_id("setup-step-check")).to_be_visible(timeout=30000)
+    unit = lambda kind, name="": page.locator(f"[data-testid=setup-unit][data-kind={kind}]").filter(has_text=name)
+    ev = unit("mcp", "e2e-everything")
+    see(ev.get_by_test_id("setup-secret")).to_have_count(1, timeout=60000)
+    see(ev.get_by_test_id("setup-secret-copy")).not_to_be_checked()
+    see(ev.get_by_test_id("setup-flags")).to_contain_text("npx")
+    see(unit("mcp", "e2e-uvx").get_by_test_id("setup-flags")).to_contain_text("uvx is not in the sandbox", timeout=60000)
+    see(unit("memory").get_by_test_id("setup-flags")).to_contain_text("every request", timeout=60000)
+    see(unit("setting").get_by_test_id("setup-flags")).to_contain_text("never copied", timeout=60000)
+    see(unit("identity").get_by_test_id("setup-flags")).to_contain_text("Personal data", timeout=60000)
+    text = page.get_by_test_id("setup-sheet").inner_text()
+    expect(not re.search(r"sk-proj-[A-Za-z0-9]{40}", text) and "never@example.invalid" not in text, "the sheet never shows a secret or the account")
+    # the server to keep: not copied here — run.sh copies it with its secret kept (the helper's command)
+    keep = unit("mcp", "e2e-keep")
+    see(keep.get_by_test_id("setup-secret")).to_have_count(1, timeout=60000)
+    keys = keep.get_attribute("data-keys")
+    pv = c.api("GET", f"/api/setup/preview?keys={keys}")["json"]
+    expect(re.fullmatch(r"[0-9a-f]{64}", pv.get("digest", "")) and pv.get("secrets"), f"the preview: {str(pv)[:300]}")
+    CONFIG_KEEP.write_text(f"{keys}:{pv['digest']} {pv['secrets'][0]['id']}\n", encoding="ascii")
+    keep.get_by_test_id("setup-include").uncheck()
+    shot(page, "c1-code-host-config-check")
+    n = len([x for x in v["staged"] if x["kind"] != "setting"]) + (1 if any(x["kind"] == "setting" for x in v["staged"]) else 0) - 1
+    page.get_by_test_id("setup-copy").click()
+    see(page.get_by_test_id("setup-result")).to_have_count(n, timeout=120000)
+    bad = page.locator("[data-testid=setup-result][data-ok='0']")
+    expect(bad.count() == 0, f"not copied: {[bad.nth(i).inner_text() for i in range(bad.count())]}")
+    shot(page, "c2-code-host-config-copied")
+    page.get_by_test_id("setup-sheet").get_by_role("button", name="Close").last.click()
+    # a new session starts with them: the skill, the npx server (its status as it connects)
+    sid = c.new_session()
+    evs = c.turn(sid, "Reply with exactly: OK")
+    init = next((e for e in evs if e.get("type") == "init"), None)
+    expect(init is not None, "the session's start")
+    expect("e2e-skill" in init.get("skills", []), f"the skill in the session: {init.get('skills')}")
+    expect(any(m.get("name") == "e2e-everything" for m in init.get("mcp", [])), f"the MCP server in the session: {init.get('mcp')}")
+    expect("OK" in text_of(evs), f"the answer: {text_of(evs)[:100]!r}")
+    csp_clean(page, rec)
+    status = next((m.get("status") for m in init.get("mcp", []) if m.get("name") == "e2e-everything"), "?")
+    return f"{n} copied (the npx server's secret left out, uvx said not in the sandbox, CLAUDE.md's tokens said); a new Haiku session starts with e2e-skill and e2e-everything ({status})"
+
+
 # --- sessions of this computer (tests/e2e/run.sh --host-sessions): run.sh wrote a fake home's stores, allowed them
 # --- with ./stack sessions consent, looked and read them in; this pass checks and copies them on the Import sheet ---
 SESSIONS_PASS = os.environ.get("E2E_SESSIONS_PASS", "")

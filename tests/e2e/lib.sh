@@ -389,6 +389,9 @@ host_folders_parent() { printf '%s\n' "${E2E_HOST_FOLDERS_DIR:-$ROOT/tests/e2e/w
 # host_sessions_parent -> where --host-sessions makes its folder and its fake home: E2E_HOST_SESSIONS_DIR, else
 # ROOT/tests/e2e/work/PROJECT-host-sessions (gitignored); as host_folders_parent: new, made and removed by the suite
 host_sessions_parent() { printf '%s\n' "${E2E_HOST_SESSIONS_DIR:-$ROOT/tests/e2e/work/$PROJECT-host-sessions}"; }
+# host_config_parent -> where --host-config makes its fake home: E2E_HOST_CONFIG_DIR, else ROOT/tests/e2e/work/PROJECT-host-config
+# (gitignored); new, made and removed by the suite
+host_config_parent() { printf '%s\n' "${E2E_HOST_CONFIG_DIR:-$ROOT/tests/e2e/work/$PROJECT-host-config}"; }
 # host_folders_refused DIR -> why ./stack project would refuse a folder in DIR by its path alone (this checkout's own
 # rules, lib/projects.sh _project_path_rules: a temporary folder, a folder of sockets, a .claude part that is not a
 # Claude Code worktree, a Time Machine backup) — printed, 0; 1 when it would not. DIR need not exist yet: it is read
