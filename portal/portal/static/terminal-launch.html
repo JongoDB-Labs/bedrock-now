@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Open {{name}} here? · bedrock-now</title>
+<link rel="icon" href="{{portal}}/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="{{portal}}/static/login.css">
+</head>
+<body class="login unlock">
+<main class="login-panel">
+  <div class="brand"><img src="{{portal}}/static/logo.svg" alt="" width="36" height="36"><span>bedrock-now</span></div>
+  <h1>Open {{name}} here?</h1>
+  <p class="lede">{{what}}</p>
+  {{error}}
+  <form method="post" action="/.bn/launch">
+    <input type="hidden" name="mode" value="{{mode}}">
+    <input type="hidden" name="tool" value="{{tool}}">
+    <input type="hidden" name="folder" value="{{folder}}">
+    <button type="submit" id="launch-open">Open {{name}}</button>
+  </form>
+  <p class="hint"><a href="/" id="launch-cancel">Cancel — the terminal as it is</a>. A link only opens this question: nothing starts in the sandbox until you choose Open here.</p>
+</main>
+</body>
+</html>

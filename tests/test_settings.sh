@@ -66,7 +66,7 @@ test_every_env_key_is_in_the_settings_table_once() {
   # model pins, hidden models, nightly backups with their hour and how many to keep, + the browser terminal's 12,
   # Chat's origin and the Code page's 5, + its previews' 2, + their 4 over remote access, + auto mode's 2, + Git hosts'
   # sign-in's 3: the GitHub App's client ID and name, the GitLab application's ID)
-  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 130
+  assert_eq "$(settings_rows | wc -l | tr -d ' ')" 131
 }
 
 test_table_columns_are_valid() {
@@ -98,7 +98,7 @@ test_the_layout_places_every_key_once() {
       if ($3 !~ /^(main|more|with)$/) print $1 " place " $3
       if ($3 == "with" && $4 == "-") print $1 " with no row"
       if ($3 != "with" && ($5 == "" || $5 == "-")) print $1 " no summary"
-      if ($1 ~ /^\+/ && $1 !~ /^\+(devices|models|backups|test|check-aws|report|restart|git-hosts|project-folders|sessions-consent|bring-setup)$/) print $1 " unknown own row"
+      if ($1 ~ /^\+/ && $1 !~ /^\+(devices|models|backups|test|check-aws|report|restart|git-hosts|project-folders|sessions-consent|bring-setup|subscriptions)$/) print $1 " unknown own row"
       s[$1] = $2; p[$1] = $4; pl[$1] = $3; o[++n] = $1 }
     END { for (i = 1; i <= n; i++) { k = o[i]; if (p[k] == "-") continue
             if (!(p[k] in s)) print k " parent " p[k] " unknown"; else if (s[p[k]] != s[k]) print k " parent in another section"
@@ -251,7 +251,7 @@ test_snapshot_masks_every_secret() {
   assert_contains "$s" "\"base\": \"$(env_sha256)\""
   assert_contains "$s" '"key": "MY_OWN_SECRET", "group": "advanced", "secret": "S"'
   if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 131; assert d["last_change"] is None' "$f"
+    python3 -I -c 'import json, sys; d = json.load(open(sys.argv[1])); assert len(d["keys"]) == 132; assert d["last_change"] is None' "$f"
   fi
 }
 

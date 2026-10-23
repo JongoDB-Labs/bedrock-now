@@ -234,8 +234,8 @@ http://{$FILES_HOST} {
 # The browser terminal (./stack terminal; terminal-on.caddy and the remote sites). Its unlock form — the portal
 # password typed again — posts to /.bn/unlock on the terminal host, answered by the portal before the check (it
 # sets the host-only unlock cookie). Everything else needs the portal's yes for the terminal (?app=terminal, fixed
-# here, so no request header can turn it into another app's check): a session, a fresh unlock, and an Origin of
-# the terminal host itself. ttyd sits behind terminal-upstream:7681 (the terminal's gateway, compose.terminal.yaml).
+# here, so no request header can turn it into another app's check): a session, a fresh unlock, an Origin of the
+# terminal host itself, and — for an address with the pickers' words (?arg=…) — a launch token made on your click. ttyd sits behind terminal-upstream:7681 (the terminal's gateway, compose.terminal.yaml).
 (terminal_unlock) {
 	request_body /.bn/unlock {
 		max_size 16KB
@@ -243,6 +243,15 @@ http://{$FILES_HOST} {
 	@bn_unlock path /.bn/unlock
 	reverse_proxy @bn_unlock portal:8000 {
 		rewrite /auth/terminal-unlock
+	}
+	# (the "Open … here?" page's Open: the portal makes a launch token for the words it names — the only way an address
+	# with the pickers' words gets past the check below without one made in the portal's own page)
+	request_body /.bn/launch {
+		max_size 16KB
+	}
+	@bn_launch path /.bn/launch
+	reverse_proxy @bn_launch portal:8000 {
+		rewrite /auth/terminal-launch
 	}
 }
 

@@ -3082,13 +3082,21 @@ never reads, copies, keeps, passes on or relays a login.**
   shows its words as plain text only — no terminal escape of the sandbox's reaches this computer's terminal. *Sign out* in Settings runs the app's own sign-out in the sandbox, through the update helper
   with the password (a request of fixed fields: the action and a tool id among `claude`, `codex`, `cursor`, `grok` —
   Gemini CLI and Copilot sign out inside their own screens); it does not revoke the login at the provider.
-- [x] **The pickers' words.** The Terminal tab's *Open*, the Code page's terminal panel and the Chat tab's embedded
-  tool load the terminal with `?arg=MODE&arg=TOOL&arg=NONCE[&arg=FOLDER]`; ttyd (`--url-arg`) hands them to
-  `bn-session` as arguments, never through a shell. `bn-session` takes only `open`/`chat`, a tool of its fixed list, a
-  16-32 hex nonce (each acts once) and a folder that resolves inside `/workspace` or a project folder; anything else is
-  the plain attach of before. A link from another site never reaches it: the terminal's unlock cookie is
-  `SameSite=Strict`, so such a link meets the unlock form, and the unlock and the Code page's hand-off keep only words
-  that pass the same rules (`answers.terminal_next`). What a word can do at most is open a window of one of those apps.
+- [x] **Nothing starts from an address alone.** The Terminal tab's *Open*, the Code page's terminal panel and the Chat
+  tab's embedded tool load the terminal with `?arg=MODE&arg=TOOL&arg=TOKEN[&arg=FOLDER]`; ttyd (`--url-arg`) hands
+  those words to `bn-session` as arguments, never through a shell. TOKEN is a **launch token** the portal makes only on
+  your click — in its own page (`POST /api/terminal/launch`: the session, `X-Requested-With`, the portal's Origin), in
+  the Code page's hand-off (its own same-origin request, its unlock), or on the terminal host's own *Open … here?* page
+  (`POST /.bn/launch`: that host's Origin, `Sec-Fetch-Site: same-origin`) — an HMAC over the login, exactly those words
+  and when it was made, keyed by the portal's secret and the password (a new password voids them all), refused if made
+  before the last *Sign out everywhere*, fresh for 10 minutes, then valid only for reconnecting the terminal it opened
+  (12 hours, while the portal runs). The portal's check of every request to the terminal host refuses an address that
+  carries words (as ttyd reads them: fragments split at `&` and `;`, URL-decoded, `arg%3D…` included) without a valid
+  token for exactly those words: a page shows the *Open … here?* question instead — nothing starts until you choose
+  *Open* there — and the WebSocket that would start the tool gets 403. A link from another site, a page of the same site
+  (a preview, Chat's output) or an old address therefore starts nothing. `bn-session` then takes only `open`/`chat`, a
+  tool of its fixed list, a token's form (each acts once) and a folder that resolves inside `/workspace` or a project
+  folder; anything else is the plain attach of before.
 - [x] **No subscription behind an API.** None of these logins is used by LiteLLM, Open WebUI or the Code page's
   sessions in this release; Chat shows them as models greyed out, with each provider's reason. The Chat tab can show
   the app itself (its own screen, in the terminal frame) — you type into the real app.

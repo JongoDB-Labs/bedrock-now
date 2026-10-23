@@ -5,17 +5,18 @@
 #
 # The pickers ("who answers": the Terminal tab, the Code page's terminal panel, the Chat tab) add words to the address
 # (?arg=…, which ttyd's --url-arg hands over as arguments — never through a shell):
-#   open TOOL NONCE [DIR]   a window running TOOL (`subscriptions open TOOL`: its own sign-in first when it is not
+#   open TOOL TOKEN [DIR]   a window running TOOL (`subscriptions open TOOL`: its own sign-in first when it is not
 #                           signed in), named after it, made the current one of "claude" — or that window, if it is
 #                           there already
-#   chat TOOL NONCE [DIR]   the same window, shown alone in a session of its own grouped with "claude" (chat-TOOL…:
+#   chat TOOL TOKEN [DIR]   the same window, shown alone in a session of its own grouped with "claude" (chat-TOOL…:
 #                           the Chat tab's embedded tool; "claude"'s current window stays what it was)
 # TOOL: bedrock (claude-bedrock), claude (claude-sub, your Claude plan), codex, gemini, copilot, cursor, grok, shell.
-# NONCE: 16-32 hex; each acts once (a reconnect, or the same address again, only attaches). DIR: /workspace or a folder
-# below it, or one of the project folders of your computer (BN_CODE_ROOTS); default /workspace. Anything else — more
-# words, other words, a folder elsewhere — is the plain attach above. A link from another site never gets here: the
-# terminal's unlock cookie is SameSite=Strict (the unlock form answers it), and the unlock keeps only words that pass
-# the portal's own check of these rules.
+# TOKEN: a launch token, <iat>-<16 hex>-<32 hex> — the portal makes one only on your click (in its own page, the Code
+# page's hand-off, or the terminal host's own "Open … here?" page) and lets no request to the terminal carry words
+# without a valid one for exactly these words (portal/portal/answers.py, app.py launch_gate); here only its form is
+# checked (this side cannot tell a real one: the gate did). Each acts once (a reconnect only attaches). DIR: /workspace
+# or a folder below it, or one of the project folders of your computer (BN_CODE_ROOTS); default /workspace. Anything
+# else — more words, other words, a folder elsewhere — is the plain attach above.
 set -uo pipefail
 S=claude
 STATE="${BN_SESSION_STATE:-/tmp/bn-session}"
@@ -25,10 +26,10 @@ plain() { exec tmux new-session -A -s "$S" -n claude -c "$WS" "claude-bedrock; e
 ensure() { tmux has-session -t "=$S" 2>/dev/null || tmux new-session -d -s "$S" -n claude -c "$WS" "claude-bedrock; exec bash"; }
 
 [ $# -ge 3 ] && [ $# -le 4 ] || plain
-mode="$1" tool="$2" nonce="$3" dir="${4:-$WS}"
+mode="$1" tool="$2" token="$3" dir="${4:-$WS}"
 case "$mode" in open | chat) ;; *) plain ;; esac
 case "$tool" in bedrock | claude | codex | gemini | copilot | cursor | grok | shell) ;; *) plain ;; esac
-[[ $nonce =~ ^[0-9a-f]{16,32}$ ]] || plain
+[[ $token =~ ^[0-9]{10}-[0-9a-f]{16}-[0-9a-f]{32}$ ]] || plain
 # the folder: as it resolves, inside the workspace or a project folder of your computer
 case "$dir" in /*) ;; *) plain ;; esac
 real="$(cd -- "$dir" 2>/dev/null && pwd -P)" || plain
@@ -45,7 +46,7 @@ fi
 name="$tool"
 if [ "$real" != "$WS" ]; then name="$tool-$(printf '%s' "${real##*/}" | LC_ALL=C tr -c 'A-Za-z0-9_.-' '-' | cut -c1-24)"; fi
 fresh=0
-mkdir -p "$STATE" 2>/dev/null && chmod 700 "$STATE" 2>/dev/null && mkdir "$STATE/$nonce" 2>/dev/null && fresh=1
+mkdir -p "$STATE" 2>/dev/null && chmod 700 "$STATE" 2>/dev/null && mkdir "$STATE/$token" 2>/dev/null && fresh=1
 ensure
 if [ "$fresh" = 1 ]; then
   # (-S: the window of that name if there is one; the command is fixed words — TOOL is one of the list above — and the

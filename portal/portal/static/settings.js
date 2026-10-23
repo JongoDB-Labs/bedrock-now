@@ -1311,10 +1311,13 @@
       if (t.installed !== false && termHere) {
         const open = el("button", { type: "button", class: "action", text: t.signed_in === "yes" ? "Open in the terminal" : "Sign in in the terminal", "data-act": "subscriptions-open" });
         open.addEventListener("click", () => {
-          showTab("terminal");
-          const f = document.querySelector('#frames iframe[data-app="terminal"]');
-          if (f && window.bnAnswers) f.src = window.bnAnswers._pure.terminalSrc(appUrl("terminal"), "open", t.id,
-            Array.from(crypto.getRandomValues(new Uint8Array(8)), (x) => x.toString(16).padStart(2, "0")).join(""));
+          // (a launch token for exactly this, made on this click: answers.js launch)
+          if (!window.bnAnswers || !window.bnAnswers.launch) return;
+          window.bnAnswers.launch("open", t.id).then((url) => {
+            showTab("terminal");
+            const f = document.querySelector('#frames iframe[data-app="terminal"]');
+            if (f) f.src = url;
+          }, (e) => { if (e.message !== "signed out") toast(`Could not open it: ${e.message}`); });
         });
         acts.append(open);
       }

@@ -171,6 +171,36 @@ def _unlock_page(s: Settings, rem: bool, error: str = "", status: int = 401, ret
     return _no_store(resp)
 
 
+def _launch_page(s: Settings, rem: bool, mode: str, tool: str, folder: str) -> HTMLResponse:
+    """The terminal host's own question when its address carries the pickers' words without a valid launch token (a
+    link from anywhere, an old address): "Open Codex here? [Open] Cancel" — Open is a form of this page (POST
+    /.bn/launch, same origin), which makes the token; nothing starts before. Words already checked (answers.py)."""
+    portal = s.origin(remote=rem)
+    framers = portal + (f" {s.origin(CODE, rem)}" if s.code_on(rem) else "")
+    names = {t["id"]: t for t in answers.read_tools(s.catalog_dir)}
+    names.update({b["id"]: {**b, "provider": "", "plan": ""} for b in answers.BASICS})
+    t = names.get(tool) or {"name": tool, "provider": "", "plan": "", "command": tool}
+    name = t["name"]
+    if tool in ("bedrock", "shell"):
+        what = f"{name} in a window of its own in this terminal (the sandbox)"
+    else:
+        what = (f"{name} ({t['provider']}) on {t['plan']}, in a window of its own in this terminal (the sandbox) — its own "
+                f"sign-in first if it has none; bedrock-now never sees the login")
+    where = f", in {folder}" if folder else ""
+    what += where + (". In Chat, in place of Open WebUI." if mode == "chat" else ".")
+    page = (STATIC / "terminal-launch.html").read_text(encoding="utf-8").replace("{{portal}}", html.escape(portal, quote=True))
+    for k, v in (("name", name), ("what", what), ("mode", mode), ("tool", tool), ("folder", folder)):
+        page = page.replace("{{" + k + "}}", html.escape(v, quote=True))
+    page = page.replace("{{error}}", "")
+    resp = HTMLResponse(page, status_code=403)
+    resp.headers["Content-Security-Policy"] = (
+        f"default-src 'none'; style-src {portal}; img-src {portal}; form-action 'self'; base-uri 'none'; "
+        f"frame-ancestors {framers}")
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "same-origin"
+    return _no_store(resp)
+
+
 def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
     state_file = settings.state_dir / "logout-not-before" if settings.state_dir else None
     sessions = Sessions(settings.secret, settings.password_hash, state_file=state_file, max_age=settings.session_days * 86400)
@@ -188,6 +218,8 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     previews = PreviewCaps(settings.secret, sessions)
     preview_cookies = PreviewCookies(settings.secret, sessions)
     preview_handoff = Handoff(settings.secret, sessions.fingerprint, salt="bedrock-now.portal.preview-handoff")
+    # the terminal's launch tokens (answers.py): a tool starts there only with one, made on your click
+    launches = answers.Launches(settings.secret, sessions.fingerprint)
     # Automatic sign-in to Admin and Files (portal/appsso.py): which LiteLLM sessions came from which portal session,
     # a cap on sign-ins per session, and ending the Admin sessions at Sign out (also after a new PORTAL_PASSWORD).
     markers, sso_budget = appsso.Markers(settings.secret), appsso.Budget()
@@ -359,12 +391,76 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if not authed(request):
             return need_login(request)
         if unlocked(request, rem, app):
+            if app == TERMINAL and (gate := launch_gate(request, rem, websocket)) is not None:
+                return gate
             return Response(status_code=200, headers={"X-Portal-User": settings.user_email, "Cache-Control": "no-store"})
         if method in ("GET", "HEAD") and "text/html" in request.headers.get("accept", ""):
             # (the Code page: its deep links; the terminal: the pickers' words — answers.terminal_next)
             nxt = codepage.deep_link(request.headers.get("x-forwarded-uri")) if app == CODE else answers.terminal_next(request.headers.get("x-forwarded-uri"))
             return _unlock_page(settings, rem, app=app, next_link=nxt)
         return _no_store(PlainTextResponse(f"{NAME[app]} locked: unlock it with the portal password", status_code=401))
+
+    def launch_gate(request: Request, rem: bool, websocket: bool) -> Response | None:
+        """The terminal host, unlocked: an address with the pickers' words (?arg=…, which ttyd hands to bn-session) needs
+        a launch token valid for exactly those words and this login (answers.Launches) — its page, and its WebSocket,
+        which starts the tool (or reconnects it: that token is then remembered). Without one nothing starts: a page
+        shows "Open … here?" (its own form makes a token on your click), anything else is refused. None: let it in."""
+        got = answers.parse_terminal_uri(request.headers.get("x-forwarded-uri"))
+        if got is None:
+            return None
+        path, args = got
+        if args is not None and path in ("/", "/ws"):
+            words = args[:2] + args[3:]
+            if launches.valid(args[2], session_login(request.headers, settings), words, sessions.not_before,
+                              use=websocket and path == "/ws"):
+                return None
+        nav = (not websocket and request.headers.get("x-forwarded-method", "GET").upper() == "GET"
+               and "text/html" in request.headers.get("accept", ""))
+        if not nav:
+            log.warning("terminal: a request with the pickers' words and no valid launch token refused (%s)",
+                        "WebSocket" if websocket else request.headers.get("x-forwarded-method", "GET")[:10])
+            return _no_store(PlainTextResponse("refused: nothing starts in the terminal without a launch token made on your click", status_code=403))
+        if args is None or path != "/":
+            return _no_store(RedirectResponse("/", status_code=303))
+        return _launch_page(settings, rem, args[0], args[1], args[3] if len(args) > 3 else "")
+
+    async def terminal_launch(request: Request) -> Response:
+        """POST /.bn/launch on the terminal host (Caddy → here, before its check): the "Open … here?" page's Open — the
+        session, the terminal's own unlock, this host's own Origin (and Sec-Fetch-Site same-origin when sent): a launch
+        token for exactly those words, then the terminal with them."""
+        rem = remote(request)
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        if not settings.locked_on(TERMINAL, rem) or host != settings.app_host(TERMINAL, rem):
+            return _no_store(PlainTextResponse("not found", status_code=404))
+        if (deny := foreign_login(request)) is not None:
+            return deny
+        if not terminal_same_origin(request.headers, settings, rem, TERMINAL) or \
+                request.headers.get("sec-fetch-site", "same-origin") != "same-origin":
+            log.warning("terminal launch: a request from another site refused (Origin %s)", request.headers.get("origin", "none")[:100])
+            return _no_store(PlainTextResponse("cross-site request refused", status_code=403))
+        if not authed(request):
+            return _no_store(login_redirect(settings.origin(TERMINAL, rem) + "/", rem))
+        if not unlocked(request, rem, TERMINAL):
+            return _no_store(RedirectResponse("/", status_code=303))   # (the unlock form, then)
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or not length.isascii() or int(length) > MAX_FORM:
+            return _no_store(PlainTextResponse("form too large or without a length", status_code=413))
+        body = await request.body()
+        if len(body) > MAX_FORM:
+            return _no_store(PlainTextResponse("form too large", status_code=413))
+        try:
+            form = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True, max_num_fields=4)
+        except ValueError:
+            form = {}
+        mode, tool, folder = ((form.get(k) or [""])[0] for k in ("mode", "tool", "folder"))
+        words = answers.terminal_words(mode, tool, folder)
+        if words is None:
+            return _no_store(PlainTextResponse("no such tool, or a folder that is not one", status_code=400))
+        token = launches.issue(session_login(request.headers, settings), words)
+        resp = RedirectResponse(answers.terminal_link(answers.terminal_args(mode, tool, token, folder)), status_code=303)
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        log.warning("terminal: %s %s opened from its own page%s", mode, tool, " (remote)" if rem else "")
+        return _no_store(resp)
 
     async def terminal_unlock(request: Request) -> Response:
         return await app_unlock(request, TERMINAL)
@@ -459,10 +555,14 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         # ?open=TOOL[&dir=FOLDER]: the terminal panel's Open menu — a window of that tool, after the hand-off (answers.py)
         nxt = ""
         if "open" in request.query_params:
-            link = answers.terminal_link(answers.terminal_args("open", request.query_params.get("open", ""), None, request.query_params.get("dir")))
-            if not link:
+            # (this request is the Code page's own — Sec-Fetch-Site same-origin, its unlock — on your choice in its
+            # Open menu: the launch token is made here, for exactly these words)
+            tool, folder = request.query_params.get("open", ""), request.query_params.get("dir")
+            words = answers.terminal_words("open", tool, folder)
+            if words is None:
                 return _no_store(PlainTextResponse("no such tool, or a folder that is not one", status_code=400))
-            nxt = "&next=" + quote(link, safe="")
+            launch = launches.issue(login, words)
+            nxt = "&next=" + quote(answers.terminal_link(answers.terminal_args("open", tool, launch, folder)), safe="")
         resp = RedirectResponse(f"{settings.origin(TERMINAL, rem)}/.bn/unlock-callback?t={quote(token, safe='')}{nxt}", status_code=303)
         resp.headers["Referrer-Policy"] = "no-referrer"
         return _no_store(resp)
@@ -1049,6 +1149,34 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
                           "url": settings.origin(remote=True) if settings.remote_on() else ""}
         return _no_store(JSONResponse(data))
 
+    # --- a launch token for the terminal (answers.py): the portal's own page on your click (the Terminal tab's Open, the
+    # --- Chat tab's tool, Settings' Open in the terminal) — the session, X-Requested-With (no cross-site request can send
+    # --- it without a preflight, which is never allowed), this portal's own Origin; the terminal's address with the words
+    async def api_terminal_launch(request: Request) -> Response:
+        if (deny := api_guard(request)) is not None:
+            return deny
+        if not same_origin(request.headers, settings):
+            return _no_store(JSONResponse({"error": "cross-site request refused"}, status_code=403))
+        rem = remote(request)
+        if not settings.terminal_on(rem):
+            return _no_store(JSONResponse({"error": "the terminal is off here"}, status_code=404))
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or not length.isascii() or int(length) > 4096:
+            return _no_store(JSONResponse({"error": "request too large or without a length"}, status_code=413))
+        try:
+            data = json.loads(await request.body())
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return _no_store(JSONResponse({"error": "not a JSON object"}, status_code=400))
+        mode, tool, folder = data.get("mode"), data.get("tool"), data.get("folder") or None
+        words = answers.terminal_words(mode, tool, folder) if isinstance(mode, str) and isinstance(tool, str) else None
+        if words is None:
+            return _no_store(JSONResponse({"error": "no such tool, or a folder that is not one"}, status_code=400))
+        token = launches.issue(session_login(request.headers, settings), words)
+        url = settings.origin(TERMINAL, rem) + answers.terminal_link(answers.terminal_args(mode, tool, token, folder))
+        return _no_store(JSONResponse({"url": url}))
+
     # --- who answers (answers.py): the pickers of the Terminal and Chat tabs and Settings › Your AI subscriptions —
     # --- the tools in the sandbox and whether each says it is signed in (never a login), and Chat's models
     async def api_answers(request: Request) -> Response:
@@ -1277,6 +1405,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/callback", auth_callback, methods=["GET"]),
             Route("/auth/app-sso", app_sso, methods=["GET"]),
             Route("/auth/terminal-unlock", terminal_unlock, methods=["POST"]),
+            Route("/auth/terminal-launch", terminal_launch, methods=["POST"]),
             Route("/auth/code-unlock", code_unlock, methods=["POST"]),
             Route("/auth/code-models", code_models, methods=["GET"]),
             Route("/auth/code-spend", code_spend, methods=["GET"]),
@@ -1293,6 +1422,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/", index),
             Route("/api/summary", api_summary),
             Route("/api/answers", api_answers, methods=["GET"]),
+            Route("/api/terminal/launch", api_terminal_launch, methods=["POST"]),
             Route("/api/logins", api_logins),
             Route("/api/admin/status", api_admin_status, methods=["GET"]),
             Route("/api/admin/request", api_admin_request, methods=["POST"]),

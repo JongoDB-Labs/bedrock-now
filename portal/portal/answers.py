@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import secrets
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, unquote_plus, urlencode
 
 from . import hostfiles
 
@@ -130,27 +130,39 @@ def build(s, remote: bool, models: dict | None = None) -> dict:
             "folders": folders(s.status_dir)}
 
 
-# --- the terminal's words: what the pickers add to its address (?arg=MODE&arg=TOOL&arg=NONCE[&arg=FOLDER]), which ttyd
-# --- hands to bn-session as its arguments. The same rules as terminal/bin/bn-session's (it checks them again, the
-# --- folder as it resolves in the sandbox): here they decide which words survive the unlock and the Code page's hand-off.
+# --- the terminal's words: what the pickers add to its address (?arg=MODE&arg=TOOL&arg=TOKEN[&arg=FOLDER]), which ttyd
+# --- hands to bn-session as its arguments. Nothing starts from an address alone: TOKEN is a launch token that only the
+# --- portal makes, on your click in its own page (POST /api/terminal/launch, same origin, X-Requested-With), in the
+# --- Code page's same-origin hand-off, or on the terminal host's own "Open … here?" page (POST /.bn/launch from that
+# --- page) — and every request to the terminal host that carries words needs one that is valid for exactly those
+# --- words and this login (app.py launch_gate). bn-session checks the words again (the folder as it resolves) and acts
+# --- once per token.
 TERMINAL_TOOLS = ("bedrock", "claude", "codex", "gemini", "copilot", "cursor", "grok", "shell")
-NONCE = re.compile(r"[0-9a-f]{16,32}")
+TOKEN = re.compile(r"([0-9]{10})-([0-9a-f]{16})-([0-9a-f]{32})")
 FOLDER = re.compile(r"/[^\x00-\x1f\x7f]{0,511}")
+FRESH_S = 600          # a token starts something only this long after it was made (time to unlock first)
+LAUNCH_MAX_S = 12 * 3600   # a token that started something keeps reconnecting its terminal while the unlock lasts
+SEEN_MAX = 2000
 
 
-def terminal_args(mode: str, tool: str, nonce: str | None = None, folder: str | None = None) -> list[str] | None:
-    """[MODE, TOOL, NONCE(, FOLDER)] when every word passes (a new nonce when none is given), else None."""
+def terminal_words(mode: str, tool: str, folder: str | None = None) -> list[str] | None:
+    """[MODE, TOOL(, FOLDER)] when each word passes bn-session's rules, else None."""
     if mode not in ("open", "chat") or tool not in TERMINAL_TOOLS:
         return None
-    nonce = secrets.token_hex(8) if nonce is None else nonce
-    if not isinstance(nonce, str) or not NONCE.fullmatch(nonce):
-        return None
-    args = [mode, tool, nonce]
+    words = [mode, tool]
     if folder not in (None, ""):
         if not isinstance(folder, str) or not FOLDER.fullmatch(folder) or "/../" in folder + "/" or "/./" in folder + "/":
             return None
-        args.append(folder)
-    return args
+        words.append(folder)
+    return words
+
+
+def terminal_args(mode: str, tool: str, token: str, folder: str | None = None) -> list[str] | None:
+    """[MODE, TOOL, TOKEN(, FOLDER)] — bn-session's argument order — when every word passes (TOKEN: its form only)."""
+    words = terminal_words(mode, tool, folder)
+    if words is None or not isinstance(token, str) or not TOKEN.fullmatch(token):
+        return None
+    return words[:2] + [token] + words[2:]
 
 
 def terminal_link(args: list[str] | None) -> str | None:
@@ -158,15 +170,84 @@ def terminal_link(args: list[str] | None) -> str | None:
     return "/?" + urlencode([("arg", a) for a in args]) if args else None
 
 
-def terminal_next(uri: str | None) -> str | None:
-    """The terminal's address rebuilt from a request's path and query when it is the root with the pickers' words and
-    nothing else, every word passing terminal_args; else None (the unlock then opens the terminal as it is)."""
-    if not isinstance(uri, str) or not uri.startswith("/?") or len(uri) > 4096:
+def carries_words(query: str) -> bool:
+    """Whether ttyd would hand any of QUERY to bn-session: libwebsockets splits it at '&' and ';' (checked against
+    ttyd 1.7.7: 'x=1;arg=semi' passes 'semi'), URL-decodes each fragment ('+' a space), and ttyd takes every one that
+    then starts with 'arg=' — 'arg%3D…' included."""
+    return any(unquote_plus(f).startswith("arg=") for f in re.split(r"[&;]", query))
+
+
+def parse_terminal_uri(uri: str | None) -> tuple[str, list[str] | None] | None:
+    """A request to the terminal host: None when its query carries no words for bn-session (nothing to check: ttyd
+    ignores the rest); else (path, [MODE, TOOL, TOKEN(, FOLDER)] or None when the query is anything but the pickers'
+    words in bn-session's form)."""
+    if not isinstance(uri, str) or "?" not in uri:
+        return None
+    path, query = uri.split("?", 1)
+    if len(uri) > 4096:
+        return path, None
+    if not carries_words(query):
         return None
     try:
-        pairs = parse_qsl(uri[2:], keep_blank_values=True, strict_parsing=True, max_num_fields=5)
+        pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=5)
     except ValueError:
-        return None
+        return path, None
     if not 3 <= len(pairs) <= 4 or any(k != "arg" for k, _ in pairs):
-        return None
-    return terminal_link(terminal_args(*[v for _, v in pairs]))
+        return path, None
+    return path, terminal_args(*[v for _, v in pairs])
+
+
+def terminal_next(uri: str | None) -> str | None:
+    """The terminal's address rebuilt from a request's path and query when it is the root with the pickers' words
+    (their token in its form) and nothing else; else None (the unlock then opens the terminal as it is). Whether the
+    token is valid is checked when that address is asked for (launch_gate)."""
+    got = parse_terminal_uri(uri)
+    return terminal_link(got[1]) if got and got[0] == "/" else None
+
+
+class Launches:
+    """Launch tokens: '<iat>-<16 hex>-<32 hex HMAC>' over (the login, the words, iat, the random part), keyed by the
+    portal's secret and the password's fingerprint (a new password voids them all). valid(): made for exactly these
+    words and this login, after the last Sign out; fresh (FRESH_S) to start something — then remembered, so its own
+    terminal reconnects with it while the unlock lasts (LAUNCH_MAX_S); a portal restart forgets that (reopen it)."""
+
+    def __init__(self, secret: str, fingerprint: str, clock=None):
+        import hashlib
+        import time as _time
+        self._key = hashlib.sha256(f"bedrock-now.terminal-launch|{secret}|{fingerprint}".encode()).digest()
+        self._clock = clock or _time.time
+        self._seen: dict[str, float] = {}
+
+    def _mac(self, login: str, words: list[str], iat: str, rnd: str) -> str:
+        import hashlib
+        import hmac
+        msg = "\x1f".join([login or "", *words, iat, rnd]).encode("utf-8", "surrogatepass")
+        return hmac.new(self._key, msg, hashlib.sha256).hexdigest()[:32]
+
+    def issue(self, login: str | None, words: list[str]) -> str:
+        iat, rnd = str(int(self._clock())), secrets.token_hex(8)
+        return f"{iat}-{rnd}-{self._mac(login or '', words, iat, rnd)}"
+
+    def valid(self, token: str, login: str | None, words: list[str], not_before: float = 0.0, use: bool = False) -> bool:
+        """True when TOKEN is this portal's for these words and login; USE (a WebSocket: something starts or
+        reconnects) remembers it."""
+        import hmac
+        m = TOKEN.fullmatch(token or "")
+        if not m:
+            return False
+        iat, rnd, mac = m.groups()
+        if not hmac.compare_digest(mac, self._mac(login or "", words, iat, rnd)):
+            return False
+        now, t = self._clock(), int(iat)
+        if t <= not_before or t > now + 30:
+            return False
+        if token in self._seen and now - t <= LAUNCH_MAX_S:
+            return True
+        if now - t > FRESH_S:
+            return False
+        if use:
+            if len(self._seen) >= SEEN_MAX:
+                for k in [k for k, v in self._seen.items() if now - v > LAUNCH_MAX_S][:SEEN_MAX] or list(self._seen)[:SEEN_MAX // 4]:
+                    self._seen.pop(k, None)
+            self._seen[token] = t
+        return True

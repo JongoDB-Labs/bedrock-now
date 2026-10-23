@@ -240,10 +240,12 @@ test_bn_session_takes_only_its_words() {
   printf '#!/bin/sh\necho "tmux $*" >> "%s/tmux"\ncase "$1" in has-session) [ "$3" = =claude ] && [ -f "%s/made" ]; exit $? ;; new-session) [ "$2" = -d ] && touch "%s/made"; exit 0 ;; esac\nexit 0\n' "$TMP" "$TMP" "$TMP" > "$b/tmux"
   chmod +x "$b/tmux"
   _run() { : > "$TMP/tmux"; env PATH="$b:$PATH" BN_SESSION_STATE="$TMP/state" BN_CODE_WORKSPACE="$ws" BN_CODE_ROOTS="[\"$proj\"]" bash "$STACK_DIR/terminal/bin/bn-session" "$@"; cat "$TMP/tmux"; }
-  local N1=0123456789abcdef N2=fedcba9876543210 N3=00112233445566778899aabb out
+  # (a launch token's form: <iat>-<16 hex>-<32 hex>; whether one is valid is the portal's gate's to say)
+  local M=0123456789abcdef0123456789abcdef
+  local N1="1792760000-0123456789abcdef-$M" N2="1792760001-fedcba9876543210-$M" N3="1792760002-00112233445566aa-$M" out
   # no words, wrong words, a nonce that is not one, a folder elsewhere, too many: the plain attach
-  for args in "" "evil codex $N1" "open evil $N1" "open codex nothex" "open codex $N1 $TMP/elsewhere" "open codex $N1 $ws/../elsewhere" \
-    "open codex $N1 relative" "open codex $N1 $ws extra"; do
+  for args in "" "evil codex $N1" "open evil $N1" "open codex nothex" "open codex 0123456789abcdef" "open codex 1792760000-0123456789abcdef-short" \
+    "open codex $N1 $TMP/elsewhere" "open codex $N1 $ws/../elsewhere" "open codex $N1 relative" "open codex $N1 $ws extra"; do
     # shellcheck disable=SC2086
     out="$(_run $args)"
     assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "tmux new-session -A -s claude -n claude -c $ws claude-bedrock; exec bash"

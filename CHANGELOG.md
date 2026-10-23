@@ -16,7 +16,8 @@ All notable changes to bedrock-now are documented here. The format follows
   it), **GitHub Copilot CLI**, **Cursor CLI** and **Grok Build** (SuperGrok, the X Subscription). Each is in the
   sandbox's image, pinned and checked when it is built (Codex's and Copilot's release files by SHA-256, Gemini CLI's and
   Grok's npm lockfiles, Cursor's by a SHA-256 recorded here — Cursor publishes none), its self-update off;
-  `TERMINAL_AI_TOOLS` (all, none or a list) keeps fewer. Each login stays in its own app's file in the sandbox:
+  `TERMINAL_AI_TOOLS` (all, none or a list) keeps fewer. The update downloads them once (about 500 MB, 1.1 GB
+  unpacked); `TERMINAL_AI_TOOLS=none` in `.env` before updating leaves them out. Each login stays in its own app's file in the sandbox:
   bedrock-now never reads, copies or passes one on, and backups leave them out. `subscriptions` in the terminal and
   `./stack subscriptions status|login TOOL|logout TOOL` here.
 - **Who answers, on each page.** The Terminal tab's **Open** menu (Claude Code on Bedrock, a shell, one of your tools —
@@ -33,9 +34,9 @@ All notable changes to bedrock-now are documented here. The format follows
 ### Changed
 
 - Claude Code 2.1.309 in the sandbox, with the Agent SDK 0.3.309 (2.1.301 fixed sign-outs after a short `claude auth
-  status`). The sandbox's terminal takes the pickers' words from its address (ttyd `--url-arg`): `bn-session` checks
-  them against a fixed list — anything else is the plain attach as before — and the terminal's unlock and the Code
-  page's hand-off keep only words that pass the same check.
+  status`). The sandbox's terminal takes the pickers' words from its address (ttyd `--url-arg`), and only with a
+  **launch token** the portal makes on your click: an address with words and no valid token — a link from anywhere —
+  starts nothing; the terminal asks *Open … here?* first. `bn-session` checks the words again against a fixed list.
 
 ### Security
 

@@ -44,12 +44,10 @@ test("the Chat tab: Open WebUI first, the models, your keys next, the tools them
   assert.equal(g[5].items[1].title, "Terms first.");
 });
 
-test("the terminal's address carries the pickers' words, and only those", () => {
-  assert.equal(A.terminalSrc("http://terminal.bedrock-now.localhost/?x=1", "open", "codex", "0123456789abcdef"),
-    "http://terminal.bedrock-now.localhost/?arg=open&arg=codex&arg=0123456789abcdef");
-  assert.equal(A.terminalSrc("https://bn-terminal.tail.ts.net/", "chat", "grok", "aa", "/home/me/my app"),
-    "https://bn-terminal.tail.ts.net/?arg=chat&arg=grok&arg=aa&arg=%2Fhome%2Fme%2Fmy%20app");
-  assert.equal(A.chatSrc("http://chat.bedrock-now.localhost/", "or/x:free"), "http://chat.bedrock-now.localhost/?models=or%2Fx%3Afree");
+test("Open WebUI's address for a new chat with a model", () => {
+  assert.equal(A.chatSrc("http://chat.bedrock-now.localhost/?x=1#y", "or/x:free"), "http://chat.bedrock-now.localhost/?models=or%2Fx%3Afree");
+  assert.equal(A.chatSrc("http://chat.bedrock-now.localhost/", ""), "http://chat.bedrock-now.localhost/");
+  assert.equal(A.terminalSrc, undefined, "the page never builds the terminal's words itself: the portal does, with a launch token");
 });
 
 test("the saved choice is read back checked", () => {

@@ -590,7 +590,8 @@ without the stack's `ANTHROPIC_*` variables so it uses your login; only its upda
 
 - **Terminal**: *Open* above it — Claude Code on Bedrock, a shell, or one of your tools, each in a tmux window of its
   own (one that is not signed in starts with its sign-in). The Code page's terminal panel has the same *Open…* menu,
-  in the project's folder.
+  in the project's folder. A tool starts only on your click there: the portal then makes a short-lived launch token for
+  exactly that; a link to the terminal with a tool in it but no such token only asks *Open … here?*.
 - **Chat**: *Who answers* above it — a Bedrock or OpenRouter model (a new chat with it in Open WebUI), or one of your
   tools **itself**, in place of Open WebUI, in the folder you pick (the workspace or a project folder): you type into
   the real app, with its own history (`/resume`) and its own usage display. *Open WebUI* brings Chat back. As Chat

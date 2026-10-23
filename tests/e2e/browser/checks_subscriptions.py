@@ -7,13 +7,15 @@ own sign-in: a link and a code, never completed), then Open WebUI again. No sign
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import socket
 
-from common import ENV, Skip, check, expect, http
+from common import ENV, HOST, PORT, TARGET_IP, Skip, check, expect, http
 from checks_browser import login, shot
-from checks_terminal import TERM, LOCKED_OK, terminal_frame, unlock_in, wait_text, wait_xterm
+from checks_terminal import TERM, LOCKED_OK, terminal_frame, unlock_cookie, unlock_in, wait_text, wait_xterm
 
 ON = ENV.get("TERMINAL_ENABLED") == "true"
 FULL = os.environ.get("E2E_SUBSCRIPTIONS") == "1"
@@ -148,3 +150,47 @@ def chat_embed(ctx):
     rec.save()
     expect(not probs, f"errors: {probs[:6]}")
     return "Chat › Who answers › Grok Build: the tool itself in place of Open WebUI (unlocked in place, at its own device-code sign-in), then Open WebUI again"
+
+
+def ws_status(cookie: str, path: str) -> int:
+    """ttyd's WebSocket handshake at PATH through Caddy, from the terminal's own Origin: the HTTP status only."""
+    key = base64.b64encode(os.urandom(16)).decode()
+    lines = [f"GET {path} HTTP/1.1", f"Host: terminal.{HOST}:{PORT}", "Upgrade: websocket", "Connection: Upgrade",
+             "Sec-WebSocket-Version: 13", f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Protocol: tty", f"Cookie: {cookie}",
+             f"Origin: {TERM}"]
+    s = socket.create_connection((TARGET_IP, PORT), timeout=15)
+    try:
+        s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+        head = s.recv(1024).decode("latin-1")
+    finally:
+        s.close()
+    m = re.match(r"HTTP/1\.[01] (\d{3})", head)
+    return int(m.group(1)) if m else 0
+
+
+@check("http", "subscriptions-a-link-alone-starts-nothing")
+def link_alone(ctx):
+    """An address with the pickers' words and no launch token made on a click — a link from anywhere — starts nothing:
+    the terminal host asks "Open … here?" (its own form), and the WebSocket that would start the tool is refused."""
+    need_on()
+    sess = ctx.session()
+    unlock = unlock_cookie(sess).split(";", 1)[0]
+    cookie = f"{sess}; {unlock}"
+    fake = "1792760000-0123456789abcdef-" + "0" * 32
+    r = http("GET", "terminal", f"/?arg=open&arg=shell&arg={fake}", {"Accept": "text/html"}, cookie=cookie)
+    expect(r.status == 403 and "Open A shell here?" in r.text and 'action="/.bn/launch"' in r.text, f"HTTP {r.status}: {r.text[:200]!r}")
+    for path in (f"/ws?arg=open&arg=shell&arg={fake}", f"/ws?x=1;arg=open;arg=shell;arg={fake}", "/ws?arg%3Dopen&arg%3Dshell&arg%3D" + fake):
+        expect(ws_status(cookie, path) == 403, f"WebSocket {path}: not refused")
+    expect(ws_status(cookie, "/ws") == 101, "the plain WebSocket no longer opens")
+    # a token made on a click (the portal's own page): its words open
+    r = http("POST", None, "/api/terminal/launch", {"X-Requested-With": "bedrock-now", "Content-Type": "application/json", "Origin": origin_portal()},
+             json.dumps({"mode": "open", "tool": "shell"}), cookie=sess)
+    expect(r.status == 200, f"/api/terminal/launch: HTTP {r.status}")
+    url = json.loads(r.body)["url"]
+    expect(ws_status(cookie, "/ws" + url.split(TERM, 1)[1][1:]) == 101, "a launch token made on a click does not open")
+    return "a link alone: the question page, its WebSockets refused (also ;-separated and %-encoded words); with a token from a click: open"
+
+
+def origin_portal() -> str:
+    from common import origin
+    return origin()

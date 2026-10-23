@@ -3,8 +3,10 @@
 // signed in there with its own flow — and, in Chat, the models of Bedrock and OpenRouter (your own API keys next).
 // GET /api/answers (answers.py): the tools of catalog/ai-tools.tsv with what each said of its own login at ./stack's
 // last check (never a login), the chat models, the project folders. Built with el()/textContent only.
-//   Terminal tab: "Open" makes (or selects) a window of that tool in the terminal's tmux session — the terminal frame
-//   loads ?arg=open&arg=TOOL&arg=NONCE, which ttyd hands to bn-session (it checks every word again).
+//   Terminal tab: "Open" makes (or selects) a window of that tool in the terminal's tmux session — on that click the
+//   portal makes a launch token for exactly those words (POST /api/terminal/launch) and the terminal frame loads
+//   ?arg=open&arg=TOOL&arg=TOKEN, which ttyd hands to bn-session (it checks the words again). An address with words and
+//   no valid token starts nothing (the terminal host asks "Open … here?").
 //   Chat tab: a model keeps Open WebUI (?models=ID: a new chat with it); a subscription's tool replaces Open WebUI's
 //   frame with the tool's own screen — the terminal frame with ?arg=chat&…: a session of its own grouped with the
 //   terminal's, in the folder chosen beside it. You type into the real, unmodified client. "Open WebUI" brings it back.
@@ -57,12 +59,7 @@
         { value: `as-model:${t.id}`, label: `${t.name} — not as a Chat model`, disabled: true, title: t.chat_why || "" })) },
     ].filter((g) => g.items.length);
   }
-  // terminalSrc(BASE, MODE, TOOL, NONCE, FOLDER) -> the terminal's address with the pickers' words (bn-session's
-  // arguments: ?arg=MODE&arg=TOOL&arg=NONCE[&arg=FOLDER])
   const bare = (base) => String(base).split(/[?#]/)[0];
-  function terminalSrc(base, mode, tool, nonce, folder) {
-    return `${bare(base)}?${[mode, tool, nonce].concat(folder ? [folder] : []).map((a) => `arg=${encodeURIComponent(a)}`).join("&")}`;
-  }
   // chatSrc(BASE, ID) -> Open WebUI's address for a new chat with that model preselected
   const chatSrc = (base, id) => (id ? `${bare(base)}?models=${encodeURIComponent(id)}` : bare(base));
   // parseSaved(TEXT) -> {chat, folder}: the saved choice, each field checked
@@ -75,19 +72,26 @@
     if (typeof raw.folder === "string" && raw.folder.length <= 512 && /^\/[^\u0000-\u001f\u007f]*$/.test(raw.folder)) out.folder = raw.folder;
     return out;
   }
-  const nonce = () => {
-    const b = new Uint8Array(8);
-    (root.crypto || globalThis.crypto).getRandomValues(b);
-    return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-  };
-
-  root.bnAnswers = { _pure: { toolState, terminalOptions, chatOptions, terminalSrc, chatSrc, parseSaved } };
+  root.bnAnswers = { _pure: { toolState, terminalOptions, chatOptions, chatSrc, parseSaved } };
   if (typeof document === "undefined" || typeof document.querySelector !== "function") return;
 
   const PHONE = window.matchMedia("(max-width: 767.98px)");
   let data = null, loadedAt = 0, loading = null;
   let saved = parseSaved((() => { try { return localStorage.getItem(KEY); } catch (_) { return null; } })());
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (_) { /* storage blocked: this page only */ } };
+
+  // launch(MODE, TOOL, FOLDER) -> the terminal's address with those words and a launch token the portal made now, on
+  // this click (its own page's request: X-Requested-With, its Origin); throws with what to say
+  async function launch(mode, tool, folder) {
+    const r = await fetch("/api/terminal/launch", { method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { ...API_HEADERS, "Content-Type": "application/json" }, body: JSON.stringify({ mode, tool, folder: folder || "" }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 401) { location.assign("/login"); throw new Error("signed out"); }
+    if (!r.ok || typeof d.url !== "string" || !d.url.startsWith(appUrl("terminal").split(/[?#]/)[0])) throw new Error(d.error || `HTTP ${r.status}`);
+    return d.url;
+  }
+  const failed = (e) => { if (e.message !== "signed out") toast(`Could not open it: ${e.message}`); };
+  root.bnAnswers.launch = launch;
 
   async function load(force) {
     if (!force && data && Date.now() - loadedAt < 30000) return data;
@@ -124,8 +128,8 @@
   tOpen.addEventListener("click", () => {
     const f = document.querySelector('#frames iframe[data-app="terminal"]');
     if (!f || !tSelect.value || tSelect.selectedOptions[0]?.disabled) return;
-    f.src = terminalSrc(appUrl("terminal"), "open", tSelect.value, nonce());
-    f.focus();
+    tOpen.disabled = true;
+    launch("open", tSelect.value).then((url) => { f.src = url; f.focus(); }, failed).finally(() => { tOpen.disabled = false; });
   });
 
   // Chat tab: Who answers [▾]  in [folder ▾]
@@ -158,9 +162,10 @@
       : saved.chat.startsWith("model:") ? "A new chat with this model in Open WebUI." : "";
   }
   function openTool(id) {
-    const f = toolFrame();
-    f.src = terminalSrc(appUrl("terminal"), "chat", id, nonce(), saved.folder || "");
-    showChat();
+    launch("chat", id, saved.folder || "").then((url) => { toolFrame().src = url; showChat(); }, (e) => {
+      failed(e);
+      saved.chat = "owui"; save(); cSelect.value = "owui"; showChat();
+    });
   }
   cSelect.addEventListener("change", () => {
     const v = cSelect.value;
@@ -204,7 +209,7 @@
       // (a choice this page no longer offers — a model turned off, a tool left out — is Open WebUI again)
       if (d && cSelect.value !== saved.chat) { saved.chat = cSelect.value || "owui"; save(); }
       folders(d);
-      // a tool chosen earlier comes back (its window is still there; a new nonce only selects it)
+      // a tool chosen earlier comes back (its window is still there; a new token only selects it)
       if (saved.chat.startsWith("tool:") && !document.querySelector('#frames iframe[data-app="chat-tool"]') && cSelect.value === saved.chat) openTool(saved.chat.slice(5));
       else showChat();
     }

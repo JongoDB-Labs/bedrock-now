@@ -560,7 +560,7 @@ test_compose_terminal_is_a_sandbox() {
   assert_eq "$(awk '/^networks:$/,0' "$STACK_DIR/compose.terminal-proxy.yaml" | grep -c 'internal: true')" 1   # terminal-proxy; terminal-out is the internet
   # its image: the terminal's pinned Node base, nothing installed, its own uid, a syntax check at build
   d="$(cat "$STACK_DIR/terminal/egress/Dockerfile")"
-  assert_contains "$d" "$(grep -m1 '^FROM node:' "$STACK_DIR/terminal/Dockerfile")"
+  assert_contains "$d" "$(grep -m1 '^FROM node:' "$STACK_DIR/terminal/Dockerfile" | sed 's/ AS [a-z-]*$//')"
   assert_contains "$d" "node --check /opt/bn-egress/bn-egress.mjs"
   assert_contains "$d" "USER 65534:65534"
   assert_not_contains "$d" "apt-get"
@@ -755,9 +755,14 @@ test_ttyd_listens_on_a_socket_only_and_checks_the_origin() {
   # no TCP port, and no secret on its command line (readable by every user of the machine) — or anywhere in here
   cmd="$(sed -n '/^exec env/,/bn-session$/p' "$STACK_DIR/terminal/bin/bn-terminal")"
   assert_contains "$cmd" "ttyd --interface"
-  for bad in "--port" " -p " "--auth-header" " -H " "--url-arg" " -a "; do
+  for bad in "--port" " -p " "--auth-header" " -H "; do
     assert_not_contains "$cmd" "$bad"
   done
+  # the pickers' words (?arg=…) as bn-session's arguments: --url-arg, never through a shell — bn-session takes only its
+  # fixed words and a launch token's form (tests/test_subscriptions.sh), and the portal lets no request carry words
+  # without a valid token (portal/tests/test_answers.py)
+  assert_contains "$cmd" "--check-origin --url-arg"
+  assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-session")" '[[ $token =~ ^[0-9]{10}-[0-9a-f]{16}-[0-9a-f]{32}$ ]] || plain'
   for bad in "TERMINAL_PROXY_SECRET" "X-Bn-Terminal" "X-Portal-User"; do
     assert_not_contains "$f" "$bad"
   done
@@ -766,7 +771,8 @@ test_ttyd_listens_on_a_socket_only_and_checks_the_origin() {
   assert_contains "$d" "chmod 700 /home/claude /run/bn-ttyd"
   assert_not_contains "$d" "TERMINAL_PROXY_SECRET"
   assert_not_contains "$d" "EXPOSE"
-  assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-session")" "tmux new-session -A -s claude"
+  assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-session")" 'S=claude'
+  assert_contains "$(cat "$STACK_DIR/terminal/bin/bn-session")" 'plain() { exec tmux new-session -A -s "$S" -n claude -c "$WS" "claude-bedrock; exec bash"; }'
   # the page rewrite: a viewport and our icon in, ttyd's icon out
   assert_contains "$(cat "$STACK_DIR/terminal/ttyd-page.py")" '<meta name="viewport" content="width=device-width'
   printf '<html><head><meta charset="UTF-8"><link rel="icon" type="image/png" href="data:image/png;base64,AAA"></head><body><script type="text/javascript">var t="é";</script></body></html>' > "$TMP/in.html"
