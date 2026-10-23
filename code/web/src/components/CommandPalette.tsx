@@ -168,7 +168,14 @@ export function CommandPalette() {
 function PaletteBody({ mode }: { mode: 'all' | 'files' }) {
   const phone = useMedia('(max-width: 699.98px)');
   const [query, setQuery] = useState('');
-  const [sel, setSel] = useState(0);
+  const [sel, setSelState] = useState(0);
+  // (the selection as the keys left it, not as the last render saw it: Shift+Tab then Enter typed faster than a render
+  // runs the entry Shift+Tab chose)
+  const selNow = useRef(0);
+  const setSel = (to: number | ((x: number) => number)) => {
+    selNow.current = typeof to === 'function' ? to(selNow.current) : to;
+    setSelState(selNow.current);
+  };
   const [found, setFound] = useState<{ q: string; paths: string[] }>({ q: '', paths: [] });
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -233,7 +240,8 @@ function PaletteBody({ mode }: { mode: 'all' | 'files' }) {
     return rank(all, q, (i) => i.label, (i) => i.detail, 80).map((r) => ({ item: r.item, hits: r.hits }));
   }, [q, only, st, found, wantFiles]);
 
-  useEffect(() => setSel(0), [q, only]);
+  // (the selection goes back to the first entry as the query changes — in the input's own handler, not in an effect that
+  // runs after paint: a Tab typed before it would be undone and the next Shift+Tab land on another entry)
   useEffect(() => {
     list.current?.querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
   }, [sel, items.length]);
@@ -261,7 +269,7 @@ function PaletteBody({ mode }: { mode: 'all' | 'files' }) {
       if (n) setSel((x) => Math.max(0, x - 8));
     } else if (e.key === 'Enter' && !e.isComposing) {
       e.preventDefault();
-      run(sel);
+      run(selNow.current);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -288,7 +296,10 @@ function PaletteBody({ mode }: { mode: 'all' | 'files' }) {
           placeholder={placeholder}
           value={query}
           maxLength={200}
-          onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
+          onInput={(e) => {
+            setQuery((e.currentTarget as HTMLInputElement).value);
+            setSel(0);
+          }}
           onKeyDown={onKey}
           data-testid="cp-input"
         />
