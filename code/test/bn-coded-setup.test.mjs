@@ -127,3 +127,16 @@ test('setup.which: a name in PATH, a path, the sandbox\'s own home; nothing run,
   assert.match((await call({ op: 'setup.which', names: ['~/../etc/x'] })).error, /bad name/);
   assert.match((await call({ op: 'setup.which', names: Array.from({ length: 51 }, () => 'x') })).error, /too many/);
 });
+
+test('setup.trash: the sandbox\'s own MCP server definition, read here (never sent by the caller), into its trash folder; none: nothing', async () => {
+  const g = path.join(CONF, '.claude.json');
+  fs.writeFileSync(g, JSON.stringify({ mcpServers: { own: { command: 'mine', args: ['--x'] } }, other: 1 }));
+  const r = await call({ op: 'setup.trash', mcp: 'own', config: { command: 'not this' } });
+  assert.match(r.trashed, /^\.bedrock-now-trash\/setup-[0-9T-]+Z-[0-9a-f]{6}\/mcp__own\.json$/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(CONF, r.trashed), 'utf8')), { mcpServers: { own: { command: 'mine', args: ['--x'] } } });
+  assert.equal(fs.statSync(path.join(CONF, r.trashed)).mode & 0o777, 0o600);
+  assert.equal((await call({ op: 'setup.trash', mcp: 'absent' })).trashed, null);
+  for (const bad of ['../x', '', 'a b', 'x'.repeat(65), 7]) assert.match((await call({ op: 'setup.trash', mcp: bad })).error, /bad name/);
+  // (the configuration itself unchanged: a copy removes the server through the CLI afterwards)
+  assert.equal(JSON.parse(fs.readFileSync(g, 'utf8')).mcpServers.own.command, 'mine');
+});

@@ -461,15 +461,30 @@ export const tokens = (chars) => Math.ceil(Math.max(0, chars) / 4);
 // what a listed entry of the Skill, agent or slash command tool costs in every request: its name and description, and
 // a few tokens of its own
 export const listed = (fm, fallback = '') => (fm.invocable ? tokens((fm.name || fallback).length + fm.description.length) + 8 : 0);
-// pluginLook(dir) -> {version, description, hooks, hookEvents, mcp, commands, agents, skills, tokens} of a plugin's folder
+// otherHooks(hs) -> how many hooks of a hooks object are not a command (a prompt, an agent …): what they do is not read here
+function otherHooks(hs) {
+  let n = 0;
+  if (!isObj(hs)) return 0;
+  for (const groups of Object.values(hs)) {
+    if (!Array.isArray(groups)) continue;
+    for (const g of groups.slice(0, 1000)) if (isObj(g) && Array.isArray(g.hooks)) n += g.hooks.slice(0, 1000).filter((h) => !isObj(h) || h.type !== 'command').length;
+  }
+  return n;
+}
+// pluginLook(dir) -> {version, description, hooks, hookEvents, otherHooks, hooksFile, mcp, mcpFile, commands, agents,
+// skills, tokens} of a plugin's folder — hooksFile, mcpFile: its manifest names files of hooks or MCP servers of their
+// own (a path, or a list of them): what they hold shows once it is installed
 export function pluginLook(dir) {
-  const out = { version: null, description: '', hooks: 0, hookEvents: [], mcp: [], commands: 0, agents: 0, skills: 0, tokens: 0 };
+  const out = { version: null, description: '', hooks: 0, hookEvents: [], otherHooks: 0, hooksFile: false, mcp: [], mcpFile: false, commands: 0, agents: 0, skills: 0, tokens: 0 };
   if (!isDir(dir)) return null;
   const pj = readJson(path.join(dir, '.claude-plugin', 'plugin.json'), LIMITS.manifest) ?? {};
   if (typeof pj.version === 'string' && /^[0-9A-Za-z.+-]{1,40}$/.test(pj.version)) out.version = pj.version;
   out.description = clean(redactText(typeof pj.description === 'string' ? pj.description : ''), 300);
+  out.hooksFile = typeof pj.hooks === 'string' || Array.isArray(pj.hooks);
+  out.mcpFile = typeof pj.mcpServers === 'string' || Array.isArray(pj.mcpServers);
   const hookSets = [pj.hooks, readJson(path.join(dir, 'hooks', 'hooks.json'), LIMITS.manifest)?.hooks];
   for (const hs of hookSets) {
+    out.otherHooks += otherHooks(hs);
     const h = hooksOf(hs);
     if (!h) continue;
     for (const [ev, gs] of Object.entries(h.value)) {

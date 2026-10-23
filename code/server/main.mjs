@@ -248,6 +248,8 @@ export function createServer({ secret, query, spawn, call, distDir = path.join(H
   let setupStore = setup;
   const stp = () => (setupStore ??= new Setup({ call, imports: imp(), queue: imp().queue, worker: true,
     egress: sandboxInfo.egressHost ? 'host' : sandboxInfo.egress === false ? 'off' : 'internet',
+    // (the folders of this computer added as projects: the sandbox has each at the same path)
+    projects: () => proj().list().filter((p) => p.host && !p.gone && typeof p.root === 'string').map((p) => p.root),
     plugins: { list: () => api.plugins(), addMarketplace: (source) => api.marketplaceAdd({ source }), install: (id) => api.pluginAction('install', { name: id, scope: 'user' }),
       disable: (id) => api.pluginAction('disable', { name: id, scope: 'user' }) } }));
   let setupApi = null;

@@ -29,16 +29,17 @@ const read = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } 
 fs.appendFileSync(path.join(conf, 'cli.log'), JSON.stringify(a) + '\\n');
 const p = read(st, { installed: [], markets: [] });
 const ok = (o) => { console.log(JSON.stringify(o ?? { outcome: 'ok' })); process.exit(0); };
+if (a[0] === 'mcp' && a[1] === 'add-json' && fs.existsSync(path.join(conf, 'add-fails'))) { fs.rmSync(path.join(conf, 'add-fails')); console.error('Invalid configuration'); process.exit(1); }
 if (a[0] === 'mcp' && a[1] === 'add-json') { const j = read(g, {}); j.mcpServers = j.mcpServers || {}; if (j.mcpServers[a[2]]) { console.error('MCP server ' + a[2] + ' already exists'); process.exit(1); } j.mcpServers[a[2]] = JSON.parse(a[3]); fs.writeFileSync(g, JSON.stringify(j)); console.log('Added'); process.exit(0); }
 if (a[0] === 'mcp' && a[1] === 'remove') { const j = read(g, {}); if (j.mcpServers) delete j.mcpServers[a[2]]; fs.writeFileSync(g, JSON.stringify(j)); console.log('Removed'); process.exit(0); }
 if (a[0] === 'plugin' && a[1] === 'list') { console.log(JSON.stringify(p.installed.map((id) => ({ id, enabled: true, scope: 'user' })))); process.exit(0); }
-if (a[0] === 'plugin' && a[1] === 'marketplace' && a[2] === 'list') { console.log(JSON.stringify(p.markets.map((name) => ({ name, source: 'github' })))); process.exit(0); }
+if (a[0] === 'plugin' && a[1] === 'marketplace' && a[2] === 'list') { console.log(JSON.stringify(p.markets.map((m) => (typeof m === 'string' ? { name: m, source: 'github', repo: m === 'acme' ? 'acme/claude-plugins' : 'other/x' } : m)))); process.exit(0); }
 if (a[0] === 'plugin' && a[1] === 'marketplace' && a[2] === 'add') { p.markets.push('acme'); fs.writeFileSync(st, JSON.stringify(p)); ok(); }
 if (a[0] === 'plugin' && a[1] === 'install') {
   if (fs.existsSync(path.join(conf, 'needs-confirm')) && !a.some((x) => x.startsWith('--accept-command='))) { console.log(JSON.stringify({ outcome: 'failed', failureCode: 'command_source_refused', message: 'a command', shownCommand: { kind: 'command', pluginId: a[2], command: 'npm i -g fmt', sha256: 'a'.repeat(64) } })); process.exit(1); }
   p.installed.push(a[2]); fs.writeFileSync(st, JSON.stringify(p)); ok();
 }
-if (a[0] === 'plugin' && a[1] === 'disable') ok();
+if (a[0] === 'plugin' && a[1] === 'disable') { if (fs.existsSync(path.join(conf, 'disable-fails'))) { console.log(JSON.stringify({ outcome: 'failed', message: 'no' })); process.exit(1); } ok(); }
 process.exit(2);
 `, { mode: 0o755 });
 Object.assign(process.env, { BN_CODE_WORKSPACE: WS, BN_CODE_SOCK_DIR: SOCKDIR, BN_CODE_CHILDREN: path.join(ROOT, 'children'), HOME: SBX, CLAUDE_CONFIG_DIR: CONF,
@@ -209,7 +210,11 @@ test('settings: four keys only, merged into the sandbox\'s own — what bedrock-
   await openRows([row('setting', 'permissions')]);
   const o = await copyOne([keyOf(row('setting', 'permissions'))]);
   assert.equal(o.r.ok, true, o.r.why);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(CONF, 'settings.json'), 'utf8')).permissions.allow, ['Read', 'Bash(make:*)', 'Bash(npm run test:*)']);
+  // (a rule it still brings keeps its place)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(CONF, 'settings.json'), 'utf8')).permissions.allow, ['Read', 'Bash(npm run test:*)', 'Bash(make:*)']);
+  // (and the rules it no longer brings are said before they go)
+  assert.ok(o.p.flags.some((f) => /2 rules bedrock-now copied from Claude Code before.*taken out/.test(f.text) && f.items.includes('allow: Bash(rm:*)') && f.items.includes('allow: Read(/home/alex/**)')),
+    JSON.stringify(o.p.flags));
   // the status line changed in the sandbox: a conflict, left by default
   const j2 = JSON.parse(fs.readFileSync(path.join(CONF, 'settings.json'), 'utf8'));
   j2.statusLine = { type: 'command', command: 'my-own-line' };
@@ -230,7 +235,8 @@ test('MCP servers: flags for every case; secret-shaped values left out unless ke
   assert.match(text(await pv('github')), /no Docker/);
   assert.match(text(await pv('mine')), /\/home\/alex\/bin\/mcp-mine is not in the sandbox \(a program of your computer\)/);
   const ev = await pv('everything');
-  assert.match(text(ev), /It runs npx in the sandbox/);
+  assert.match(text(ev), /It starts with every session and runs this in the sandbox.*npx fetches the package.*npx -y @modelcontextprotocol\/server-everything/s);
+  assert.equal(ev.flags.find((f) => /starts with every session/.test(f.text)).level, 'warn');
   assert.deepEqual(ev.secrets.map((s) => s.where).sort(), ['env NOTION_KEY', 'env OPENAI_API_KEY']);
   assert.deepEqual(ev.writes[0].config.env, { DEBUG: '1' }, 'left out by default; never a secret in a preview');
   assert.match(text(await pv('local-api')), /this computer's own \(localhost\)/);
@@ -342,19 +348,247 @@ test('agents, commands, output styles and keybindings; forget; the command line'
   assert.equal(setup.index(), null);
 });
 
-test('linear on hostile input: paths, programs, MCP secrets and the reader\'s shapes at 1–8 MiB in well under a second', () => {
-  const big = (unit, n) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
-  const cases = [
-    () => plan.hostPaths(big('~/', 8 << 20)), () => plan.hostPaths(big('/Us' + 'ers/a', 8 << 20), '/home/x'), () => plan.hostPaths(big('$HOME/x ', 4 << 20)),
-    () => plan.programsOf(big('a | ', 1 << 20)), () => plan.programsOf(big('"\\', 1 << 20)), () => plan.programsOf(big("X=1 ", 1 << 20)),
-    () => plan.mcpSecrets({ type: 'stdio', command: 'npx', args: Array.from({ length: 64 }, () => big('--api-key=', 2000)), env: Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`K${i}_KEY`, big('ab', 4000)])) }, 'k'),
-    () => reader.identityOf(big('[user]\nname = "\\', 4 << 20)), () => reader.frontmatter(big('---\ndescription: |\n  x\n', 1 << 20)),
-  ];
-  for (const c of cases) {
-    let best = Infinity;
-    for (let i = 0; i < 2; i++) { const t0 = performance.now(); c(); best = Math.min(best, performance.now() - t0); }
-    assert.ok(best < 1000, `${c.toString().slice(6, 60)}: ${best.toFixed(0)} ms`);
+// --- what the independent review asked for: grants in front matter, settings records per tool, secrets in URLs and
+// --- arguments, copies from another device, plugins' flags, project folders, names never sent before a copy ---
+const flagsText = (p) => p.flags.map((f) => `${f.level}: ${f.text} ${(f.items ?? []).join(' | ')}`).join('\n');
+// a Setup whose calls to the sandbox are seen (which names setup.which is asked about), with a project folder
+const PROJ = path.join(ROOT, 'proj');
+const seen = [];
+const spySetup = () => new Setup({ dir: STATE, stage: path.join(STAGE, 'setup'), stageRoot: STAGE, imports, egress: 'internet', projects: () => [PROJ],
+  call: (req, o) => { if (req.op === 'setup.which') seen.push(...req.names); return call(req, o); } });
+
+test('M1: grants in front matter said in plain words — allowed-tools, a permission mode, hooks, MCP servers, front matter not plain; !`…` commands', async () => {
+  look();
+  for (const x of setup.staged()) setup.drop(x.key);
+  await openRows([row('skill', 'shell'), row('command', 'status'), row('agent', 'yolo'), row('agent', 'odd'), row('agent', 'hooked'), row('agent', 'reviewer'), row('skill', 'notes')]);
+  const pv = (kind, name) => setup.preview([keyOf(row(kind, name))], {});
+  const shell = await pv('skill', 'shell');
+  assert.match(flagsText(shell), /warn: Lets this skill run shell commands without asking, in every session \(allowed-tools\)\. Bash, Read/);
+  assert.match(flagsText(shell), /warn: It runs 1 shell command in the sandbox each time it is used.*git branch --show-current/);
+  assert.deepEqual(shell.grants, ['this skill runs shell commands without asking']);
+  const status = await pv('command', 'status');
+  assert.match(flagsText(status), /Lets this command run shell commands without asking.*Bash\(git status:\*\)/);
+  assert.match(flagsText(status), /runs 2 shell commands.*git status --short \| \/home\/alex\/bin\/log\.sh/);
+  assert.match(flagsText(status), /They run programs that are not in the sandbox.*\/home\/alex\/bin\/log\.sh/);
+  const yolo = await pv('agent', 'yolo');
+  assert.match(flagsText(yolo), /warn: Runs without asking for anything \(permissionMode: bypassPermissions\)/);
+  assert.match(flagsText(yolo), /info: Runs on opus/);
+  assert.deepEqual(yolo.grants, ['this agent asks for nothing']);
+  const odd = await pv('agent', 'odd');
+  assert.match(flagsText(odd), /warn: Its front matter is not plain/);
+  assert.equal(odd.grants.length, 1);
+  const hooked = await pv('agent', 'hooked');
+  assert.match(flagsText(hooked), /Starts MCP servers of its own/);
+  assert.match(flagsText(hooked), /Runs programs on its own while this agent is in use/);
+  assert.match(flagsText(hooked), /not plain/);
+  // (a tools list asks as the session's mode says: said, but no grant)
+  const reviewer = await pv('agent', 'reviewer');
+  assert.match(flagsText(reviewer), /Gives this agent these tools \(tools\).*Read, Grep/);
+  assert.deepEqual(reviewer.grants, []);
+  assert.deepEqual((await pv('skill', 'notes')).grants, []);
+  // L1: from another device a copy with grants is refused (the password, through the portal); one without is copied
+  const r = (await setup.copy([{ keys: [keyOf(row('skill', 'shell'))], digest: shell.digest }, { keys: [keyOf(row('skill', 'notes'))], digest: (await pv('skill', 'notes')).digest }], { remote: true }));
+  assert.deepEqual(r.map((x) => [x.name, x.ok, x.password === true]), [['shell', false, true], ['notes', true, false]]);
+  assert.match(r[0].why, /portal password/);
+  assert.ok(!fs.existsSync(path.join(CONF, 'skills', 'shell')));
+  // on this computer: copied (the warning was the page's)
+  assert.equal((await setup.copy([{ keys: [keyOf(row('skill', 'shell'))], digest: shell.digest }]))[0].ok, true);
+  for (const x of setup.staged()) setup.drop(x.key);
+});
+
+test('M2: settings records per tool — one tool\'s copy never takes out the other\'s rules; rules it no longer brings are said before they go; L1: a whole tool allowed', async () => {
+  fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ permissions: { allow: ['Read'] } }));
+  const hs = JSON.parse(fs.readFileSync(path.join(F.claude, 'settings.json'), 'utf8'));
+  hs.permissions = { allow: ['Read'], deny: ['Bash(curl:*)'] };
+  fs.writeFileSync(path.join(F.claude, 'settings.json'), JSON.stringify(hs));
+  const copyPerm = async (tool) => {
+    look();
+    await openRows([row('setting', 'permissions', tool)]);
+    return copyOne([keyOf(row('setting', 'permissions', tool))]);
+  };
+  const perms = () => JSON.parse(fs.readFileSync(path.join(CONF, 'settings.json'), 'utf8')).permissions;
+  const a = await copyPerm('claude');
+  assert.equal(a.r.ok, true, a.r.why);
+  assert.deepEqual(perms(), { allow: ['Read'], deny: ['Bash(curl:*)'] });
+  // claude-bedrock's copy: its whole Bash said in its own words — and Claude Code's deny stays
+  const b = await copyPerm('claude-bedrock');
+  assert.equal(b.r.ok, true, b.r.why);
+  assert.match(flagsText(b.p), /warn: Lets Claude run any shell command without asking, in every session\. Bash/);
+  assert.deepEqual(b.p.grants, ['Lets Claude run any shell command without asking, in every session.']);
+  assert.ok(!b.p.flags.some((f) => /taken out/.test(f.text)), 'nothing of Claude Code\'s taken out');
+  assert.deepEqual(perms(), { allow: ['Read', 'Bash', 'Bash(git status)'], deny: ['Bash(curl:*)'] });
+  // the deny gone on the computer: Claude Code's copy again takes it out — said first; claude-bedrock's rules stay
+  hs.permissions = { allow: ['Read'] };
+  fs.writeFileSync(path.join(F.claude, 'settings.json'), JSON.stringify(hs));
+  const c = await copyPerm('claude');
+  assert.equal(c.r.ok, true, c.r.why);
+  const gone = c.p.flags.find((f) => /taken out of the sandbox's settings/.test(f.text));
+  assert.equal(gone.level, 'warn');
+  assert.deepEqual(gone.items, ['deny: Bash(curl:*)']);
+  assert.deepEqual(perms(), { allow: ['Read', 'Bash', 'Bash(git status)'], deny: [] });
+  // from another device, the whole Bash needs the password
+  look();
+  await openRows([row('setting', 'permissions', 'claude-bedrock')]);
+  const k = [keyOf(row('setting', 'permissions', 'claude-bedrock'))];
+  const p = await setup.preview(k, {});
+  assert.equal((await setup.copy([{ keys: k, digest: p.digest }], { remote: true }))[0].password, true);
+  for (const x of setup.staged()) setup.drop(x.key);
+});
+
+test('M3: a capability URL, an mcp-remote\'s URL and a marketplace\'s token are left out by default, shown masked to every device', async () => {
+  look();
+  await openRows([row('mcp', 'cap'), row('mcp', 'proxied'), row('plugin', 'widget@private')]);
+  const cap = await setup.preview([keyOf(row('mcp', 'cap'))], {});
+  assert.match(cap.blocked, /URL, arguments or command/);
+  assert.deepEqual(cap.secrets.map((x) => [x.where, x.drop, x.preview]), [['URL', 'server', 'https://mcp.example.com/api/mcp/s/•••/mcp']]);
+  const prox = await setup.preview([keyOf(row('mcp', 'proxied'))], {});
+  assert.deepEqual(prox.secrets.map((x) => [x.where, x.preview]), [['argument 3', 'https://mcp.example.com/s/•••/sse']]);
+  assert.match(flagsText(prox), /npx -y mcp-remote https:\/\/mcp\.example\.com\/s\/•••\/sse/);
+  const w = await setup.preview([keyOf(row('plugin', 'widget@private'))], {});
+  assert.match(w.blocked, /marketplace's URL holds what may be a secret/);
+  assert.equal(w.secrets[0].preview, 'https://git.example.com/org/plugins.git?private_token=•••');
+  assert.deepEqual(w.writes, []);
+  for (const x of [cap, prox, w]) noSecret(x);
+  // not copied without the keep; with it (the helper's copy): the server as it is
+  assert.equal((await setup.copy([{ keys: [keyOf(row('mcp', 'cap'))], digest: cap.digest }]))[0].ok, false);
+  assert.equal((await setup.copy([{ keys: [keyOf(row('mcp', 'cap'))], digest: cap.digest, keep: cap.needsKeep }]))[0].ok, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(CONF, '.claude.json'), 'utf8')).mcpServers.cap.url, `https://mcp.example.com/api/mcp/s/${F.s.capHex}/mcp`);
+  const kw = (await setup.copy([{ keys: [keyOf(row('plugin', 'widget@private'))], digest: w.digest, keep: w.needsKeep }]))[0];
+  assert.equal(kw.ok, true, kw.why);
+  assert.ok(fs.readFileSync(path.join(CONF, 'cli.log'), 'utf8').includes(`"plugin","marketplace","add","https://git.example.com/org/plugins.git?private_token=${F.s.glToken}"`));
+  // the shapes themselves: what is, and what is not
+  for (const u of [`https://h.example/x?sig=${'a1B2'.repeat(8)}`, 'https://u:p@h.example/x', `https://h.example/x#${F.s.capHex}`, `https://h.example/${crypto.randomUUID()}/x`,
+    `https://${F.s.capHex}.ngrok.example/x`, `https://h.example/hook/${F.s.xkey}`]) assert.equal(plan.urlSecret(u), true, u);
+  for (const u of ['https://mcp.linear.app/mcp', 'https://api.githubcopilot.com/mcp/', 'https://mcp.notion.com/sse', 'https://docs.example.com/v1/mcp-server-sequential-thinking']) assert.equal(plan.urlSecret(u), false, u);
+  for (const a of ['@modelcontextprotocol/server-everything', 'mcp-server-sequential-thinking', '--port', '8080', '-y', 'server.py', '/usr/local/bin/x', 'ghcr.io/github/github-mcp-server']) assert.equal(plan.argSecret(a), false, a);
+  for (const a of [F.s.xkey, `--token=${F.s.capHex}`, `Authorization: Bearer ${F.s.bearer}`, crypto.randomUUID(), 'x'.repeat(5000)]) assert.equal(plan.argSecret(a), true, a.slice(0, 40));
+});
+
+test('L2, L3: a plugin off on the computer stays off (or it is said); its hooks of other kinds and named files said; a marketplace of that name from elsewhere refused', async () => {
+  look();
+  await openRows([row('plugin', 'hooky@acme'), row('plugin', 'quiet@acme')]);
+  const h = await setup.preview([keyOf(row('plugin', 'hooky@acme'))], {});
+  const t = flagsText(h);
+  assert.match(t, /version 3\.0\.0 on your computer has: its marketplace may install a newer one/);
+  assert.match(t, /warn: 1 hook of another kind \(a prompt or an agent/);
+  assert.match(t, /warn: Its manifest names files of hooks of their own/);
+  assert.match(t, /warn: Its manifest names files of MCP servers of their own/);
+  // quiet@acme is off on the computer: installed (it is, from the plugins test) — a fresh sandbox's install that cannot
+  // turn it off says so
+  const st = path.join(CONF, 'fake-plugins.json');
+  const saved = fs.readFileSync(st, 'utf8');
+  fs.writeFileSync(st, JSON.stringify({ installed: [], markets: ['acme'] }));
+  fs.writeFileSync(path.join(CONF, 'disable-fails'), '');
+  const q = await setup.preview([keyOf(row('plugin', 'quiet@acme'))], {});
+  const r = (await setup.copy([{ keys: [keyOf(row('plugin', 'quiet@acme'))], digest: q.digest }]))[0];
+  fs.rmSync(path.join(CONF, 'disable-fails'));
+  assert.equal(r.ok, true, r.why);
+  assert.match(r.note, /could not be turned off/);
+  // a marketplace named acme the sandbox added from another repository: refused
+  fs.writeFileSync(st, JSON.stringify({ installed: [], markets: [{ name: 'acme', source: 'github', repo: 'evil/plugins' }] }));
+  look();
+  await openRows([row('plugin', 'hooky@acme')]);
+  const other = await setup.preview([keyOf(row('plugin', 'hooky@acme'))], {});
+  assert.match(other.blocked, /marketplace named acme from another source \(evil\/plugins\)/);
+  fs.writeFileSync(st, saved);
+  for (const x of setup.staged()) setup.drop(x.key);
+});
+
+test('L5, L6, L7: every conflict of a settings unit; a program in a project folder said as Claude\'s to change; a path only this computer has never asked of the sandbox', async () => {
+  const meta = (name, value, tool = 'claude') => ({ meta: { key: plan.itemKey(tool, 'setting', '-', name), tool, kind: 'setting', scope: '-', name, value, hmac: 'k', files: [] }, files: [] });
+  const own = { statusLine: { type: 'command', command: 'mine' }, outputStyle: 'Explanatory' };
+  const u = plan.planUnit({ items: [meta('statusLine', { type: 'command', command: `${PROJ}/bin/line.sh` }), meta('outputStyle', 'terse')],
+    state: { file: { exists: true, type: 'file', sha256: sha(JSON.stringify(own)), text: JSON.stringify(own) } }, projects: [PROJ], home: '/home/alex', which: {} });
+  assert.deepEqual(u.conflicts.map((c) => c.dest), ['settings.json › statusLine', 'settings.json › outputStyle']);
+  assert.match(flagsText(u), /warn: The status line runs a file in a folder Claude can write.*\/bin\/line\.sh/);
+  // the names setup.which is asked about: never your home's or another computer path; a project folder's, yes
+  const hooks = { PreToolUse: [{ hooks: [{ type: 'command', command: '/home/alex/bin/guard.sh' }, { type: 'command', command: `${['', 'Us' + 'ers', 'alex', 'x.sh'].join('/')}` },
+    { type: 'command', command: `${PROJ}/hooks/check.sh` }, { type: 'command', command: '/usr/bin/jq .' }, { type: 'command', command: 'npx -y x' }, { type: 'command', command: '/srv/tools/run' }] }] };
+  assert.deepEqual(plan.lookupsOf({ kind: 'setting', name: 'hooks', value: hooks }, [PROJ]).sort(), [`${PROJ}/hooks/check.sh`, '/usr/bin/jq', 'npx'].sort());
+  // (a path in a project folder of your home: in the sandbox at the same path — said apart from your computer's own)
+  const hp = plan.hostPaths('run /home/alex/src/app/a.sh and /home/alex/b.sh', '/home/alex', ['/home/alex/src/app']);
+  assert.deepEqual([hp.count, hp.project], [1, 1]);
+  assert.match(flagsText(plan.planUnit({ items: [meta('statusLine', { type: 'command', command: '/home/alex/src/app/line.sh' })], projects: ['/home/alex/src/app'], home: '/home/alex' })),
+    /1 path in your project folders: the sandbox has them at the same path/);
+  // through the code container: what setup.which was asked about
+  fs.mkdirSync(PROJ, { recursive: true });
+  const hs = JSON.parse(fs.readFileSync(path.join(F.claude, 'settings.json'), 'utf8'));
+  hs.hooks = hooks;
+  fs.writeFileSync(path.join(F.claude, 'settings.json'), JSON.stringify(hs));
+  look();
+  await openRows([row('setting', 'hooks')]);
+  seen.length = 0;
+  const sp = spySetup();
+  const p = await sp.preview([keyOf(row('setting', 'hooks'))], {});
+  assert.ok(seen.length && seen.every((n) => !n.includes('/home/alex') && !n.startsWith('/Us')), seen.join(' '));
+  assert.ok(seen.includes(`${PROJ}/hooks/check.sh`));
+  assert.match(flagsText(p), /Hooks run programs that are not in the sandbox.*\/home\/alex\/bin\/guard\.sh/);
+  assert.match(flagsText(p), /Hooks run a file in a folder Claude can write.*hooks\/check\.sh/);
+  assert.match(flagsText(p), /folder the sandbox is not asked about.*\/srv\/tools\/run/);
+  for (const x of setup.staged()) setup.drop(x.key);
+});
+
+test('L8: a server of the sandbox\'s own replaced goes to its trash first, and comes back when the new one is not taken', async () => {
+  const g = path.join(CONF, '.claude.json');
+  let j = {};
+  try { j = JSON.parse(fs.readFileSync(g, 'utf8')); } catch { /* none yet */ }
+  j.mcpServers = { ...(j.mcpServers ?? {}), fetch: { command: 'my-fetch', args: ['--own'] } };
+  fs.writeFileSync(g, JSON.stringify(j));
+  look();
+  await openRows([row('mcp', 'fetch')]);
+  const k = [keyOf(row('mcp', 'fetch'))];
+  const p = await setup.preview(k, { conflict: 'replace' });
+  assert.match(p.conflict.why, /of its own/);
+  // the new one refused: the sandbox's own back as it was
+  fs.writeFileSync(path.join(CONF, 'add-fails'), '');
+  const r = (await setup.copy([{ keys: k, digest: p.digest, conflict: 'replace' }]))[0];
+  assert.equal(r.ok, false);
+  assert.match(r.why, /the sandbox's own server is as it was/);
+  // (as Claude Code reads it: its type said)
+  assert.deepEqual(JSON.parse(fs.readFileSync(g, 'utf8')).mcpServers.fetch, { type: 'stdio', command: 'my-fetch', args: ['--own'] });
+  // taken: the sandbox's own in the trash
+  look();
+  await openRows([row('mcp', 'fetch')]);
+  const p2 = await setup.preview(k, { conflict: 'replace' });
+  const r2 = (await setup.copy([{ keys: k, digest: p2.digest, conflict: 'replace' }]))[0];
+  assert.equal(r2.ok, true, r2.why);
+  assert.match(r2.trashed, /^\.bedrock-now-trash\/setup-.*\/mcp__fetch\.json$/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(CONF, r2.trashed), 'utf8')), { mcpServers: { fetch: { type: 'stdio', command: 'my-fetch', args: ['--own'] } } });
+  assert.equal(fs.statSync(path.join(CONF, r2.trashed)).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(fs.readFileSync(g, 'utf8')).mcpServers.fetch.command, 'uvx');
+});
+
+// assertLinear(make, run, label): run's time on make(4) against make(1) — about 4× for a linear shape, 16× for a quadratic
+// one — each the fastest of two runs taken in turn (a busy machine slows both alike): at most 6× passes (or the larger
+// under 30 ms); a miss is measured once more before it counts
+const assertLinear = (make, run, label) => {
+  const small = make(1), large = make(4);
+  let q = Infinity, w = Infinity;
+  for (let round = 0; round < 2; round++) {
+    for (let i = 0; i < 2; i++) {
+      let t0 = performance.now(); run(small); q = Math.min(q, performance.now() - t0);
+      t0 = performance.now(); run(large); w = Math.min(w, performance.now() - t0);
+    }
+    if (w <= 6 * Math.max(q, 5)) return;
   }
+  assert.fail(`${label}: ${Math.round(w)} ms at 4×, ${Math.round(q)} ms at 1× — not linear`);
+};
+test('linear on hostile input: paths, programs, MCP secrets, URLs, front matter, !` commands and the reader\'s shapes, 2–8 MiB', () => {
+  const big = (unit, n) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  const MB = 1 << 20;
+  const cases = [
+    ['~/ runs', (k) => big('~/', 2 * k * MB), (t) => plan.hostPaths(t)], ['/Users/a runs', (k) => big('/Us' + 'ers/a', 2 * k * MB), (t) => plan.hostPaths(t, '/home/x', ['/Us' + 'ers/a'])],
+    ['$HOME/x', (k) => big('$HOME/x ', k * MB), (t) => plan.hostPaths(t)], ['pipes', (k) => big('a | ', k * MB / 4), plan.programsOf], ['quotes', (k) => big('"\\', k * MB / 4), plan.programsOf],
+    ['assignments', (k) => big('X=1 ', k * MB / 4), plan.programsOf],
+    ['MCP arguments and env', (k) => ({ type: 'stdio', command: 'npx', args: Array.from({ length: 16 * k }, () => big('--api-key=', 2000)), env: Object.fromEntries(Array.from({ length: 8 * k }, (_, i) => [`K${i}_KEY`, big('ab', 4000)])) }), (c) => plan.mcpSecrets(c, 'k')],
+    ['MCP arguments of pieces', (k) => ({ type: 'stdio', command: 'npx', args: Array.from({ length: 16 * k }, () => big('a/b=c:', 4000)) }), (c) => plan.mcpSecrets(c, 'k')],
+    ['URLs of many parts', (k) => Array.from({ length: 64 * k }, () => `https://h.example/${big('ab/', 7000)}?${big('a=b&', 1000)}`), (us) => us.map(plan.urlSecret)],
+    ['masked URLs', (k) => Array.from({ length: 64 * k }, () => `https://h.example/${big('ab/', 7000)}?${big('a=b&', 1000)}`), (us) => us.map(plan.maskUrl)],
+    ['!` with no end', (k) => big('!`', 2 * k * MB), plan.bangCommands], ['!`a` runs', (k) => big('!`a`', 2 * k * MB), plan.bangCommands],
+    ['front matter lines', (k) => `---\n${big('allowed-tools: Bash\n', 2 * k * MB)}---\n`, (t) => plan.grantsOf(t, 'skill')],
+    ['git identity', (k) => big('[user]\nname = "\\', k * MB), reader.identityOf], ['description blocks', (k) => big('---\ndescription: |\n  x\n', k * MB / 4), reader.frontmatter],
+  ];
+  for (const [label, make, run] of cases) assertLinear(make, run, label);
   assert.deepEqual(plan.programsOf('FOO=1 env BAR=2 /home/a/x.sh --flag | tee log && "my prog" arg; cd /x'), ['/home/a/x.sh', 'tee', 'my prog', 'cd']);
   assert.deepEqual(plan.programKind('~/.claude/x.sh'), { kind: 'look', name: '~/.claude/x.sh' });
   assert.deepEqual(plan.programKind('$CLAUDE_PROJECT_DIR/hooks/a'), { kind: 'project' });

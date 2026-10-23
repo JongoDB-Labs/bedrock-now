@@ -43,15 +43,15 @@ test('the scan: names and sizes of every kind it offers, and nothing of a value'
   const rows = rowsOf(out);
   const names = (tool, kind) => rows.filter((r) => r.tool === tool && r.kind === kind).map((r) => (r.scope ? `${r.scope}/${r.name}` : r.name)).sort();
   assert.deepEqual(names('claude', 'memory'), ['CLAUDE.md']);
-  assert.deepEqual(names('claude', 'skill'), ['notes', 'pdf']);
-  assert.deepEqual(names('claude', 'agent'), ['reviewer', 'team/helper']);
-  assert.deepEqual(names('claude', 'command'), ['deploy', 'git/commit', 'private']);
+  assert.deepEqual(names('claude', 'skill'), ['notes', 'pdf', 'shell']);
+  assert.deepEqual(names('claude', 'agent'), ['hooked', 'odd', 'reviewer', 'team/helper', 'yolo']);
+  assert.deepEqual(names('claude', 'command'), ['deploy', 'git/commit', 'private', 'status']);
   assert.deepEqual(names('claude', 'output-style'), ['terse']);
   assert.deepEqual(names('claude', 'keybindings'), ['keybindings.json']);
   assert.deepEqual(names('claude', 'setting'), ['hooks', 'outputStyle', 'permissions', 'statusLine']);
-  assert.deepEqual(names('claude', 'mcp'), ['local/proj-db', 'user/cli', 'user/everything', 'user/fetch', 'user/github', 'user/helper', 'user/keyed', 'user/lan',
-    'user/linear', 'user/local-api', 'user/mine', 'user/remote']);
-  assert.deepEqual(names('claude', 'plugin'), ['formatter@acme', 'quiet@acme', 'tools@mydir']);
+  assert.deepEqual(names('claude', 'mcp'), ['local/proj-db', 'user/cap', 'user/cli', 'user/everything', 'user/fetch', 'user/github', 'user/helper', 'user/keyed', 'user/lan',
+    'user/linear', 'user/local-api', 'user/mine', 'user/proxied', 'user/remote']);
+  assert.deepEqual(names('claude', 'plugin'), ['formatter@acme', 'hooky@acme', 'quiet@acme', 'tools@mydir', 'widget@private']);
   assert.deepEqual(names('git', 'identity'), ['identity']);
   // claude-bedrock's: its CLAUDE.md is a link (./stack does not mount it: counted), its own settings and server
   assert.deepEqual(names('claude-bedrock', 'memory'), []);
@@ -78,7 +78,8 @@ test('the scan: names and sizes of every kind it offers, and nothing of a value'
   // nothing of a value: no secret, no env, no account, no path of a plugin, no Git name
   const text = JSON.stringify(out);
   for (const v of Object.values(F.s)) assert.ok(!text.includes(v), 'a fake secret in the scan');
-  for (const v of ['evil.example.com', 'alex@example.com', 'Alex Doe', 'acme/claude-plugins', '/home/alex', 'uvx', 'Bash(rm', 'statusline.sh', 'history']) assert.ok(!text.includes(v), `${v} in the scan`);
+  for (const v of ['evil.example.com', 'alex@example.com', 'Alex Doe', 'acme/claude-plugins', '/home/alex', 'uvx', 'Bash(rm', 'statusline.sh', 'history', 'git.example.com', 'mcp-remote',
+    'bypassPermissions', 'allowed-tools']) assert.ok(!text.includes(v), `${v} in the scan`);
 });
 
 test('the fetch: text files whole, structured items by allowlist; env, the account and credentials never', () => {

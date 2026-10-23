@@ -13,7 +13,9 @@
 //                                                      copied: flags, findings, secrets, about how many tokens, the
 //                                                      exact text of each write (every secret redacted or left out)
 //   POST   /api/setup/copy {units: [{keys, mode, conflict, digest}]}   (nothing kept: every finding redacted, every
-//                                                      secret-shaped value left out; a kept one goes through the portal)
+//                                                      secret-shaped value left out; a kept one goes through the portal —
+//                                                      and from another device, a unit with grants: a whole tool allowed,
+//                                                      a front matter's grant, hooks, a status line)
 //   DELETE /api/setup/staged?key=K                     drop an item opened
 import { ImportError } from './import-sessions.mjs';
 import { KEY } from './setup-plan.mjs';
@@ -45,7 +47,8 @@ export function makeSetupApi({ setup, imports }) {
         if (!Array.isArray(b?.units)) throw new ImportError(400, 'units: what to copy');
         // (keeping a possible secret needs the portal password: such a copy goes through the portal and the helper)
         if (b.units.some((u) => u && (u.keep === true || (Array.isArray(u.keep) && u.keep.length)))) throw new ImportError(403, 'Keeping a possible secret needs the portal password: the sheet asks for it.');
-        return send(200, { results: await setup.copy(b.units.map((u) => ({ keys: Array.isArray(u?.keys) ? u.keys : [], mode: u?.mode, conflict: u?.conflict, digest: u?.digest, keep: [] }))) });
+        // (from another device, a unit that lets something act without asking is refused too: that copy needs the password)
+        return send(200, { results: await setup.copy(b.units.map((u) => ({ keys: Array.isArray(u?.keys) ? u.keys : [], mode: u?.mode, conflict: u?.conflict, digest: u?.digest, keep: [] })), { remote }) });
       }
       if (p === '/api/setup/staged' && m === 'DELETE') return send(200, setup.drop(q.get('key')));
       return false;

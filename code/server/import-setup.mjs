@@ -122,6 +122,7 @@ export function valueOf(kind, name, rec) {
       version: typeof l.version === 'string' && /^[0-9A-Za-z.+-]{1,40}$/.test(l.version) ? l.version : null,
       description: typeof l.description === 'string' ? l.description.replace(/[\x00-\x1f\x7f‪-‮⁦-⁩​-‏]/g, ' ').slice(0, 300) : '',
       hooks: int(l.hooks, 0, 1e5) ?? 0, hookEvents: Array.isArray(l.hookEvents) ? l.hookEvents.filter((e) => typeof e === 'string' && /^[A-Za-z]{1,40}$/.test(e)).slice(0, 40) : [],
+      otherHooks: int(l.otherHooks, 0, 1e6) ?? 0, hooksFile: l.hooksFile === true, mcpFile: l.mcpFile === true,
       mcp: Array.isArray(l.mcp) ? l.mcp.filter((x) => typeof x === 'string' && MCP_NAME.test(x)).slice(0, 50) : [],
       commands: int(l.commands, 0, 1e5) ?? 0, agents: int(l.agents, 0, 1e5) ?? 0, skills: int(l.skills, 0, 1e5) ?? 0, tokens: int(l.tokens, 0, 1e9) ?? 0,
     } : null;
@@ -155,8 +156,10 @@ function fileState(v) {
 /** The setup copied from this computer: the last look, the items opened, what was copied. */
 export class Setup {
   constructor({ dir = IMPORTS_DIR, stage = SETUP_STAGE, stageRoot = STAGE_DIR, helperFile = HELPER_FILE, now = () => Date.now(), call = null, plugins = null, egress = 'internet',
-    worker = false, imports = null, queue = null } = {}) {
+    worker = false, imports = null, queue = null, projects = () => [] } = {}) {
     Object.assign(this, { dir, stageDir: stage, stageRoot, helperFile, now, call, egress });
+    // (the project folders of this computer: the sandbox has each at the same path)
+    this.projectDirs = () => { try { return (projects() ?? []).filter((d) => typeof d === 'string' && d.startsWith('/') && d.length > 1 && d.length <= 4096).slice(0, 100); } catch { return []; } };
     this.imports = imports ?? new Imports({ dir, stage: stageRoot, helperFile, now });
     // (plugins: the page's own install flow — the Code page's API, which reloads the open sessions' plugins; else the
     // CLI in the sandbox directly, for ./stack in a terminal)
@@ -349,8 +352,11 @@ export class Setup {
   }
   async pluginState() {
     const p = await this.plugins().list();
+    const mks = (p.marketplaces ?? []).filter((x) => isObj(x) && typeof x.name === 'string' && PLAIN.test(x.name)).slice(0, 100);
     return { installed: (p.installed ?? []).map((x) => x.id).filter((x) => typeof x === 'string' && PLUGIN_ID.test(x)).slice(0, 500),
-      marketplaces: (p.marketplaces ?? []).map((x) => x.name).filter((x) => typeof x === 'string' && PLAIN.test(x)).slice(0, 100) };
+      marketplaces: mks.map((x) => x.name),
+      // (where each came from: a plugin is never installed from a marketplace of the same name but another source)
+      sources: Object.fromEntries(mks.map((x) => [x.name, { location: typeof x.location === 'string' ? x.location.slice(0, 500) : '' }])) };
   }
   // the CLI in the sandbox (claude mcp …, claude plugin …): its outcome as the page's API says it
   async cli(args, timeoutMs = 120000) {
@@ -365,7 +371,8 @@ export class Setup {
       try { return r.exit?.code === 0 ? JSON.parse(r.stdout.toString('utf8')) : []; } catch { return []; }
     };
     return {
-      list: async () => ({ installed: await listing(['plugin', 'list', '--json']), marketplaces: await listing(['plugin', 'marketplace', 'list', '--json']) }),
+      list: async () => ({ installed: await listing(['plugin', 'list', '--json']),
+        marketplaces: (await listing(['plugin', 'marketplace', 'list', '--json'])).map?.((x) => (isObj(x) ? { name: x.name, location: [x.repo, x.url, x.path].find((v) => typeof v === 'string') ?? '' } : null)).filter(Boolean) ?? [] }),
       addMarketplace: (src) => this.cli(['plugin', 'marketplace', 'add', src, '--json', '--scope=user'], 180000),
       install: (id) => this.cli(['plugin', 'install', id, '--json', '--scope=user']),
       disable: (id) => this.cli(['plugin', 'disable', id, '--json', '--scope=user']),
@@ -386,7 +393,9 @@ export class Setup {
     const metas = this.unitMetas(keys);
     if (digest !== null && !SHA.test(String(digest))) throw new ImportError(400, 'bad digest');
     const state = await this.sandboxState(metas);
-    const names = [...new Set(metas.flatMap((m) => lookupsOf(m)))].slice(0, 50);
+    const projects = this.projectDirs();
+    // (only names that can be in the sandbox: a path only this computer has is never sent there before a copy)
+    const names = [...new Set(metas.flatMap((m) => lookupsOf(m, projects)))].slice(0, 50);
     let which = {};
     if (names.length) {
       const f = (await this.call({ op: 'setup.which', names }, { timeoutMs: 30000 })).result?.found;
@@ -394,7 +403,7 @@ export class Setup {
     }
     const keep = choices.keep === true ? true : Array.isArray(choices.keep) ? choices.keep.filter((k) => typeof k === 'string' && SETUP_KEEP.test(k)).slice(0, 2000) : [];
     return this.queue.run({ what: 'setup', kind, stageDir: this.stageDir, keys, digest, choices: { mode: choices.mode === 'append' ? 'append' : 'replace', conflict: choices.conflict === 'replace' ? 'replace' : 'leave', keep },
-      state, which, records: this.records().dests, home: this.index()?.home ?? null, egress: this.egress });
+      state, which, records: this.records().dests, home: this.index()?.home ?? null, projects, egress: this.egress });
   }
   preview(keys, choices) { return this.plan(keys, { ...choices, keep: [] }, { kind: 'preview' }); }
 
@@ -416,16 +425,36 @@ export class Setup {
       const now = (await this.call({ op: 'setup.read', dests: [], mcp: true }, { maxBytes: 8 << 20, timeoutMs: 60000 })).result?.mcp;
       const cur = isObj(now?.servers) && Object.hasOwn(now.servers, w.name) ? now.servers[w.name] : null;
       if ((cur ? sha256(stable(cur)) : 'absent') !== w.ifSha) throw new ImportError(409, 'changed in the sandbox since you checked: check it again');
-      if (w.replace) { const r = await this.cli(['mcp', 'remove', w.name, '--scope=user'], 60000); if (!r.ok) return { failed: r }; }
+      let trashed = null;
+      if (w.replace && cur) {
+        // (the sandbox's own definition into its trash folder first — bn-coded reads it there itself; put back when the
+        // new one is not taken)
+        const t = await this.call({ op: 'setup.trash', mcp: w.name }, { timeoutMs: 30000 });
+        trashed = typeof t.result?.trashed === 'string' ? t.result.trashed.slice(0, 400) : null;
+        if (!trashed) throw new ImportError(409, 'changed in the sandbox since you checked: check it again');
+        const r = await this.cli(['mcp', 'remove', w.name, '--scope=user'], 60000);
+        if (!r.ok) return { failed: r };
+      }
       const r = await this.cli(['mcp', 'add-json', w.name, JSON.stringify(w.config), '--scope=user'], 60000);
-      return r.ok ? {} : { failed: r };
+      if (r.ok) return { trashed };
+      if (w.replace && cur) {
+        // (as Claude Code reads it: a server without a type is a stdio one; one bn-coded does not take stays in the trash, said)
+        const own = !cur.type && typeof cur.command === 'string' ? { type: 'stdio', ...cur } : cur;
+        const back = await this.cli(['mcp', 'add-json', w.name, JSON.stringify(own), '--scope=user'], 60000).catch(() => ({ ok: false }));
+        return { failed: r, note: back.ok ? 'the sandbox\'s own server is as it was' : `the sandbox's own server is in its trash folder (~/.claude/${trashed}): add it again in MCP servers` };
+      }
+      return { failed: r };
     }
     if (w.type === 'plugin') {
       const pl = this.plugins();
       if (w.addMarketplace) { const r = await pl.addMarketplace(w.source); if (!r.ok) return { failed: r }; }
       const r = await pl.install(w.id);
-      if (!r.ok) return r.needs_confirmation ? { confirm: { id: w.id, ...r.needs_confirmation } } : { failed: r };
-      if (w.disable) await pl.disable(w.id);
+      if (!r.ok) return r.needs_confirmation ? { confirm: { id: w.id, ...r.needs_confirmation }, disable: w.disable === true } : { failed: r };
+      // (off on your computer: off in the sandbox too — said when it could not be turned off)
+      if (w.disable) {
+        const d = await pl.disable(w.id).catch(() => ({ ok: false }));
+        if (!d?.ok) return { note: 'it is installed, but it could not be turned off as it is on your computer: turn it off in Plugins' };
+      }
       return {};
     }
     if (w.type === 'git') {
@@ -434,9 +463,11 @@ export class Setup {
     }
     throw new ImportError(500, 'not a write of the setup');
   }
-  /** copy(units) -> [{keys, ok, ...}]: each unit ({keys, mode, conflict, keep, digest}) planned again (refused when its
-   *  digest is not the one its check showed), written, recorded, its items dropped from the stage */
-  async copy(units) {
+  /** copy(units, {remote}) -> [{keys, ok, ...}]: each unit ({keys, mode, conflict, keep, digest}) planned again (refused
+   *  when its digest is not the one its check showed), written, recorded, its items dropped from the stage. remote: asked
+   *  from another device — a unit that lets something act without asking (its grants) is refused: that copy needs the
+   *  portal password (the page asks the portal; the update helper makes it) */
+  async copy(units, { remote = false } = {}) {
     if (!Array.isArray(units) || !units.length || units.length > LIMITS.units) throw new ImportError(400, `1 to ${LIMITS.units} items at once`);
     const out = [];
     for (const u of units) {
@@ -449,22 +480,24 @@ export class Setup {
         if (!digest) throw new ImportError(400, 'check it first');
         const pl = await this.plan(keys, { mode: u.mode, conflict: u.conflict, keep: u.keep }, { kind: 'copy', digest });
         if (pl.blocked) { out.push({ ...base, ok: false, why: pl.blocked }); continue; }
+        if (remote && pl.grants?.length) { out.push({ ...base, ok: false, password: true, why: 'From another device, what lets Claude act without asking is copied only with the portal password: the sheet asks for it.' }); continue; }
         if (pl.action === 'none') { out.push({ ...base, ok: true, nothing: true, conflict: pl.conflict ? pl.conflict.dest : null }); for (const k of keys) this.drop(k); continue; }
-        let trashed = null, confirm = null, failed = null;
+        let trashed = null, confirm = null, failed = null, note = null, disable = false;
         const record = { ...pl.record };
         for (const w of pl.writes) {
           const r = await this.write(w);
           if (r.trashed) trashed = r.trashed;
-          if (r.digest && w.type === 'dir') record[w.dest] = { digest: r.digest };
-          if (r.confirm) confirm = r.confirm;
+          if (r.digest && w.type === 'dir') record[w.dest] = { ...(record[w.dest] ?? {}), digest: r.digest };
+          if (r.confirm) { confirm = r.confirm; disable = r.disable === true; }
           if (r.failed) failed = r.failed;
+          if (r.note) note = r.note;
         }
-        if (failed) { out.push({ ...base, ok: false, why: 'the sandbox refused it', said: failed.said ?? failed.message ?? null }); continue; }
-        if (confirm) { out.push({ ...base, ok: false, confirm }); continue; }
+        if (failed) { out.push({ ...base, ok: false, why: `the sandbox refused it${note ? ` (${note})` : ''}`, said: failed.said ?? failed.message ?? null }); continue; }
+        if (confirm) { out.push({ ...base, ok: false, confirm, disable }); continue; }
         this.noteCopied(metas[0], record);
         for (const m of metas.slice(1)) this.noteCopied(m, {});
         for (const k of keys) this.drop(k);
-        out.push({ ...base, ok: true, action: pl.action, trashed, redacted: pl.redacted, kept: pl.kept });
+        out.push({ ...base, ok: true, action: pl.action, trashed, redacted: pl.redacted, kept: pl.kept, ...(note ? { note } : {}) });
       } catch (e) {
         // (a refusal of bn-coded's in its own fixed words is said as ours; anything else the sandbox said, apart)
         const plain = e instanceof SandboxError && plainRefusal(e.message);

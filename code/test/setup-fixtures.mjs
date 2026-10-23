@@ -21,6 +21,9 @@ export function fakeSecrets() {
     xkey: rand(32, AN),
     cred: ['sk', '-ant-'].join('') + rand(60, AN),
     envSecret: rand(40, AN),
+    glToken: ['gl', 'pat-'].join('') + rand(20, AN),
+    capHex: rand(40, '0123456789abcdef'),
+    capUuid: crypto.randomUUID(),
   };
 }
 const put = (f, data, mode) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, data); if (mode) fs.chmodSync(f, mode); return f; };
@@ -53,6 +56,13 @@ export function fakeHome(root, { project = '/home/test/src/app' } = {}) {
   fs.symlinkSync(path.join(root, 'elsewhere', 'evil'), path.join(claude, 'skills', 'linked'));
   fs.mkdirSync(path.join(claude, 'skills', 'bad name'), { recursive: true });
   put(path.join(claude, 'skills', 'bad name', 'SKILL.md'), '---\nname: bad\n---\n');
+  // grants in front matter: a skill and a command that run shell commands without asking (with !`…` lines), an agent
+  // that asks for nothing, one whose front matter is not plain, one that starts MCP servers and runs hooks
+  put(path.join(claude, 'skills', 'shell', 'SKILL.md'), '---\nname: shell\ndescription: Runs shell commands for you.\nallowed-tools: Bash, Read\n---\nThe branch: !`git branch --show-current`\n');
+  put(path.join(claude, 'commands', 'status.md'), '---\ndescription: Show the status\nallowed-tools: Bash(git status:*)\n---\n- Status: !`git status --short`\n- Log: !`/home/alex/bin/log.sh`\n');
+  put(path.join(claude, 'agents', 'yolo.md'), '---\nname: yolo\ndescription: Does it all.\npermissionMode: bypassPermissions\nmodel: opus\n---\nJust do it.\n');
+  put(path.join(claude, 'agents', 'odd.md'), '---\nname: odd\ndescription: Odd one.\ntools: [Bash, Write]\n---\nOdd.\n');
+  put(path.join(claude, 'agents', 'hooked.md'), '---\nname: hooked\ndescription: Has hooks.\nmcpServers:\n  - github\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: ./after.sh\n---\nHooked.\n');
   // agents (one in a folder), commands (one in a folder, one the model may not run), an output style
   put(path.join(claude, 'agents', 'reviewer.md'), '---\nname: reviewer\ndescription: Reviews a diff for bugs and style before you commit.\ntools: Read, Grep\n---\nYou review code.\n');
   put(path.join(claude, 'agents', 'team', 'helper.md'), '---\nname: helper\ndescription: Helps.\n---\nHelp.\n');
@@ -95,6 +105,9 @@ export function fakeHome(root, { project = '/home/test/src/app' } = {}) {
       'bad name!': { command: 'npx' },
       socket: { type: 'ws', url: 'ws://localhost:1' },
       helper: { type: 'http', url: 'https://mcp.example.net/mcp', headersHelper: '/home/alex/bin/headers.sh' },
+      // capability URLs: the secret is the URL's path (no name says so) — and the same through mcp-remote
+      cap: { type: 'http', url: `https://mcp.example.com/api/mcp/s/${s.capHex}/mcp` },
+      proxied: { command: 'npx', args: ['-y', 'mcp-remote', `https://mcp.example.com/s/${s.capUuid}/sse`] },
     },
     projects: {
       [project]: { mcpServers: { 'proj-db': { command: 'node', args: ['tools/db-mcp.js'] } }, allowedTools: ['Bash'], history: [{ display: `my secret ${s.envSecret}` }] },
@@ -110,12 +123,20 @@ export function fakeHome(root, { project = '/home/test/src/app' } = {}) {
     'formatter@acme': [{ scope: 'user', installPath: cache, version: '1.0.0', installedAt: '2026-10-01T00:00:00.000Z' }],
     'quiet@acme': [{ scope: 'user', installPath: path.join(claude, 'plugins', 'cache', 'acme', 'quiet', '0.1.0'), version: '0.1.0' }],
     'tools@mydir': [{ scope: 'user', installPath: path.join(claude, 'plugins', 'cache', 'mydir', 'tools', '2.0.0'), version: '2.0.0' }],
+    'widget@private': [{ scope: 'user', installPath: path.join(claude, 'plugins', 'cache', 'private', 'widget', '1.0.0'), version: '1.0.0' }],
+    'hooky@acme': [{ scope: 'user', installPath: path.join(claude, 'plugins', 'cache', 'acme', 'hooky', '3.0.0'), version: '3.0.0' }],
     'proj@acme': [{ scope: 'project', projectPath: project, installPath: '/x', version: '1' }],
   } }));
   put(path.join(claude, 'plugins', 'known_marketplaces.json'), json({
     acme: { source: { source: 'github', repo: 'acme/claude-plugins' }, installLocation: path.join(claude, 'plugins', 'marketplaces', 'acme'), lastUpdated: '2026-10-01T00:00:00.000Z' },
     mydir: { source: { source: 'directory', path: '/home/alex/my-marketplace' }, installLocation: '/home/alex/my-marketplace', lastUpdated: '2026-10-01T00:00:00.000Z' },
+    // (a marketplace's URL with a token in its query: never added unless kept)
+    private: { source: { source: 'git', url: `https://git.example.com/org/plugins.git?private_token=${s.glToken}` }, installLocation: '/x', lastUpdated: '2026-10-01T00:00:00.000Z' },
   }));
+  // a plugin whose manifest names files of hooks and MCP servers of their own, with a prompt hook besides
+  const hooky = path.join(claude, 'plugins', 'cache', 'acme', 'hooky', '3.0.0');
+  put(path.join(hooky, '.claude-plugin', 'plugin.json'), json({ name: 'hooky', version: '3.0.0', hooks: './more/hooks.json', mcpServers: ['./more/mcp.json'] }));
+  put(path.join(hooky, 'hooks', 'hooks.json'), json({ hooks: { Stop: [{ hooks: [{ type: 'prompt', prompt: 'Check the work.' }] }] } }));
   put(path.join(cache, '.claude-plugin', 'plugin.json'), json({ name: 'formatter', version: '1.0.0', description: 'Formats code after each edit.‮' }));
   put(path.join(cache, 'hooks', 'hooks.json'), json({ hooks: { PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/fmt.sh' }] }] } }));
   put(path.join(cache, '.mcp.json'), json({ mcpServers: { fmt: { command: 'npx', args: ['fmt-mcp'] } } }));
@@ -124,7 +145,8 @@ export function fakeHome(root, { project = '/home/test/src/app' } = {}) {
   // claude-bedrock's own folder: a CLAUDE.md that is a link to the one above (never followed), its own settings and server
   fs.mkdirSync(bedrock, { recursive: true });
   fs.symlinkSync(path.join(claude, 'CLAUDE.md'), path.join(bedrock, 'CLAUDE.md'));
-  put(path.join(bedrock, 'settings.json'), json({ permissions: { allow: ['Bash(git status)'] }, env: { X: 'y' } }));
+  // (a whole tool allowed — every shell command without asking)
+  put(path.join(bedrock, 'settings.json'), json({ permissions: { allow: ['Bash', 'Bash(git status)'] }, env: { X: 'y' } }));
   put(path.join(bedrock, '.claude.json'), json({ mcpServers: { docs: { type: 'http', url: 'https://docs.example.com/mcp' } } }));
   // git: the name and email, an include (never followed) and a credential helper (never offered)
   const gitconfig = put(path.join(home, '.gitconfig'), '[user]\n\tname = "Alex Doe"   # me\n\temail = alex@example.com\n[include]\n\tpath = ~/.gitconfig.local\n[credential]\n\thelper = osxkeychain\n');

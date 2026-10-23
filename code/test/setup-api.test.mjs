@@ -13,7 +13,7 @@ function fake() {
     fetchable: () => true,
     staged: () => [{ key: K1 }],
     preview: async (keys, choices) => { calls.push(['preview', keys, choices]); return { digest: 'd'.repeat(64) }; },
-    copy: async (units) => { calls.push(['copy', units]); return units.map((u) => ({ keys: u.keys, ok: true })); },
+    copy: async (units, opts) => { calls.push(['copy', units, opts]); return units.map((u) => ({ keys: u.keys, ok: true })); },
     drop: (key) => { calls.push(['drop', key]); return { ok: true }; },
   };
   const imports = {
@@ -45,7 +45,10 @@ test('a preview by keys only; a copy keeps nothing — a keep needs the portal p
   await assert.rejects(route(api, 'GET', '/api/setup/preview', { q: { keys: '' } }), /bad items/);
   const r = await route(api, 'POST', '/api/setup/copy', { body: { units: [{ keys: [K1], mode: 'replace', conflict: 'leave', digest: 'd'.repeat(64), extra: 1 }] }, remote: true });
   assert.equal(r.status, 200);
-  assert.deepEqual(calls.at(-1), ['copy', [{ keys: [K1], mode: 'replace', conflict: 'leave', digest: 'd'.repeat(64), keep: [] }]]);
+  // (from another device: said to the copy — a unit with grants is refused there)
+  assert.deepEqual(calls.at(-1), ['copy', [{ keys: [K1], mode: 'replace', conflict: 'leave', digest: 'd'.repeat(64), keep: [] }], { remote: true }]);
+  await route(api, 'POST', '/api/setup/copy', { body: { units: [{ keys: [K1], digest: 'd'.repeat(64) }] } });
+  assert.deepEqual(calls.at(-1)[2], { remote: false });
   await assert.rejects(route(api, 'POST', '/api/setup/copy', { body: { units: [{ keys: [K1], keep: ['v#0123456789abcdef'] }] } }), /portal password/);
   await assert.rejects(route(api, 'POST', '/api/setup/copy', { body: { units: [{ keys: [K1], keep: true }] } }), /portal password/);
   await assert.rejects(route(api, 'POST', '/api/setup/copy', { body: {} }), /units/);

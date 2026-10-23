@@ -54,7 +54,7 @@
 //                   the Code page; or a fork for Continue in this project): into the store folder of a working folder
 //                   the sandbox has, a checked id, at most 32 MiB, never over another nor an id another folder has; and
 //                   one read whole (at most 32 MiB) for such a fork
-//   setup.read / setup.write / setup.git / setup.which
+//   setup.read / setup.write / setup.git / setup.which / setup.trash
 //                   Bring your setup: items of your Claude Code setup on the computer, checked on the Code page, copied
 //                   into this sandbox's own ~/.claude — a fixed set of destinations (CLAUDE.md, settings.json,
 //                   keybindings.json, agents/, commands/, output-styles/, skills/<name>/), never through a link, only while
@@ -768,7 +768,7 @@ export function sessionsExport(send, id, cwd) {
   } finally { fs.closeSync(fd); }
 }
 
-// --- setup.read / setup.write / setup.git / setup.which: Bring your setup — items of your Claude Code setup on the
+// --- setup.read / setup.write / setup.git / setup.which / setup.trash: Bring your setup — items of your Claude Code setup on the
 // --- computer (read there, checked and shown on the Code page) copied into this sandbox's own configuration. The code
 // --- container decides what a copy says; here only where it goes: a fixed set of destinations in ~/.claude (CLAUDE.md,
 // --- settings.json, keybindings.json, agents/, commands/, output-styles/ and skills/<name>/), never through a link, only
@@ -950,6 +950,27 @@ export function setupWriteBegin(req) {
       } finally { abort(); }
     },
   };
+}
+/** setup.trash {mcp: NAME} -> {ok, trashed}: the sandbox's own definition of an MCP server of user scope, read here from
+ *  its ~/.claude.json (never one the caller sends), written into ~/.claude/.bedrock-now-trash/setup-<time>-<random>/
+ *  mcp__NAME.json (mode 600) before a copy replaces it; trashed null when there is none */
+export function setupTrash(req) {
+  const name = req?.mcp;
+  if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) throw new Error('bad name');
+  const b = readRegular(GLOBAL_CONFIG(), SETUP_LIMITS.global);
+  let j = null;
+  try { j = b ? JSON.parse(b.toString('utf8')) : null; } catch { j = null; }
+  const list = j && typeof j === 'object' && j.mcpServers && typeof j.mcpServers === 'object' && !Array.isArray(j.mcpServers) ? j.mcpServers : null;
+  const v = list && Object.hasOwn(list, name) && list[name] && typeof list[name] === 'object' ? list[name] : null;
+  if (!v) return { ok: true, trashed: null };
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  realDir(CONFIG_DIR);
+  realDir(SETUP_TRASH(), true);
+  const box = path.join(SETUP_TRASH(), `setup-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`);
+  fs.mkdirSync(box, { mode: 0o700 });
+  const to = path.join(box, `mcp__${name}.json`);
+  fs.writeFileSync(to, `${JSON.stringify({ mcpServers: { [name]: v } }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  return { ok: true, trashed: path.relative(CONFIG_DIR, to) };
 }
 /** setup.git {name, email, if: {name, email} | null} — the sandbox's own ~/.gitconfig [user] (git config --file, nothing
  *  else of it changed), only while the sandbox's name and email are what the page showed */
@@ -4443,6 +4464,7 @@ export function serve(sock) {
           setupGit(req).then((r) => finish(T.RESULT, r), (e) => fail(e.message));
           return undefined;
         case 'setup.which': return finish(T.RESULT, setupWhich(req));
+        case 'setup.trash': return finish(T.RESULT, setupTrash(req));
         case 'fs.list': return finish(T.RESULT, fsList(req.path, root()));
         case 'fs.mkdir': return finish(T.RESULT, fsMkdir(req.path, root()));
         case 'fs.rename': return finish(T.RESULT, fsRename(req.from, req.to, root()));

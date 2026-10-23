@@ -189,7 +189,7 @@ export const SANDBOX_REFUSALS = Object.freeze([
   'that session is in the sandbox already',
   'that session changed in the sandbox since it was copied',
   'that session is not in the sandbox (any more)',
-  // Bring your setup (setup.read, setup.write, setup.git, setup.which)
+  // Bring your setup (setup.read, setup.write, setup.git, setup.which, setup.trash)
   'not a destination of the setup',
   'bad if',
   'bad files',
