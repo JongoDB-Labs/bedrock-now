@@ -738,7 +738,8 @@ export function planUnit(job) {
       if (!Object.keys(cfg.headers ?? {}).some((h) => /^authorization$/i.test(h))) flags.push(flag('info', 'If it signs in with OAuth, sign in again in the sandbox (/mcp in a session): your computer\'s sign-in is never copied.'));
     }
     if (m.scope === 'local') flags.push(flag('info', 'Of this project\'s local scope on your computer: in the sandbox it is of user scope (every project there sees it).'));
-    if (Array.isArray(m.dropped) && m.dropped.length) flags.push(flag('info', 'Settings of it left out (the sandbox takes only these shapes).', m.dropped));
+    // (a key's name is shown: one shaped like a token, redacted — or by its shape alone, masked)
+    if (Array.isArray(m.dropped) && m.dropped.length) flags.push(flag('info', 'Settings of it left out (the sandbox takes only these shapes).', m.dropped.map((k) => (secretPiece(k) ? '•••' : redactText(k)))));
     tokens_.unknown = true; tokens_.every = null;
     flags.push(flag('info', 'Its tools\' definitions go into every request: how many tokens shows once it connects (/context in a session).'));
     const curCfg = isObj(state.mcp?.servers) && Object.hasOwn(state.mcp.servers, m.name) ? state.mcp.servers[m.name] : null;

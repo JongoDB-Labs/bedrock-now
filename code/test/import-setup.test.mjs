@@ -247,6 +247,11 @@ test('MCP servers: flags for every case; secret-shaped values left out unless ke
   assert.deepEqual((await pv('remote')).secrets.map((s) => s.where), ['header X-Api-Key']);
   assert.match(text(await pv('linear')), /sign in again in the sandbox \(\/mcp/);
   assert.match(text(await pv('linear')), /left out.*oauth/s);
+  // (a dropped key named like a token: never shown as it is)
+  const akia = ['AK', 'IA'].join('') + 'ABCDEFGHIJKLMNOP';
+  const dz = plan.planUnit({ items: [{ meta: { key: plan.itemKey('claude', 'mcp', 'user', 'dz'), tool: 'claude', kind: 'mcp', scope: 'user', name: 'dz', hmac: 'k', files: [],
+    value: { type: 'http', url: 'https://mcp.example.com/mcp' }, dropped: [akia, 'oauth'] }, files: [] }] });
+  assert.ok(!JSON.stringify(dz.flags).includes(akia) && JSON.stringify(dz.flags).includes('oauth'));
   const keyed = await pv('keyed');
   assert.match(keyed.blocked, /URL, arguments or command/);
   assert.deepEqual(keyed.needsKeep, [keyed.secrets[0].id]);
