@@ -73,7 +73,7 @@ export function fakeHome(root, { project = '/home/test/src/app' } = {}) {
   put(path.join(claude, 'output-styles', 'terse.md'), '---\nname: terse\ndescription: Short answers\n---\nAnswer in as few words as you can.\n');
   // keybindings: a block, and keys that are not Claude Code's
   put(path.join(claude, 'keybindings.json'), json({ $schema: 'https://example.com/schema.json', bindings: [{ context: 'Chat', bindings: { 'ctrl+k': 'command:compact', 'ctrl+u': null } },
-    { context: 'Bad‮context', bindings: {} }], extra: { x: 1 } }));
+    { context: 'Bad\u202econtext', bindings: {} }], extra: { x: 1 } }));
   // settings.json: the four keys offered — and env, the model, an API key helper and the plugins' switches (never offered)
   put(path.join(claude, 'settings.json'), json({
     permissions: { allow: ['Bash(npm run test:*)', 'Bash(rm:*)', 'Read(/home/alex/**)'], deny: ['Bash(curl:*)'], defaultMode: 'bypassPermissions', additionalDirectories: ['/home/alex/x'] },
@@ -137,7 +137,7 @@ export function fakeHome(root, { project = '/home/test/src/app' } = {}) {
   const hooky = path.join(claude, 'plugins', 'cache', 'acme', 'hooky', '3.0.0');
   put(path.join(hooky, '.claude-plugin', 'plugin.json'), json({ name: 'hooky', version: '3.0.0', hooks: './more/hooks.json', mcpServers: ['./more/mcp.json'] }));
   put(path.join(hooky, 'hooks', 'hooks.json'), json({ hooks: { Stop: [{ hooks: [{ type: 'prompt', prompt: 'Check the work.' }] }] } }));
-  put(path.join(cache, '.claude-plugin', 'plugin.json'), json({ name: 'formatter', version: '1.0.0', description: 'Formats code after each edit.‮' }));
+  put(path.join(cache, '.claude-plugin', 'plugin.json'), json({ name: 'formatter', version: '1.0.0', description: 'Formats code after each edit.\u202e' }));
   put(path.join(cache, 'hooks', 'hooks.json'), json({ hooks: { PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/fmt.sh' }] }] } }));
   put(path.join(cache, '.mcp.json'), json({ mcpServers: { fmt: { command: 'npx', args: ['fmt-mcp'] } } }));
   put(path.join(cache, 'commands', 'fmt.md'), '---\ndescription: Format the whole project now\n---\nformat\n');

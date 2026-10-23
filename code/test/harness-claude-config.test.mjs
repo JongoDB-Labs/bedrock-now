@@ -119,7 +119,7 @@ test('the fetch: text files whole, structured items by allowlist; env, the accou
   assert.equal(fm.look.commands, 1);
   assert.equal(fm.look.skills, 1);
   assert.ok(fm.look.tokens > 10);
-  assert.ok(!/[‮]/.test(fm.look.description), 'a direction-changing character left in a description');
+  assert.ok(!/[\u202e]/.test(fm.look.description), 'a direction-changing character left in a description');
   assert.deepEqual(item(w[11].n).value.source, { kind: 'directory' });
   assert.equal(item(w[11].n).value.look, null);
   assert.deepEqual(item(w[12].n).value, { bindings: [{ context: 'Chat', bindings: { 'ctrl+k': 'command:compact', 'ctrl+u': null } }] });
@@ -156,7 +156,7 @@ test('a hostile home: links never followed, a FIFO never read, huge and binary f
   fs.mkdirSync(path.join(H, 'agents'), { recursive: true });
   execFileSync('mkfifo', [path.join(H, 'agents', 'fifo.md')]);
   fs.symlinkSync('/etc/hostname', path.join(H, 'agents', 'link.md'));
-  fs.writeFileSync(path.join(H, 'agents', 'evil‮name.md'), 'x');
+  fs.writeFileSync(path.join(H, 'agents', 'evil\u202ename.md'), 'x');
   fs.writeFileSync(path.join(H, 'agents', 'huge.md'), Buffer.alloc(LIMITS.text + 1, 0x62));
   fs.writeFileSync(path.join(H, 'agents', 'binary.md'), Buffer.from([0xff, 0xfe, 0xfd]));
   let deep = path.join(H, 'commands');

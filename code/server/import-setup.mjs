@@ -120,7 +120,7 @@ export function valueOf(kind, name, rec) {
     const l = isObj(v.look) ? v.look : null;
     const look = l ? {
       version: typeof l.version === 'string' && /^[0-9A-Za-z.+-]{1,40}$/.test(l.version) ? l.version : null,
-      description: typeof l.description === 'string' ? l.description.replace(/[\x00-\x1f\x7f‪-‮⁦-⁩​-‏]/g, ' ').slice(0, 300) : '',
+      description: typeof l.description === 'string' ? l.description.replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069\u200b-\u200f]/g, ' ').slice(0, 300) : '',
       hooks: int(l.hooks, 0, 1e5) ?? 0, hookEvents: Array.isArray(l.hookEvents) ? l.hookEvents.filter((e) => typeof e === 'string' && /^[A-Za-z]{1,40}$/.test(e)).slice(0, 40) : [],
       otherHooks: int(l.otherHooks, 0, 1e6) ?? 0, hooksFile: l.hooksFile === true, mcpFile: l.mcpFile === true,
       mcp: Array.isArray(l.mcp) ? l.mcp.filter((x) => typeof x === 'string' && MCP_NAME.test(x)).slice(0, 50) : [],
