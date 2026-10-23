@@ -3331,7 +3331,7 @@ def host_config_a(ctx):
     """run.sh opened a fake home's setup into the Code page's container (./stack sessions config consent, scan, open
     --all). The Bring your setup sheet opens on Check and copy: the npx MCP server's secret-shaped env value left out by
     default (never shown), the uvx one not in the sandbox, CLAUDE.md's tokens in every request, settings.json's env never
-    copied. Every unit is copied but one server (its unit, digest and secret's token go to run.sh, which copies it with
+    copied, a skill's allowed-tools and an agent's bypassPermissions said, a capability URL's server left out (masked). Every unit is copied but one server (its unit, digest and secret's token go to run.sh, which copies it with
     that secret kept, as the helper would). A new Haiku session then starts with the skill and the npx server."""
     need_haiku()
     need_on()
@@ -3354,8 +3354,16 @@ def host_config_a(ctx):
     see(unit("memory").get_by_test_id("setup-flags")).to_contain_text("every request", timeout=60000)
     see(unit("setting").get_by_test_id("setup-flags")).to_contain_text("never copied", timeout=60000)
     see(unit("identity").get_by_test_id("setup-flags")).to_contain_text("Personal data", timeout=60000)
+    # what lets Claude act without asking, said in its own words: a skill's allowed-tools, an agent's permission mode
+    see(unit("skill", "e2e-shell").get_by_test_id("setup-flags")).to_contain_text("Lets this skill run shell commands without asking", timeout=60000)
+    see(unit("agent", "e2e-yolo").get_by_test_id("setup-flags")).to_contain_text("Runs without asking for anything (permissionMode: bypassPermissions)", timeout=60000)
+    # a capability URL (its secret in its path): left out by default, shown masked
+    cap = unit("mcp", "e2e-cap")
+    see(cap.get_by_test_id("setup-blocked")).to_contain_text("copied only with that kept", timeout=60000)
+    see(cap.get_by_test_id("setup-secret")).to_contain_text("https://mcp.example.invalid/api/mcp/s/•••/mcp")
     text = page.get_by_test_id("setup-sheet").inner_text()
-    expect(not re.search(r"sk-proj-[A-Za-z0-9]{40}", text) and "never@example.invalid" not in text, "the sheet never shows a secret or the account")
+    expect(not re.search(r"sk-proj-[A-Za-z0-9]{40}", text) and "never@example.invalid" not in text and not re.search(r"/s/[0-9a-f]{40}/", text),
+           "the sheet never shows a secret, a capability URL's path or the account")
     # the server to keep: not copied here — run.sh copies it with its secret kept (the helper's command)
     keep = unit("mcp", "e2e-keep")
     see(keep.get_by_test_id("setup-secret")).to_have_count(1, timeout=60000)
@@ -3365,7 +3373,8 @@ def host_config_a(ctx):
     CONFIG_KEEP.write_text(f"{keys}:{pv['digest']} {pv['secrets'][0]['id']}\n", encoding="ascii")
     keep.get_by_test_id("setup-include").uncheck()
     shot(page, "c1-code-host-config-check")
-    n = len([x for x in v["staged"] if x["kind"] != "setting"]) + (1 if any(x["kind"] == "setting" for x in v["staged"]) else 0) - 1
+    # (every unit but the one to keep, unticked, and the capability URL's server, left out as it is)
+    n = len([x for x in v["staged"] if x["kind"] != "setting"]) + (1 if any(x["kind"] == "setting" for x in v["staged"]) else 0) - 2
     page.get_by_test_id("setup-copy").click()
     see(page.get_by_test_id("setup-result")).to_have_count(n, timeout=120000)
     bad = page.locator("[data-testid=setup-result][data-ok='0']")
@@ -3382,7 +3391,7 @@ def host_config_a(ctx):
     expect("OK" in text_of(evs), f"the answer: {text_of(evs)[:100]!r}")
     csp_clean(page, rec)
     status = next((m.get("status") for m in init.get("mcp", []) if m.get("name") == "e2e-everything"), "?")
-    return f"{n} copied (the npx server's secret left out, uvx said not in the sandbox, CLAUDE.md's tokens said); a new Haiku session starts with e2e-skill and e2e-everything ({status})"
+    return f"{n} copied (the npx server's secret left out, uvx said not in the sandbox, CLAUDE.md's tokens said, allowed-tools and bypassPermissions said, the capability URL's server left out); a new Haiku session starts with e2e-skill and e2e-everything ({status})"
 
 
 # --- sessions of this computer (tests/e2e/run.sh --host-sessions): run.sh wrote a fake home's stores, allowed them

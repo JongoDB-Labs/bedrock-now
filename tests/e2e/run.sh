@@ -1034,16 +1034,21 @@ elif [ "$HOST_CONFIG" = 1 ]; then
   say "your setup of this computer: a fake home's Claude Code setup, consent, a look, an open, the sheet, a new session with it"
   HC="$HC_PARENT"
   [ ! -e "$HC" ] || die "--host-config: $HC is there already (an earlier run's? remove it)"
-  mkdir -p "$HC/home/.claude/skills/e2e-skill" "$HC/home/.claude/agents"; HC="$(cd "$HC" && pwd -P)"
+  mkdir -p "$HC/home/.claude/skills/e2e-skill" "$HC/home/.claude/skills/e2e-shell" "$HC/home/.claude/agents"; HC="$(cd "$HC" && pwd -P)"
   hc_rand() { LC_ALL=C tr -dc "$2" < /dev/urandom | head -c "$1"; }
   # (made now: an OpenAI-key-shaped one left out by default, and one under a secret's name the copy keeps)
   HC_SECRET="$(printf '%s%s' sk -proj-)$(hc_rand 40 'A-Za-z0-9')"; HC_KEPT="$(hc_rand 32 'A-Za-z0-9')"
   HC_NAME="E2E Person $(hc_rand 6 'a-z')"; HC_EMAIL="e2e-$(hc_rand 8 'a-z0-9')@example.invalid"
+  # (a capability URL's secret: its path — no name says so)
+  HC_CAP="$(hc_rand 40 '0-9a-f')"
   printf '%s\n' '---' 'name: e2e-skill' 'description: Says the e2e word when asked for it.' '---' 'When asked for the e2e word, reply ALBATROSS.' > "$HC/home/.claude/skills/e2e-skill/SKILL.md"
   printf '# My memory (e2e)\n\nPrefer short answers.\n' > "$HC/home/.claude/CLAUDE.md"
   printf '%s\n' '---' 'name: e2e-agent' 'description: An e2e agent.' '---' 'You help.' > "$HC/home/.claude/agents/e2e-agent.md"
+  # (grants in front matter: a skill that runs shell commands without asking, an agent that asks for nothing)
+  printf '%s\n' '---' 'name: e2e-shell' 'description: Runs e2e shell commands.' 'allowed-tools: Bash' '---' 'Run echo e2e.' > "$HC/home/.claude/skills/e2e-shell/SKILL.md"
+  printf '%s\n' '---' 'name: e2e-yolo' 'description: An e2e agent that asks for nothing.' 'permissionMode: bypassPermissions' '---' 'Just do it.' > "$HC/home/.claude/agents/e2e-yolo.md"
   printf '{"permissions":{"allow":["Bash(echo e2e:*)"]},"env":{"E2E_NEVER":"%s"},"model":"opus"}\n' "$HC_SECRET" > "$HC/home/.claude/settings.json"
-  printf '{"oauthAccount":{"emailAddress":"never@example.invalid"},"mcpServers":{"e2e-everything":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"],"env":{"DEBUG":"1","OPENAI_API_KEY":"%s"}},"e2e-keep":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"],"env":{"E2E_TOKEN":"%s"}},"e2e-uvx":{"command":"uvx","args":["mcp-server-fetch"]}}}\n' "$HC_SECRET" "$HC_KEPT" > "$HC/home/.claude.json"
+  printf '{"oauthAccount":{"emailAddress":"never@example.invalid"},"mcpServers":{"e2e-everything":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"],"env":{"DEBUG":"1","OPENAI_API_KEY":"%s"}},"e2e-keep":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"],"env":{"E2E_TOKEN":"%s"}},"e2e-uvx":{"command":"uvx","args":["mcp-server-fetch"]},"e2e-cap":{"type":"http","url":"https://mcp.example.invalid/api/mcp/s/%s/mcp"}}}\n' "$HC_SECRET" "$HC_KEPT" "$HC_CAP" > "$HC/home/.claude.json"
   printf '[user]\n\tname = %s\n\temail = %s\n' "$HC_NAME" "$HC_EMAIL" > "$HC/home/.gitconfig"
   printf 'secret %s\n' "$HC_SECRET" > "$HC/home/.claude/.credentials.json"
   hc_sum() { (cd "$HC/home" && find . -type f | LC_ALL=C sort | xargs shasum -a 256 2>/dev/null) | shasum -a 256 | cut -c1-16; }
@@ -1065,15 +1070,16 @@ elif [ "$HOST_CONFIG" = 1 ]; then
   if [ -n "$keep" ]; then BN_SESSIONS_HOME="$HC/home" cli setup-copy-kept 0 'copied into the sandbox, the possible secrets you chose kept' sessions config copy --units "$units" --keep "$toks"
   else record cli setup-copy-kept FAIL 0 "the browser pass left no unit to keep"; fi
   tc="$(svc_id terminal)"; cc_id="$(svc_id code)"
-  # from inside the sandbox: the left-out secret nowhere, the kept one in its MCP configuration, the skill, Git's name
-  leak="$(docker exec -e S="$HC_SECRET" "$tc" sh -c 'grep -rlF -e "$S" /home/claude/.claude /home/claude/.claude.json /home/claude/.gitconfig 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
+  # from inside the sandbox: the left-out secret and the capability URL's nowhere, the kept one in its MCP configuration,
+  # the skill, Git's name
+  leak="$(docker exec -e S="$HC_SECRET" -e C="$HC_CAP" "$tc" sh -c 'grep -rlF -e "$S" -e "$C" /home/claude/.claude /home/claude/.claude.json /home/claude/.gitconfig 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
   kept="$(docker exec -e K="$HC_KEPT" "$tc" sh -c 'grep -c -F -e "$K" /home/claude/.claude.json 2>/dev/null' 2>/dev/null | tr -d ' ')"
   skill="$(docker exec "$tc" sh -c 'test -f /home/claude/.claude/skills/e2e-skill/SKILL.md && echo yes' 2>/dev/null)"
   gname="$(docker exec "$tc" git config --file /home/claude/.gitconfig user.name 2>/dev/null)"
   gmail="$(docker exec "$tc" git config --file /home/claude/.gitconfig user.email 2>/dev/null)"
   never="$(docker exec "$tc" sh -c 'grep -lF -e E2E_NEVER -e never@example.invalid /home/claude/.claude/settings.json /home/claude/.claude.json 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
   if [ "${leak:-1}" = 0 ] && [ "${kept:-0}" -ge 1 ] && [ "$skill" = yes ] && [ "$gname" = "$HC_NAME" ] && [ "$gmail" = "$HC_EMAIL" ] && [ "${never:-1}" = 0 ] && [ "$(hc_sum)" = "$hc_before" ]; then
-    record projects host-config-in-the-sandbox PASS "$(( $(now) - t0 ))" "the skill and the Git name and email there; the left-out secret nowhere, the kept one in the MCP configuration; env and the account never; the fake home unchanged"
+    record projects host-config-in-the-sandbox PASS "$(( $(now) - t0 ))" "the skill and the Git name and email there; the left-out secret and the capability URL nowhere, the kept one in the MCP configuration; env and the account never; the fake home unchanged"
   else record projects host-config-in-the-sandbox FAIL "$(( $(now) - t0 ))" "leak=$leak kept=$kept skill=$skill name=$([ "$gname" = "$HC_NAME" ] && echo ok || echo no) email=$([ "$gmail" = "$HC_EMAIL" ] && echo ok || echo no) never=$never home unchanged: $([ "$(hc_sum)" = "$hc_before" ] && echo yes || echo no)"; fi
   BN_SESSIONS_HOME="$HC/home" cli setup-revoke 0 'no longer reads your' sessions config consent --revoke
   t0="$(now)"
@@ -1082,10 +1088,10 @@ elif [ "$HOST_CONFIG" = 1 ]; then
   else record projects host-config-forgotten PASS "$(( $(now) - t0 ))" "taken back: the code container's look is forgotten (what was copied stays in the sandbox)"; fi
   BN_SESSIONS_HOME="$HC/home" cli setup-open-after-revoke 1 'no look at your setup|that look is gone|not allowed' sessions config open --all
   # (tidy: the throwaway's later checks start without these MCP servers; the fake home and its secrets go)
-  for n in e2e-everything e2e-keep e2e-uvx; do docker exec "$tc" claude mcp remove "$n" --scope user >/dev/null 2>&1 || true; done
+  for n in e2e-everything e2e-keep e2e-uvx e2e-cap; do docker exec "$tc" claude mcp remove "$n" --scope user >/dev/null 2>&1 || true; done
   rm -rf -- "$HC"
   rm -f "$OUT/browser/host-config-keep.txt"
-  unset HC_SECRET HC_KEPT
+  unset HC_SECRET HC_KEPT HC_CAP
 fi
 
 # --- 3b. voice: the stt container's isolation, and Bedrock speech-to-text off and on again ---
