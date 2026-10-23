@@ -4,8 +4,9 @@ bedrock-now is a private, single-user AI workbench for your own Mac or Linux mac
 and a shared file store. Models run on **Amazon Bedrock** in your own AWS account (an IAM user's access key, or an
 EC2 instance role) and are billed there; the only other places a call can go are ones you turn on yourself —
 **OpenRouter** with your own key (billed by OpenRouter; some models are free) and speech-to-text through **OpenAI or
-Groq** with your own key. You get modern models without sending your work to a consumer AI service, and you see what
-every answer costs.
+Groq** with your own key. The microphone in Chat uses your browser's own speech recognition unless you choose
+otherwise, and that sends what you say to the browser's maker (Google, Microsoft or Apple; [Voice](#voice-speech-to-text)).
+You get modern models without sending your work to a consumer AI service, and you see what every answer costs.
 Install it with one command; nothing listens beyond `127.0.0.1`.
 
 ![bedrock-now portal](docs/img/portal-home.png)
