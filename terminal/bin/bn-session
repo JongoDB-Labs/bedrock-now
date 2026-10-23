@@ -60,7 +60,7 @@ fi
 view="chat-$name"
 if ! tmux has-session -t "=$view" 2>/dev/null; then
   tmux new-session -d -t "=$S" -s "$view" 2>/dev/null || plain
-  tmux set-option -t "=$view" status off 2>/dev/null || true
+  tmux set-option -t "=$view:" status off 2>/dev/null || true   # (a session option: "=NAME:" — "=NAME" alone is refused)
   fresh=1
 fi
 [ "$fresh" = 0 ] || tmux select-window -t "=$view:=$name" 2>/dev/null || true

@@ -1329,7 +1329,7 @@
           `${t.name}'s own sign-out runs in the sandbox: its login there is removed. If anything in the sandbox may have read it, revoke it at ${t.provider} too.`, "Sign out"));
         acts.append(out);
       } else if (t.signout === "inside" && t.signed_in !== "no" && t.installed !== false) {
-        li.append(el("p", { class: "note set-project-pending", text: `${t.name} signs out inside it: ${t.id === "gemini" ? "/auth signout" : "/logout"} (Open in the terminal).` }));
+        li.append(el("p", { class: "note", text: `${t.name} signs out inside it: ${t.id === "gemini" ? "/auth signout" : "/logout"} (Open in the terminal).` }));
       }
       li.append(acts);
       list.append(li);

@@ -264,7 +264,7 @@ test_bn_session_takes_only_its_words() {
   # chat: a session of its own grouped with "claude", without a status line
   out="$(_run chat gemini "$N3" "$ws/sub")"
   assert_contains "$out" "tmux new-session -d -t =claude -s chat-gemini-sub"
-  assert_contains "$out" "tmux set-option -t =chat-gemini-sub status off"
+  assert_contains "$out" "tmux set-option -t =chat-gemini-sub: status off"
   assert_contains "$out" "tmux select-window -t =chat-gemini-sub:=gemini-sub"
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "tmux attach-session -t =chat-gemini-sub"
 }
