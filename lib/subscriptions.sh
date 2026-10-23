@@ -176,7 +176,7 @@ cmd_subscriptions() {
       [ $# -eq 0 ] || die "usage: ./stack subscriptions status"
       [ -f "$ENV_FILE" ] || die "run ./stack setup first"
       if subs_refresh; then
-        printf 'Your AI subscriptions in the sandbox (each signs in with its own flow there; bedrock-now never sees the login):\n'
+        printf 'Your AI subscriptions in the sandbox (each signs in with its own flow there; %s never sees the login):\n' "$PRODUCT_NAME"
         subs_print
         printf '\nSign in: ./stack subscriptions login TOOL (here), or the Terminal tab'"'"'s Open menu. Settings › Claude Code › Your AI subscriptions shows the same.\n'
       else
