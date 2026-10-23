@@ -358,7 +358,7 @@ sessions_config_copy() {
       --keep) keep="${2:-}"; shift 2 || true ;;
       --origin) origin="${2:-}"; shift 2 || true ;;
       --request) SS_REQ="${2:-}"; shift 2 || true ;;
-      *) die "usage: ./stack sessions config copy --units KEY:DIGEST --keep TOKENS (the Code page's Bring your setup sheet asks for it)" ;;
+      *) die "usage: ./stack sessions config copy --units KEY:DIGEST [--keep TOKENS] (the Code page's Bring your setup sheet asks for it)" ;;
     esac
   done
   case "$SS_REQ" in '') ;; *[!0-9a-f]* | ?????????????????????????????????*) SS_REQ='' ;; esac
@@ -369,19 +369,20 @@ sessions_config_copy() {
   [[ $units =~ $ure ]] || _ss_fail bad-request "bad units"
   case "$mode" in replace | append) ;; *) _ss_fail bad-request "--mode: replace or append" ;; esac
   case "$conflict" in leave | replace) ;; *) _ss_fail bad-request "--conflict: leave or replace" ;; esac
-  [ -n "$keep" ] && [ "$keep" != - ] || _ss_fail bad-request "--keep: the findings to keep"
+  # (no keep: a copy the page asked for from another device of what lets Claude act without asking — the password checked)
+  [ "$keep" != - ] || keep=''
   local IFS=,
   for t in $keep; do [[ $t =~ $kre ]] || { IFS=$' \t\n'; _ss_fail bad-request "bad keep"; }; done
   IFS=$' \t\n'
   _ss_need_code
   _ss_tell copying
-  res="$(_sc_code --secs "$SESSIONS_COPY_S" copy --units "$units" --mode "$mode" --conflict "$conflict" --keep "$keep" --request "${SS_REQ:-}" --tsv 2>/dev/null)" || true
+  res="$(_sc_code --secs "$SESSIONS_COPY_S" copy --units "$units" --mode "$mode" --conflict "$conflict" ${keep:+--keep "$keep"} --request "${SS_REQ:-}" --tsv 2>/dev/null)" || true
   # (the unit's keys as they are: "+" joins them, never a pattern)
   line="$(printf '%s\n' "$res" | awk -F'\t' -v k="${units%%:*}" '!f && $1 == k { print; f = 1 }')" || true
   [ -n "$line" ] || _ss_fail code "the Code page's container did not copy it"
   _ss_tell done
   case "$(printf '%s' "$line" | cut -f2)" in
-    ok) log "your setup: copied into the sandbox, the possible secrets you chose kept as they were" ;;
+    ok) log "your setup: copied into the sandbox$([ -z "$keep" ] || echo ', the possible secrets you chose kept as they were')" ;;
     *) log "your setup: not copied (the Code page says why)" ;;
   esac
 }

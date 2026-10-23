@@ -721,7 +721,8 @@ def write_sessions_request(request_dir: Path, action: str, password: str, remote
                                                                     be empty then) — from another device, only so
       setup-scan        {…,"origin","project","tool"}               a look at your setup (project: a project's id or -)
       setup-fetch       {…,"origin","scan","rows"}                  rows of that look opened
-      setup-copy        {…,"origin","units","digest","mode","conflict","keep"}
+      setup-copy        {…,"origin","units","digest","mode","conflict","keep"}   (keep may be empty: a copy that brings
+                                                                   grants, asked from another device)
                                                                     a copy of one unit (its items' keys joined by +) that
                                                                     keeps what keep names
     origin: remote when the portal says the request came over remote access. -> nonce"""
@@ -761,9 +762,10 @@ def write_sessions_request(request_dir: Path, action: str, password: str, remote
     elif action == "setup-copy":
         if not isinstance(units, list) or not 1 <= len(units) <= 4 or not all(isinstance(k, str) and SETUP_KEY.fullmatch(k) for k in units) or len(set(units)) != len(units) \
                 or not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest) or mode not in ("replace", "append") or conflict not in ("leave", "replace") \
-                or not isinstance(keep, list) or not 1 <= len(keep) <= SESSIONS_KEEP_MAX or not all(isinstance(k, str) and SETUP_KEEP.fullmatch(k) for k in keep) \
+                or not isinstance(keep, list) or not 0 <= len(keep) <= SESSIONS_KEEP_MAX or not all(isinstance(k, str) and SETUP_KEEP.fullmatch(k) for k in keep) \
                 or len(set(keep)) != len(keep):
             raise ValueError("bad request")
+        # (no keep at all: a copy from another device of what lets Claude act without asking — it needs the password too)
         body.update({"units": "+".join(units), "digest": digest, "mode": mode, "conflict": conflict, "keep": ",".join(keep)})
     raw = json.dumps(body, separators=(",", ":")).encode("ascii")
     if len(raw) > SESSIONS_REQ_MAX:

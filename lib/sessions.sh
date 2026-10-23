@@ -925,7 +925,7 @@ _ss_check_request() {
   local re_sscan="$head"',"project":"(p_[0-9a-f]{8}|-)","tool":"(claude|claude-bedrock|git|all)"\}$'
   local re_sfetch="$head"',"scan":"([0-9a-f]{32})","rows":"([0-9]{1,5}(,[0-9]{1,5}){0,99})"\}$'
   local stok='(v|f[0-9]{1,3})#[0-9a-f]{16}'
-  local re_scopy="$head"',"units":"(s_[0-9a-f]{16}(\+s_[0-9a-f]{16}){0,3})","digest":"([0-9a-f]{64})","mode":"(replace|append)","conflict":"(leave|replace)","keep":"('"$stok"'(,'"$stok"'){0,63})"\}$'
+  local re_scopy="$head"',"units":"(s_[0-9a-f]{16}(\+s_[0-9a-f]{16}){0,3})","digest":"([0-9a-f]{64})","mode":"(replace|append)","conflict":"(leave|replace)","keep":"(('"$stok"'(,'"$stok"'){0,63})?)"\}$'
   if [[ $body =~ $re_scan ]] && [ "${BASH_REMATCH[1]}" = sessions-scan ]; then
     project="${BASH_REMATCH[6]}"; tool="${BASH_REMATCH[7]}"
   elif [[ $body =~ $re_fetch ]] && [ "${BASH_REMATCH[1]}" = sessions-fetch ]; then
@@ -942,7 +942,8 @@ _ss_check_request() {
   elif [[ $body =~ $re_sfetch ]] && [ "${BASH_REMATCH[1]}" = setup-fetch ]; then
     scan="${BASH_REMATCH[6]}"; rows="${BASH_REMATCH[7]}"
   elif [[ $body =~ $re_scopy ]] && [ "${BASH_REMATCH[1]}" = setup-copy ]; then
-    session="${BASH_REMATCH[6]}"; digest="${BASH_REMATCH[8]}"; thinking="${BASH_REMATCH[9]}"; outputs="${BASH_REMATCH[10]}"; keep="${BASH_REMATCH[11]}"
+    # (no keep: a copy that brings grants — a whole tool allowed, hooks … — asked from another device, with the password)
+    session="${BASH_REMATCH[6]}"; digest="${BASH_REMATCH[8]}"; thinking="${BASH_REMATCH[9]}"; outputs="${BASH_REMATCH[10]}"; keep="${BASH_REMATCH[11]:--}"
   else echo "not a valid request" >&2; return 1; fi
   action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"; origin="${BASH_REMATCH[5]}"
   [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }

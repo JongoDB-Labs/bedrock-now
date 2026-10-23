@@ -202,13 +202,17 @@ test_the_helper_takes_setup_requests_only_in_their_fixed_shapes() {
   _ses 33333333333333333333333333333333 '"setup-copy"' ",\"units\":\"$k1+$k2\",\"digest\":\"$dig\",\"mode\":\"append\",\"conflict\":\"leave\",\"keep\":\"v#0123456789abcdef,f2#fedcba9876543210\"" remote
   sessions_poll_once 2>/dev/null
   assert_contains "$(cat "$CALLS")" "sessions config copy --units $k1+$k2:$dig --mode append --conflict leave --keep v#0123456789abcdef,f2#fedcba9876543210 --origin remote --request 33333333333333333333333333333333"
-  # never: a path, a name, a kind of keep or a unit of another shape, no keep at all, a sixth key
+  # (nothing kept: a copy from another device of what lets Claude act without asking — the password was checked)
+  _ses 34343434343434343434343434343434 '"setup-copy"' ",\"units\":\"$k1\",\"digest\":\"$dig\",\"mode\":\"replace\",\"conflict\":\"leave\",\"keep\":\"\"" remote
+  sessions_poll_once 2>/dev/null
+  assert_contains "$(cat "$CALLS")" "sessions config copy --units $k1:$dig --mode replace --conflict leave --keep - --origin remote --request 34343434343434343434343434343434"
+  # never: a path, a name, a kind of keep or a unit of another shape, a keep of another field, a sixth key
   : > "$CALLS"
   local n=44444444444444444444444444444444 bad
   for bad in ',"project":"/etc","tool":"all"' ',"project":"-","tool":"ssh"' ",\"scan\":\"$NONCE\",\"rows\":\"../x\"" \
       ",\"units\":\"../x\",\"digest\":\"$dig\",\"mode\":\"append\",\"conflict\":\"leave\",\"keep\":\"v#0123456789abcdef\"" \
       ",\"units\":\"$k1\",\"digest\":\"$dig\",\"mode\":\"append\",\"conflict\":\"leave\",\"keep\":\"main#0123456789abcdef\"" \
-      ",\"units\":\"$k1\",\"digest\":\"$dig\",\"mode\":\"append\",\"conflict\":\"leave\",\"keep\":\"\"" \
+      ",\"units\":\"$k1\",\"digest\":\"$dig\",\"mode\":\"append\",\"conflict\":\"leave\",\"keep\":\",\"" \
       ",\"units\":\"$k1+$k1+$k1+$k1+$k1\",\"digest\":\"$dig\",\"mode\":\"append\",\"conflict\":\"leave\",\"keep\":\"v#0123456789abcdef\""; do
     case "$bad" in *project*) _ses "$n" '"setup-scan"' "$bad" ;; *scan*) _ses "$n" '"setup-fetch"' "$bad" ;; *) _ses "$n" '"setup-copy"' "$bad" ;; esac
     sessions_poll_once 2>/dev/null || true
@@ -224,7 +228,7 @@ test_the_copy_and_the_whole_way_in_a_terminal_print_plain_text() {
   _stubs
   local dig; dig="$(printf 'd%.0s' $(seq 1 64))"
   # the helper's copy: units, mode, conflict and tokens of fixed shapes only
-  for a in "--units x:$dig --keep v#0123456789abcdef" "--units s_0123456789abcdef:$dig --keep main#0123456789abcdef" "--units s_0123456789abcdef:$dig --keep -" \
+  for a in "--units x:$dig --keep v#0123456789abcdef" "--units s_0123456789abcdef:$dig --keep main#0123456789abcdef" "--units s_0123456789abcdef:$dig --keep ,," \
       "--units s_0123456789abcdef:$dig --keep v#0123456789abcdef --mode x"; do
     # shellcheck disable=SC2086
     if (sessions_config_copy $a 2>/dev/null); then echo "took $a" >&2; return 1; fi
@@ -237,6 +241,11 @@ test_the_copy_and_the_whole_way_in_a_terminal_print_plain_text() {
   assert_contains "$out" "copied into the sandbox, the possible secrets you chose kept"
   export COPY_TSV="s_0123456789abcdef	ok	mcp	fetch	-	0	1	-	"
   assert_contains "$(cat "$TMP/dc")" "exec -T code node server/import-setup.mjs copy --units s_0123456789abcdef:$dig --mode replace --conflict leave --keep v#0123456789abcdef --request  --tsv"
+  # (nothing kept — a copy with grants asked from another device: no --keep at all)
+  out="$(sessions_config_copy --units "s_0123456789abcdef:$dig" --keep - 2>&1)" || { echo "$out" >&2; return 1; }
+  assert_contains "$out" "your setup: copied into the sandbox"
+  case "$out" in *"kept as they were"*) echo "said kept: $out" >&2; return 1 ;; esac
+  assert_contains "$(cat "$TMP/dc")" "exec -T code node server/import-setup.mjs copy --units s_0123456789abcdef:$dig --mode replace --conflict leave --request  --tsv"
   # the terminal: what the code container says is printed as plain ASCII, the sandbox's words apart
   sessions_config_consent --tool all --always 2>/dev/null
   export LIST_TSV="$(printf '1\tclaude\tmemory\t-\tCLAUDE.md\t9\t-\n2\tclaude\tagent\t-\tevil\033[31m\t3\tcopied')"

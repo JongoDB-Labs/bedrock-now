@@ -879,6 +879,8 @@ def test_setup_requests_each_field_checked_never_a_path(cs, tmp_path):
             ({"action": "setup-fetch", "scan": scan, "rows": [1, 7, 100]}, '"scan":"' + scan + '","rows":"1,7,100"}'),
             ({"action": "setup-copy", "units": [k1, k2], "digest": dig, "mode": "append", "conflict": "replace", "keep": ["v#0123456789abcdef", "f12#fedcba9876543210"]},
              f'"units":"{k1}+{k2}","digest":"{dig}","mode":"append","conflict":"replace","keep":"v#0123456789abcdef,f12#fedcba9876543210"}}'),
+            # (nothing kept: a copy from another device of what lets Claude act without asking — the password checked here)
+            ({"action": "setup-copy", "units": [k1], "digest": dig, "keep": []}, f'"units":"{k1}","digest":"{dig}","mode":"replace","conflict":"leave","keep":""}}'),
         ]
         for body, tail in good:
             time.sleep(2.1)   # (one request every 2 s)
@@ -891,7 +893,7 @@ def test_setup_requests_each_field_checked_never_a_path(cs, tmp_path):
             {"action": "setup-scan", "project": "-"},
             {"action": "setup-fetch", "scan": scan, "rows": []}, {"action": "setup-fetch", "scan": scan, "rows": list(range(1, 102))},
             {"action": "setup-fetch", "scan": "../x", "rows": [1]}, {"action": "setup-fetch", "scan": scan, "rows": ["~/.ssh"]},
-            {"action": "setup-copy", "units": [k1], "digest": dig, "keep": []},
+            {"action": "setup-copy", "units": [k1], "digest": dig},
             {"action": "setup-copy", "units": ["../x"], "digest": dig, "keep": ["v#0123456789abcdef"]},
             {"action": "setup-copy", "units": [k1] * 2, "digest": dig, "keep": ["v#0123456789abcdef"]},
             {"action": "setup-copy", "units": [k1, k2, "s_0000000000000000", "s_1111111111111111", "s_2222222222222222"], "digest": dig, "keep": ["v#0123456789abcdef"]},
