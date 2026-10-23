@@ -192,8 +192,11 @@ test_the_helper_takes_setup_requests_only_in_their_fixed_shapes() {
     printf '{"action":%s,"requested_at":%s,"nonce":"%s","auth":"%s","origin":"%s"%s}\n' "$2" "$(date +%s)" "$1" "$(printf '%s' 'correct horse battery' | openssl base64 -A)" "${4:-local}" "$3" \
       > "$(request_dir)/ses-$1.json"
   }
+  # (through the update helper's own loop, as it runs — its tidying of the request folder comes first: a setup request,
+  # ses-*.json, is kept and handled)
   _ses 11111111111111111111111111111111 '"setup-scan"' ',"project":"-","tool":"all"'
-  sessions_poll_once 2>/dev/null
+  mkdir -p "$(helper_dir)/inbox"
+  helper_poll_once 2>/dev/null || true
   assert_eq "$(cat "$CALLS")" "sessions config scan --tool all --project - --origin local --request 11111111111111111111111111111111 --screen"
   _ses 22222222222222222222222222222222 '"setup-fetch"' ",\"scan\":\"$NONCE\",\"rows\":\"1,4\""
   sessions_poll_once 2>/dev/null
