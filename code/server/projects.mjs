@@ -18,6 +18,10 @@ import { STATE_DIR } from './githosts.mjs';
 import { isUuid } from './validate.mjs';
 
 export const WS = '/workspace';
+// The epoch of a trust: a project's (or a folder's) trusted settings apply only while their record says this one — a
+// trust recorded before bedrock-now read Claude Code settings the way it does now (v0.21.1: front matter found where
+// Claude Code finds it, its shell commands listed) is looked at again, never carried over (trust.mjs's stateOf: recheck)
+export const TRUST_EPOCH = 2;
 export const WORKSPACE_ID = 'ws';
 export const PROJECTS_MAX = 64, FILED_MAX = 2000, HOSTS_MAX = 16, GONE_MAX = 16;
 // ./stack's list of the folders of this computer (lib/projects.sh public/roots.json; compose.code.yaml mounts its folder)
@@ -118,14 +122,16 @@ export class Projects {
       if (!p || !ID.test(p.id) || !nameOk(p.name) || !rootOk(p.root) || projects.some((x) => x.id === p.id || x.root === p.root)) continue;
       const rec = { id: p.id, name: p.name, root: p.root, created: Number.isInteger(p.created) && p.created > 0 ? p.created : null };
       // its own Claude Code settings, trusted as they were then (their hash: bn-coded's project.settings)
-      if (p.trust && SHA.test(p.trust.hash) && Number.isInteger(p.trust.at) && p.trust.at > 0) rec.trust = { hash: p.trust.hash, at: p.trust.at };
+      if (p.trust && SHA.test(p.trust.hash) && Number.isInteger(p.trust.at) && p.trust.at > 0) {
+        rec.trust = { hash: p.trust.hash, at: p.trust.at, ...(Number.isInteger(p.trust.epoch) ? { epoch: p.trust.epoch } : {}) };
+      }
       projects.push(rec);
     }
     // the folders of this computer: whether their own settings are trusted (by id), and those no longer added
     const hostTrust = {};
     const ht = v.hostTrust && typeof v.hostTrust === 'object' && !Array.isArray(v.hostTrust) ? v.hostTrust : {};
     for (const [k, t] of Object.entries(ht).slice(0, HOSTS_MAX * 4)) {
-      if (ID.test(k) && t && SHA.test(t.hash) && Number.isInteger(t.at) && t.at > 0) hostTrust[k] = { hash: t.hash, at: t.at };
+      if (ID.test(k) && t && SHA.test(t.hash) && Number.isInteger(t.at) && t.at > 0) hostTrust[k] = { hash: t.hash, at: t.at, ...(Number.isInteger(t.epoch) ? { epoch: t.epoch } : {}) };
     }
     const gone = [];
     for (const g of Array.isArray(v.gone) ? v.gone.slice(0, GONE_MAX) : []) {
@@ -252,14 +258,14 @@ export class Projects {
     const h = this.hostRecords().find((x) => x.id === id && !x.gone);
     if (h) {
       return this.update((v) => {
-        if (hash === null) delete v.hostTrust[id]; else v.hostTrust[id] = { hash, at: this.now() };
+        if (hash === null) delete v.hostTrust[id]; else v.hostTrust[id] = { hash, at: this.now(), epoch: TRUST_EPOCH };
         return { ...h, ...(hash === null ? { trust: undefined } : { trust: { ...v.hostTrust[id] } }) };
       });
     }
     return this.update((v) => {
       const p = v.projects.find((x) => x.id === id);
       if (!p) throw new ProjectError(404, 'no such project (it was removed?)');
-      if (hash === null) delete p.trust; else p.trust = { hash, at: this.now() };
+      if (hash === null) delete p.trust; else p.trust = { hash, at: this.now(), epoch: TRUST_EPOCH };
       return { ...p };
     });
   }

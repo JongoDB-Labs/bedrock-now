@@ -12,7 +12,7 @@
 // from the sandbox: shown as text, capped.
 import crypto from 'node:crypto';
 import { short, str } from './validate.mjs';
-import { WS, WORKSPACE_ID, absOf } from './projects.mjs';
+import { WS, WORKSPACE_ID, absOf, TRUST_EPOCH } from './projects.mjs';
 
 export const ALL_SOURCES = Object.freeze(['user', 'project', 'local']);
 export const USER_SOURCES = Object.freeze(['user']);
@@ -83,18 +83,30 @@ const STRUCTURAL = /^[{[|>&*!?]|\t/;
 const WS_CHAR = /\s/;
 /** ccFrontMatterBlock(text) -> the front matter block Claude Code reads (its text), or null when it reads none */
 export function ccFrontMatterBlock(t) {
-  const s = t.charCodeAt(0) === 0xfeff ? t.slice(1) : t;
+  const m = ccFrontMatter(t);
+  return m ? m.block : null;
+}
+/** ccFrontMatter(text) -> {block, body} — the block Claude Code reads and where its body starts in the text (si's
+ *  content: after the closing --- and the whitespace its \s*\n? takes, all of it), or null */
+export function ccFrontMatter(t) {
+  const bom = t.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const s = bom ? t.slice(1) : t;
   if (!s.startsWith('---') || s.indexOf('---', 3) < 0) return null;
   let i = 3, lastNl = -1;
   while (i < s.length && WS_CHAR.test(s[i])) { if (s[i] === '\n') lastNl = i; i++; }
   if (lastNl < 0) return null;
   const close = s.indexOf('---', lastNl + 1);
-  return close < 0 ? null : s.slice(lastNl + 1, close);
+  if (close < 0) return null;
+  let e = close + 3;
+  while (e < s.length && WS_CHAR.test(s[e])) e++;
+  return { block: s.slice(lastNl + 1, close), body: bom + e };
 }
 // the block as this page reads front matter plainly: "---" (spaces or tabs after it) on the first line, the block to a
 // line that is "---" (spaces or tabs after it)
-const STRICT = /^﻿?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
-const BLOCK_MAX = 64 << 10;   // (Claude Code reads no front matter of more than 64 KiB in an untrusted folder)
+const STRICT = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+const BLOCK_MAX = 64 << 10;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x85]/;   // (Claude Code reads no front matter of more than 64 KiB in an untrusted folder)
 // readBlock(block) -> {keys: [{key, value, list}], plain}: top-level `key: value` lines and `key:` with `  - item`
 // lines, one pass; anything else is not plain (a key twice — told by a set —, a structural value, a continuation …)
 function readBlock(block) {
@@ -135,7 +147,11 @@ function readBlock(block) {
  *  scalars, anchors, aliases, tags, explicit or quoted keys, multi-line scalars, a key twice), or a grant key's value
  *  not a plain scalar (quoted, ": " or " #" inside). Linear in the text. */
 export function frontMatter(t) {
-  const s = t.charCodeAt(0) === 0xfeff ? t.slice(1) : t;
+  // (every BOM before it: Claude Code takes one off — two or more before a --- is never plain, its grants read anyway)
+  let b = 0;
+  while (t.charCodeAt(b) === 0xfeff) b++;
+  if (b > 1) return t.startsWith('---', b) ? { grants: frontMatter(t.slice(b)).grants, plain: false } : { grants: [], plain: true };
+  const s = b ? t.slice(1) : t;
   if (!s.startsWith('---')) return { grants: [], plain: true };
   const cc = ccFrontMatterBlock(t);
   const strict = STRICT.exec(t);
@@ -143,6 +159,8 @@ export function frontMatter(t) {
   const grants = [], said = new Set();
   for (const block of [cc, strict && strict[1] !== cc ? strict[1] : null]) {
     if (block === null) continue;
+    // (a control character but a tab or a line break, or a NEL — a line break to some YAML parsers: never plain)
+    if (CONTROL.test(block)) plain = false;
     const r = readBlock(block.length > BLOCK_MAX ? block.slice(0, BLOCK_MAX) : block);
     if (!r.plain) plain = false;
     for (const x of r.keys) {
@@ -189,7 +207,7 @@ function blankInlineCode(s, passOver = true) {
  *  whole (never cut: a caller that cannot show one whole says so); the first max of them, more when there are more (a
  *  caller says so). 'open': a ```! block with no closing ``` — Claude Code runs nothing there; listed all the same */
 export function shellBlocks(text, max = 1000) {
-  const s = String(text), out = [], seen = new Set();
+  const t = String(text), out = [], seen = new Set();
   let more = false;
   const add = (kind, c, at) => {
     const cmd = c.trim().replaceAll('\r\n', '\n');
@@ -197,24 +215,32 @@ export function shellBlocks(text, max = 1000) {
     seen.add(`${at}\0${cmd}`);
     if (out.length < max) out.push({ kind, command: cmd, at }); else more = true;
   };
-  for (let at = s.indexOf('```!'); at >= 0 && !more; ) {
-    const close = s.indexOf('```', at + 4);
-    add(close < 0 ? 'open' : 'fenced', s.slice(at + 4, close < 0 ? s.length : close), at);
-    if (close < 0) break;
-    at = s.indexOf('```!', close + 3);
-  }
-  // (each reading's blanked text keeps the text's length: a command's place is the same in both)
-  for (const passOver of s.includes('!`') ? [true, false] : []) {
-    const b = blankInlineCode(s, passOver);
-    for (let at = b.indexOf('!`'); at >= 0 && !more; ) {
-      if (at > 0 && !WS_CHAR.test(b[at - 1])) { at = b.indexOf('!`', at + 1); continue; }
-      const end = b.indexOf('`', at + 2);
-      if (end < 0) break;
-      if (end === at + 2) { at = b.indexOf('!`', at + 1); continue; }
-      add('inline', b.slice(at + 2, end), at);
-      at = b.indexOf('!`', end + 1);
+  // scan(s, from) — the commands of s (its places counted from 'from' in the text)
+  const scan = (s, from) => {
+    for (let at = s.indexOf('```!'); at >= 0 && !more; ) {
+      const close = s.indexOf('```', at + 4);
+      add(close < 0 ? 'open' : 'fenced', s.slice(at + 4, close < 0 ? s.length : close), from + at);
+      if (close < 0) break;
+      at = s.indexOf('```!', close + 3);
     }
-  }
+    // (each reading's blanked text keeps the text's length: a command's place is the same in both)
+    for (const passOver of s.includes('!`') ? [true, false] : []) {
+      const b = blankInlineCode(s, passOver);
+      for (let at = b.indexOf('!`'); at >= 0 && !more; ) {
+        if (at > 0 && !WS_CHAR.test(b[at - 1])) { at = b.indexOf('!`', at + 1); continue; }
+        const end = b.indexOf('`', at + 2);
+        if (end < 0) break;
+        if (end === at + 2) { at = b.indexOf('!`', at + 1); continue; }
+        add('inline', b.slice(at + 2, end), from + at);
+        at = b.indexOf('!`', end + 1);
+      }
+    }
+  };
+  // the whole text — and, where Claude Code reads front matter, its body alone, as Claude Code scans it (si's content):
+  // a !` left open in the front matter cannot hide a command of the body
+  scan(t, 0);
+  const fm = ccFrontMatter(t);
+  if (fm && fm.body > 0) scan(t.slice(fm.body), fm.body);
   return { list: out, more };
 }
 // canonical(v) -> JSON with sorted keys (every field, whatever the friendly line shows)
@@ -332,13 +358,17 @@ export function summarize(files) {
  *  link out of the workspace, too large, a FIFO —, so no hash covers what Claude Code would read: never trusted) |
  *  unchecked (the sandbox did not say: not applied). */
 export const APPLIED = Object.freeze(['workspace', 'none', 'trusted']);
+// recheck: trusted before bedrock-now read Claude Code settings the way it does now (a trust of an earlier epoch,
+// projects.mjs TRUST_EPOCH) — not applied until you look at them again, whatever they hold
 export const stateOf = ({ workspace = false, present, hash, trust, verifiable = true }) => {
   if (workspace) return 'workspace';
   if (!present) return 'none';
   if (!verifiable || !hash) return 'unverifiable';
+  if (trust && trust.epoch !== TRUST_EPOCH) return 'recheck';
   if (trust && trust.hash === hash) return 'trusted';
   return trust ? 'changed' : 'untrusted';
 };
+export const RECHECK_TEXT = 'bedrock-now reads Claude Code settings more strictly since v0.21.1 — look at them again';
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 /** hashOf(files) -> the hash bn-coded's settingsFiles makes, from the checked rows (null when none is there) */
 export const hashOf = (files) => (files.length ? sha256(JSON.stringify(files.map((f) => [f.name, f.type, f.sha256 ?? null, f.target ?? null]))) : null);
@@ -351,7 +381,8 @@ export function withheldText(d) {
   if (d.state === 'unchecked') return `This folder's ${what.slice(4)} are not applied in this session: the sandbox did not say what they hold. Your own settings apply; of MCP servers, only the stack's own (bedrock-shared).`;
   const how = d.project ? 'Review them: the project\'s ⋯ › Claude Code settings… — once you trust them, Claude Code here restarts with them at your next prompt.'
     : 'To review and trust them, make this folder a project (New project › A folder in the workspace).';
-  return `This ${d.project ? 'project' : 'folder'}'s ${what.slice(4)} are not applied in this session${d.state === 'changed' ? ': they changed since you trusted them' : ''} — ${why}. Your own settings apply; of MCP servers, only the stack's own (bedrock-shared). ${how}`;
+  const since = d.state === 'changed' ? ': they changed since you trusted them' : d.state === 'recheck' ? `: ${RECHECK_TEXT}` : '';
+  return `This ${d.project ? 'project' : 'folder'}'s ${what.slice(4)} are not applied in this session${since} — ${why}. Your own settings apply; of MCP servers, only the stack's own (bedrock-shared). ${how}`;
 }
 
 /** makeTrust({call, store, log}) — what a Claude Code process started in a folder gets of the folder's own settings

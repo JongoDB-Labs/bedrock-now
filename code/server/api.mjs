@@ -17,7 +17,7 @@ import { repoOk } from './gitremote.mjs';
 import { SandboxSaid, refused } from './said.mjs';
 import { reasonOf, answerOf, GIT_LOG_FAILED } from './gitreasons.mjs';
 import { watched } from './watch.mjs';
-import { WS, WORKSPACE_ID, PROJECTS_MAX, absOf, cwdOk, hostRoots, nameOk, rootOk } from './projects.mjs';
+import { WS, WORKSPACE_ID, PROJECTS_MAX, TRUST_EPOCH, absOf, cwdOk, hostRoots, nameOk, rootOk } from './projects.mjs';
 import { BYPASS_ASK, READ_ONLY_DENY } from './modes.mjs';
 
 export class HttpError extends Error {
@@ -700,7 +700,9 @@ export function makeApi({ call, sessions, projects = null, reloadPollMs = 1000, 
   }
   const projectOut = (p, f) => ({ id: p.id, name: p.name, root: p.root, path: absOf(p.root), created: p.created ?? null, workspace: p.id === WORKSPACE_ID,
     // its own Claude Code configuration (trust.mjs): as last looked at (a session's start, the dialog); null: not yet
-    folder: f?.folder ?? null, git: f?.git ?? null, settings: p.id === WORKSPACE_ID || p.gone ? (p.gone ? null : 'workspace') : f?.settings ?? settingsKnown(p.id),
+    // (a trust of an earlier epoch: recheck, said from the record — before anything was looked at)
+    folder: f?.folder ?? null, git: f?.git ?? null, settings: p.id === WORKSPACE_ID || p.gone ? (p.gone ? null : 'workspace')
+      : f?.settings ?? settingsKnown(p.id) ?? (p.trust && p.trust.epoch !== TRUST_EPOCH ? 'recheck' : null),
     // a folder of this computer (./stack project): read-only or not, its path hidden or not (at /projects/<name>); gone: no longer added
     // pending: not yet so in the running sandbox (until it restarts); leaving: no longer added, still mounted until then
     ...(p.host ? { host: true, mode: p.mode === 'ro' ? 'ro' : 'rw', hidden: p.hidden === true, gone: p.gone === true,

@@ -13,7 +13,7 @@ import { tmp } from './helpers.mjs';
 const DIR = tmp('bnhost');
 const ROOTS = path.join(DIR, 'roots.json');
 process.env.BN_CODE_PROJECTS_FILE = ROOTS;
-const { Projects, hostRoots, hostLeaving, cwdOk, absOf, WORKSPACE_ID } = await import('../server/projects.mjs');
+const { Projects, hostRoots, hostLeaving, cwdOk, absOf, WORKSPACE_ID, TRUST_EPOCH } = await import('../server/projects.mjs');
 const { createServer } = await import('../server/main.mjs');
 const { SandboxError } = await import('../server/spawn-client.mjs');
 const { fakeQuery } = await import('./fake-sdk.mjs');
@@ -78,7 +78,7 @@ test('the records: a folder of this computer is a project; renamed, removed, tru
   assert.throws(() => s.remove(ID.app), /removed on this computer/);
   // its own settings: trusted by id (a folder of this computer has no record of the workspace's to keep it in)
   s.trust(ID.app, 'a'.repeat(64));
-  assert.deepEqual(s.get(ID.app).trust, { hash: 'a'.repeat(64), at: now });
+  assert.deepEqual(s.get(ID.app).trust, { hash: 'a'.repeat(64), at: now, epoch: TRUST_EPOCH });
   s.file([crypto.randomUUID()], ID.notes);
   // ./stack removes old: remembered as no longer added, with its sessions' place; added again: not
   now += 1000;
@@ -189,4 +189,19 @@ test('the API: folders of this computer listed with their switches; their root o
   assert.equal(r.status, 409); assert.match(r.json.error, /does not see \/projects\/notes yet/);
   r = await req('POST', '/api/sessions', { resume: s2, model: 'claude-haiku-5-5' });
   assert.notEqual(r.status, 200, 'a session of a folder no longer added is never resumed');
+});
+
+test('a folder of this computer trusted before v0.21.1 (no epoch): recheck in the list; trusting it again writes the epoch', async () => {
+  // (a folder nothing has looked at since this code container started — as a version before this one wrote its trust:
+  // the hash and when, no epoch)
+  const v = JSON.parse(fs.readFileSync(store.jsonFile, 'utf8'));
+  v.hostTrust = { ...(v.hostTrust ?? {}), [ID.notes]: { hash: 'a'.repeat(64), at: 1_700_000_000_000 } };
+  fs.writeFileSync(store.jsonFile, JSON.stringify(v));
+  assert.equal(store.get(ID.notes).trust.epoch, undefined);
+  assert.equal((await req('GET', '/api/projects')).json.projects.find((p) => p.id === ID.notes).settings, 'recheck');
+  store.trust(ID.notes, 'a'.repeat(64));
+  assert.equal(store.get(ID.notes).trust.epoch, TRUST_EPOCH);
+  assert.equal(JSON.parse(fs.readFileSync(store.jsonFile, 'utf8')).hostTrust[ID.notes].epoch, TRUST_EPOCH);
+  assert.notEqual((await req('GET', '/api/projects')).json.projects.find((p) => p.id === ID.notes).settings, 'recheck');
+  store.trust(ID.notes, null);
 });

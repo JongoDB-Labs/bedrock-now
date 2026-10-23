@@ -39,7 +39,7 @@ import {
 } from '../app';
 import * as api from '../api';
 import { GROUP_LABEL, groupOf, type Group } from '../groups';
-import { needsLook, rootOk, sessionsByProject, settingsApplied, visibleWs, WORKSPACE_ID, type Project, type SettingsView } from '../projects';
+import { needsLook, RECHECK_TEXT, rootOk, sessionsByProject, settingsApplied, visibleWs, WORKSPACE_ID, type Project, type SettingsView } from '../projects';
 import type { SessionView } from '../session';
 import type { ImportedFrom, SessionInfo } from '../types';
 import { ago, label } from '../text';
@@ -325,7 +325,8 @@ export function ProjectsPanel() {
           {note && !p.gone && <span class="proj-tag warn-text" title={note} data-testid="project-folder-note"><Icon name="alert" size={12} /></span>}
           {!p.gone && !settingsApplied(p.settings) && (
             <button type="button" class="proj-tag proj-settings warn-text" onClick={() => openProjectDialog({ kind: 'settings', id: p.id })}
-              title="Its own Claude Code settings are not applied: review them" aria-label={`${p.name}: its own Claude Code settings are not applied — review them`}
+              title={p.settings === 'recheck' ? `Its own Claude Code settings are not applied: ${RECHECK_TEXT}` : 'Its own Claude Code settings are not applied: review them'}
+              aria-label={`${p.name}: its own Claude Code settings are not applied — ${p.settings === 'recheck' ? RECHECK_TEXT : 'review them'}`}
               data-testid="project-settings-flag">
               <Icon name="shield" size={12} />
             </button>
@@ -844,6 +845,7 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
   const lead: Record<string, string> = {
     untrusted: 'Claude Code reads these files when a session starts in this folder. They are not applied until you trust them: hooks run commands, allow rules and a skill\'s allowed-tools skip the permission cards, env changes what runs, MCP servers start programs. Read them first.',
     changed: `They changed since you trusted them${when ? ` (${when})` : ''}: not applied until you look again.`,
+    recheck: `${RECHECK_TEXT[0].toUpperCase()}${RECHECK_TEXT.slice(1)}: you trusted them${when ? ` ${when}` : ''}, as the page showed them then — it now finds front matter where Claude Code finds it and lists the shell commands skills run. Not applied until you trust them again.`,
     trusted: `Trusted${when ? ` ${when}` : ''}: they apply to sessions in this folder while they stay exactly as they are.`,
     unverifiable: 'One of these files cannot be checked (a link out of the workspace, too large to show, or not a file): they are not applied, and cannot be trusted until it is a plain file of the project.',
     none: 'This project has no Claude Code configuration of its own (no file under .claude/, no .mcp.json): nothing to trust. Its CLAUDE.md, if any, is read as instructions.',
@@ -900,7 +902,7 @@ function SettingsDialog({ id, start, onClose }: { id: string; start?: NewSession
         </ul>
       </div>
     ) : null;
-  const canTrust = v && v.hash && v.summary.complete && (v.state === 'untrusted' || v.state === 'changed');
+  const canTrust = v && v.hash && v.summary.complete && (v.state === 'untrusted' || v.state === 'changed' || v.state === 'recheck');
   return (
     <Dialog title={`${p.name}: its own Claude Code settings`} onClose={onClose} testid="settings-dialog">
       {!v && !err && <p class="muted small"><Spinner size={12} /> Reading them in the sandbox…</p>}

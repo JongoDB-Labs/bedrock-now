@@ -22,8 +22,10 @@ export type FolderState = 'dir' | 'missing' | 'link' | 'other' | 'unmounted';
 /** A project's own Claude Code settings (.claude/settings*.json, .mcp.json): the Workspace's always apply; a project's
  *  only once trusted as they are (none: nothing to trust; changed: trusted once, different now; unverifiable: a file
  *  there cannot be checked — never trusted; unchecked: the sandbox did not say — not applied). */
-export type SettingsState = 'workspace' | 'none' | 'trusted' | 'untrusted' | 'changed' | 'unverifiable' | 'unchecked';
-const SETTINGS: SettingsState[] = ['workspace', 'none', 'trusted', 'untrusted', 'changed', 'unverifiable', 'unchecked'];
+// recheck: trusted before bedrock-now read Claude Code settings the way it does now (v0.21.1): looked at again first
+export type SettingsState = 'workspace' | 'none' | 'trusted' | 'untrusted' | 'changed' | 'recheck' | 'unverifiable' | 'unchecked';
+const SETTINGS: SettingsState[] = ['workspace', 'none', 'trusted', 'untrusted', 'changed', 'recheck', 'unverifiable', 'unchecked'];
+export const RECHECK_TEXT = 'bedrock-now reads Claude Code settings more strictly since v0.21.1 — look at them again';
 export const settingsState = (v: unknown): SettingsState | null => (SETTINGS.includes(v as SettingsState) ? (v as SettingsState) : null);
 /** they apply (or there is nothing to apply; null: not said) */
 export const settingsApplied = (v: SettingsState | null): boolean => v === null || v === 'workspace' || v === 'none' || v === 'trusted';

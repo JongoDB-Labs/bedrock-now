@@ -114,7 +114,10 @@ test('a project\'s own Claude Code settings: its state in the list, a session\'s
   assert.equal(a.settings, 'unverifiable');
   assert.equal(b.settings, null);
   for (const st of ['workspace', 'none', 'trusted', null] as const) assert.equal(settingsApplied(st), true, String(st));
-  for (const st of ['untrusted', 'changed', 'unverifiable', 'unchecked'] as const) assert.equal(settingsApplied(st), false, st);
+  for (const st of ['untrusted', 'changed', 'recheck', 'unverifiable', 'unchecked'] as const) assert.equal(settingsApplied(st), false, st);
+  // (trusted before v0.21.1: recheck — not applied until looked at again; the list and a session say so)
+  assert.equal(normProjects([{ ...P('p_0000000c', 'old'), settings: 'recheck' }])[1].settings, 'recheck');
+  assert.deepEqual(normSessionSettings({ state: 'recheck', project: 'p_0000000c' }), { state: 'recheck', project: 'p_0000000c' });
   assert.deepEqual(normSessionSettings({ state: 'changed', project: 'p_0000000a' }), { state: 'changed', project: 'p_0000000a' });
   assert.deepEqual(normSessionSettings({ state: 'changed', project: '../x' }), { state: 'changed', project: null });
   assert.equal(normSessionSettings({ state: 'evil' }), null);

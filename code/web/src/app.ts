@@ -24,7 +24,7 @@ import { crossed, nextBudget, rememberBudget, storedBudget, type Budget } from '
 import { pageTitle, waitingSessions } from './groups';
 import { parseDeepLink, withoutDeepLink } from './deeplink';
 import { sessionCost } from './spend';
-import { WORKSPACE, WORKSPACE_ID, goneTops, inProject, liveHostTops, mentionPath, projectFor, projectIdOk, projectOfCwd, readOnlyTops, settingsApplied, type Project, type SettingsState, type Where } from './projects';
+import { RECHECK_TEXT, WORKSPACE, WORKSPACE_ID, goneTops, inProject, liveHostTops, mentionPath, projectFor, projectIdOk, projectOfCwd, readOnlyTops, settingsApplied, type Project, type SettingsState, type Where } from './projects';
 
 export interface Toast {
   id: number;
@@ -1199,6 +1199,18 @@ async function askThenOpen(id: string, opts: NewSessionOptions): Promise<string 
 /** What a project's own configuration was when last looked at (the Projects tab's marker). */
 export function noteProjectSettings(id: string, state: SettingsState): void {
   set((x) => ({ ...x, projects: x.projects.map((p) => (p.id === id && !p.workspace && p.settings !== state ? { ...p, settings: state } : p)) }));
+  if (state === 'recheck') sayRecheck(get().projects);
+}
+// A project trusted before bedrock-now read Claude Code settings the way it does now (v0.21.1): said once per project —
+// this browser remembers it (and says it again when it cannot) — with the way to look at them again
+const RECHECK_SAID = 'bn.recheck-said';
+function sayRecheck(projects: Project[]): void {
+  let said: string[] = [];
+  try { const v = JSON.parse(localStorage.getItem(RECHECK_SAID) ?? '[]'); said = Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []; } catch { said = []; }
+  const fresh = projects.filter((p) => p.settings === 'recheck' && !p.gone && !p.workspace && !said.includes(p.id));
+  if (!fresh.length) return;
+  for (const p of fresh.slice(0, 3)) toast(`${p.name}: ${RECHECK_TEXT}.`, 'info', { label: 'Claude Code settings…', run: () => openProjectDialog({ kind: 'settings', id: p.id }) });
+  try { localStorage.setItem(RECHECK_SAID, JSON.stringify([...said, ...fresh.map((p) => p.id)].slice(-200))); } catch { /* not kept: said again next time */ }
 }
 
 async function openNew(opts: NewSessionOptions): Promise<string | null> {
@@ -1851,6 +1863,7 @@ export async function refreshProjects(): Promise<void> {
     // (the folders of this computer the sandbox sees: their paths are the page's own — text.ts cleanPath)
     const changed = setHostTops(liveHostTops(projects), readOnlyTops(projects), goneTops(projects));
     set((s) => ({ ...s, projects, projectsError: null, projectsSaid: null }));
+    sayRecheck(projects);
     // (a session list read before these folders were known left their sessions out)
     if (changed) void refreshSessions();
   } catch (e) {

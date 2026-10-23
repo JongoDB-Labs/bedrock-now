@@ -17,8 +17,13 @@ All notable changes to bedrock-now are documented here. The format follows
   text that starts with `---` and does not read the same block both ways leaves the summary incomplete — never trusted.
   Reading front matter is linear in its length (a key twice was told by comparing every key with every other).
 - **The trust summary lists the shell commands a project's skills and commands run** each time they are used
-  (``!`…` `` and ```` ```! ```` blocks, read as Claude Code reads them and a second, more cautious way — the union),
+  (``!`…` `` and ```` ```! ```` blocks, read as Claude Code reads them — in the body after the front matter too — and a
+  second, more cautious way — the union),
   beside what their front matter grants; one too many or too long to show leaves the summary incomplete.
+- **Settings trusted before this version are looked at again.** A project's (or a folder of this computer's) trusted
+  settings were trusted as the old summary showed them: after the update they are not applied until you trust them
+  again (the page says so once per project: *bedrock-now reads Claude Code settings more strictly since v0.21.1 — look
+  at them again*, with *Claude Code settings…*).
 
 ## [0.21.0] - 2026-10-23
 

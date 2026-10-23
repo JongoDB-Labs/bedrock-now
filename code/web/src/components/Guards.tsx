@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { useSel } from '../store';
 import { store, activeView, dropLinkDraft, ackLinkDraft, openProjectDialog, setModel } from '../app';
-import { settingsApplied } from '../projects';
+import { RECHECK_TEXT, settingsApplied } from '../projects';
 import { cacheNotice, opusHint } from '../budget';
 import { fullModel } from '../models';
 import type { SessionView } from '../session';
@@ -108,7 +108,8 @@ function LinkDraft({ onClear, nudge }: { onClear: () => void; nudge: number }) {
 function SettingsGuard({ v }: { v: SessionView }) {
   const p = useSel(store, (s) => (v.settings?.project ? s.projects.find((x) => x.id === v.settings?.project) : undefined));
   if (!v.settings || settingsApplied(v.settings.state) || v.state === 'closed') return null;
-  const why = v.settings.state === 'changed' ? ' (they changed since you trusted them)' : v.settings.state === 'unverifiable' ? ' (one of them cannot be checked)' : '';
+  const why = v.settings.state === 'changed' ? ' (they changed since you trusted them)' : v.settings.state === 'unverifiable' ? ' (one of them cannot be checked)'
+    : v.settings.state === 'recheck' ? ` (${RECHECK_TEXT})` : '';
   return (
     <div class="guard settings-guard" data-testid="settings-guard" data-state={v.settings.state}>
       <Icon name="shield" size={13} />

@@ -1283,13 +1283,15 @@ direction-changing character; a record that does not fit (a file someone changed
     the block up to its first `---`, wherever that is) and read strictly: only top-level `key: value` lines and `- item`
     lists, a grant key's value a plain scalar (its key in any case). A grant found in Claude Code's block or in this
     page's plain one is listed; anything off — a text that starts with `---` where the two do not read the same block
-    (another opener, a `---` inside a value, a closer not on a line of its own, no closing `---`), a CR alone, a block
-    over 64 KiB, or anything a YAML parser could read differently (flow style, quotes, anchors and aliases, tags,
+    (another opener, a `---` inside a value, a closer not on a line of its own, no closing `---`), a CR alone, another
+    control character or a NEL in the block, more than one BOM before it, a block over 64 KiB, or anything a YAML parser could read differently (flow style, quotes, anchors and aliases, tags,
     explicit keys, block scalars, a key twice) — leaves the summary incomplete, never trusted. The shell commands a
     skill or command runs each time it is used (``!`…` `` after whitespace and ```` ```! ```` blocks, read as Claude
-    Code reads them, inline code first blanked — and read a second way, a span right after `!` not taken as code: the
-    union listed) are listed with the file's grants, each whole: a file with more than 200 of them, or one longer than
-    2,000 characters, leaves the summary incomplete. The settings files and `.mcp.json` are summarised whole or not at all: more
+    Code reads them — in the body after the front matter, as Claude Code does, and in the whole text —, inline code
+    first blanked; and read a second way, a span right after `!` not taken as code: the union listed) are listed with the file's grants, each whole: a file with more than 200 of them, or one longer than
+    2,000 characters, leaves the summary incomplete. A trust is recorded with the epoch of the reading it was made under (`TRUST_EPOCH`):
+    one recorded before v0.21.1's reading — which could miss front matter Claude Code reads — is not applied until you
+    look at the settings again (*recheck*; said once per project). The settings files and `.mcp.json` are summarised whole or not at all: more
     than 200 entries in a section, a value over 2,000 characters or invalid JSON leave no hash to trust. Each hook and
     MCP server is shown whole (its entry as JSON with sorted keys, beside a friendly line; one naming more than one of
     a command, a URL and a prompt is marked); every character but printable ASCII, a tab or a line break is shown as
