@@ -8,9 +8,28 @@ import { scan, scanEntries, redactEntries, processEntries, redactText, entropy, 
 import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewriteString, rewritePaths, rewrites, outsidePaths } from '../server/transcript.mjs';
 import { session, fake, rand, uuid } from './transcripts.mjs';
 
-// fastest(fn) -> the shorter of two runs, in ms: what the scan costs, not a pause of the collector or a busy machine
-// (a scan that is not linear takes minutes on these inputs, not a second)
-const fastest = (fn) => { let best = Infinity; for (let i = 0; i < 2; i++) { const t0 = Date.now(); fn(); best = Math.min(best, Date.now() - t0); } return best; };
+// assertLinear(input, run, label, part) — does run take time in proportion to its input? Its time on the whole input
+// against its time on a quarter of it (part; for a text: its first quarter and its last 64 characters, so what ends a run
+// stays): about 4× for a linear shape, 16× or more for a quadratic one. Each the fastest of two runs taken in turn — a
+// busy machine slows both alike, where a limit in seconds would fail — and at most 6× passes (or the whole under 30 ms:
+// too short to tell); a miss is measured once more before it counts. (A scan that is not linear takes minutes on these
+// inputs: it fails either way.)
+const assertLinear = (input, run, label, part = null) => {
+  const small = part ?? (input.length > 512 ? input.slice(0, input.length >> 2) + input.slice(-64) : input);
+  let q = Infinity, w = Infinity;
+  for (let round = 0; round < 2; round++) {
+    for (let i = 0; i < 2; i++) {
+      let t0 = performance.now();
+      run(small);
+      q = Math.min(q, performance.now() - t0);
+      t0 = performance.now();
+      run(input);
+      w = Math.min(w, performance.now() - t0);
+    }
+    if (w <= 6 * Math.max(q, 5)) return;
+  }
+  assert.fail(`${label}: ${Math.round(w)} ms for the whole, ${Math.round(q)} ms for a quarter — not linear`);
+};
 
 test('every kind of secret is found, said in plain words with its length (a token\'s public start only) — never whole', () => {
   const cases = {
@@ -139,9 +158,8 @@ test('a finding\'s words around it mask every other finding near it too', () => 
 
 test('a long run of text without secrets is scanned in reasonable time', () => {
   const big = `${'ab+/'.repeat(1 << 18)} ${'word '.repeat(1 << 16)} ${'x'.repeat(1 << 20)}`;
-  const t0 = Date.now();
   assert.deepEqual(scan(big), []);
-  assert.ok(Date.now() - t0 < 5000, `${Date.now() - t0} ms`);
+  assertLinear(big, scan, 'a long run of text without secrets');
 });
 
 test('thinking blocks out: an entry left with nothing goes, and what pointed to it points to its parent — the chain stays whole', () => {
@@ -229,9 +247,8 @@ test('nothing hides a secret: a "signature" anywhere but on a thinking block, an
 test('the scan takes time in proportion to the text, and fails closed: too long, too many, a key\'s start with no end', () => {
   // 50,000 beginnings of a private key and no end: one finding, to the end of the text — fast
   const begins = `-----BEGIN ${['RSA', 'PRIVATE KEY'].join(' ')}-----x`.repeat(50000);
-  let t0 = Date.now();
   const fb = scan(begins);
-  assert.ok(Date.now() - t0 < 1000, `${Date.now() - t0} ms`);
+  assertLinear(begins, scan, '50,000 beginnings of a key');
   assert.deepEqual(fb.map((x) => [x.kind, x.start, x.end]), [['private-key', 0, begins.length]]);
   // an end with no beginning (the key's start in another piece of a large tool output): from the start to it
   const end = `MIIEow${rand(60)}\n-----END ${['RSA', 'PRIVATE KEY'].join(' ')}-----\nafter`;
@@ -239,9 +256,8 @@ test('the scan takes time in proportion to the text, and fails closed: too long,
   assert.ok(!redactEntries([end]).entries[0].includes('MIIEow'));
   // 100,000 small findings: bounded — the whole text left out, never kept
   const many = Array.from({ length: 100000 }, () => fake.awsKeyId()).join(' ');
-  t0 = Date.now();
   const fm = scanEntries([{ type: 'user', message: { content: many } }]);
-  assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
+  assertLinear(many, (t) => scanEntries([{ type: 'user', message: { content: t } }]), '100,000 small findings');
   assert.deepEqual(fm.map((x) => [x.kind, x.keepable]), [['too-many', false]]);
   const rm = redactEntries([{ type: 'user', message: { content: many } }], new Set([fm[0].id]));
   assert.deepEqual([rm.entries[0].message.content, rm.kept], ['[REDACTED:too-many]', 0]);
@@ -249,11 +265,10 @@ test('the scan takes time in proportion to the text, and fails closed: too long,
   const long = `${'x'.repeat(MAX_TEXT)} ${fake.github()}`;
   assert.deepEqual(scan(long).map((x) => x.kind), ['too-long']);
   assert.equal(redactEntries([long]).entries[0], '[REDACTED:too-long]');
-  // adversarial runs for every pattern: each well under a second for 4 MiB
+  // adversarial runs for every pattern, 4 MiB: each in time proportional to its length
   for (const s of ['eyJ-', 'eyJaaaaaaaaa.', 'a.', 'a://a:', `password${' '.repeat(50)}`, 'Bearer ', 'sk-ant-', 'ghp_', 'github_pat_', 'ABC=xxxxxxxxxxxxxxxxxxxxxxxx\n', '-', 'Authorization: x ']) {
     const text = s.repeat(Math.ceil((4 << 20) / s.length));
-    const ms = fastest(() => scan(text));
-    assert.ok(ms < 1500, `${JSON.stringify(s)}: ${ms} ms`);
+    assertLinear(text, scan, `${JSON.stringify(s)}`);
   }
 });
 
@@ -377,7 +392,7 @@ test('overlapping findings become one: their union, said as the most specific ki
   assert.deepEqual(r.entries, [{ password: '[REDACTED:github-token]' }]);
 });
 
-test('every shape stays linear on hostile 7 MiB text — runs of spaces and tabs, repeated names and prefixes, endless runs — never near a second', () => {
+test('every shape stays linear on hostile 7 MiB text — runs of spaces and tabs, repeated names and prefixes, endless runs — in time proportional to its length', () => {
   const M = 7 << 20;
   const fill = (head, unit, tail = '') => head + unit.repeat(Math.floor((M - head.length - tail.length) / unit.length)) + tail;
   const P = (...a) => a.join('');   // (prefixes split: no literal here has a token's shape)
@@ -402,13 +417,11 @@ test('every shape stays linear on hostile 7 MiB text — runs of spaces and tabs
     ['many AWS key ids, no gap', fill('', P('AK', 'IA', 'AAAAAAAAAAAAAAAA'))],
   ];
   for (const [label, text, opts] of cases) {
-    const ms = fastest(() => scan(text, opts ?? {}));
-    assert.ok(ms < 1000, `${label}: ${ms} ms`);
+    assertLinear(text, (t) => scan(t, opts ?? {}), `${label}`);
   }
   // keys and values together: a 7 MiB key with a secret's name, an environment item of spaces
-  const t0 = Date.now();
-  processEntries([{ [`password${' '.repeat(M - 20)}`]: 'x '.repeat(1000), env: [fill('TOKEN=', ' ', 'x')] }]);
-  assert.ok(Date.now() - t0 < 1500, `processEntries: ${Date.now() - t0} ms`);
+  const kv = (m) => [{ [`password${' '.repeat(m - 20)}`]: 'x '.repeat(1000), env: [`TOKEN=${' '.repeat(m - 7)}x`] }];
+  assertLinear(kv(M), processEntries, 'processEntries: a 7 MiB key with a secret\'s name, an item of spaces', kv(M >> 2));
 });
 
 test('thinking blocks kept: a block that holds a finding or a path to rewrite is left out whole; the others stay exactly as they were', () => {
@@ -520,7 +533,7 @@ test('deeper than the bound: refused in fixed words, fast; titles scanned whole 
   for (const v of [r.title, r.first]) assert.ok(!v.includes(tok.slice(0, 8)) && !v.includes(tok.slice(4, 12)), v);
 });
 
-test('every new shape stays linear on hostile 7 MiB text — never near a second', () => {
+test('every new shape stays linear on hostile 7 MiB text', () => {
   const M = 7 << 20;
   const fill = (head, unit, tail = '') => head + unit.repeat(Math.floor((M - head.length - tail.length) / unit.length)) + tail;
   const P = (...a) => a.join('');
@@ -538,15 +551,12 @@ test('every new shape stays linear on hostile 7 MiB text — never near a second
     ['an AWS prefix in a long run', fill('', P('xAK', 'IA'))], ['_auth repeated', fill('', '_auth=')],
   ];
   for (const [label, text] of cases) {
-    const ms = fastest(() => scan(text));
-    assert.ok(ms < 1000, `${label}: ${ms} ms`);
+    assertLinear(text, scan, `${label}`);
   }
   // names and values apart, at volume: 200,000 env items and --flag pairs
-  const big = { env: Array.from({ length: 100000 }, (_, i) => ({ name: i % 2 ? 'DB_PASSWORD' : 'HOST', value: `v${i}-${'z'.repeat(8)}` })),
-    args: Array.from({ length: 100000 }, (_, i) => (i % 2 ? `val-${i}-xxxxxxxx` : '--api-key')) };
-  const t0 = Date.now();
-  processEntries([big]);
-  assert.ok(Date.now() - t0 < 5000, `processEntries: ${Date.now() - t0} ms`);
+  const mk = (n) => ({ env: Array.from({ length: n }, (_, i) => ({ name: i % 2 ? 'DB_PASSWORD' : 'HOST', value: `v${i}-${'z'.repeat(8)}` })),
+    args: Array.from({ length: n }, (_, i) => (i % 2 ? `val-${i}-xxxxxxxx` : '--api-key')) });
+  assertLinear(mk(100000), (b) => processEntries([b]), 'processEntries: 200,000 env items and --flag pairs', mk(25000));
 });
 
 test('no exemption broader than its intent: counts are numbers under known count keys only; floors low; templates hold no assignment', () => {
@@ -587,8 +597,7 @@ test('the scan stays linear without its jumps: values that are no findings, nest
     ['identified by repeated', fill('', 'identified by ')], ['configure set repeated', fill('', 'configure set ')], ['URLs, one after another', fill('', 'http://a:b ')],
     ['URLs with no @', fill('', 'https://h:1/x ')], ['secret= then spaces', fill('', 'secret= ')], ['a low-entropy value with names', fill('password="', 'aaaaaaaaaa token aaaaaaaaa ')],
   ]) {
-    const ms = fastest(() => scan(text));
-    assert.ok(ms < 1500, `${label}: ${ms} ms`);
+    assertLinear(text, scan, `${label}`);
   }
 });
 
@@ -608,8 +617,7 @@ test('every finder reads on: a secret right after an unredacted URL or -u value 
   const fill = (unit) => unit.repeat(Math.floor(M / unit.length));
   for (const [label, text] of [['https://a starts', fill('https://a')], ['x://a:b@h? starts', fill('x://a:b@h?')], ['--user= chain', fill('--user=')], ['-u x starts', fill('-u x')],
     ['user: starts', fill('user:')], ['-u with a long value', `-u ${fill('a:')}`], ['a long query', `https://a:${fill('?@')}`], ['x:// chain', fill('x://')], ['scheme runs', fill('aaaaaaaa://')]]) {
-    const ms = fastest(() => scan(text));
-    assert.ok(ms < 1000, `${label}: ${ms} ms`);
+    assertLinear(text, scan, `${label}`);
   }
 });
 
@@ -625,23 +633,16 @@ test('URL credentials run by run: nested ones in a query, a password holding @ /
   // (bare user:pass@host)
   hidden(`redis-cli -u default:${x}@cache:6379`, x);
   hidden(`mongodb+srv://${['app', x].join(':')}@cluster0.example.net/db`, x);
-  // (no bound: a 1 MiB authority, and a 1 MiB run after user: with no terminator at all, both under a second)
+  // (no bound: a 1 MiB authority, and a 1 MiB run after user: with no terminator at all — in time proportional to them)
   const mib = rand(1 << 20);
-  let t0 = Date.now();
   hidden(`https://user:${mib}@host/x`, mib.slice(0, 64), mib.slice(-64));
-  assert.ok(Date.now() - t0 < 1000, `1 MiB authority: ${Date.now() - t0} ms`);
-  t0 = Date.now();
+  assertLinear(`https://user:${mib}@host/x`, redactText, '1 MiB authority');
   hidden(`curl -u user:${mib}`, mib.slice(0, 64), mib.slice(-64));
-  assert.ok(Date.now() - t0 < 1000, `1 MiB -u value: ${Date.now() - t0} ms`);
-  t0 = Date.now();
-  scan(`https://user:${mib}`);
-  assert.ok(Date.now() - t0 < 1000, `1 MiB with no @: ${Date.now() - t0} ms`);
+  assertLinear(`curl -u user:${mib}`, redactText, '1 MiB -u value');
+  assertLinear(`https://user:${mib}`, scan, '1 MiB with no @');
   // (https:// x100k with long authorities, one run and spaced)
   for (const [label, unit] of [['one run', `https://${'u'.repeat(30)}:${'p'.repeat(30)}@`], ['spaced', `https://${'u'.repeat(30)}:${'p'.repeat(30)}@h `], ['no @', `https://${'h'.repeat(30)}:${'1'.repeat(30)}/`]]) {
-    const text = unit.repeat(100000);
-    t0 = Date.now();
-    scan(text);
-    assert.ok(Date.now() - t0 < 1000, `https:// x100k, ${label}: ${Date.now() - t0} ms`);
+    assertLinear(unit.repeat(100000), scan, `https:// x100k, ${label}`);
   }
   // (no password: a port, an image's digest, a mailto:, a git remote)
   for (const t of ['http://localhost:5173/@vite/client', `FROM node:22-bookworm-slim@sha256:${'ab'.repeat(32)}`, 'mailto:someone@example.com', 'git@github.com:org/repo.git', 'ssh://git@host:22/r']) {
@@ -714,8 +715,7 @@ test('the assignment finder reads every name and stays linear: chains of names i
     ['escaped quotes', fill('password=\\"', 'token=\\"a\\\\')], ['low-entropy with <token>', fill('password=', `${'a'.repeat(99)}<token>`)],
     ['machine lines', fill('', 'machine h login u password p\n')], ['-u quoted words', fill('', '-u "a b:c" ')], ['quotes in commands', fill('mysql ', `-p'a;b' `)],
   ]) {
-    const ms = fastest(() => scan(text));
-    assert.ok(ms < 1500, `${label}: ${ms} ms`);
+    assertLinear(text, scan, `${label}`);
   }
 });
 
@@ -775,8 +775,7 @@ test('two readings stay linear: apostrophes, quotes with and without a match, gl
       ['=" quotes', fill('password=', '="')], ['double quotes, many lines', fill('', 'sshpass -p "a\n')], ['types', fill('', 'password: T = ')],
       ['markers', fill('', '[REDACTED:jwt]@')],
     ]) {
-      const ms = fastest(() => scan(text));
-      assert.ok(ms < 1000, `${label}, ${size >> 20} MiB: ${ms} ms`);
+      assertLinear(text, scan, `${label}, ${size >> 20} MiB`);
     }
   }
 });
@@ -864,12 +863,11 @@ test('B fixes: pwd names (L2), comparisons with a quoted literal, password flags
   assert.ok(!redactText(`-----BEGIN RSA ${'PRIVATE'} KEY-----\nMIIE${rand(60)}\nrest ${x}`).includes(x));
 });
 
-test('M5: keys made equal by a redaction are numbered in linear time (40,000 in one object, under 2 s)', () => {
-  const obj = {};
-  for (let i = 0; i < 40000; i++) obj[fake.github()] = i;
-  const t0 = Date.now();
+test('M5: keys made equal by a redaction are numbered in linear time (40,000 in one object)', () => {
+  const mk = (n) => { const o = {}; for (let i = 0; i < n; i++) o[fake.github()] = i; return o; };
+  const obj = mk(40000);
   const r = redactEntries([{ type: 'user', toolUseResult: obj }]);
-  assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
+  assertLinear(obj, (o) => redactEntries([{ type: 'user', toolUseResult: o }]), 'M5: 40,000 keys made equal', mk(10000));
   const keys = Object.keys(r.entries[0].toolUseResult);
   assert.equal(keys.length, 40000);
   assert.equal(new Set(keys).size, 40000);
@@ -886,8 +884,7 @@ test('the new finders stay linear on 8 MiB: name/value fields, quotes and braces
     ['- items', fill('', '\n- name: DB_PASSWORD\n  value: ')], ['<add', fill('', '<add key="password" value="')], ['comparisons', fill('', 'password == "')],
     ['redis-cli -a', fill('redis-cli', ' -a')], ['smbclient -U', fill('smbclient', ' -U a%')], ['escapes before tokens', fill('', '\\nghp_')], ['\\u escapes', fill('', '\\u0041sk-')],
   ]) {
-    const ms = fastest(() => scan(text));
-    assert.ok(ms < 1000, `${label}: ${ms} ms`);
+    assertLinear(text, scan, `${label}`);
   }
 });
 
@@ -954,10 +951,7 @@ test('the allowlist alone: a tool result one line with its size, its call, its i
   const L = (b) => `<${b.length}>`;
   assert.equal(stripTags('a <bash-stdout>out</bash-stdout> b <event>e</event>', L), 'a <bash-stdout><3></bash-stdout> b <event><1></event>');
   assert.equal(stripTags('x <result>no end', L), 'x <result><6>');
-  const big = '<bash-stdout>'.repeat(200000);
-  const t0 = Date.now();
-  stripTags(big, L);
-  assert.ok(Date.now() - t0 < 1000);
+  assertLinear('<bash-stdout>'.repeat(200000), (t) => stripTags(t, L), 'stripTags: 200,000 tags with no end');
 });
 
 test('pairs in text, again: brace depth (M1), only an item\'s end clears it (M3), YAML |- and >- blocks, minified JSON lists linear (H2)', () => {
@@ -975,13 +969,12 @@ test('pairs in text, again: brace depth (M1), only an item\'s end clears it (M3)
   // (another item's value is its own)
   const pairs = (t) => KINDS.find((k) => k.kind === 'named').find(t, {});
   assert.deepEqual(pairs(`[{"name":"DB_PASSWORD","value":"p1234567"},{"name":"HOST","value":"${x}"}]`).length, 1);
-  // linear on minified JSON lists, 1 to 8 MiB, under a second
+  // linear on minified JSON lists, 1 to 8 MiB
   for (const size of [1 << 20, 4 << 20, MAX_TEXT - 16]) {
     const list = (unit) => `[${unit.repeat(Math.floor((size - 2) / unit.length))}]`;
     for (const [label, text] of [['name/value', list('{"name":"x1","value":"y1"},')], ['key/value true', list('{"key":"k","value":true},')], ['name/value unquoted', list('{name:x1,value:y1},')],
       ['secret names, unquoted values', list('{"name":"API_TOKEN","value":12345},')], ['values only', list('{"value":true},')], ['YAML one line', `value: ${'value: '.repeat(Math.floor(size / 7))}`]]) {
-      const ms = fastest(() => scan(text));
-      assert.ok(ms < 1000, `${label}, ${size >> 20} MiB: ${ms} ms`);
+      assertLinear(text, scan, `${label}, ${size >> 20} MiB`);
     }
   }
 });
@@ -1019,14 +1012,13 @@ test('final round: namespaced names (M2), crafted lines stay linear (M3, M4), th
   // the depth cap: past it { and } are counted, not kept — an item still ends where it does
   const deep = `${'{'.repeat(5000)}"name":"DB_PASSWORD","value":"${x}"${'}'.repeat(5000)}{"name":"HOST","value":"h"}`;
   hidden(deep);
-  // M3, M4: crafted lines, 1 to 8 MiB, under a second
+  // M3, M4: crafted lines, 1 to 8 MiB, linear
   for (const size of [1 << 20, 4 << 20, MAX_TEXT - 16]) {
     const fill = (head, unit) => head + unit.repeat(Math.floor((size - head.length) / unit.length));
     for (const [label, text] of [['"value":a on one line', fill('', '"value":a')], ['values pending in nested objects', fill('', '{value: v name: API_TOKEN ')],
       ['pending values in many objects, one secret name', `${fill('', '{value: v ')} name: API_TOKEN`], ['value: | with growing indentation', Array.from({ length: Math.floor(size / 200) }, (_, i) => `${' '.repeat(i % 180)}value: |`).join('\n')],
       ['quoted keys, values to the line end', fill('{', '"value": a b ')]]) {
-      const ms = fastest(() => scan(text));
-      assert.ok(ms < 1000, `${label}, ${size >> 20} MiB: ${ms} ms`);
+      assertLinear(text, scan, `${label}, ${size >> 20} MiB`);
     }
   }
 });

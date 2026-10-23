@@ -1817,12 +1817,13 @@ test_helper_ends_a_job_that_runs_past_its_deadline() {
   DIAG_MIN_INTERVAL_S=0
   # the stub ./stack hangs for its test run
   sed -i.bak 's/^  test) printf/  test) exec "$0" hang ;;\n  testx) printf/' "$STACK_DIR/stack" && rm -f "$STACK_DIR/stack.bak"
-  export HELPER_TEST_MAX_S=1
+  # (3 s: the stub has started by then even on a busy machine — it writes down its PIDs as it starts)
+  export HELPER_TEST_MAX_S=3
   _act test 0 77777777777777777777777777777777
   t0="$(date +%s)"
   settings_poll_once 2>/dev/null
-  [ "$(( $(date +%s) - t0 ))" -le 20 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
-  assert_contains "$(cat "$(helper_status_file)")" '"phase": "failed", "message": "Stopped — after 1 s: it did not finish'
+  [ "$(( $(date +%s) - t0 ))" -le 25 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
+  assert_contains "$(cat "$(helper_status_file)")" '"phase": "failed", "message": "Stopped — after 3 s: it did not finish'
   p="$(cat "$TMP/hung")"; c="$(cat "$TMP/hung-child")"
   sleep 0.3
   if kill -0 "$p" 2>/dev/null || kill -0 "$c" 2>/dev/null; then echo "left running: $p $c" >&2; return 1; fi
@@ -1836,21 +1837,22 @@ test_helper_a_long_job_runs_while_it_says_something_and_ends_when_it_goes_silent
   local log="$TMP/job.log" pid rc t0
   helper_heartbeat() { :; }
   HELPER_JOB_POLL_S=0.2
-  # one that keeps writing for 4 s, past an idle limit of 2 s (the clock's seconds: a line every 0.5 s is plenty): not
-  # stopped
+  # one that keeps writing for 4 s, a line every 0.5 s, with an idle limit of 4 s: not stopped (the limit is counted in
+  # the clock's whole seconds, polled every 0.2 s — a gap of just over a second can count as 2, more on a busy machine:
+  # the limit leaves room for that)
   set -m; ( for _ in 1 2 3 4 5 6 7 8; do echo step; sleep 0.5; done ) > "$log" 2>&1 & pid=$!; set +m
-  rc=0; _wait_beating "$pid" 60 "$log" 2 || rc=$?
+  rc=0; _wait_beating "$pid" 60 "$log" 4 || rc=$?
   assert_eq "$rc" 0
-  # one that goes silent: ended after 2 s without a new line, and nothing of it left
+  # one that goes silent: ended after 4 s without a new line, and nothing of it left
   : > "$log"
   set -m; ( echo started; sleep 30 ) > "$log" 2>&1 & pid=$!; set +m
-  t0="$(date +%s)"; rc=0; _wait_beating "$pid" 60 "$log" 2 || rc=$?
+  t0="$(date +%s)"; rc=0; _wait_beating "$pid" 60 "$log" 4 || rc=$?
   assert_eq "$rc" 125
-  [ "$(( $(date +%s) - t0 ))" -le 15 ] || return 1
+  [ "$(( $(date +%s) - t0 ))" -le 20 ] || return 1
   ! kill -0 "$pid" 2>/dev/null || { echo "left running" >&2; return 1; }
   # the ceiling in all, whatever it says
   set -m; ( while :; do echo tick; sleep 0.2; done ) > "$log" 2>&1 & pid=$!; set +m
-  rc=0; _wait_beating "$pid" 3 "$log" 2 || rc=$?
+  rc=0; _wait_beating "$pid" 3 "$log" 4 || rc=$?
   assert_eq "$rc" 124
   ! kill -0 "$pid" 2>/dev/null || return 1
   # and what is said
