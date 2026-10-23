@@ -866,7 +866,10 @@ written back to those folders.
   container read under it (the list, sessions waiting) is forgotten; `./stack sessions consent --project NAME --revoke`
   (or `--revoke-all`) in a terminal.
 - **What is copied by default, and nothing else:** what you typed, Claude's text, its thinking (as below), its tool
-  calls (the tool and its input) and compaction summaries — scanned, a best effort. Everything else Claude Code
+  calls (the tool and its input) and compaction summaries (written by Claude: they may quote command output) —
+  scanned, a best effort. What Claude Code adds to your turn in tags of its own (a `<system-reminder>`, a hook's
+  output, a teammate's or another session's message, a task notification, a fetched page …) is not yours and is left
+  out; so is a message that came from elsewhere. Everything else Claude Code
   recorded is left out: what its tools gave back (command output, files read — also the files it attaches again after
   a compaction —, web pages, MCP results), the output of `!` commands and local commands, hooks' output, its own notes
   to the model; each becomes one line saying so and its size, and a kind of record it does not know is dropped. The tool

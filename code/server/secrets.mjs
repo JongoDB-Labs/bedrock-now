@@ -858,8 +858,9 @@ const PAIR_NAMES = ['name', 'key', 'id', 'parameterkey', 'parametername', 'optio
 const PAIR_VALUES = ['value', 'values', 'parametervalue', 'secretstring', 'secretvalue', 'optionvalue', 'stringvalue', 'plaintext'];
 const PAIR_RE = new RegExp(`[{}<"'\n\r]|/>|(?<![A-Za-z0-9_])(${[...PAIR_NAMES, ...PAIR_VALUES].map(ci).join('|')})(?![A-Za-z0-9_-])`, 'g');
 const PAIR_VALUE = new Set(PAIR_VALUES);
-// (where an unquoted name ends: a space, a comma, a closing mark, a quote, = : & ;)
-const NAME_END = cls(',}]>"\'=:&;');
+// (where an unquoted name ends: a space, a comma, a closing mark, a quote — and, to know where it stops, = : & ; too;
+// whether it names a secret is judged on the longer reading: arn:aws:ssm:…:parameter/prod/db/password, prod:DB_PASSWORD)
+const NAME_END = cls(',}]>"\'=:&;'), NAME_END_LONG = cls(',}]>"\'');
 // (where an unquoted value of a quoted key — JSON: "value": true — ends: , } ])
 const JSON_END = cls(',}]');
 const PAIR_DEPTH = 4096;
@@ -877,19 +878,44 @@ function namedPairs(text) {
   let le0 = -1, le1 = -1, lt = -1;
   const lineEndOf = (p) => { if (p < le0 || p > le1) { le0 = p; le1 = lineEnd(text, p); lt = le1; while (lt > p && isBlank(text[lt - 1])) lt--; } return le1; };
   const trimmedEnd = (p) => { lineEndOf(p); return Math.max(p, lt); };
-  // (a value read to its line's end and judged: one that starts inside it is in it — not judged again)
-  let span0 = -1, span1 = -1, spanFound = false;
   const judge = (a, b, toLineEnd) => {
     if (b <= a) return;
-    if (toLineEnd && a >= span0 && a < span1) { if (!spanFound) out.push({ start: a, end: b }); return; }
+    if (toLineEnd) {
+      const j = judgedLines.get(b);
+      if (j && j.start <= a) { if (!j.found) out.push({ start: a, end: b }); return; }
+    }
     const found = named(text.slice(a, b));
     if (found) out.push({ start: a, end: b });
-    if (toLineEnd) { span0 = a; span1 = b; spanFound = found; }
+    if (toLineEnd) { const j = judgedLines.get(b); if (!j || a < j.start) judgedLines.set(b, { start: a, found: found || Boolean(j?.found) }); }
   };
   // (escaped: a quote mark after an odd number of backslashes)
   const escaped = (i) => { let k = i; while (k > 0 && text.charCodeAt(k - 1) === 92) k--; return (i - k) % 2 === 1; };
   // (the end of the last name field's value: a field named inside it is part of that name, not a field)
   let nameEnd = -1;
+  // (the longer reading of an unquoted name: its span, and where the last secret's name in it starts — a name that
+  // starts inside it names a secret when one starts at or after it; each span read once)
+  let long0 = -1, long1 = -1, longSecret = -1;
+  const secretFrom = (v, end) => {
+    if (!(v >= long0 && v < long1)) {
+      long0 = v; long1 = v;
+      while (long1 < n && !isSpace(text.charCodeAt(long1)) && !(text.charCodeAt(long1) < 128 && NAME_END_LONG[text.charCodeAt(long1)] === 1)) long1++;
+      longSecret = -1;
+      const span = text.slice(long0, long1);
+      SECRET_NAMES.lastIndex = 0;
+      for (let m; (m = SECRET_NAMES.exec(span)) !== null;) if (!knownWord(text, long0 + m.index, m[0].length)) longSecret = long0 + m.index;
+      if (long1 - long0 <= 70 && AUTH_NAME.test(span)) longSecret = Math.max(longSecret, long0);
+    }
+    return longSecret >= v || isSecretName(text.slice(v, end));
+  };
+  // (a quoted key's unquoted value: where the last one read stopped — one starting before it stops there too)
+  let json0 = -1, json1 = -1;
+  // (each line's smallest start of a value read to the line's end and judged, and whether it was a finding: one that
+  // starts after it on that line is in it)
+  const judgedLines = new Map();
+  // (the last YAML block read: a field inside it is its text, not a field)
+  let block0 = -1, block1 = -1;
+  // (past the depth kept apart: { and } counted, not kept)
+  let extra = 0;
   PAIR_RE.lastIndex = 0;
   for (let m; (m = PAIR_RE.exec(text)) !== null;) {
     const at = m.index, c = text[at];
@@ -916,17 +942,17 @@ function namedPairs(text) {
           while (k > 0 && isId(text.charCodeAt(k - 1))) k--;
           secret = e > k && isSecretName(text.slice(k, e));
         }
-        if (outer.length < PAIR_DEPTH) { outer.push(st); st = fresh(); }
+        if (outer.length < PAIR_DEPTH && !extra) { outer.push(st); st = fresh(); } else extra++;
         if (secret) st.secret = true;
         continue;
       }
-      if (c === '}') { st = outer.length ? outer.pop() : fresh(); continue; }
+      if (c === '}') { if (extra) extra--; else st = outer.length ? outer.pop() : fresh(); continue; }
       // (a tag: <add key="…" value="…"/> is an item; < not before a letter or /, as in a<b, is none)
       if (c === '<' && !/[A-Za-z/]/.test(text[at + 1] ?? '')) continue;
       st = fresh();
       continue;
     }
-    if (at < nameEnd) continue;
+    if (at < nameEnd || (at >= block0 && at < block1)) continue;
     // a field: its name, a closing quote (\" too), blanks, then : or = (not :: or ==)
     let i = at + m[1].length;
     const quotedKey = QUOTE(text[i]) || (text[i] === '\\' && QUOTE(text[i + 1]));
@@ -952,17 +978,22 @@ function namedPairs(text) {
         const b = blockScalar(text, at, k);
         if (!b) continue;
         v = b.start; end = b.end;
+        block0 = b.start; block1 = b.end;
       } else { end = trimmedEnd(v); toLineEnd = true; }
     } else if (quotedKey) {
-      // (JSON: "value": true, 123 — to , } ] or the line's end)
-      end = v;
-      const le = lineEndOf(v);
-      while (end < le && !(text.charCodeAt(end) < 128 && JSON_END[text.charCodeAt(end)] === 1)) end++;
+      // (JSON: "value": true, 123 — to , } ] or the line's end; one starting before where the last stopped stops there)
+      if (v >= json0 && v < json1) end = json1;
+      else {
+        end = v;
+        const le = lineEndOf(v);
+        while (end < le && !(text.charCodeAt(end) < 128 && JSON_END[text.charCodeAt(end)] === 1)) end++;
+        json0 = v; json1 = end;
+      }
       while (end > v && isBlank(text[end - 1])) end--;
     } else { end = trimmedEnd(v); toLineEnd = true; }
     if (!isValue) {
       nameEnd = end;
-      if (isSecretName(text.slice(v, end))) {
+      if (q ? isSecretName(text.slice(v, end)) : secretFrom(v, end)) {
         for (const [a, b, l] of st.pending) judge(a, b, l);
         if (st.spill) out.push({ start: st.spill[0], end: st.spill[1] });
         st.pending = []; st.spill = null;

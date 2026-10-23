@@ -1006,3 +1006,37 @@ test('PWD only as the shell\'s or a path (M2); a BEGIN with no END stops at a qu
     `gcloud x --name=api_token --value=${x}`]) hidden(t);
   left(`aws ssm put-parameter --name /prod/db/host --value ${x}`);
 });
+
+test('final round: namespaced names (M2), crafted lines stay linear (M3, M4), the depth cap, a summary\'s leafUuid relinked', () => {
+  const x = `Zq${rand(14)}`;
+  const hidden = (t) => { const out = redactText(t); assert.ok(!out.includes(x), `${t.slice(0, 120)} -> ${out.slice(0, 160)}`); };
+  // M2: a name that stops at : ; = & still names a secret when its longer reading does
+  for (const name of ['arn:aws:ssm:us-east-1:111111111111:parameter/prod/db/password', 'prod:DB_PASSWORD', 'arn:aws:secretsmanager:us-east-1:111111111111:secret:prod/api_token-AbCdEf',
+    'app:db_password', 'db;password']) {
+    hidden(`- name: ${name}\n  value: ${x}`);
+    hidden(`{name: ${name}, value: ${x}}`);
+  }
+  // the depth cap: past it { and } are counted, not kept — an item still ends where it does
+  const deep = `${'{'.repeat(5000)}"name":"DB_PASSWORD","value":"${x}"${'}'.repeat(5000)}{"name":"HOST","value":"h"}`;
+  hidden(deep);
+  // M3, M4: crafted lines, 1 to 8 MiB, under a second
+  for (const size of [1 << 20, 4 << 20, MAX_TEXT - 16]) {
+    const fill = (head, unit) => head + unit.repeat(Math.floor((size - head.length) / unit.length));
+    for (const [label, text] of [['"value":a on one line', fill('', '"value":a')], ['values pending in nested objects', fill('', '{value: v name: API_TOKEN ')],
+      ['pending values in many objects, one secret name', `${fill('', '{value: v ')} name: API_TOKEN`], ['value: | with growing indentation', Array.from({ length: Math.floor(size / 200) }, (_, i) => `${' '.repeat(i % 180)}value: |`).join('\n')],
+      ['quoted keys, values to the line end', fill('{', '"value": a b ')]]) {
+      const ms = fastest(() => scan(text));
+      assert.ok(ms < 1000, `${label}, ${size >> 20} MiB: ${ms} ms`);
+    }
+  }
+});
+
+test('dropThinking relinks a summary\'s leafUuid too', () => {
+  const e = [
+    { type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'hi' } },
+    { type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 't', signature: 's' }] } },
+    { type: 'summary', summary: 'a title', leafUuid: 'a1' },
+  ];
+  const r = stripThinking(e);
+  assert.equal(r.entries.find((x) => x.type === 'summary').leafUuid, 'u1');
+});

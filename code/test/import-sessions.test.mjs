@@ -658,7 +658,7 @@ test('allowlist: a marker in every place an output can be — none in the copy b
   }
   const text = fs.readFileSync(files[0], 'utf8');
   for (const k of ['OWNERKEPT', 'OWNERKEPT2', 'CLAUDEKEPT', 'CLAUDEKEPT2', 'CLAUDEKEPT3', 'INPUTKEPT', 'SUMMARYKEPT', 'TITLEKEPT', '<bash-input>ls</bash-input><bash-stdout>[tool output left out',
-    '<event>[tool output left out', '"type":"tool_reference","tool_name":"mcp__srv__deferred"', '"structuredContentOmitted":true', '"claude/kept":1', '"error_code":"unavailable"', '"snippet":""']) {
+    '"content":"[tool output left out by bedrock-now', '"type":"tool_reference","tool_name":"mcp__srv__deferred"', '"structuredContentOmitted":true', '"claude/kept":1', '"error_code":"unavailable"', '"snippet":""']) {
     assert.ok(text.includes(k), k);
   }
   const lines = text.trim().split('\n').map((l) => JSON.parse(l));
@@ -692,4 +692,71 @@ test('allowlist: a marker in every place an output can be — none in the copy b
   for (const k of ['result1', 'tur', 'file', 'dir', 'resource', 'hook', 'webfetch', 'mcpblock', 'bashout', 'meta', 'struct', 'queued']) assert.ok(text2.includes(`leakmarker-${k}`), k);
   for (const k of ['future', 'fblock', 'ublock', 'fattach', 'memory', 'todo', 'progress', 'fhs', 'queue', 'stophook', 'info']) assert.ok(!new RegExp(`leakmarker-${k}(?![a-z0-9])`).test(text2), k);
   assert.ok(!fs.readFileSync(path.join(storeOf(APP), id, 'subagents', 'agent-1.meta.json'), 'utf8').includes('leakmarker'));
+});
+
+test('what counts as yours, by allowlist too: Claude Code\'s wrapper tags (any, with attributes, unknown ones), origins other than human, team entries — none in the copy or the preview; a partial compaction\'s preserved turns kept', async () => {
+  const id = uuid();
+  const out = [];
+  let parent = null, t = Date.parse('2026-10-03T10:00:00.000Z');
+  const base = { isSidechain: false, userType: 'external', cwd: APP, sessionId: id, version: '2.1.296', gitBranch: 'main' };
+  const push = (e) => { const u = e.uuid ?? uuid(); out.push({ ...base, parentUuid: parent, ...e, uuid: u, timestamp: new Date(t += 1000).toISOString() }); parent = u; return u; };
+  const user = (content, extra = {}) => push({ type: 'user', message: { role: 'user', content }, ...extra });
+  const asst = (text, extra = {}) => push({ type: 'assistant', message: { id: `msg_${uuid().slice(0, 8)}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'text', text }], stop_reason: 'end_turn' }, ...extra });
+  const M = (k) => `leakmarker-${k}`;
+  user(`OWNERKEPT1 the plan\n<system-reminder>${M('reminder-inline')}</system-reminder> and more OWNERKEPT1B`);
+  for (const [k, s] of [['reminder', `<system-reminder>${M('reminder')}</system-reminder>`], ['ws', `  \n<system-reminder>${M('ws')}</system-reminder>`],
+    ['nl', `<system-reminder\n>${M('nl')}</system-reminder>`], ['hook', `<user-prompt-submit-hook>${M('hook')}</user-prompt-submit-hook>`],
+    ['team', `<teammate-message teammate_id="lead" color="blue">${M('team')}</teammate-message>`], ['task', `<task-notification><task-id>t</task-id><output>${M('task')}</output></task-notification>`],
+    ['channel', `<channel source="slack">${M('channel')}</channel>`], ['cross', `<cross-session-message from="s1">${M('cross')}</cross-session-message>`],
+    ['agent', `<agent-message>${M('agent')}</agent-message>`], ['web', `<fetched-web-content url="x">${M('web')}</fetched-web-content>`], ['slack', `<slack-message>${M('slack')}</slack-message>`],
+    ['future', `<future-wrapper-v9 x="1">${M('future')}</future-wrapper-v9>`]]) {
+    user(s);
+    user([{ type: 'text', text: s.replace(M(k), M(`${k}-block`)) }]);
+  }
+  user(`<command-name>/deploy</command-name><command-message>deploy</command-message><command-args>OWNERARGS</command-args>`);
+  user(`<bash-input>OWNERBASH</bash-input>`);
+  user(`<bash-stdout>${M('bso')}</bash-stdout><bash-stderr>${M('bse')}</bash-stderr>`);
+  user(`OWNERMIX <bash-stdout>a</bash-stdout> b </bash-stdout> c <bash-stdout>${M('mix')}</bash-stdout> ${M('mix2')}</bash-stdout> OWNERMIXEND`);
+  user(`${M('peer')} from a peer`, { origin: { kind: 'peer', from: 'other' } });
+  user('OWNERHUMAN typed', { origin: { kind: 'human' } });
+  user(`${M('teamname')} a team's`, { teamName: 'blue' });
+  asst('CLAUDEKEPT ok');
+  // a partial compaction: u2 a2 kept by it, then the boundary and summary, then u3 a3
+  const u2 = user('OWNERPRESERVED2'), a2 = asst('CLAUDEPRESERVED2');
+  const cs = uuid();
+  const cb = push({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', parentUuid: null, logicalParentUuid: a2,
+    compactMetadata: { trigger: 'manual', preTokens: 99, preservedSegment: { headUuid: u2, anchorUuid: cs, tailUuid: a2 } } });
+  parent = cb;
+  user(`Summary SUMMARYKEPT2 <system-reminder>${M('sumrem')}</system-reminder> <bash-stdout>${M('sumout')}</bash-stdout>`, { uuid: cs, isCompactSummary: true, isVisibleInTranscriptOnly: true });
+  user('OWNERAFTER3'); asst('CLAUDEAFTER3');
+  // (a server tool's call whose result is of a kind not known: both go)
+  push({ type: 'assistant', message: { id: 'msg_srv', type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'server_tool_use', id: 'srvtoolu_x', name: 'future_tool', input: {} }] } });
+  push({ type: 'assistant', message: { id: 'msg_srv', type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'future_tool_result', tool_use_id: 'srvtoolu_x', content: M('srv') }, { type: 'text', text: 'CLAUDEAFTERSRV' }] } });
+  const dir = hostStore(APP, [[id, out]]);
+  const scan = nonce();
+  imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
+  await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
+  const pv = await preview(imports, 'p_00000001', id);
+  assert.ok(!JSON.stringify(pv).includes('leakmarker'), (/leakmarker-[a-z0-9-]+/.exec(JSON.stringify(pv)) ?? [''])[0]);
+  assert.ok(pv.events.some((ev) => ev.type === 'user' && /^\[tool output left out by bedrock-now/.test(ev.text)), 'a wrapper\'s entry shows the line, not its words');
+  assert.ok(pv.events.some((ev) => ev.type === 'local' && /written by Claude; it may quote command output/.test(ev.text)));
+  const r = await copy(imports, call, 'p_00000001', [{ id, digest: pv.digest }]);
+  assert.equal(r[0].ok, true, JSON.stringify(r));
+  const text = fs.readFileSync(path.join(storeOf(APP), `${id}.jsonl`), 'utf8');
+  assert.ok(!text.includes('leakmarker'), (/leakmarker-[a-z0-9-]+/.exec(text) ?? [''])[0]);
+  for (const k of ['OWNERKEPT1', 'OWNERKEPT1B', '<command-name>/deploy</command-name>', 'OWNERARGS', '<bash-input>OWNERBASH</bash-input>', '<bash-stdout>[tool output left out',
+    'OWNERMIX', 'OWNERMIXEND', 'OWNERHUMAN', 'CLAUDEKEPT', 'OWNERPRESERVED2', 'CLAUDEPRESERVED2', 'SUMMARYKEPT2', 'OWNERAFTER3', 'CLAUDEAFTER3', 'CLAUDEAFTERSRV']) {
+    assert.ok(text.includes(k), k);
+  }
+  const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+  assert.ok(!lines.some((l) => l.teamName !== undefined || l.origin?.kind === 'peer'));
+  assert.ok(!text.includes('srvtoolu_x'), 'the call goes with its result');
+  // (the partial compaction reads the same through the SDK: the copy's messages are the source's)
+  const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk');
+  const read = async (entries) => getSessionMessages(id, { dir: APP, sessionStore: { async load(k) { return k?.sessionId === id ? entries : null; }, async append() {}, async listSessions() { return [{ sessionId: id, mtime: 1 }]; } } });
+  const src = (await read(out)).map((m) => m.uuid), cp = (await read(lines)).map((m) => m.uuid);
+  assert.ok(src.includes(u2) && src.includes(a2), 'the source keeps its preserved turns');
+  const tail = (l) => l.slice(l.indexOf(u2));
+  assert.deepEqual(tail(cp).slice(0, 4), tail(src).slice(0, 4), 'u2 a2 then what followed, in the copy as in the source');
+  assert.deepEqual(lines.find((l) => l.subtype === 'compact_boundary').compactMetadata.preservedSegment, { headUuid: u2, anchorUuid: cs, tailUuid: a2 });
 });

@@ -17,8 +17,9 @@ All notable changes to bedrock-now are documented here. The format follows
   listed with their length (a token's public start only) and **redacted by default**, its thinking blocks taken out when it ran
   elsewhere than Bedrock, **only what you typed, Claude's text, its thinking, its tool calls and compaction summaries
   copied by default** — every transcript rebuilt by allowlist: tool outputs, attached files, MCP and web results,
-  command and hook output and Claude Code's own notes each become one line saying so and its size, a kind of record
-  it does not know is dropped (*Include tool outputs* brings the outputs, scanned — on the computer, or with the portal
+  command and hook output, what Claude Code adds to your turn in tags of its own (reminders, teammates' and other
+  sessions' messages, task notifications) and its own notes each become one line saying so and its size, a kind of
+  record it does not know is dropped (*Include tool outputs* brings the outputs, scanned — on the computer, or with the portal
   password from another device; `--with-tool-outputs` in a terminal) —, the transcript shown exactly as it would be
   copied; *Copy into the sandbox* keeps the session's id, its tool calls with their results' ids and its subagents'
   transcripts, and it resumes on any model of the catalog (first open in Manual).

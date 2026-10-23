@@ -916,10 +916,12 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
   HS_OUT="$(printf '%s%s' glp at-)$(hs_rand 20 'A-Za-z0-9')"
   HS_S1="$(hs_uuid)"; HS_S2="$(hs_uuid)"; u1="$(hs_uuid)"; a1="$(hs_uuid)"; t1="$(hs_uuid)"; r1="$(hs_uuid)"; a2="$(hs_uuid)"; v1="$(hs_uuid)"; w1="$(hs_uuid)"
   u0="$(hs_uuid)"; a0="$(hs_uuid)"; b0="$(hs_uuid)"; m0="$(hs_uuid)"; f1="$(hs_uuid)"; h1="$(hs_uuid)"; t2="$(hs_uuid)"; r2="$(hs_uuid)"; bi="$(hs_uuid)"; bo="$(hs_uuid)"
+  tm="$(hs_uuid)"; hk="$(hs_uuid)"
   HS_ID="$HS_S1"
   # (its history as Claude Code writes it: a compaction (boundary, summary), the prompt to remember, a thinking block,
   # a Bash call whose output holds the third fake secret, a file attached and a hook's output after it, an MCP call
-  # with its structured result, the answer, then a `!ls` of yours — the allowlist keeps your words, Claude's and the
+  # with its structured result, the answer, a teammate's message and a hook's (a reminder in your prompt too), then a
+  # `!ls` of yours — the allowlist keeps your words, Claude's and the
   # calls, and puts one line in place of every output; the Haiku resume below runs on exactly that)
   hs_asst() { printf '"type":"assistant","requestId":"%s","message":{"id":"%s","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[%s],"stop_reason":%s,"usage":{"input_tokens":20,"output_tokens":10}}' "$1" "$2" "$3" "$4"; }
   # (a block's JSON in a variable of its own: in a quoted argument inside $( ), braces and commas would be expanded)
@@ -928,7 +930,7 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
     hs_line "\"parentUuid\":\"$u0\",$(hs_asst req_e2e0 msg_e2e0 '{"type":"text","text":"Sure."}' '"end_turn"'),\"uuid\":\"$a0\"" 1 2
     hs_line "\"parentUuid\":null,\"logicalParentUuid\":\"$a0\",\"type\":\"system\",\"subtype\":\"compact_boundary\",\"content\":\"Conversation compacted\",\"isMeta\":false,\"level\":\"info\",\"compactMetadata\":{\"trigger\":\"manual\",\"preTokens\":120},\"uuid\":\"$b0\"" 1 3
     hs_line "\"parentUuid\":\"$b0\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"This session is being continued from a previous conversation that ran out of context. Summary: the user said hello and Claude agreed to start.\"},\"isCompactSummary\":true,\"isVisibleInTranscriptOnly\":true,\"uuid\":\"$m0\"" 1 4
-    hs_line "\"parentUuid\":\"$m0\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Remember the word PELICAN for later. My key is $HS_KEY.\"},\"uuid\":\"$u1\"" 1 5
+    hs_line "\"parentUuid\":\"$m0\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Remember the word PELICAN for later. My key is $HS_KEY.\\n<system-reminder>a reminder that quotes $HS_OUT</system-reminder>\"},\"uuid\":\"$u1\"" 1 5
     hs_line "\"parentUuid\":\"$u1\",$(hs_asst req_e2e1 msg_e2e1 "$hs_think" null),\"uuid\":\"$a1\"" 1 6
     hs_line "\"parentUuid\":\"$a1\",$(hs_asst req_e2e1 msg_e2e1 '{"type":"tool_use","id":"toolu_e2e_env1","name":"Bash","input":{"command":"cat .env"}}' '"tool_use"'),\"uuid\":\"$t1\"" 1 7
     hs_line "\"parentUuid\":\"$t1\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_e2e_env1\",\"type\":\"tool_result\",\"content\":\"DEPLOY_TOKEN=$HS_OUT\"}]},\"toolUseResult\":{\"stdout\":\"DEPLOY_TOKEN=$HS_OUT\",\"stderr\":\"\",\"interrupted\":false},\"uuid\":\"$r1\"" 1 8
@@ -937,8 +939,10 @@ elif [ "$HOST_SESSIONS" = 1 ]; then
     hs_line "\"parentUuid\":\"$h1\",$(hs_asst req_e2e2 msg_e2e2 '{"type":"tool_use","id":"toolu_e2e_mcp1","name":"mcp__e2e__lookup","input":{"q":"deploy"}}' '"tool_use"'),\"uuid\":\"$t2\"" 3 2
     hs_line "\"parentUuid\":\"$t2\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_e2e_mcp1\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"deploy uses $HS_OUT\"}]}]},\"mcpMeta\":{\"structuredContent\":{\"token\":\"$HS_OUT\"},\"_meta\":{\"claude/kept\":1}},\"uuid\":\"$r2\"" 3 3
     hs_line "\"parentUuid\":\"$r2\",$(hs_asst req_e2e3 msg_e2e3 '{"type":"text","text":"OK, I will remember it."}' '"end_turn"'),\"uuid\":\"$a2\"" 3 4
-    hs_line "\"parentUuid\":\"$a2\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<bash-input>cat .env</bash-input>\"},\"uuid\":\"$bi\"" 3 5
-    hs_line "\"parentUuid\":\"$bi\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<bash-stdout>DEPLOY_TOKEN=$HS_OUT</bash-stdout><bash-stderr></bash-stderr>\"},\"uuid\":\"$bo\"" 3 6
+    hs_line "\"parentUuid\":\"$a2\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<teammate-message teammate_id=\\\"lead\\\">the lead says $HS_OUT</teammate-message>\"},\"uuid\":\"$tm\"" 3 5
+    hs_line "\"parentUuid\":\"$tm\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<user-prompt-submit-hook>a hook printed $HS_OUT</user-prompt-submit-hook>\"},\"uuid\":\"$hk\"" 3 6
+    hs_line "\"parentUuid\":\"$hk\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<bash-input>cat .env</bash-input>\"},\"uuid\":\"$bi\"" 3 7
+    hs_line "\"parentUuid\":\"$bi\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<bash-stdout>DEPLOY_TOKEN=$HS_OUT</bash-stdout><bash-stderr></bash-stderr>\"},\"uuid\":\"$bo\"" 3 8
     printf '{"type":"custom-title","customTitle":"e2e remember a word","sessionId":"%s"}\n' "$HS_S1"; } > "$cc/$HS_S1.jsonl"
   mkdir -p "$cc/$HS_S1/subagents"
   HS_ID="$HS_S1" hs_line "\"parentUuid\":null,\"isSidechain\":true,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"GH_TOKEN=$HS_TOKEN gh pr list\"},\"uuid\":\"$(hs_uuid)\"" 1 4 > "$cc/$HS_S1/subagents/agent-e2e.jsonl"

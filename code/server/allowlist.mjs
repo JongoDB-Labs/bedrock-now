@@ -55,21 +55,60 @@ const ENTRY_KEYS = ['type', 'subtype', 'uuid', 'parentUuid', 'logicalParentUuid'
 const primitive = (v) => (v === null || typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)) ? v : undefined);
 const base = (e) => pick(e, ENTRY_KEYS.map((k) => [k, primitive]));
 
-// the tags whose bodies are a command's or a task's output, in text you typed: their bodies left out, the tags kept
-const OUTPUT_TAGS = ['bash-stdout', 'bash-stderr', 'local-command-stdout', 'local-command-stderr', 'event', 'result'];
-/** stripTags(s, left) -> s with each output tag's body replaced by left(body) — by hand, each character looked at a
- *  bounded number of times: an opening tag found, then its closing tag (none: the body runs to the end, fail closed) */
+// What counts as typed by you — by allowlist too: Claude Code wraps what it adds to a user's turn in tags of its own
+// (<system-reminder>, a hook's <user-prompt-submit-hook>, <teammate-message>, <task-notification>, a channel's or a
+// peer session's message, a fetched page …; the list grows), so a text that starts with such a tag is not yours —
+// unless it is one of the few that record what you did: <bash-input> (your ! command) and <command-name>,
+// <command-message>, <command-args> (your slash command). Any other such text becomes the one line; a command's output
+// (<bash-stdout>, <bash-stderr>, <local-command-stdout>, <local-command-stderr>) keeps its opening tag, all after it the
+// line. In text that is yours, every <system-reminder> and <user-prompt-submit-hook> block is left out wherever it is,
+// and an output tag's body runs to the LAST closing tag of its kind (none: to the end) — fail closed.
+const WRAPPER = /^\s*<([a-z][a-z0-9-]*)[\s>]/;
+const OWNER_TAGS = new Set(['bash-input', 'command-name', 'command-message', 'command-args']);
+const OUTPUT_START = new Set(['bash-stdout', 'bash-stderr', 'local-command-stdout', 'local-command-stderr']);
+// (with the outputs asked for: these are outputs — kept as they are; any other wrapper is still not yours)
+const OUTPUT_WRAPPERS = new Set([...OUTPUT_START, 'task-notification', 'user-prompt-submit-hook']);
+const OUTPUT_TAGS = ['bash-stdout', 'bash-stderr', 'local-command-stdout', 'local-command-stderr', 'event', 'result', 'output'];
+const BLOCK_TAGS = ['system-reminder', 'user-prompt-submit-hook'];
+// (an opening tag at i: <tag> or <tag attr…> — its end, or -1)
+const openingAt = (s, i, tag) => {
+  if (!s.startsWith(`<${tag}`, i)) return -1;
+  const c = s[i + tag.length + 1];
+  if (c === '>') return i + tag.length + 2;
+  if (c === undefined || !/\s/.test(c)) return -1;
+  const gt = s.indexOf('>', i);
+  return gt < 0 ? s.length : gt + 1;
+};
+/** stripTags(s, left) -> s with each output tag's body replaced by left(body): from its opening tag to the LAST closing
+ *  tag of its kind (none: to the end) — by hand, each kind looked for a bounded number of times */
 export function stripTags(s, left) {
   if (typeof s !== 'string' || s.indexOf('<') < 0) return s;
   let out = '', at = 0;
   for (let i = s.indexOf('<'); i >= 0 && i < s.length; i = s.indexOf('<', i)) {
-    const tag = OUTPUT_TAGS.find((t) => s.startsWith(`<${t}>`, i));
+    let tag = null, open = -1;
+    for (const t of OUTPUT_TAGS) { const o = openingAt(s, i, t); if (o >= 0) { tag = t; open = o; break; } }
     if (!tag) { i++; continue; }
-    const open = i + tag.length + 2;
-    const close = s.indexOf(`</${tag}>`, open);
-    const end = close < 0 ? s.length : close;
+    const close = s.lastIndexOf(`</${tag}>`);
+    const end = close >= open ? close : s.length;
     if (end > open) { out += s.slice(at, open) + left(s.slice(open, end)); at = end; }
-    i = close < 0 ? s.length : close + tag.length + 3;
+    i = end >= s.length ? s.length : end + tag.length + 3;
+  }
+  return out + s.slice(at);
+}
+/** stripBlocks(s, left, keep) -> s with every <system-reminder> and <user-prompt-submit-hook> block (its tags too)
+ *  replaced by left(block): to its first closing tag (none: to the end); keep(tag): a kind kept as it is */
+export function stripBlocks(s, left, keep = () => false) {
+  if (typeof s !== 'string' || s.indexOf('<') < 0) return s;
+  let out = '', at = 0;
+  for (let i = s.indexOf('<'); i >= 0 && i < s.length; i = s.indexOf('<', i)) {
+    let tag = null, open = -1;
+    for (const t of BLOCK_TAGS) { const o = openingAt(s, i, t); if (o >= 0) { tag = t; open = o; break; } }
+    if (!tag || keep(tag)) { i = tag ? open : i + 1; continue; }
+    const close = s.indexOf(`</${tag}>`, open);
+    const end = close < 0 ? s.length : close + tag.length + 3;
+    out += s.slice(at, i) + left(s.slice(i, end));
+    at = end;
+    i = end;
   }
   return out + s.slice(at);
 }
@@ -89,7 +128,18 @@ export function rebuild(entries, { outputs = false } = {}) {
   const line = (v) => { const b = sizeOf(v); left++; bytes += b; return outputLeft(b); };
   // (a tag's body: counted in the bytes, not as one more thing left out)
   const body = (v) => { const b = sizeOf(v); bytes += b; return outputLeft(b); };
-  const typed = (s) => (outputs ? s : stripTags(s, body));
+  // (text in a user's turn: yours, or Claude Code's — by the rules above)
+  const typed = (s) => {
+    if (typeof s !== 'string') return '';
+    const w = WRAPPER.exec(s);
+    if (w && !OWNER_TAGS.has(w[1])) {
+      if (outputs && OUTPUT_WRAPPERS.has(w[1])) return s;
+      if (OUTPUT_START.has(w[1])) { const o = openingAt(s, s.indexOf('<'), w[1]); return `${s.slice(0, o)}${line(s.slice(o))}</${w[1]}>`; }
+      return line(s);
+    }
+    const t = stripBlocks(s, line, (tag) => outputs && tag === 'user-prompt-submit-hook');
+    return outputs ? t : stripTags(t, body);
+  };
 
   // a tool result's content: one line (ToolSearch's tool references kept beside it) — or, asked for, its blocks
   const resultContent = (c) => {
@@ -118,11 +168,15 @@ export function rebuild(entries, { outputs = false } = {}) {
   const user = (e) => {
     const m = e.message;
     if (!isObj(m)) return null;
+    // (a user-role message that came from elsewhere — a channel, a peer session, a team lead: not yours)
+    const origin = isObj(e.origin) ? e.origin : isObj(m.origin) ? m.origin : null;
+    if (origin && 'kind' in origin && origin.kind !== 'human') return null;
     const c = m.content;
     let content;
     if (e.isCompactSummary === true) {
-      // (a compaction's summary: Claude's own words — kept, scanned)
-      content = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => isObj(b) && b.type === 'text').map((b) => ({ type: 'text', text: str(b.text) ?? '' })) : null;
+      // (a compaction's summary: Claude's own words, which may quote what it saw — kept, through the same rules for tags,
+      // scanned)
+      content = typeof c === 'string' ? typed(c) : Array.isArray(c) ? c.filter((b) => isObj(b) && b.type === 'text').map((b) => ({ type: 'text', text: typed(str(b.text) ?? '') })) : null;
     } else if (e.isMeta === true && !outputs) {
       // (Claude Code's own note to the model — a skill's body, a command's expansion, a reminder: not yours)
       content = line(c);
@@ -175,6 +229,15 @@ export function rebuild(entries, { outputs = false } = {}) {
     const usage = numbers(m.usage);
     return { ...base(e), message: { ...message, role: 'assistant', content, ...(usage ? { usage } : {}) } };
   };
+  // (a compaction's metadata: its trigger and size, and the turns it kept — a partial compaction's preserved segment or
+  // messages, by their ids: checked and linked again below, to entries the copy keeps)
+  const ids = (v) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? [...v] : undefined);
+  const compactMeta = (cm) => {
+    const r = pick(cm, [['trigger', str], ['preTokens', num]]);
+    if (isObj(cm.preservedSegment)) r.preservedSegment = pick(cm.preservedSegment, [['headUuid', str], ['anchorUuid', str], ['tailUuid', str]]);
+    if (isObj(cm.preservedMessages)) r.preservedMessages = pick(cm.preservedMessages, [['uuids', ids], ['anchorUuid', str], ['allUuids', ids]]);
+    return r;
+  };
   const fileContent = (c) => {
     const f = isObj(c) && isObj(c.file) ? c.file : {};
     return { type: 'text', file: { filePath: str(f.filePath) ?? '', content: line(c), ...pick(f, [['numLines', num], ['startLine', num], ['totalLines', num]]) } };
@@ -208,13 +271,15 @@ export function rebuild(entries, { outputs = false } = {}) {
   };
   const entry = (e) => {
     if (!isObj(e)) return null;
+    // (a team's entry — another agent's, with its teamName: not this session's own)
+    if (e.teamName !== undefined) return null;
     switch (e.type) {
       case 'user': return user(e);
       case 'assistant': return assistant(e);
       case 'attachment': { const a = attachment(e.attachment); return a ? { ...base(e), attachment: a } : null; }
       case 'system':
         if (e.subtype === 'compact_boundary') {
-          return { ...base(e), content: typeof e.content === 'string' ? e.content : '', ...(isObj(e.compactMetadata) ? { compactMetadata: pick(e.compactMetadata, [['trigger', str], ['preTokens', num]]) } : {}) };
+          return { ...base(e), content: typeof e.content === 'string' ? e.content : '', ...(isObj(e.compactMetadata) ? { compactMetadata: compactMeta(e.compactMetadata) } : {}) };
         }
         if (e.subtype === 'local_command') return { ...base(e), content: outputs ? (str(e.content) ?? '') : line(e.content) };
         return null;
@@ -225,14 +290,24 @@ export function rebuild(entries, { outputs = false } = {}) {
   };
 
   const gone = new Map();   // uuid of a dropped entry -> its parentUuid
-  const kept = [];
+  const drop = (e) => { if (isObj(e) && typeof e.uuid === 'string') gone.set(e.uuid, typeof e.parentUuid === 'string' ? e.parentUuid : null); };
+  let kept = [];
   for (const e of entries) {
     const r = entry(e);
-    if (r) { kept.push(r); continue; }
-    if (isObj(e) && typeof e.uuid === 'string') gone.set(e.uuid, typeof e.parentUuid === 'string' ? e.parentUuid : null);
+    if (r) kept.push(r); else drop(e);
   }
+  // (a server or MCP tool's call whose result was not kept — a kind of result not known — goes too: a call with no
+  // result would be refused on resume; an entry left with nothing is dropped)
+  const results = new Set();
+  for (const e of kept) if (e.type === 'assistant') for (const b of e.message.content) if (typeof b.tool_use_id === 'string') results.add(b.tool_use_id);
+  kept = kept.filter((e) => {
+    if (e.type !== 'assistant' || !e.message.content.some((b) => (b.type === 'server_tool_use' || b.type === 'mcp_tool_use') && !results.has(b.id))) return true;
+    e.message.content = e.message.content.filter((b) => !((b.type === 'server_tool_use' || b.type === 'mcp_tool_use') && !results.has(b.id)));
+    if (e.message.content.length) return true;
+    drop(e);
+    return false;
+  });
   const dropped = entries.length - kept.length;
-  if (!gone.size) return { entries: kept, left, bytes, dropped };
   // (what pointed to a dropped entry points to its nearest kept ancestor — each chain walked once: remembered)
   const up = (u) => {
     const path = [];
@@ -241,9 +316,26 @@ export function rebuild(entries, { outputs = false } = {}) {
     for (const p of path) gone.set(p, v);
     return v;
   };
+  const here = new Set(kept.map((e) => e.uuid).filter((u) => typeof u === 'string'));
   const relinked = kept.map((e) => {
     const r = { ...e };
     for (const k of ['parentUuid', 'logicalParentUuid', 'leafUuid']) if (typeof e[k] === 'string' && gone.has(e[k])) r[k] = up(e[k]);
+    const cm = r.compactMetadata;
+    if (cm) {
+      const c = { ...cm };
+      if (cm.preservedSegment) {
+        const seg = Object.fromEntries(Object.entries(cm.preservedSegment).map(([k, v]) => [k, gone.has(v) ? up(v) : v]));
+        if (['headUuid', 'anchorUuid', 'tailUuid'].every((k) => here.has(seg[k]))) c.preservedSegment = seg; else delete c.preservedSegment;
+      }
+      if (cm.preservedMessages) {
+        const pm = { ...cm.preservedMessages };
+        if (pm.uuids) pm.uuids = pm.uuids.filter((u) => here.has(u));
+        if (pm.allUuids) pm.allUuids = pm.allUuids.filter((u) => here.has(u));
+        if (typeof pm.anchorUuid === 'string' && gone.has(pm.anchorUuid)) pm.anchorUuid = up(pm.anchorUuid);
+        if (pm.uuids?.length && here.has(pm.anchorUuid)) c.preservedMessages = pm; else delete c.preservedMessages;
+      }
+      r.compactMetadata = c;
+    }
     return r;
   });
   return { entries: relinked, left, bytes, dropped };

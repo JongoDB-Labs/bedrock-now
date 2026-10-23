@@ -59,7 +59,8 @@ export function dropThinking(entries, which = () => true) {
   const relinked = out.map((e) => {
     const p = typeof e.parentUuid === 'string' && gone.has(e.parentUuid) ? { parentUuid: up(e.parentUuid) } : {};
     const l = typeof e.logicalParentUuid === 'string' && gone.has(e.logicalParentUuid) ? { logicalParentUuid: up(e.logicalParentUuid) } : {};
-    return Object.keys(p).length || Object.keys(l).length ? { ...e, ...p, ...l } : e;
+    const f = typeof e.leafUuid === 'string' && gone.has(e.leafUuid) ? { leafUuid: up(e.leafUuid) } : {};
+    return Object.keys(p).length || Object.keys(l).length || Object.keys(f).length ? { ...e, ...p, ...l, ...f } : e;
   });
   return { entries: relinked, blocks, dropped: gone.size };
 }

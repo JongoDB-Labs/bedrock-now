@@ -26,6 +26,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { redactText } from '../secrets.mjs';
+import { stripBlocks, stripTags } from '../allowlist.mjs';
 
 export const TOOLS = Object.freeze(['claude', 'claude-bedrock']);
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -137,10 +138,16 @@ function parse(buf, { skipFirst = false } = {}) {
 }
 const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? ((c.find((b) => b && b.type === 'text' && typeof b.text === 'string') || {}).text || '') : '');
 // a prompt you typed (not a tool's result, not a command's output, not a reminder Claude Code put there)
+// (a prompt of yours, by the import's own rules (allowlist.mjs): not a note of Claude Code's, not a message from elsewhere
+// — another origin, a team's —, not a text that starts with a tag; a reminder or a hook's block in it, and an output
+// tag's body, left out)
 const humanPrompt = (e) => {
-  if (e.type !== 'user' || e.isMeta || e.isSidechain || !e.message) return '';
+  if (e.type !== 'user' || e.isMeta || e.isSidechain || !e.message || e.teamName !== undefined) return '';
+  const o = e.origin ?? e.message.origin;
+  if (o && typeof o === 'object' && 'kind' in o && o.kind !== 'human') return '';
   const t = textOf(e.message.content);
-  return typeof t === 'string' && t && !t.trimStart().startsWith('<') ? t : '';
+  if (typeof t !== 'string' || !t || t.trimStart().startsWith('<')) return '';
+  return stripTags(stripBlocks(t, () => '…'), () => '…');
 };
 // cwdOf(entries) -> the working folder the transcript records first (a string), else null
 const cwdOf = (list) => { for (const e of list) if (typeof e.cwd === 'string') return e.cwd; return null; };

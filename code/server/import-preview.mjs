@@ -1,7 +1,9 @@
-// The Import sheet's transcript: the entries a copy would write, as the page's history events — every one of them,
-// so nothing goes along unseen: your prompts and Claude's words as the history shows them (normalize.mjs), and what the
-// history leaves out — an attachment, Claude Code's own note to the model, a local command's output, a compaction's
-// boundary and summary — as a line of its own ("local"), saying what it is and what of it is copied.
+// The Import sheet's transcript: the entries a copy would write, as the page's history events — your prompts and
+// Claude's words as the history shows them (normalize.mjs), and what the history leaves out — an attachment, Claude
+// Code's own note to the model, a local command's output, a compaction's boundary and summary — as a line of its own
+// ("local"), saying what it is and what of it is copied. Copied but not shown here (the sheet says so): the entries
+// before the last 300 (import-plan.mjs), what is past 600 characters of such a line, the subagents' transcripts and
+// their meta, the custom title, a compaction marker's own words, Claude Code's own metadata (claude/* of an MCP result).
 import { fromHistory } from './normalize.mjs';
 
 const MAX = 600;
@@ -14,7 +16,7 @@ export function previewEvents(entries) {
   const out = [];
   for (const e of entries) {
     if (!e || typeof e !== 'object') continue;
-    if (e.type === 'user' && e.isCompactSummary === true) { out.push(local(`Compaction summary (Claude's words): ${text(e.message?.content)}`)); continue; }
+    if (e.type === 'user' && e.isCompactSummary === true) { out.push(local(`Compaction summary (written by Claude; it may quote command output — scanned, a best effort): ${text(e.message?.content)}`)); continue; }
     if (e.type === 'user' && e.isMeta === true) { out.push(local(`Claude Code's note to the model: ${text(e.message?.content)}`)); continue; }
     if (e.type === 'user' || e.type === 'assistant') { out.push(...fromHistory(e)); continue; }
     if (e.type === 'attachment' && e.attachment && typeof e.attachment === 'object') {

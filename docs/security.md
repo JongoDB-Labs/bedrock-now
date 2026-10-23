@@ -2725,11 +2725,20 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   effort, and what a session's tools gave back is where its secrets mostly are; so the exposure is bounded by
   structure, not by the scan, and by what is kept, not by what is known to be left out (code/server/allowlist.mjs):
   every entry of every transcript of a copy (the session's and its subagents') is rebuilt from a fixed set of shapes
-  known to be safe and needed to resume, and nothing else of it goes along. **Copied by default:** what you typed (the
-  bodies of `<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>` and a task notification's `<event>` and
-  `<result>` left out, the tags kept), Claude's text, its thinking (by the rules below), its tool calls (the tool, the
+  known to be safe and needed to resume, and nothing else of it goes along. **Copied by default:** what you typed — by allowlist
+  too: a text that starts with a tag of Claude Code's own (`<system-reminder>`, a hook's `<user-prompt-submit-hook>`,
+  `<teammate-message>`, `<task-notification>`, a channel's, a peer session's or an agent's message, a fetched page,
+  any tag a newer version adds, with attributes or not) is not yours and becomes the one line, unless it is
+  `<bash-input>` (your `!` command) or `<command-name>`/`<command-message>`/`<command-args>` (your slash command); a
+  command's output that starts a message (`<bash-stdout>` …) keeps its opening tag, everything after it the line; in
+  your own text every `<system-reminder>` and `<user-prompt-submit-hook>` block is left out, and an output tag's body
+  (`<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>`, a task's `<event>`, `<result>`, `<output>`) runs to
+  the last closing tag of its kind; a user message whose `origin` is not `human` (a channel, a peer session, a team
+  lead) and any entry of a team (`teamName`) are dropped; the list's first prompt follows the same rules — Claude's text, its thinking (by the rules below), its tool calls (the tool, the
   call's id and input), ToolSearch's tool references (so deferred tools load on resume), compaction summaries (Claude's
-  own words), the custom title, and the entry fields the CLI reads (type, ids and links, times, folder, branch,
+  own words, which may quote command output: through the same rules for tags, and scanned), a partial compaction's
+  preserved turns (its `preservedSegment` and `preservedMessages`, their ids checked against the entries the copy
+  keeps), the custom title, and the entry fields the CLI reads (type, ids and links, times, folder, branch,
   version, model, the usage numbers) — all of it scanned. **Replaced by one fixed line** (`[tool output left out by
   bedrock-now — 12.3 KB; re-import with "Include tool outputs" to bring it]`), in the shape the CLI expects there: a
   tool result's content and a tool's structured result (`toolUseResult`); a file or folder Claude Code attached — it
@@ -2745,7 +2754,10 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   stays behind. Every tool call keeps its result (its id, `is_error`), so the session resumes — checked through the
   Agent SDK's own reading and fork, and resumed on Haiku in the end-to-end suite with attachments, a compaction, an MCP
   result, hooks and `!` command output in its history. **The preview is made from the very bytes the copy would
-  write** — every entry, attachments and notes included — never from a reading that would leave some out. Bringing
+  write** — attachments and notes included, never from a reading that would leave some out; it shows the last 300
+  entries, long lines cut, and says what is copied but not shown there (earlier entries, the subagents' transcripts
+  and their notes, the title, compaction markers, Claude Code's own `claude/*` metadata). A server tool's call whose
+  result is of a kind not kept goes with it (a call without its result would be refused on resume). Bringing
   the outputs is your choice per import — **Include tool outputs** on the sheet, `--with-tool-outputs` in a terminal,
   `"outputs":"in"` in the helper's request (a fixed field it checks again) — and then the known output fields are
   kept, scanned and redacted like the rest, while a kind of record the allowlist does not know is still dropped. From

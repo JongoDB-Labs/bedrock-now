@@ -478,6 +478,12 @@ function Staged({ project, id, tool, choice, outputs, set }: { project: string; 
             {open ? 'Hide the transcript' : `Show the transcript as it would be copied (${pv.total} messages)`}
           </button>
           {open && <Transcript events={pv.events} />}
+          {open && (
+            <p class="muted small" data-testid="import-transcript-note">
+              Shown: its last 300 entries, long lines cut. Also copied, not shown here: earlier entries, its subagents' transcripts and their notes, its title,
+              compaction markers and Claude Code's own metadata. A compaction summary is written by Claude and may quote command output: it is scanned, a best effort.
+            </p>
+          )}
         </div>
       )}
     </section>
