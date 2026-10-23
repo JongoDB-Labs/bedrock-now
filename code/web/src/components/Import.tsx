@@ -301,13 +301,16 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
   const ch = (id: string) => { const c = choices[id]; return c && c.digest === digestOf(id) ? c : fresh(id); };
   const set = (id: string, v: Partial<Choice>) => setChoices((c) => ({ ...c, [id]: { ...ch(id), ...v, digest: digestOf(id) } }));
   const todo = view.staged.filter((s) => !ch(s.id).skip);
-  const kept = todo.filter((s) => ch(s.id).keep.length > 0);
+  // (from another device, a copy with the tool outputs goes through the portal, with the password — as one that keeps a
+  // finding; and nothing of them is shown here)
+  const remoteOutputs = outputs && !view.local;
+  const kept = todo.filter((s) => ch(s.id).keep.length > 0 || remoteOutputs);
   const go = async () => {
     setBusy(true);
     const out: ImportResult[] = [];
     try {
       // (nothing kept: here, at once; some kept: through the portal and the helper, with the password, one at a time)
-      const plain = todo.filter((s) => !ch(s.id).keep.length);
+      const plain = todo.filter((s) => !kept.includes(s));
       if (plain.length) out.push(...await api.importCopy(project, plain.map((s) => ({ id: s.id, thinking: ch(s.id).thinking, outputs, digest: ch(s.id).digest }))));
       for (const s of kept) {
         const c = ch(s.id);
@@ -362,7 +365,12 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
           Include tool outputs (scanned — the scan is best effort; command output often holds secrets)
         </label>
       )}
-      {view.staged.map((s) => <Staged key={`${s.id}:${s.digest ?? ''}`} project={project} id={s.id} tool={s.tool} choice={ch(s.id)} outputs={outputs} set={(v) => set(s.id, v)} />)}
+      {remoteOutputs && (
+        <p class="small muted" data-testid="import-outputs-remote">
+          From another device the tool outputs are not shown here: they are scanned and redacted on the computer when copied, with the portal password.
+        </p>
+      )}
+      {view.staged.map((s) => <Staged key={`${s.id}:${s.digest ?? ''}`} project={project} id={s.id} tool={s.tool} choice={ch(s.id)} outputs={outputs && view.local} set={(v) => set(s.id, v)} />)}
       {view.staged.length > 0 && (
         <>
           <p class="muted small">
@@ -371,7 +379,7 @@ function CheckStep({ project, view, onCopied }: { project: string; view: ImportV
           </p>
           {kept.length > 0 && (
             <p class="small warn-text" data-testid="import-keep-note">
-              Keeping a possible secret as it is needs the portal password: the update helper on the computer makes that copy ({kept.length} session{kept.length === 1 ? '' : 's'}).
+              {remoteOutputs ? 'Bringing tool outputs from another device' : 'Keeping a possible secret as it is'} needs the portal password: the update helper on the computer makes that copy ({kept.length} session{kept.length === 1 ? '' : 's'}).
             </p>
           )}
           <div class="imp-ask">
@@ -447,11 +455,12 @@ function Staged({ project, id, tool, choice, outputs, set }: { project: string; 
               </button>
             </div>
           )}
-          {(pv.outputs.included || pv.outputs.left > 0) && (
+          {(pv.outputs.included || pv.outputs.left > 0 || pv.outputs.dropped > 0) && (
             <div class="small" data-testid="import-outputs">
               {pv.outputs.included
                 ? 'Its tool outputs come along, scanned and redacted as the rest (the scan is best effort).'
-                : `${pv.outputs.left} tool output${pv.outputs.left === 1 ? '' : 's'} (${bytes(pv.outputs.bytes)}) left out: each becomes one line saying so — the tool calls stay, and the session resumes.`}
+                : `${pv.outputs.left} tool output${pv.outputs.left === 1 ? '' : 's'} and other things Claude Code recorded (${bytes(pv.outputs.bytes)}) left out: each becomes one line saying so — what you typed, Claude's text and its tool calls stay, and the session resumes.`}
+              {pv.outputs.dropped > 0 ? ` ${pv.outputs.dropped} record${pv.outputs.dropped === 1 ? '' : 's'} of kinds the copy does not keep left out too.` : ''}
             </div>
           )}
           {pv.outside.count > 0 && (

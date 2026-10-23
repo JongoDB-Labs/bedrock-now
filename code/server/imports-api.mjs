@@ -11,12 +11,15 @@
 //   GET    /api/imports/request/<nonce>         how a request went (a copy's: its results)
 //   GET    /api/imports/preview?project=&id=&thinking=&outputs=1   a waiting session as it would be copied (and its digest;
 //                                                                   outputs=1: its tool outputs included, else left out)
-//   POST   /api/imports/copy     {project, items: [{id, thinking, outputs, digest}]}   (nothing kept: every finding redacted)
+//   POST   /api/imports/copy     {project, items: [{id, thinking, outputs, digest}]}   (nothing kept: every finding redacted;
+//                                 outputs only on the computer itself — from another device through the portal)
 //   DELETE /api/imports/staged?project=&id=     drop a waiting session
 //   GET    /api/imports/suggestions             folders your tools kept sessions for (not projects yet)
 //   POST   /api/sessions/<id>/continue  {project}  Continue in this project
 import { ImportError } from './import-sessions.mjs';
 import { preview, copy, continueIn } from './import-copy.mjs';
+
+const OUTPUTS_REMOTE = 'From another device, tool outputs come only with the portal password (the sheet asks for it), and are not shown here.';
 import { isUuid } from './validate.mjs';
 
 const NONCE = /^[0-9a-f]{32}$/;
@@ -53,6 +56,9 @@ export function makeImportsApi({ imports, call, projects, cwdFor, rootFor }) {
       }
       if (p === '/api/imports/preview' && m === 'GET') {
         const th = q.get('thinking');
+        // (tool outputs: shown and copied only on the computer itself — from another device, a copy with them needs the
+        // portal password, and nothing of them is shown here)
+        if (q.get('outputs') === '1' && remote) throw new ImportError(403, OUTPUTS_REMOTE);
         return send(200, await preview(imports, q.get('project'), q.get('id'), { thinking: th === 'keep' || th === 'strip' ? th : null, outputs: q.get('outputs') === '1' }));
       }
       if (p === '/api/imports/copy' && m === 'POST') {
@@ -61,6 +67,7 @@ export function makeImportsApi({ imports, call, projects, cwdFor, rootFor }) {
         if (!Array.isArray(b.items)) throw new ImportError(400, 'items: the sessions to copy');
         // (keeping a possible secret needs the portal password: such a copy goes through the portal and the helper)
         if (b.items.some((it) => it && (it.keep === true || (Array.isArray(it.keep) && it.keep.length)))) throw new ImportError(403, 'Keeping a possible secret needs the portal password: the sheet asks for it.');
+        if (remote && b.items.some((it) => it?.outputs === true)) throw new ImportError(403, OUTPUTS_REMOTE);
         return send(200, { results: await copy(imports, call, b.project, b.items.map((it) => ({ id: it?.id, keep: [], thinking: it?.thinking, outputs: it?.outputs === true, digest: it?.digest }))) });
       }
       if (p === '/api/imports/staged' && m === 'DELETE') return send(200, imports.drop(q.get('project'), q.get('id')));

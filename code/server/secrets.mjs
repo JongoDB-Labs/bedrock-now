@@ -84,6 +84,8 @@ function markers(text, open) {
   }
   return out.length > 1 ? out.sort((x, y) => x.at - y.at) : out;
 }
+// skipKeySpace(text, i, to) -> past the line breaks, spaces and \n escapes a key's text starts after
+const skipKeySpace = (text, i, to) => { let k = i; while (k < to && (isSpace(text.charCodeAt(k)) || (text[k] === '\\' && (text[k + 1] === 'n' || text[k + 1] === 'r')))) k += text[k] === '\\' ? 2 : 1; return k; };
 // quoteAfter(text, i) -> the first " ' or ` at or after i, or -1 (once per BEGIN with no END: there is at most one)
 const quoteAfter = (text, i) => { for (let k = i; k < text.length; k++) { const c = text.charCodeAt(k); if (c === 34 || c === 39 || c === 96) return k; } return -1; };
 function pemBlocks(text) {
@@ -98,7 +100,12 @@ function pemBlocks(text) {
     // (no END: to the end of the quoted string it is in — a key's body holds no quote mark — else of the text; an SSH2
     // key's Comment: "…" may: to the end of the text)
     let end = j < ends.length ? ends[j] : text.length;
-    if (j >= ends.length && m.pem) { const q = quoteAfter(text, m.end); if (q >= 0) end = q; }
+    if (j >= ends.length && m.pem) {
+      // (only when the key's text lies between the marker and that quote — a marker written alone in quotes, its key
+      // elsewhere, is redacted to the end of the text)
+      const q = quoteAfter(text, m.end);
+      if (q >= 0 && runEnd(text, skipKeySpace(text, m.end, q), B64) > skipKeySpace(text, m.end, q)) end = q;
+    }
     out.push({ start: m.at, end });
     after = end;
     if (end === text.length) break;
@@ -162,10 +169,11 @@ export const SECRET_NAME = new RegExp([
 const SECRET_NAMES = new RegExp(SECRET_NAME.source, 'g');
 // words that end with pass (or hold it before another word: passThrough) and are never a credential's name — when in
 // doubt a word is not here (passcode, passkey are names of secrets); and the shell's own PWD and OLDPWD, as they are
-// written whole ($PWD, ${OLDPWD}), never DB_PWD, --pwd, _PWD
+// written as the shell's ($PWD, ${OLDPWD}) or bare with a path for its value (PWD=/home/x), never DB_PWD, --pwd, _PWD,
+// nor ODBC's PWD=P; or {"Pwd": P}
 const NOT_PASS = new Set(['bypass', 'compass', 'encompass', 'trespass', 'surpass', 'overpass', 'underpass', 'passport', 'passenger', 'passive',
   'passage', 'passthrough', 'passthru', 'passable', 'passerby', 'passover', 'passion']);
-const NOT_PWD = /^\$?\{?(?:old)?pwd\}?$/i;
+const NOT_PWD = /^(?:old)?pwd$/i;
 const isLetter = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 const isUpper = (c) => c >= 65 && c <= 90, isLower = (c) => c >= 97 && c <= 122;
 // knownWord(text, at, len) -> whether this "pass" or "pwd" (at, its length) is one of the words above: the word it is in
@@ -179,8 +187,18 @@ function knownWord(text, at, len) {
     let a = at, b = at + len;
     while (a > 0 && isId(text.charCodeAt(a - 1))) a--;
     while (b < text.length && isId(text.charCodeAt(b))) b++;
-    if (text[a - 1] === '{' && text[a - 2] === '$') { a -= 2; if (text[b] === '}') b++; } else if (text[a - 1] === '$') a--;
-    return NOT_PWD.test(text.slice(a, b));
+    if (!NOT_PWD.test(text.slice(a, b))) return false;
+    // ($PWD, ${PWD}: the shell's own)
+    if (text[a - 1] === '$' || (text[a - 1] === '{' && text[a - 2] === '$')) return true;
+    // (bare: only with a path for its value — PWD=/home/x, "PWD": "~/src"; never after ; or {, nor with any other value)
+    if (a > 0 && (text[a - 1] === ';' || text[a - 1] === '{' || (QUOTE(text[a - 1]) && text[a - 2] === '{'))) return false;
+    let k = b;
+    if (QUOTE(text[k])) k++;
+    k = skipBlanks(text, k);
+    if (text[k] !== '=' && text[k] !== ':') return false;
+    k = skipBlanks(text, k + 1);
+    if (QUOTE(text[k])) k++;
+    return text[k] === '/' || text[k] === '~';
   }
   let a = at, b = at + len;
   while (a > 0 && isLetter(text.charCodeAt(a - 1)) && !(isLower(text.charCodeAt(a - 1)) && isUpper(text.charCodeAt(a)))) a--;
@@ -389,7 +407,7 @@ function assignments(text) {
     while (e < n && isId(text.charCodeAt(e))) e++;
     KEYWORD.lastIndex = e;
     // (bypass, compass, PWD …: not a secret's name — unless the name holds another: bypass_token)
-    if (knownWord(text, m.index, m[0].length) && !isSecretName(text.slice(s, e))) continue;
+    if (knownWord(text, m.index, m[0].length) && !isSecretName(text.slice(s, m.index) + text.slice(m.index + m[0].length, e))) continue;
     const tag = s > 0 && text[s - 1] === '<' && text[e] === '>';
     if (inside(cover.p, m.index) && !tag) continue;
     // (a redaction already made, [REDACTED:github-token]: its kind is no name — only a whole one, its ] there)
@@ -737,21 +755,42 @@ function commandPasswords(text) {
     while (b > a && QUOTE(text[b - 1])) b--;
     return [a, b];
   };
-  // (a command word, compared lower case without its quote marks — "mysql, sshpass': only a word of 2 to 13 characters
-  // starting with a letter or a dash can be one; any other is not even read)
+  // (a command word, compared lower case without its quote marks — "mysql, sshpass' — and a program named by its path or
+  // with .exe by its name: /opt/mssql-tools/bin/sqlcmd, ./redis-cli, sqlcmd.exe; only a name of 2 to 13 characters
+  // starting with a letter or a dash can be one)
   const w = (k) => {
     if (k >= cnt) return '';
     let a = W[2 * k], b = W[2 * k + 1];
     if (b - a < 2) return '';
     while (a < b && QUOTE(text[a])) a++;
     while (b > a && QUOTE(text[b - 1])) b--;
+    let p = b;
+    while (p > a && text[p - 1] !== '/' && text[p - 1] !== '\\') p--;
+    a = p;
+    if (b - a > 4 && text.slice(b - 4, b).toLowerCase() === '.exe') b -= 4;
     const c = text.charCodeAt(a);
     return b - a >= 2 && b - a <= 13 && (isLetter(c) || c === 45) ? text.slice(a, b).toLowerCase() : '';
   };
   // (a word as written, without its quote marks: a flag's case matters — sqlcmd's -P is its password, -p is not)
   const raw = (k) => { const [a, b] = bare(k); return { a, b, t: b - a <= 64 ? text.slice(a, b) : '' }; };
+  // (a secret set by its name and value as flags — aws ssm put-parameter --name /prod/db/password --value P, az keyvault
+  // secret set --name db-password --value P —, in either order)
+  const NAME_FLAGS = new Set(['--name', '-n', '--secret-id', '--key']), VALUE_FLAGS = new Set(['--value', '--secret-string', '--secret-value']);
   const pair = () => {
-    let ctx = '', flags = null;
+    let ctx = '', flags = null, named = false;
+    const values = [];
+    for (let k = 0; k < cnt; k++) {
+      // (only a word that can be one of those flags is read: --… or -n)
+      const f0 = QUOTE(text[W[2 * k]]) ? W[2 * k] + 1 : W[2 * k];
+      if (text[f0] === '-' && (text[f0 + 1] === '-' || (text[f0 + 1] === 'n' && W[2 * k + 1] - f0 <= 3))) {
+        const r = raw(k);
+        const eq = r.t.indexOf('=');
+        const flag = eq > 0 ? r.t.slice(0, eq) : r.t;
+        if (NAME_FLAGS.has(flag) && (eq > 0 ? isSecretName(r.t.slice(eq + 1)) : has(k + 1) && isSecretName(text.slice(...bare(k + 1))))) named = true;
+        if (VALUE_FLAGS.has(flag)) { if (eq > 0) values.push({ start: r.a + eq + 1, end: r.b }); else if (has(k + 1)) values.push(span(k + 1)); }
+      }
+    }
+    if (named) for (const v of values) add(v);
     for (let k = 0; k < cnt; k++) {
       const t = w(k);
       if (PASSWORD_FLAG.has(t)) { ctx = 'tool'; flags = PASSWORD_FLAG.get(t); continue; }
@@ -819,21 +858,38 @@ const PAIR_NAMES = ['name', 'key', 'id', 'parameterkey', 'parametername', 'optio
 const PAIR_VALUES = ['value', 'values', 'parametervalue', 'secretstring', 'secretvalue', 'optionvalue', 'stringvalue', 'plaintext'];
 const PAIR_RE = new RegExp(`[{}<"'\n\r]|/>|(?<![A-Za-z0-9_])(${[...PAIR_NAMES, ...PAIR_VALUES].map(ci).join('|')})(?![A-Za-z0-9_-])`, 'g');
 const PAIR_VALUE = new Set(PAIR_VALUES);
-// (where an unquoted name ends: a space, a comma, a closing mark, a quote)
-const NAME_END = cls(',}]>"\'');
+// (where an unquoted name ends: a space, a comma, a closing mark, a quote, = : & ;)
+const NAME_END = cls(',}]>"\'=:&;');
+// (where an unquoted value of a quoted key — JSON: "value": true — ends: , } ])
+const JSON_END = cls(',}]');
+const PAIR_DEPTH = 4096;
 function namedPairs(text) {
   const out = [];
   const n = text.length;
-  // (pending: the value fields of this item before its name — at most 64 kept apart; more: one span from the first to
-  // the last, redacted whole if the name names a secret — fail closed)
-  let secret = false, pending = [], spill = null, inDq = false, inSq = false;
-  const reset = () => { secret = false; pending = []; spill = null; };
-  // (the end of the line from p: the last one asked kept — the questions come in order)
-  let le0 = -1, le1 = -1;
-  const lineEndOf = (p) => { if (p < le0 || p > le1) { le0 = p; le1 = lineEnd(text, p); } return le1; };
-  const judge = (a, b) => { if (b > a && named(text.slice(a, b))) out.push({ start: a, end: b }); };
+  // an item's state — whether a name of it names a secret (it stays so for the whole item), and its value fields seen
+  // before such a name (pending: at most 64 kept apart; more: one span from the first to the last, redacted whole if a
+  // name names a secret — fail closed). One state per object: { keeps the one around it, } returns to it (az keyvault's
+  // "tags": {} between a name and its value ends nothing); only an item's end clears it: }, a new "- " item, a tag.
+  const fresh = () => ({ secret: false, pending: [], spill: null });
+  const outer = [];
+  let st = fresh(), inDq = false, inSq = false;
+  // (a line's end from p, and that end without its trailing blanks: the last line asked kept — questions come in order)
+  let le0 = -1, le1 = -1, lt = -1;
+  const lineEndOf = (p) => { if (p < le0 || p > le1) { le0 = p; le1 = lineEnd(text, p); lt = le1; while (lt > p && isBlank(text[lt - 1])) lt--; } return le1; };
+  const trimmedEnd = (p) => { lineEndOf(p); return Math.max(p, lt); };
+  // (a value read to its line's end and judged: one that starts inside it is in it — not judged again)
+  let span0 = -1, span1 = -1, spanFound = false;
+  const judge = (a, b, toLineEnd) => {
+    if (b <= a) return;
+    if (toLineEnd && a >= span0 && a < span1) { if (!spanFound) out.push({ start: a, end: b }); return; }
+    const found = named(text.slice(a, b));
+    if (found) out.push({ start: a, end: b });
+    if (toLineEnd) { span0 = a; span1 = b; spanFound = found; }
+  };
   // (escaped: a quote mark after an odd number of backslashes)
   const escaped = (i) => { let k = i; while (k > 0 && text.charCodeAt(k - 1) === 92) k--; return (i - k) % 2 === 1; };
+  // (the end of the last name field's value: a field named inside it is part of that name, not a field)
+  let nameEnd = -1;
   PAIR_RE.lastIndex = 0;
   for (let m; (m = PAIR_RE.exec(text)) !== null;) {
     const at = m.index, c = text[at];
@@ -843,13 +899,13 @@ function namedPairs(text) {
       if (c === '\n' || c === '\r') {
         inDq = false; inSq = false;
         const k = skipBlanks(text, at + 1);
-        if (text[k] === '-' && text[k + 1] === ' ') reset();
+        if (text[k] === '-' && text[k + 1] === ' ') st = fresh();
         continue;
       }
       if (inDq || inSq) continue;
-      reset();
-      // (a key that names a secret, opening an object: its value field is the secret)
       if (c === '{') {
+        // (a key that names a secret, opening an object: its value field is the secret — Terraform's outputs)
+        let secret = false;
         let k = at;
         while (k > 0 && isBlank(text[k - 1])) k--;
         if (text[k - 1] === ':' || text[k - 1] === '=') {
@@ -858,13 +914,22 @@ function namedPairs(text) {
           if (QUOTE(text[k - 1])) { k--; if (text[k - 1] === '\\') k--; }
           const e = k;
           while (k > 0 && isId(text.charCodeAt(k - 1))) k--;
-          if (e > k && isSecretName(text.slice(k, e))) secret = true;
+          secret = e > k && isSecretName(text.slice(k, e));
         }
+        if (outer.length < PAIR_DEPTH) { outer.push(st); st = fresh(); }
+        if (secret) st.secret = true;
+        continue;
       }
+      if (c === '}') { st = outer.length ? outer.pop() : fresh(); continue; }
+      // (a tag: <add key="…" value="…"/> is an item; < not before a letter or /, as in a<b, is none)
+      if (c === '<' && !/[A-Za-z/]/.test(text[at + 1] ?? '')) continue;
+      st = fresh();
       continue;
     }
+    if (at < nameEnd) continue;
     // a field: its name, a closing quote (\" too), blanks, then : or = (not :: or ==)
     let i = at + m[1].length;
+    const quotedKey = QUOTE(text[i]) || (text[i] === '\\' && QUOTE(text[i + 1]));
     if (text[i] === '\\' && QUOTE(text[i + 1])) i += 2; else if (QUOTE(text[i])) i++;
     i = skipBlanks(text, i);
     if (!((text[i] === ':' && text[i + 1] !== ':') || (text[i] === '=' && text[i + 1] !== '='))) continue;
@@ -872,31 +937,40 @@ function namedPairs(text) {
     let q = null, escq = false;
     if (text[v] === '\\' && QUOTE(text[v + 1])) { q = text[v + 1]; escq = true; v += 2; } else if (QUOTE(text[v])) { q = text[v]; v++; }
     const isValue = PAIR_VALUE.has(m[1].toLowerCase());
-    let end;
-    if (q) {
-      end = quotedEnd(text, v, q, escq);
-      // (the quote mark of this value is read here: the field's own marks are not ends of an item)
-    } else if (!isValue) {
+    let end, toLineEnd = false;
+    if (q) end = quotedEnd(text, v, q, escq);
+    else if (!isValue) {
       end = v;
       while (end < n && !isSpace(text.charCodeAt(end)) && !(text.charCodeAt(end) < 128 && NAME_END[text.charCodeAt(end)] === 1)) end++;
-    } else if (text[v] === '{') {
-      continue;
-    } else if ((text[v] === '|' || text[v] === '>') && lineEndOf(v + 1) === skipBlanks(text, v + 1)) {
-      const b = blockScalar(text, at, lineEndOf(v + 1));
-      if (!b) continue;
-      v = b.start; end = b.end;
-    } else {
-      end = lineEndOf(v);
+    } else if (text[v] === '{') continue;
+    else if (text[v] === '|' || text[v] === '>') {
+      // (YAML: value: | — and |-, >-, |+, |2 … — the indented lines below)
+      let k = v + 1;
+      while (k < n && /[-+0-9]/.test(text[k])) k++;
+      k = skipBlanks(text, k);
+      if (k >= n || lineBreak(text.charCodeAt(k))) {
+        const b = blockScalar(text, at, k);
+        if (!b) continue;
+        v = b.start; end = b.end;
+      } else { end = trimmedEnd(v); toLineEnd = true; }
+    } else if (quotedKey) {
+      // (JSON: "value": true, 123 — to , } ] or the line's end)
+      end = v;
+      const le = lineEndOf(v);
+      while (end < le && !(text.charCodeAt(end) < 128 && JSON_END[text.charCodeAt(end)] === 1)) end++;
       while (end > v && isBlank(text[end - 1])) end--;
-    }
+    } else { end = trimmedEnd(v); toLineEnd = true; }
     if (!isValue) {
-      const isSecret = isSecretName(text.slice(v, end));
-      if (isSecret) { for (const [a, b] of pending) judge(a, b); if (spill) out.push({ start: spill[0], end: spill[1] }); }
-      pending = []; spill = null;
-      secret = isSecret;
-    } else if (secret) judge(v, end);
-    else if (pending.length < 64) pending.push([v, end]);
-    else spill = [spill ? spill[0] : v, end];
+      nameEnd = end;
+      if (isSecretName(text.slice(v, end))) {
+        for (const [a, b, l] of st.pending) judge(a, b, l);
+        if (st.spill) out.push({ start: st.spill[0], end: st.spill[1] });
+        st.pending = []; st.spill = null;
+        st.secret = true;
+      }
+    } else if (st.secret) judge(v, end, toLineEnd);
+    else if (st.pending.length < 64) st.pending.push([v, end, toLineEnd]);
+    else st.spill = [st.spill ? st.spill[0] : v, end];
   }
   return out;
 }
@@ -1215,8 +1289,9 @@ export function processEntries(entries, { part = 'main', keep = new Set(), key =
       const o = {};
       // (keys made equal by a redaction get #2, #3 …: the next number of each, kept here — never counted up again)
       const next = new Map();
-      // (an image's or a document's base64 data: no text to scan)
-      const base64 = v.type === 'base64' && typeof v.media_type === 'string' && typeof v.data === 'string' && isBase64(v.data);
+      // (an image's or a PDF's base64 data: no text to scan — any other media type's is)
+      const base64 = v.type === 'base64' && typeof v.media_type === 'string' && (v.media_type.startsWith('image/') || v.media_type === 'application/pdf')
+        && typeof v.data === 'string' && isBase64(v.data);
       for (const [k, x] of Object.entries(v)) {
         const at = path ? `${path}.${k.slice(0, 40)}` : k.slice(0, 40);
         if (base64 && k === 'data' && typeof x === 'string') { Object.defineProperty(o, k, { value: x, enumerable: true, writable: true, configurable: true }); continue; }

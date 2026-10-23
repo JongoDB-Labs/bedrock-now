@@ -704,8 +704,9 @@ def write_sessions_request(request_dir: Path, action: str, password: str, remote
       sessions-fetch    {…,"origin","project","scan","rows"}        rows of that look read in
       sessions-suggest  {…,"origin"}                                the folders your tools kept sessions for
       sessions-copy     {…,"origin","project","session","digest","thinking","outputs","keep"}
-                                                                    a copy that keeps the findings named by keep
-                                                                    (outputs: "in" — its tool outputs too — or "out")
+                                                                    a copy that keeps the findings named by keep, or
+                                                                    brings its tool outputs ("outputs":"in", keep may
+                                                                    be empty then) — from another device, only so
     origin: remote when the portal says the request came over remote access. -> nonce"""
     if action not in SESSIONS_REQUESTS:
         raise ValueError("action not allowed")
@@ -726,7 +727,8 @@ def write_sessions_request(request_dir: Path, action: str, password: str, remote
         body.update({"project": project, "scan": scan, "rows": ",".join(str(n) for n in rows)})
     elif action == "sessions-copy":
         if not pid_ok or not isinstance(session, str) or not UUID_RE.fullmatch(session) or not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest) \
-                or thinking not in ("default", "strip", "keep") or outputs not in ("out", "in") or not isinstance(keep, list) or not 1 <= len(keep) <= SESSIONS_KEEP_MAX \
+                or thinking not in ("default", "strip", "keep") or outputs not in ("out", "in") or not isinstance(keep, list) \
+                or not (0 if outputs == "in" else 1) <= len(keep) <= SESSIONS_KEEP_MAX \
                 or not all(isinstance(k, str) and KEEP_RE.fullmatch(k) for k in keep) or len(set(keep)) != len(keep):
             raise ValueError("bad request")
         body.update({"project": project, "session": session, "digest": digest, "thinking": thinking, "outputs": outputs, "keep": ",".join(keep)})

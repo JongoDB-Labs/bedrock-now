@@ -622,19 +622,20 @@ sessions_copy() {
   [[ $digest =~ $hex64 ]] || _ss_fail bad-request "bad digest"
   case "$thinking" in default) ;; strip) th=--strip-thinking ;; keep) th=--keep-thinking ;; *) _ss_fail bad-request "--thinking: default, strip or keep" ;; esac
   case "$outputs" in out) ;; in) outs=--with-tool-outputs ;; *) _ss_fail bad-request "--outputs: out or in" ;; esac
-  [ -n "$keep" ] || _ss_fail bad-request "--keep: the findings to keep"
+  [ "$keep" != - ] || keep=''
+  [ -n "$keep" ] || [ "$outputs" = in ] || _ss_fail bad-request "--keep: the findings to keep"
   local IFS=,
   for t in $keep; do [[ $t =~ $tokre ]] || { IFS=$' \t\n'; _ss_fail bad-request "bad keep"; }; done
   IFS=$' \t\n'
   _ss_project "$ref"
   _ss_need_code
   _ss_tell copying
-  res="$(_ss_code copy --project "$SS_ID" --ids "$session" --digest "$digest" --keep "$keep" ${th:+"$th"} ${outs:+"$outs"} --request "${SS_REQ:-}" --tsv 2>/dev/null)" || true
+  res="$(_ss_code copy --project "$SS_ID" --ids "$session" --digest "$digest" ${keep:+--keep "$keep"} ${th:+"$th"} ${outs:+"$outs"} --request "${SS_REQ:-}" --tsv 2>/dev/null)" || true
   line="$(printf '%s\n' "$res" | grep -E "^$session"$'\t' | head -n 1)" || true
   [ -n "$line" ] || _ss_fail code "the Code page's container did not copy it"
   _ss_tell done
   case "$(printf '%s' "$line" | cut -f2)" in
-    ok) log "$SS_NAME: copied into the sandbox, the possible secrets you chose kept as they were" ;;
+    ok) log "$SS_NAME: copied into the sandbox$([ -z "$keep" ] || echo ', the possible secrets you chose kept as they were')$([ "$outputs" = in ] && echo ', its tool outputs scanned and redacted')" ;;
     *) log "$SS_NAME: not copied (the Code page says why)" ;;
   esac
 }
@@ -903,7 +904,7 @@ _ss_check_request() {
   local re_fetch="$head"',"project":"(p_[0-9a-f]{8})","scan":"([0-9a-f]{32})","rows":"([0-9]{1,5}(,[0-9]{1,5}){0,49})"\}$'
   local re_suggest="$head"'\}$'
   local tokre='(main|(subagents|tool-results)/[A-Za-z0-9][A-Za-z0-9._-]*)#[0-9a-f]{16}'
-  local re_copy="$head"',"project":"(p_[0-9a-f]{8})","session":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})","digest":"([0-9a-f]{64})","thinking":"(default|strip|keep)","outputs":"(out|in)","keep":"('"$tokre"'(,'"$tokre"')*)"\}$'
+  local re_copy="$head"',"project":"(p_[0-9a-f]{8})","session":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})","digest":"([0-9a-f]{64})","thinking":"(default|strip|keep)","outputs":"(out|in)","keep":"(('"$tokre"'(,'"$tokre"')*)?)"\}$'
   if [[ $body =~ $re_scan ]] && [ "${BASH_REMATCH[1]}" = sessions-scan ]; then
     project="${BASH_REMATCH[6]}"; tool="${BASH_REMATCH[7]}"
   elif [[ $body =~ $re_fetch ]] && [ "${BASH_REMATCH[1]}" = sessions-fetch ]; then
@@ -911,6 +912,8 @@ _ss_check_request() {
   elif [[ $body =~ $re_suggest ]] && [ "${BASH_REMATCH[1]}" = sessions-suggest ]; then :
   elif [[ $body =~ $re_copy ]] && [ "${BASH_REMATCH[1]}" = sessions-copy ]; then
     project="${BASH_REMATCH[6]}"; session="${BASH_REMATCH[7]}"; digest="${BASH_REMATCH[8]}"; thinking="${BASH_REMATCH[9]}"; outputs="${BASH_REMATCH[10]}"; keep="${BASH_REMATCH[11]}"
+    # (nothing kept: only a copy that brings the tool outputs — from another device, they come only this way)
+    if [ -z "$keep" ]; then [ "$outputs" = in ] || { echo "a copy that keeps nothing and brings no outputs is not the helper's" >&2; return 1; }; keep=-; fi
   else echo "not a valid request" >&2; return 1; fi
   action="${BASH_REMATCH[1]}"; ts="${BASH_REMATCH[2]}"; n="${BASH_REMATCH[3]}"; auth="${BASH_REMATCH[4]}"; origin="${BASH_REMATCH[5]}"
   [ "${#auth}" -le 400 ] || { echo "the password is longer than 300 bytes (the portal refuses those too)" >&2; return 1; }

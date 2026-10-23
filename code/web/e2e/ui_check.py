@@ -5137,6 +5137,7 @@ def import_sheet(browser):
     expect(page.get_by_test_id("import-outputs-include")).not_to_be_checked()
     expect(cc.get_by_test_id("import-outputs")).to_contain_text("3 tool outputs")
     expect(cc.get_by_test_id("import-outputs")).to_contain_text("left out: each becomes one line saying so")
+    expect(cc.get_by_test_id("import-outputs")).to_contain_text("2 records of kinds the copy does not keep left out too")
     expect(cc.get_by_test_id("import-left")).to_have_count(0)
     cc.get_by_test_id("import-preview-toggle").click()
     expect(cc.get_by_test_id("import-transcript")).to_contain_text("[REDACTED:aws-key-id]")

@@ -3357,8 +3357,9 @@ def host_sessions_a(ctx):
     kinds = sorted(one.get_by_test_id("import-finding").evaluate_all("(els) => els.map((e) => e.dataset.kind)"))
     expect(kinds == ["aws-key-id", "github-token"], f"the findings: {kinds}")
     see(one.get_by_test_id("import-thinking")).to_contain_text("taken out")
-    # its Bash call's output (a third fake secret in it) is left out by default: said, never scanned or shown
-    see(one.get_by_test_id("import-outputs")).to_contain_text("1 tool output")
+    # its outputs — a Bash call's, a file attached after it, a hook's, an MCP result's, a `!` command's (a third fake
+    # secret in each) — are left out by default: said, never scanned or shown
+    see(one.get_by_test_id("import-outputs")).to_contain_text(re.compile(r"[0-9]+ tool outputs? and other things Claude Code recorded"))
     see(page.get_by_test_id("import-outputs-include")).not_to_be_checked()
     text = page.get_by_test_id("import-sheet").inner_text()
     expect("characters)" in text and not re.search(r"A[K]IA[A-Z2-7]{16}|gh[p]_[A-Za-z0-9]{36}", text), "the sheet shows a length and a token's public start, never a secret")

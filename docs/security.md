@@ -2721,19 +2721,37 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   `tool-results/*`, plain names), whole, matching, and within the budget (a 160 MB tmpfs, at most 128 MiB staged).
   The stage is swept every 5 minutes: a waiting session goes an hour after it was read (or once copied or dropped); a
   read still coming in (`.<id>`) is never swept, unless it was left behind more than an hour ago.
-- [x] **Tool outputs left out by default.** A scan of text is best effort, and what a session's tools gave back —
-  command output, files read, an API's answer — is where its secrets mostly are; so the exposure is bounded by
-  structure, not by the scan. In every transcript of a copy (the session's and its subagents'), each tool result's
-  content becomes one fixed line (`[tool output left out by bedrock-now — 12.3 KB; re-import with "Include tool
-  outputs" to bring it]`), and so do a tool's structured result beside it (`toolUseResult`), a running command's
-  output in a progress entry and every large output's file (`tool-results/*`: a `.json` one stays valid JSON). The
-  result keeps its type, its `tool_use_id` and `is_error`, so every tool call still has its result and the session
-  resumes (checked through the Agent SDK's own reading and fork, and resumed on Haiku in the end-to-end suite). What
-  is copied as it was, scanned: your prompts, Claude's text, thinking (by the rules below) and the tool calls' inputs.
-  Bringing the outputs is your choice per import — **Include tool outputs** on the sheet, `--with-tool-outputs` in a
-  terminal, `"outputs":"in"` in the helper's request (a fixed field it checks again) — and then they are scanned and
-  redacted like the rest. The sheet says how many outputs were left out and their size. The redaction below is a
-  safety net, never a guarantee.
+- [x] **An imported transcript is rebuilt by allowlist; tool outputs are left out by default.** A scan of text is best
+  effort, and what a session's tools gave back is where its secrets mostly are; so the exposure is bounded by
+  structure, not by the scan, and by what is kept, not by what is known to be left out (code/server/allowlist.mjs):
+  every entry of every transcript of a copy (the session's and its subagents') is rebuilt from a fixed set of shapes
+  known to be safe and needed to resume, and nothing else of it goes along. **Copied by default:** what you typed (the
+  bodies of `<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>` and a task notification's `<event>` and
+  `<result>` left out, the tags kept), Claude's text, its thinking (by the rules below), its tool calls (the tool, the
+  call's id and input), ToolSearch's tool references (so deferred tools load on resume), compaction summaries (Claude's
+  own words), the custom title, and the entry fields the CLI reads (type, ids and links, times, folder, branch,
+  version, model, the usage numbers) — all of it scanned. **Replaced by one fixed line** (`[tool output left out by
+  bedrock-now — 12.3 KB; re-import with "Include tool outputs" to bring it]`), in the shape the CLI expects there: a
+  tool result's content and a tool's structured result (`toolUseResult`); a file or folder Claude Code attached — it
+  attaches the files it had read, whole, after every compaction —, an MCP resource, an edited file's snippet (emptied);
+  an MCP result's structured content (`mcpMeta`: dropped, only its `claude/*` metadata kept); a server tool's result
+  (web fetch, web search, code execution: the API's own "unavailable" error); a hook's output (emptied, its types
+  kept); a local command's output; a queued command; text or an image beside a tool result (Claude Code's, not
+  yours); Claude Code's own notes to the model (`isMeta`: a skill's body, a command's expansion); every large output's
+  file (`tool-results/*`: a `.json` one stays valid JSON). **Dropped:** every other kind of entry, attachment or
+  block — progress entries, file-history snapshots, queue operations, todo lists, nested `CLAUDE.md` memory, anything
+  a newer version writes — and what pointed to a dropped entry points to its nearest kept ancestor (the chain stays
+  whole); a subagent's `meta.json` keeps only its kind, description and model; any other file beside the transcript
+  stays behind. Every tool call keeps its result (its id, `is_error`), so the session resumes — checked through the
+  Agent SDK's own reading and fork, and resumed on Haiku in the end-to-end suite with attachments, a compaction, an MCP
+  result, hooks and `!` command output in its history. **The preview is made from the very bytes the copy would
+  write** — every entry, attachments and notes included — never from a reading that would leave some out. Bringing
+  the outputs is your choice per import — **Include tool outputs** on the sheet, `--with-tool-outputs` in a terminal,
+  `"outputs":"in"` in the helper's request (a fixed field it checks again) — and then the known output fields are
+  kept, scanned and redacted like the rest, while a kind of record the allowlist does not know is still dropped. From
+  another device, the outputs are never shown (a preview with them is refused) and come only through the portal with
+  its password (the update helper makes that copy), as a kept finding does. The redaction below is a safety net,
+  never a guarantee.
 - [x] **Possible secrets redacted by default, and shown.** Before anything reaches the sandbox, the code container
   scans every string of the transcript — values *and* keys, every message, the subagents' transcripts, the JSON files
   beside it and, when included, the tool outputs — for AWS key ids (even right after a letter) and secrets, Amazon Bedrock API keys,

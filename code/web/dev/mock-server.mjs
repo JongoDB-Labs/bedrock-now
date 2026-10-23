@@ -1799,7 +1799,7 @@ function importPreviewOf(r, host, thinking, outputs = false) {
   return { id: r.id, tool: r.tool, title: r.title, messages: r.messages, size: r.size, digest: r.digest, findings, findingsTotal: findings.length,
     thinking: { blocks: r.thinking ?? 0, removed: strip ? r.thinking ?? 0 : 0, left: !strip && r.thinking ? 1 : 0, strip, source: r.source }, outside: { count: r.tool === 'claude' ? 2 : 0, sample: ['/home/you/.zshrc', '/etc/hosts'] },
     bad: 0, rewritten: 0, hidden: host.startsWith('/projects/'), parts: 1, left: r.tool === 'claude' && outputs ? [{ part: 'tool-results/image.bin', why: 'not text (not UTF-8)' }] : [],
-    outputs: { included: outputs, left: outputs ? 0 : left, bytes: outputs ? 0 : left * 6144 }, format: r.format, version: r.version ?? null, again: null,
+    outputs: { included: outputs, left: outputs ? 0 : left, bytes: outputs ? 0 : left * 6144, dropped: r.tool === 'claude' ? 2 : 0 }, format: r.format, version: r.version ?? null, again: null,
     events: [{ type: 'user', text: `${r.first} — and deploy with [REDACTED:aws-key-id]`, uuid: crypto.randomUUID() }, { type: 'tool_use', id: 'toolu_01', name: 'Read', input: { file_path: `${host}/src/login.ts` } },
       { type: 'tool_result', id: 'toolu_01', text: outputs ? 'export const login = () => true;' : '[tool output left out by bedrock-now — 6.0 KB; re-import with "Include tool outputs" to bring it]', isError: false }, { type: 'text', text: HOSTILE_MODE ? hostileMarkdown().slice(0, 2000) : 'Fixed: **login** works again.', model: 'claude-sonnet-4-5' }],
     total: 4, _row: r };
@@ -1850,7 +1850,8 @@ async function bnSessions(req, res) {
   }
   if (b.action === 'sessions-copy') {
     const h = hostOf(b.project), x = h && st(b.project);
-    if (!x || !UUID.test(String(b.session)) || !/^[0-9a-f]{64}$/.test(String(b.digest)) || !Array.isArray(b.keep) || !b.keep.length || !['out', 'in'].includes(b.outputs)) return json(res, 400, { error: 'bad request' });
+    if (!x || !UUID.test(String(b.session)) || !/^[0-9a-f]{64}$/.test(String(b.digest)) || !Array.isArray(b.keep) || !['out', 'in'].includes(b.outputs)
+      || (!b.keep.length && b.outputs !== 'in')) return json(res, 400, { error: 'bad request' });
     const id = importRequest('sessions-copy', b.project, () => {
       const r = importRequests.get(id);
       r.results = [importCopyOne(h, x, { id: b.session, digest: b.digest, thinking: b.thinking === 'default' ? null : b.thinking, outputs: b.outputs === 'in' }, b.keep)];
@@ -1890,6 +1891,7 @@ async function importsApi(req, res, url, p, m) {
     if (!v) return json(res, 404, { error: 'that session is not waiting to be copied (read it again)' });
     const h = hostOf(url.searchParams.get('project'));
     const th = url.searchParams.get('thinking');
+    if (url.searchParams.get('outputs') === '1' && remote) return json(res, 403, { error: 'From another device, tool outputs come only with the portal password (the sheet asks for it), and are not shown here.' });
     const { _row, ...out } = importPreviewOf(v._row, h.root, th === 'keep' || th === 'strip' ? th : null, url.searchParams.get('outputs') === '1');
     return json(res, 200, out);
   }
@@ -1898,6 +1900,7 @@ async function importsApi(req, res, url, p, m) {
     const h = hostOf(b.project), x = h && st(b.project);
     if (!x) return json(res, 404, { error: 'no such project' });
     if ((b.items || []).some((it) => Array.isArray(it.keep) && it.keep.length)) return json(res, 403, { error: 'Keeping a possible secret needs the portal password: the sheet asks for it.' });
+    if (remote && (b.items || []).some((it) => it.outputs === true)) return json(res, 403, { error: 'From another device, tool outputs come only with the portal password (the sheet asks for it), and are not shown here.' });
     return json(res, 200, { results: (b.items || []).map((it) => importCopyOne(h, x, it, [])) });
   }
   if (p === '/api/imports/staged' && m === 'DELETE') {

@@ -334,8 +334,9 @@ export interface ImportPreview {
   hidden: boolean;
   parts: number;
   left: { part: string; why: string }[];
-  /** tool outputs: included (asked for: scanned) or left out — how many, how many bytes */
-  outputs: { included: boolean; left: number; bytes: number };
+  /** tool outputs: included (asked for: scanned) or left out — how many things, how many bytes; dropped: entries of
+   *  kinds the copy does not keep */
+  outputs: { included: boolean; left: number; bytes: number; dropped: number };
   format: string;
   version: string | null;
   again: { at: number } | null;

@@ -838,7 +838,11 @@ test('B fixes: pwd names (L2), comparisons with a quoted literal, password flags
   const hidden = (t) => { const out = redactText(t); assert.ok(!out.includes(x), `${t.slice(0, 100)} -> ${out.slice(0, 140)}`); };
   const left = (t) => assert.ok(redactText(t).includes(x), t);
   for (const k of ['MYSQL_PWD', 'db-pwd', 'PGPWD', 'db_pass', 'dbPass', 'DB_PASS', '--pass', 'Pass']) assert.ok(isSecretName(k), k);
-  for (const k of ['PWD', 'OLDPWD', 'bypass', 'compass', 'passport', 'Passenger', 'PASSPORT', 'BYPASS', 'passive']) assert.ok(!isSecretName(k), k);
+  for (const k of ['bypass', 'compass', 'passport', 'Passenger', 'PASSPORT', 'BYPASS', 'passive']) assert.ok(!isSecretName(k), k);
+  // (PWD: a key of its own is a secret's name — {"Pwd": P}, ODBC's PWD=P; — but not the shell's $PWD, nor PWD=/a/path)
+  assert.ok(isSecretName('PWD') && isSecretName('Pwd'));
+  for (const t of [`PWD=${x};`, `Server=db;UID=sa;PWD=${x};`, `{"Pwd":"${x}"}`, `{ PWD: ${x} }`]) hidden(t);
+  for (const t of [`cd $PWD && ls ${x}`, `echo \${PWD}/${x}`, `PWD=/home/me ${x}`, `"OLDPWD": "~/src", "x": "${x}"`]) left(t);
   hidden(`MYSQL_PWD=${x}`); hidden(`export PGPWD=${x}`); hidden(`db_pass: ${x}`); hidden(`--pass ${x}`);
   left(`bypass: ${x}`); left(`compass=${x}`); left(`passport_number: ${x}`); left(`cd $PWD ${x}`);
   // comparisons
@@ -920,38 +924,85 @@ test('"pass" and "pwd" names: wherever a word of the name ends with them, but th
   }
   // (short values: a long random one after NAME= is an .env line's finding whatever the name)
   const y = `Zq${rand(8)}`;
-  for (const t of [`bypass: ${y}`, `passport_id: ${y}`, `surpassedThreshold=${y}`, `compass=${y}`, `BYPASS=${y}`, `bypassMode: ${y}`, `passThrough=${y}`, `trespass: ${y}`, `cd $PWD ${y}`, `OLDPWD=x${y}`, `echo \${PWD} ${y}`, `PWD=/x${y}`]) {
+  for (const t of [`bypass: ${y}`, `passport_id: ${y}`, `surpassedThreshold=${y}`, `compass=${y}`, `BYPASS=${y}`, `bypassMode: ${y}`, `passThrough=${y}`, `trespass: ${y}`, `cd $PWD ${y}`, `OLDPWD=/x${y}`, `echo \${PWD} ${y}`, `PWD=/x${y}`]) {
     assert.ok(redactText(t).includes(y), t);
   }
 });
 
-test('tool outputs left out: each result one line with its size; its call, its id, is_error kept; toolUseResult, progress output too; the input unchanged', async () => {
-  const { leaveOutputs, outputLeft, sizeLabel } = await import('../server/transcript.mjs');
+test('the allowlist alone: a tool result one line with its size, its call, its id, is_error kept; an unknown entry dropped and its child linked to its parent; the input unchanged', async () => {
+  const { outputLeft, sizeLabel } = await import('../server/transcript.mjs');
+  const { rebuild, stripTags } = await import('../server/allowlist.mjs');
   const key = fake.awsKeyId();
   const e = [
-    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'cat .env' } }] } },
-    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: `KEY=${key}\n` }] },
-      toolUseResult: { stdout: `KEY=${key}\n`, stderr: '', interrupted: false } },
-    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_2', is_error: true, content: [{ type: 'text', text: `no: ${key}` }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBOR' } }] }] } },
-    { type: 'progress', data: { type: 'bash_progress', output: `partial ${key}`, fullOutput: `all ${key}`, elapsedTimeSeconds: 2 } },
-    { type: 'progress', data: { type: 'agent_progress', message: { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_9', content: `sub ${key}` }] } } } },
-    { type: 'user', message: { role: 'user', content: `my prompt holds ${key}` } },
+    { type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'look' } },
+    { type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'cat .env' } }] } },
+    { type: 'user', uuid: 'r1', parentUuid: 'a1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: true, content: `KEY=${key}\n` }] },
+      toolUseResult: { stdout: `KEY=${key}\n` } },
+    { type: 'progress', uuid: 'p1', parentUuid: 'r1', data: { type: 'bash_progress', output: `partial ${key}` } },
+    { type: 'not-yet-written', uuid: 'f1', parentUuid: 'p1', x: key },
+    { type: 'user', uuid: 'u2', parentUuid: 'f1', message: { role: 'user', content: `my prompt holds ${key}` } },
   ];
   const before = JSON.stringify(e);
-  const r = leaveOutputs(e);
+  const r = rebuild(e);
   assert.equal(JSON.stringify(e), before, 'the input is never changed');
-  assert.equal(r.n, 3, 'three tool results (one in a subagent\'s progress)');
-  const out = JSON.stringify(r.entries);
-  assert.equal(out.split(key).length - 1, 1, 'only the prompt still holds it');
-  assert.deepEqual(r.entries[1].message.content[0], { type: 'tool_result', tool_use_id: 'toolu_1', is_error: false, content: outputLeft(Buffer.byteLength(`KEY=${key}\n`)) });
-  assert.equal(r.entries[2].message.content[0].is_error, true);
-  assert.match(r.entries[2].message.content[0].content, /^\[tool output left out by bedrock-now — [0-9]+ bytes; re-import with "Include tool outputs" to bring it\]$/);
-  assert.match(r.entries[1].toolUseResult, /^\[tool output left out by bedrock-now/);
-  assert.match(r.entries[3].data.output, /^\[tool output left out/);
-  assert.equal(r.entries[3].data.elapsedTimeSeconds, 2);
-  assert.equal(r.entries[0].message.content[0].input.command, 'cat .env', 'tool calls stay');
-  assert.ok(r.bytes > 100);
+  assert.deepEqual([r.left, r.dropped], [1, 2]);
+  assert.equal(JSON.stringify(r.entries).split(key).length - 1, 1, 'only the prompt still holds it');
+  assert.deepEqual(r.entries[2].message.content[0], { type: 'tool_result', tool_use_id: 'toolu_1', is_error: true, content: outputLeft(Buffer.byteLength(`KEY=${key}\n`)) });
+  assert.equal(r.entries[3].parentUuid, 'r1', 'the dropped entries\' child points to their nearest kept ancestor');
   assert.deepEqual([sizeLabel(1), sizeLabel(512), sizeLabel(12_595), sizeLabel(4 << 20)], ['1 byte', '512 bytes', '12.3 KB', '4.0 MB']);
-  // (scanned after: nothing of an output is a finding)
-  assert.deepEqual(scanEntries(r.entries).map((f) => f.path), ['message.content']);
+  // (an output tag's body: left out, the tags kept; one with no end: to the end)
+  const L = (b) => `<${b.length}>`;
+  assert.equal(stripTags('a <bash-stdout>out</bash-stdout> b <event>e</event>', L), 'a <bash-stdout><3></bash-stdout> b <event><1></event>');
+  assert.equal(stripTags('x <result>no end', L), 'x <result><6>');
+  const big = '<bash-stdout>'.repeat(200000);
+  const t0 = Date.now();
+  stripTags(big, L);
+  assert.ok(Date.now() - t0 < 1000);
+});
+
+test('pairs in text, again: brace depth (M1), only an item\'s end clears it (M3), YAML |- and >- blocks, minified JSON lists linear (H2)', () => {
+  const x = `Zq${rand(14)}`;
+  const hidden = (t) => { const out = redactText(t); assert.ok(!out.includes(x), `${t.slice(0, 120)} -> ${out.slice(0, 160)}`); };
+  // (az keyvault secret show: tags {} between the name and the value; YAML's labels: {})
+  hidden(`{"attributes":{"enabled":true},"contentType":null,"id":"https://v.vault.azure.net/secrets/db-password/1","name":"db-password","tags":{},"value":"${x}"}`);
+  hidden(`- name: DB_PASSWORD\n  labels: {}\n  value: ${x}`);
+  hidden(`{"name":"API_TOKEN","meta":{"name":"other","value":"v"},"value":"${x}"}`);
+  // (a name that names a secret holds for its item: an id or another name after it does not undo it; values before it wait)
+  hidden(`{"name":"DB_PASSWORD","id":"123","value":"${x}"}`);
+  hidden(`{"value":"${x}","key":"k1","name":"API_TOKEN"}`);
+  // (YAML blocks: |-, >-, |+)
+  for (const ind of ['|-', '>-', '|+', '|2']) hidden(`- name: DB_PASSWORD\n  value: ${ind}\n    ${x}\n- name: HOST`);
+  // (another item's value is its own)
+  const pairs = (t) => KINDS.find((k) => k.kind === 'named').find(t, {});
+  assert.deepEqual(pairs(`[{"name":"DB_PASSWORD","value":"p1234567"},{"name":"HOST","value":"${x}"}]`).length, 1);
+  // linear on minified JSON lists, 1 to 8 MiB, under a second
+  for (const size of [1 << 20, 4 << 20, MAX_TEXT - 16]) {
+    const list = (unit) => `[${unit.repeat(Math.floor((size - 2) / unit.length))}]`;
+    for (const [label, text] of [['name/value', list('{"name":"x1","value":"y1"},')], ['key/value true', list('{"key":"k","value":true},')], ['name/value unquoted', list('{name:x1,value:y1},')],
+      ['secret names, unquoted values', list('{"name":"API_TOKEN","value":12345},')], ['values only', list('{"value":true},')], ['YAML one line', `value: ${'value: '.repeat(Math.floor(size / 7))}`]]) {
+      const ms = fastest(() => scan(text));
+      assert.ok(ms < 1000, `${label}, ${size >> 20} MiB: ${ms} ms`);
+    }
+  }
+});
+
+test('PWD only as the shell\'s or a path (M2); a BEGIN with no END stops at a quote only after key text (M4); base64 skipped only for images and PDFs (L4); programs by path and --name/--value (M7)', () => {
+  const x = `Zq${rand(14)}`;
+  const hidden = (t) => { const out = redactText(t); assert.ok(!out.includes(x), `${t.slice(0, 120)} -> ${out.slice(0, 160)}`); };
+  const left = (t) => assert.ok(redactText(t).includes(x), t);
+  hidden(`Driver={ODBC};Server=db;UID=sa;PWD=${x};`); hidden(`{"Pwd":"${x}"}`); hidden(`pwd: ${x}`);
+  left(`cd $PWD; echo ${x}`); left(`echo \${OLDPWD} ${x}`); left(`PWD=/home/me ${x}`);
+  // (a marker alone in quotes, its key after: to the end of the text)
+  const PK = ['PRIVATE', 'KEY'].join(' ');
+  const out = redactText(`const begin = "-----BEGIN RSA ${PK}-----"; const body = "MIIE${x}";`);
+  assert.ok(!out.includes(x), out);
+  // (base64 of another media type is scanned)
+  const tok = fake.github();
+  const data = Buffer.from(`token ${tok}`).toString('base64');
+  assert.deepEqual(scanEntries([{ type: 'user', message: { content: [{ type: 'document', source: { type: 'base64', media_type: 'text/plain', data: tok } }] } }]).map((f) => f.kind), ['github-token']);
+  assert.deepEqual(scanEntries([{ type: 'user', message: { content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }] } }]), []);
+  for (const t of [`/opt/mssql-tools18/bin/sqlcmd -S h -U sa -P ${x}`, `./redis-cli -a ${x} ping`, `sqlcmd.exe -P ${x}`, `C:\\tools\\sqlcmd.exe -P ${x}`,
+    `aws ssm put-parameter --name /prod/db/password --value ${x} --type SecureString`, `az keyvault secret set --value ${x} --name db-password --vault-name v`,
+    `gcloud x --name=api_token --value=${x}`]) hidden(t);
+  left(`aws ssm put-parameter --name /prod/db/host --value ${x}`);
 });

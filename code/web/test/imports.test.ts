@@ -49,10 +49,10 @@ test('a preview: findings by their own ids, their words as text; events through 
   assert.deepEqual(pv.events.map((e) => e.kind), ['user', 'text']);
   assert.deepEqual(pv.left, [{ part: 'tool-results/a.bin', why: 'not text (not UTF-8)' }]);
   // (tool outputs: left out unless asked — the answer's counts, numbers only; asked for with outputs=1)
-  assert.deepEqual(pv.outputs, { included: false, left: 0, bytes: 0 });
+  assert.deepEqual(pv.outputs, { included: false, left: 0, bytes: 0, dropped: 0 });
   assert.equal(sent.at(-1)?.url.includes('outputs='), false);
   answer({ tool: 'claude', outputs: { included: 'yes', left: '3; rm', bytes: -1 } });
-  assert.deepEqual((await importPreview(P, S)).outputs, { included: false, left: 0, bytes: 0 });
+  assert.deepEqual((await importPreview(P, S)).outputs, { included: false, left: 0, bytes: 0, dropped: 0 });
   answer({ tool: 'claude', outputs: { included: true, left: 0, bytes: 0 } });
   assert.equal((await importPreview(P, S, null, true)).outputs.included, true);
   assert.match(sent.at(-1)?.url ?? '', /[?&]outputs=1(&|$)/);
@@ -99,6 +99,9 @@ test('what needs the password goes to the portal on this host (/.bn/sessions): a
   await assert.rejects(importFetch(P, '../x', [1], 'pw'), /bad request/);
   await assert.rejects(importFetch(P, 'd'.repeat(32), [0], 'pw'), /pick sessions/);
   await assert.rejects(importCopyKept(P, { id: S, keep: ['x'], thinking: null, digest: 'e'.repeat(64) }, 'pw'), /nothing to keep/);
+  // (nothing kept: a copy that brings the tool outputs — from another device they come only through the portal)
+  await importCopyKept(P, { id: S, keep: [], thinking: null, outputs: true, digest: 'e'.repeat(64) }, 'pw');
+  assert.deepEqual(sent.at(-1)?.body, { action: 'sessions-copy', project: P, session: S, digest: 'e'.repeat(64), thinking: 'default', outputs: 'in', keep: [], password: 'pw' });
   await assert.rejects(importScan('ws', 'both', 'pw'), /bad project id/);
   // a request followed by its id: not heard of yet (unknown), then a copy's with its results, the sandbox's words apart
   answer({ id: 'c'.repeat(32), state: 'unknown' });

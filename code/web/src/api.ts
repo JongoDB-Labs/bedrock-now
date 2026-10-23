@@ -2254,7 +2254,7 @@ export async function importPreview(project: string, id: string, thinking: 'stri
     outside: { count: N(out?.count, 1e7) ?? 0, sample: arr(out?.sample, 30).map((p) => label(p, 300)).filter(Boolean) },
     bad: N(o.bad, 1e7) ?? 0, rewritten: N(o.rewritten, 1e9) ?? 0, hidden: o.hidden === true, parts: N(o.parts, 1e6) ?? 0,
     left: arr(o.left, 600).map(obj).filter((x): x is Obj => x !== null).map((x) => ({ part: label(x.part, 220), why: label(x.why, 120) })),
-    outputs: { included: op?.included === true, left: N(op?.left, 1e7) ?? 0, bytes: N(op?.bytes, 1e13) ?? 0 },
+    outputs: { included: op?.included === true, left: N(op?.left, 1e7) ?? 0, bytes: N(op?.bytes, 1e13) ?? 0, dropped: N(op?.dropped, 1e7) ?? 0 },
     format: label(o.format, 20), version: o.version ? label(o.version, 40) : null, again: obj(o.again) ? { at: time(obj(o.again)?.at) } : null,
     events: arr(o.events, 3000).map(normEvent).filter((e): e is Ev => e !== null), total: N(o.total, 1e7) ?? 0,
   };
@@ -2280,7 +2280,8 @@ export async function importCopy(project: string, items: { id: string; thinking:
 export async function importCopyKept(project: string, item: { id: string; keep: string[]; thinking: 'strip' | 'keep' | null; outputs?: boolean; digest: string }, password: string): Promise<string> {
   if (!isUuid(item.id) || !/^[0-9a-f]{64}$/.test(item.digest)) throw new ApiError(400, 'bad request');
   const keep = [...new Set(item.keep.filter((k) => KEEP_TOKEN.test(k)))].slice(0, 64);
-  if (!keep.length) throw new ApiError(400, 'nothing to keep');
+  // (nothing kept: only a copy that brings the tool outputs — from another device, they come only this way)
+  if (!keep.length && !item.outputs) throw new ApiError(400, 'nothing to keep');
   return askComputer({ action: 'sessions-copy', project, session: item.id.toLowerCase(), digest: item.digest, thinking: item.thinking ?? 'default', outputs: item.outputs ? 'in' : 'out', keep, password });
 }
 export async function importDrop(project: string, id: string): Promise<void> {

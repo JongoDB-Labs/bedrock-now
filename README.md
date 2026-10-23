@@ -865,11 +865,16 @@ written back to those folders.
   bedrock-now may read on this computer**, where **Take back** (from any device) undoes it — and what the Code page's
   container read under it (the list, sessions waiting) is forgotten; `./stack sessions consent --project NAME --revoke`
   (or `--revoke-all`) in a terminal.
-- **Tool outputs are left out by default** — what a session's tools gave back (command output, files it read, an API's
-  answer) is where its secrets mostly are. Each becomes one line saying so and its size; the tool calls and their
-  results' ids stay, so the session resumes as it was (Claude can run a tool again when it needs what it saw). Tick
-  **Include tool outputs** on the sheet (`./stack sessions import … --with-tool-outputs` in a terminal) to bring them,
-  scanned and redacted as below; the sheet says how many were left out.
+- **What is copied by default, and nothing else:** what you typed, Claude's text, its thinking (as below), its tool
+  calls (the tool and its input) and compaction summaries — scanned, a best effort. Everything else Claude Code
+  recorded is left out: what its tools gave back (command output, files read — also the files it attaches again after
+  a compaction —, web pages, MCP results), the output of `!` commands and local commands, hooks' output, its own notes
+  to the model; each becomes one line saying so and its size, and a kind of record it does not know is dropped. The tool
+  calls and their results' ids stay, so the session resumes as it was (Claude can run a tool again when it needs what
+  it saw). Tick **Include tool outputs** on the sheet (`./stack sessions import … --with-tool-outputs` in a terminal)
+  to bring those outputs, scanned and redacted as below — on the computer itself, or from another device with the
+  portal password; the sheet says how many things were left out, and shows the transcript exactly as it would be
+  copied.
 - **Possible secrets** (AWS keys, Amazon Bedrock API keys, GitHub, GitLab, Slack, Anthropic, OpenAI, Google, Stripe,
   SendGrid, npm, PyPI, Hugging Face, DigitalOcean, Shopify, Linear and Atlassian tokens, Slack webhooks, Azure keys,
   age and private keys, JSON web tokens, `Authorization` and cookie headers, passwords in URLs and on command lines —
@@ -878,9 +883,9 @@ written back to those folders.
   `api_key`, `X-Api-Key` …, or a `name`/`value` pair such as Kubernetes' env — and `.env`-style lines with a random
   value) are listed per session — what kind, where, and its length; for a token only its public start (`ghp_…`),
   never anything of a password — and **redacted by default** (`[REDACTED:<kind>]`). Untick one to keep it as it is:
-  that copy needs the portal password (the update helper makes it). The transcript, its subagents' transcripts and the
-  JSON files beside it alike (and the tool outputs, when you include them); a file beside it that cannot be read so
-  stays behind. What you chose holds for the session as it was checked: read again, it is checked again. **The
+  that copy needs the portal password (the update helper makes it). The transcript and its subagents' transcripts alike
+  (and the tool outputs, when you include them); a file beside it that cannot be read so, or of a kind the copy does
+  not keep, stays behind. What you chose holds for the session as it was checked: read again, it is checked again. **The
   redaction is a best-effort safety net, not a guarantee**: a secret in a shape the scan does not know, or in prose,
   can still go along — the sheet shows the transcript as it would be copied.
 - **Thinking blocks** of a session that ran elsewhere than Bedrock (Anthropic's API, a Claude subscription) are taken out

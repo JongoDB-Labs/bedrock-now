@@ -801,6 +801,9 @@ def test_sessions_requests_each_field_checked_never_a_path(cs, tmp_path):
             # (its tool outputs too, asked for on the sheet)
             ({"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "outputs": "in", "keep": ["main#0123456789abcdef"]},
              f'"session":"{sid}","digest":"{dig}","thinking":"default","outputs":"in","keep":"main#0123456789abcdef"}}'),
+            # (nothing kept: only the tool outputs — from another device they come only so)
+            ({"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "outputs": "in", "keep": []},
+             f'"session":"{sid}","digest":"{dig}","thinking":"default","outputs":"in","keep":""}}'),
         ]
         for body, tail in good:
             import time
@@ -813,6 +816,7 @@ def test_sessions_requests_each_field_checked_never_a_path(cs, tmp_path):
             {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": scan, "rows": []}, {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": scan, "rows": ["1;rm"]},
             {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": scan, "rows": list(range(1, 52))}, {"action": "sessions-fetch", "project": "p_0000aaaa", "scan": "/etc", "rows": [1]},
             {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "keep": []},
+            {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "outputs": "out", "keep": []},
             {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": dig, "keep": ["../../etc#0123456789abcdef"]},
             {"action": "sessions-copy", "project": "p_0000aaaa", "session": sid, "digest": "x", "keep": ["main#0123456789abcdef"]},
             {"action": "sessions-copy", "project": "p_0000aaaa", "session": "x", "digest": dig, "keep": ["main#0123456789abcdef"]},

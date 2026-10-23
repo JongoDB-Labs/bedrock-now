@@ -116,7 +116,8 @@ export function parseIndex(text) {
 export class Imports {
   constructor({ dir = IMPORTS_DIR, stage = STAGE_DIR, helperFile = HELPER_FILE, now = () => Date.now(), call = null, projects = null, log = () => {}, worker = false } = {}) {
     Object.assign(this, { dir, stageDir: stage, helperFile, now, call, projects, log });
-    // (a check or a copy: in a worker thread, one at a time — the server's; in this thread: tests, the command line)
+    // (a check or a copy: in a worker thread, one at a time, within its deadline — the server's and the command line's;
+    // in this thread: tests)
     this.queue = new PlanQueue({ inline: !worker });
     this.sweeper = null;
   }
@@ -403,7 +404,7 @@ async function readAll(stream, max) {
   for await (const c of stream) { n += c.length; if (n > max) throw new ImportError(413, 'the input is too long'); chunks.push(c); }
   return Buffer.concat(chunks).toString('utf8');
 }
-export async function cli(argv, { stdin = process.stdin, imports = new Imports({ projects: new Projects() }), out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`), call = null,
+export async function cli(argv, { stdin = process.stdin, imports = new Imports({ projects: new Projects(), worker: true }), out = (o) => process.stdout.write(`${JSON.stringify(o)}\n`), call = null,
   line = (s) => process.stdout.write(`${s}\n`) } = {}) {
   const [cmd] = argv;
   // (--tsv: tab-separated lines for lib/sessions.sh — every field a number, a fixed word, or text without tabs or line

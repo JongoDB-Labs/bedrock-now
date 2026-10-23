@@ -254,6 +254,10 @@ test_the_helper_takes_the_code_pages_requests_from_the_portal_only_in_their_fixe
   _ses 67777777777777777777777777777777 '"sessions-copy"' ",\"project\":\"p_0000aaaa\",\"session\":\"$UUID_A\",\"digest\":\"$dig\",\"thinking\":\"default\",\"outputs\":\"in\",\"keep\":\"main#0123456789abcdef\""
   sessions_poll_once 2>/dev/null
   assert_contains "$(cat "$CALLS")" "sessions copy --project p_0000aaaa --session $UUID_A --digest $dig --thinking default --outputs in --keep main#0123456789abcdef --origin local --request 67777777777777777777777777777777"
+  # (nothing kept: a copy that only brings the tool outputs — from another device they come only so)
+  _ses 68888888888888888888888888888888 '"sessions-copy"' ",\"project\":\"p_0000aaaa\",\"session\":\"$UUID_A\",\"digest\":\"$dig\",\"thinking\":\"default\",\"outputs\":\"in\",\"keep\":\"\"" 'correct horse battery' remote
+  sessions_poll_once 2>/dev/null
+  assert_contains "$(cat "$CALLS")" "sessions copy --project p_0000aaaa --session $UUID_A --digest $dig --thinking default --outputs in --keep - --origin remote --request 68888888888888888888888888888888"
   [ -z "$(ls "$(request_dir)")" ] || { echo "left in the requests folder: $(ls "$(request_dir)")" >&2; return 1; }   # (each request moved out, then gone)
   # never a path, an extra field, another action, a range of rows, a keep that is not a token, a wrong password; a
   # request used once
@@ -264,6 +268,7 @@ test_the_helper_takes_the_code_pages_requests_from_the_portal_only_in_their_fixe
            '"sessions-fetch"|,"project":"p_0000aaaa","scan":"../x","rows":"1"' '"sessions-fetch"|,"project":"p_0000aaaa","scan":"'"$NONCE"'","id":"'"$UUID_A"'","rows":"1"' \
            '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","outputs":"out","keep":"../../etc#0123456789abcdef"' \
            '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","outputs":"out","keep":""' \
+           '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","outputs":"in","keep":","' \
            '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","outputs":"all","keep":"main#0123456789abcdef"' \
            '"sessions-copy"|,"project":"p_0000aaaa","session":"'"$UUID_A"'","digest":"'"$dig"'","thinking":"keep","keep":"main#0123456789abcdef"' \
            '"sessions-import"|,"project":"p_0000aaaa"'; do

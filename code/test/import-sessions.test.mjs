@@ -28,7 +28,8 @@ const { sandboxCall } = await import('../server/spawn-client.mjs');
 const { Imports, parseIndex, ImportError, LIMITS, cli } = await import('../server/import-sessions.mjs');
 const { KEEP_TOKEN } = await import('../server/secrets.mjs');
 const { copy, preview, continueIn, fork } = await import('../server/import-copy.mjs');
-const { leaveOutputs, parseLines, toJsonl } = await import('../server/transcript.mjs');
+const { parseLines, toJsonl } = await import('../server/transcript.mjs');
+const { rebuild } = await import('../server/allowlist.mjs');
 const reader = await import('../server/harness/claude.mjs');
 
 const SOCK = path.join(SOCKDIR, 'coded.sock');
@@ -198,8 +199,8 @@ test('a project\'s sessions copied: listed, picked, checked (secrets redacted, t
   const ca = fs.readFileSync(path.join(storeOf(APP), `${a}.jsonl`), 'utf8');
   assert.ok(!ca.includes(key) && ca.includes('[REDACTED:aws-key-id]'));
   assert.ok(!ca.includes('"thinking"'));
-  assert.equal(fs.readFileSync(path.join(storeOf(APP), a, 'subagents', 'agent-1.jsonl'), 'utf8'), toJsonl(leaveOutputs(parseLines(Buffer.from(subLines)).entries).entries).toString('utf8'),
-    'a subagent\'s transcript as it was but for its tool outputs');
+  assert.equal(fs.readFileSync(path.join(storeOf(APP), a, 'subagents', 'agent-1.jsonl'), 'utf8'), toJsonl(rebuild(parseLines(Buffer.from(subLines)).entries).entries).toString('utf8'),
+    'a subagent\'s transcript rebuilt by the same allowlist: its tool outputs left out');
   // (every tool call still has its result: the same ids, the content one line)
   const lines = ca.trim().split('\n').map((l) => JSON.parse(l));
   const uses = lines.flatMap((e) => (e.type === 'assistant' && Array.isArray(e.message.content) ? e.message.content.filter((b) => b.type === 'tool_use').map((b) => b.id) : []));
@@ -251,7 +252,7 @@ test('the files beside a transcript go through the same scan: a secret only in a
   const subEntries = session({ cwd: APP, sidechain: true, prompts: [`use ${sub}`], thinking: true });
   const dir = hostStore(APP, [[id, session({ id, cwd: APP }), {
     'subagents/agent-1.jsonl': jsonl(subEntries),
-    'subagents/agent-1.meta.json': JSON.stringify({ note: `token ${json}` }),
+    'subagents/agent-1.meta.json': JSON.stringify({ agentType: 'general-purpose', description: `token ${json}`, note: 'not one of its kept fields' }),
     'tool-results/toolu_1.txt': `line 1\nAWS_ACCESS_KEY_ID=${out}\n${APP}/x\n`,
     'tool-results/toolu_2.bin': Buffer.from([0xff, 0xfe, 0x00, 0x81]),
     'subagents/agent-2.meta.json': '{not json',
@@ -261,7 +262,7 @@ test('the files beside a transcript go through the same scan: a secret only in a
   await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
   // (tool outputs asked for: scanned like the rest)
   const pv = await preview(imports, 'p_00000001', id, { outputs: true });
-  assert.deepEqual(pv.outputs, { included: true, left: 0, bytes: 0 });
+  assert.deepEqual(pv.outputs, { included: true, left: 0, bytes: 0, dropped: 0 });
   assert.deepEqual(pv.findings.map((x) => [x.kind, x.part]).sort(), [['aws-key-id', 'tool-results/toolu_1.txt'], ['github-token', 'subagents/agent-1.jsonl'],
     ['gitlab-token', 'subagents/agent-1.meta.json']].sort());
   assert.ok(pv.findings.every((x) => KEEP_TOKEN.test(x.id) && x.id.startsWith(`${x.part}#`)), 'each kept by its file and a hash of what it is');
@@ -563,4 +564,132 @@ test('tool outputs left out by default — a large output\'s file one line too (
   const text2 = fs.readFileSync(path.join(storeOf(APP), `${id}.jsonl`), 'utf8');
   assert.ok(!text2.includes(out) && text2.includes('AWS_ACCESS_KEY_ID=[REDACTED:aws-key-id]'));
   assert.equal(fs.readFileSync(path.join(base, 'toolu_big.txt'), 'utf8'), 'token [REDACTED:github-token]\n');
+});
+
+// a transcript with every place an output can be (each holding its own marker), what you and Claude wrote, and kinds
+// of entries and blocks no version writes yet
+function everyPlace(id, cwd) {
+  const out = [];
+  let parent = null, t = Date.parse('2026-10-02T10:00:00.000Z');
+  const base = { isSidechain: false, userType: 'external', cwd, sessionId: id, version: '2.1.296', gitBranch: 'main' };
+  const push = (e) => { const u = uuid(); out.push({ ...base, parentUuid: parent, ...e, uuid: u, timestamp: new Date(t += 1000).toISOString() }); parent = u; return u; };
+  const user = (content, extra = {}) => push({ type: 'user', message: { role: 'user', content }, ...extra });
+  const asst = (content, extra = {}) => push({ type: 'assistant', requestId: 'req_x', message: { id: `msg_${uuid().slice(0, 8)}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-5', content, stop_reason: null, usage: { input_tokens: 1, output_tokens: 1, service_tier: 'leakmarker-usage' } }, ...extra });
+  const M = (name) => `leakmarker-${name}`;
+  user('OWNERKEPT please look');
+  user(`<bash-input>ls</bash-input><bash-stdout>${M('bashout')}</bash-stdout><bash-stderr>${M('basherr')}</bash-stderr>`);
+  user(`<local-command-stdout>${M('localcmd')}</local-command-stdout>`);
+  user(`<task-notification><task-id>t1</task-id><status>completed</status><event>${M('event')}</event><result>${M('result')}</result></task-notification>`);
+  user(`a skill's body ${M('meta')}`, { isMeta: true });
+  asst([{ type: 'text', text: 'CLAUDEKEPT on it' }, { type: 'tool_use', id: 'toolu_a1', name: 'Bash', input: { command: 'INPUTKEPT' } }, { type: 'future_block', x: M('fblock') }]);
+  user([{ type: 'tool_result', tool_use_id: 'toolu_a1', content: M('result1') }, { type: 'text', text: M('beside') }, { type: 'future_block', x: M('ublock') }],
+    { toolUseResult: { stdout: M('tur'), stderr: '' } });
+  asst([{ type: 'tool_use', id: 'toolu_a2', name: 'ToolSearch', input: { query: 'x' } }]);
+  user([{ type: 'tool_result', tool_use_id: 'toolu_a2', content: [{ type: 'text', text: M('arr') }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'bGVha21hcmtlcg==' } }, { type: 'tool_reference', tool_name: 'mcp__srv__deferred' }] }]);
+  asst([{ type: 'tool_use', id: 'toolu_a3', name: 'mcp__srv__get', input: {} }]);
+  user([{ type: 'tool_result', tool_use_id: 'toolu_a3', content: [{ type: 'text', text: M('mcpresult') }] }],
+    { mcpMeta: { structuredContent: { x: M('struct') }, _meta: { 'claude/kept': 1, other: M('meta2') }, resourceLinks: [{ uri: M('link') }] } });
+  for (const a of [
+    { type: 'file', filename: `${cwd}/a.txt`, content: { type: 'text', file: { filePath: `${cwd}/a.txt`, content: M('file'), numLines: 1, startLine: 1, totalLines: 1 } } },
+    { type: 'already_read_file', filename: `${cwd}/b.txt`, content: { type: 'text', file: { filePath: `${cwd}/b.txt`, content: M('already') } } },
+    { type: 'directory', path: cwd, content: M('dir') },
+    { type: 'mcp_resource', server: 'srv', uri: 'srv://r', name: 'r', content: { contents: [{ uri: 'srv://r', mimeType: 'text/plain', text: M('resource') }] } },
+    { type: 'edited_text_file', filename: `${cwd}/c.txt`, snippet: M('snippet') },
+    { type: 'hook_success', hookName: 'PostToolUse:Bash', hookEvent: 'PostToolUse', toolUseID: 'toolu_a1', content: M('hook'), stdout: M('hookout'), exitCode: 0 },
+    { type: 'hook_additional_context', hookName: 'SessionStart', hookEvent: 'SessionStart', content: [M('ctx')] },
+    { type: 'hook_blocking_error', hookName: 'PreToolUse', hookEvent: 'PreToolUse', blockingError: { blockingError: M('block'), command: 'x' } },
+    { type: 'async_hook_response', hookName: 'Stop', response: { systemMessage: M('async') } },
+    { type: 'queued_command', prompt: M('queued'), commandMode: 'prompt' },
+    { type: 'nested_memory', path: `${cwd}/CLAUDE.md`, content: { content: M('memory') } },
+    { type: 'todo', content: [{ content: M('todo') }] },
+    { type: 'future_attachment', x: M('fattach') },
+  ]) push({ type: 'attachment', attachment: a });
+  push({ type: 'system', subtype: 'local_command', content: `<local-command-stdout>${M('syslocal')}</local-command-stdout>`, level: 'info' });
+  push({ type: 'system', subtype: 'stop_hook_summary', hookInfos: [{ command: M('stophook') }], level: 'info' });
+  push({ type: 'system', subtype: 'informational', content: M('info'), level: 'info' });
+  asst([{ type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_fetch', input: { url: 'https://example.com' } },
+    { type: 'web_fetch_tool_result', tool_use_id: 'srvtoolu_1', content: { type: 'web_fetch_result', url: 'https://example.com', content: { type: 'document', source: { type: 'text', media_type: 'text/plain', data: M('webfetch') } } } },
+    { type: 'server_tool_use', id: 'srvtoolu_2', name: 'web_search', input: { query: 'q' } },
+    { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_2', content: [{ type: 'web_search_result', title: M('websearch'), url: 'https://example.com' }] },
+    { type: 'server_tool_use', id: 'srvtoolu_3', name: 'code_execution', input: { code: 'print(1)' } },
+    { type: 'code_execution_tool_result', tool_use_id: 'srvtoolu_3', content: { type: 'code_execution_result', stdout: M('codeexec'), stderr: '', return_code: 0 } },
+    { type: 'mcp_tool_use', id: 'mcptoolu_1', name: 'get', server_name: 'srv', input: {} },
+    { type: 'mcp_tool_result', tool_use_id: 'mcptoolu_1', is_error: false, content: [{ type: 'text', text: M('mcpblock') }] },
+    { type: 'text', text: 'CLAUDEKEPT2 done' }], { stop_reason: 'end_turn' });
+  out.push({ ...base, type: 'progress', data: { type: 'bash_progress', output: M('progress'), fullOutput: M('progress2') }, toolUseID: 'toolu_a1', parentUuid: parent, uuid: uuid(), timestamp: new Date(t += 1000).toISOString() });
+  parent = out.at(-1).uuid;   // (the next one points to the progress entry: dropped, its child points to its parent)
+  push({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 1234 }, logicalParentUuid: parent });
+  user('This session is being continued from a previous conversation. SUMMARYKEPT', { isCompactSummary: true, isVisibleInTranscriptOnly: true });
+  user('OWNERKEPT2 thanks');
+  asst([{ type: 'text', text: 'CLAUDEKEPT3 bye' }], { stop_reason: 'end_turn' });
+  out.push({ type: 'file-history-snapshot', messageId: uuid(), snapshot: { trackedFileBackups: { [M('fhs')]: {} } } });
+  out.push({ type: 'queue-operation', operation: 'enqueue', content: M('queue'), sessionId: id });
+  out.push({ type: 'future-thing', data: M('future'), uuid: uuid(), parentUuid: parent });
+  out.push({ type: 'custom-title', customTitle: 'TITLEKEPT', sessionId: id });
+  return out;
+}
+
+test('allowlist: a marker in every place an output can be — none in the copy by default; what you and Claude wrote kept; the chain, the pairs and a resume through the SDK whole', async () => {
+  const id = uuid();
+  const e = everyPlace(id, APP);
+  const sub = session({ cwd: APP, sidechain: true, prompts: ['a subagent'] });
+  sub[2].message.content[0].content = 'leakmarker-subresult';
+  const dir = hostStore(APP, [[id, e, { 'subagents/agent-1.jsonl': jsonl(sub), 'subagents/agent-1.meta.json': JSON.stringify({ agentType: 'general-purpose', description: 'desc', extra: 'leakmarker-metajson' }),
+    'tool-results/toolu_a1.txt': 'leakmarker-trfile' }]]);
+  const stage = async () => {
+    const scan = nonce();
+    imports.saveIndex('p_00000001', indexText(APP, dir), { scan, consent: 'once', host: APP });
+    await imports.stageBundle('p_00000001', scan, Readable.from([bundle(APP, dir, [id])]));
+  };
+  await stage();
+  const pv = await preview(imports, 'p_00000001', id);
+  assert.ok(!JSON.stringify(pv).includes('leakmarker'), 'nothing of an output in the preview');
+  assert.ok(pv.outputs.left >= 20 && pv.outputs.dropped >= 6, JSON.stringify(pv.outputs));
+  // (the preview shows every entry the copy writes — an attachment, a note — not only what the SDK's history shows)
+  assert.ok(pv.events.some((ev) => ev.type === 'local' && /^Attachment \(file: .*a\.txt\): \[tool output left out by bedrock-now/.test(ev.text)));
+  assert.ok(pv.events.some((ev) => ev.type === 'local' && /^Claude Code's note to the model: \[tool output left out/.test(ev.text)));
+  assert.ok(pv.events.some((ev) => ev.type === 'local' && /SUMMARYKEPT/.test(ev.text)));
+  const r = await copy(imports, call, 'p_00000001', [{ id, digest: pv.digest }]);
+  assert.equal(r[0].ok, true, JSON.stringify(r));
+  const files = [path.join(storeOf(APP), `${id}.jsonl`), ...fs.readdirSync(path.join(storeOf(APP), id), { recursive: true }).map((f) => path.join(storeOf(APP), id, f)).filter((f) => fs.statSync(f).isFile())];
+  for (const f of files) {
+    const body = fs.readFileSync(f, 'utf8');
+    assert.ok(!body.includes('leakmarker'), `${path.basename(f)}: ${(/leakmarker-[a-z0-9]+/.exec(body) ?? [''])[0]}`);
+  }
+  const text = fs.readFileSync(files[0], 'utf8');
+  for (const k of ['OWNERKEPT', 'OWNERKEPT2', 'CLAUDEKEPT', 'CLAUDEKEPT2', 'CLAUDEKEPT3', 'INPUTKEPT', 'SUMMARYKEPT', 'TITLEKEPT', '<bash-input>ls</bash-input><bash-stdout>[tool output left out',
+    '<event>[tool output left out', '"type":"tool_reference","tool_name":"mcp__srv__deferred"', '"structuredContentOmitted":true', '"claude/kept":1', '"error_code":"unavailable"', '"snippet":""']) {
+    assert.ok(text.includes(k), k);
+  }
+  const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+  // (no kind it does not know: no progress, snapshot, queue operation, future entry, block or attachment)
+  assert.deepEqual([...new Set(lines.map((l) => l.type))].sort(), ['assistant', 'attachment', 'custom-title', 'system', 'user']);
+  assert.ok(lines.every((l) => l.type !== 'attachment' || ['file', 'already_read_file', 'directory', 'mcp_resource', 'edited_text_file', 'hook_success', 'hook_additional_context', 'hook_blocking_error', 'async_hook_response', 'queued_command'].includes(l.attachment.type)));
+  assert.deepEqual(lines.find((l) => l.attachment?.type === 'hook_additional_context').attachment.content, []);
+  assert.equal(lines.find((l) => l.attachment?.type === 'hook_success').attachment.content, '');
+  // (the chain whole: every link points to an entry that is there)
+  const ids = new Set(lines.map((l) => l.uuid).filter(Boolean));
+  assert.ok(lines.every((l) => l.parentUuid === null || l.parentUuid === undefined || ids.has(l.parentUuid)), 'parentUuid');
+  assert.ok(lines.every((l) => !l.logicalParentUuid || ids.has(l.logicalParentUuid)), 'logicalParentUuid');
+  // (every call with its result)
+  const blocks = lines.flatMap((l) => (Array.isArray(l.message?.content) ? l.message.content : []));
+  const uses = blocks.filter((b) => b.type === 'tool_use').map((b) => b.id), results = blocks.filter((b) => b.type === 'tool_result').map((b) => b.tool_use_id);
+  assert.deepEqual(results, uses);
+  // it resumes: the SDK reads it and forks it
+  const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk');
+  const store = { async load(k) { return k?.sessionId === id ? lines : null; }, async append() {}, async listSessions() { return [{ sessionId: id, mtime: Date.now() }]; } };
+  const msgs = await getSessionMessages(id, { dir: APP, sessionStore: store, includeSystemMessages: true });
+  assert.ok(msgs.length >= 8, `${msgs.length} messages`);
+  assert.ok(JSON.stringify(msgs).includes('OWNERKEPT2') && JSON.stringify(msgs).includes('CLAUDEKEPT3'));
+  const f = await fork(id, lines, APP);
+  assert.ok(f.entries.length > 0 && !JSON.stringify(f.entries).includes('leakmarker'));
+  // asked for: the known outputs come along (scanned); what is unknown still does not
+  await stage();
+  const pv2 = await preview(imports, 'p_00000001', id, { outputs: true });
+  const r2 = await copy(imports, call, 'p_00000001', [{ id, outputs: true, digest: pv2.digest }]);
+  assert.equal(r2[0].ok, true, JSON.stringify(r2));
+  const text2 = fs.readFileSync(files[0], 'utf8');
+  for (const k of ['result1', 'tur', 'file', 'dir', 'resource', 'hook', 'webfetch', 'mcpblock', 'bashout', 'meta', 'struct', 'queued']) assert.ok(text2.includes(`leakmarker-${k}`), k);
+  for (const k of ['future', 'fblock', 'ublock', 'fattach', 'memory', 'todo', 'progress', 'fhs', 'queue', 'stophook', 'info']) assert.ok(!new RegExp(`leakmarker-${k}(?![a-z0-9])`).test(text2), k);
+  assert.ok(!fs.readFileSync(path.join(storeOf(APP), id, 'subagents', 'agent-1.meta.json'), 'utf8').includes('leakmarker'));
 });

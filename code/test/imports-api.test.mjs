@@ -139,6 +139,12 @@ test('a read done by the helper waits here; the preview never has the secret, an
   assert.ok(r.json.events.length > 0);
   // (its tool outputs: left out unless outputs=1 — then scanned as the rest)
   assert.deepEqual([r.json.outputs.included, r.json.outputs.left], [false, 1]);
+  // (tool outputs only on the computer itself: from another device, neither shown nor copied here — the portal's way)
+  const far = await req('GET', `/api/imports/preview?project=${ID}&id=${A}&outputs=1`, undefined, { remote: true });
+  assert.deepEqual([far.status, far.json.error], [403, 'From another device, tool outputs come only with the portal password (the sheet asks for it), and are not shown here.']);
+  const farCopy = await req('POST', '/api/imports/copy', { project: ID, items: [{ id: A, outputs: true, digest: r.json.digest }] }, { remote: true });
+  assert.equal(farCopy.status, 403);
+  assert.ok(stored.get(A) === undefined, 'nothing copied');
   const withOutputs = (await req('GET', `/api/imports/preview?project=${ID}&id=${A}&outputs=1`)).json;
   assert.deepEqual([withOutputs.outputs.included, withOutputs.outputs.left], [true, 0]);
   assert.ok(withOutputs.events.some((e) => e.type === 'tool_result' && /export const main/.test(e.text)));
