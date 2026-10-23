@@ -2728,7 +2728,8 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   Stripe (and its webhook secrets), SendGrid, npm, PyPI, Hugging Face, DigitalOcean, Shopify, Linear and Atlassian
   tokens, Slack webhooks, Azure account keys and SAS signatures, age keys, private keys (PEM, SSH2, PuTTY, and PEM in
   base64 as a kubeconfig holds it), JSON web tokens, `Authorization` (any scheme, any case) and cookie headers, passwords
-  in URLs (an empty user, `/`, `#` or `@` in them: up to the last `@` before the query), passwords on a command line
+  in URLs (`scheme://user:pass@host` and a bare `user:pass@host`, an empty user, `/`, `?`, `#`, `:` or `@` in them: up
+  to the last `@` before the next `://` — so a URL in another's query is found too), passwords on a command line
   (`curl -u user:pass`, `mysql -pPASS`, `sshpass -p`, `docker login -p`, `aws configure set aws_secret_access_key …`,
   SQL's `IDENTIFIED BY` and `PASSWORD '…'`), values set to a secret's name (the name anywhere in an identifier, any
   case: `db_password: …`, `GH_TOKEN=…`, `cfg["password"] = …`, `password: str = …`, `'secret' => …`, YAML, YAML's `|`
@@ -2745,20 +2746,23 @@ that trusts nothing in them, and what it read is untrusted data all the way to t
   no placeholder holds `=` or `:` (`{{ token=… }}` is none) — `${VAR:-default}` only when its default is empty or one
   too; a value under a secret's name counts from 4 characters (`1234`, `abcd`); an unquoted value ends only at a space,
   a quote or its line's end (never at `;` `,` `&` `)`: `password=ab;REST` leaves nothing behind). No finder steps over
-  text it did not redact where only it would find a secret: past a value only when it is a finding (or a placeholder);
-  every other finder looks at most 2,048 characters from any one start and then moves its cursor past what it examined
-  (a URL's authority, a `-u` value — a `user:pass` is still redacted to its end, however long), which never hides that
-  text from the others, since each reads the whole text on its own. Findings that overlap become one, their union. Each
-  finding is listed with its kind, where and its length — and, only for a token whose start is everyone's (`ghp_`,
-  `AKIA`, `sk-ant-` …), that start: nothing of a password, a value, a cookie, a header or a URL's password, on any
+  text another of its own matches needs, and no bound makes one find less: URLs are read run by run (a run ends at a
+  space, a quote, a backtick, `<` or `>`), each character once; a `-u` value and a command's words are shell words,
+  quotes and all, each read once (`uid:gid` is left only as two whole numbers of at most 10 digits, `date -u +%…`
+  only as a format); the assignment finder looks at every name, even one glued inside a value it redacted
+  (`password=a,token="b c"`) — it skips a value only where its end cannot pass the redacted one's, and a value that is
+  no finding holds no `=`, `:` or space, so no other name's value; a `${…}` in a value goes to its closing brace (none
+  on the line: to its end). Each finder reads the whole text on its own. Findings that overlap become one, their
+  union. Each finding is listed with its kind, where and its length — and, only for a token whose start is everyone's
+  (`ghp_`, `AKIA`, `sk-ant-` …), that start: nothing of a password, a value, a cookie, a header or a URL's password, on any
   device — and replaced by `[REDACTED:<kind>]`; redaction is idempotent. **Keeping one** needs the portal password (the
   sheet asks; the portal hands the copy to the helper): a keep names the file the finding is in and a keyed hash of its
   kind and value (the key is the waiting session's own, never shown — so the page holds no hash anyone could test
   guesses against), never a position; the check shows a digest of what is waiting — its files and the id of that key —
   and a copy is refused when the session was read again since, even unchanged. The scan is linear on hostile text and
   never backtracks: each pattern finds only where a token starts and its least length, and loops take the rest
-  (assignments, headers, URLs, command lines, `.env` lines, private keys and JWTs are found by hand; every look back is
-  bounded) — timed on 7 MiB inputs built to be slow for each shape. It runs once per check or copy, in a worker thread,
+  (assignments, headers, URLs, command lines, `.env` lines, private keys and JWTs are found by hand; every look back
+  reads its text once) — timed on 7 MiB inputs built to be slow for each shape. It runs once per check or copy, in a worker thread,
   one job at a time, each within 2 minutes: past that, the worker is ended and the session is not copied (fail
   closed). Every bound **fails closed**: a string longer than 8 MiB is replaced whole (`[REDACTED:too-long]`), a string
   with more than 1,000 findings likewise (`too-many`) — neither can be kept; JSON nested more than 200 deep is not

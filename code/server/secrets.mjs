@@ -16,12 +16,13 @@
 // whole (said; never kept); a private key's BEGIN with no END is redacted to the end of the text, an END with no BEGIN
 // from its start. Findings that overlap become one: their union, said as the most specific kind among them.
 //
-// Every finder keeps two promises. Its work from any one start is bounded (a token's run, a user part or a URL's
-// authority of at most 2,048 characters, a command's words, a line), or it never looks at that span again; and its
-// cursor only moves on — past what it examined, found or not — except where moving on could step over a secret only
-// it would find: the assignment finder goes past a value only when the value is a finding or a whole placeholder (a
-// value that is neither never holds = or :, so the scan inside it stays cheap). Every finder reads the whole text on
-// its own: one finder stepping over a span never hides it from the others. Timed on hostile 7 MiB inputs per shape.
+// No finder steps over text that another of its own matches needs, and none has a bound that makes it find less: URLs
+// are read run by run, each character once (nested ones in a query too); a -u value and a command's words are shell
+// words, each read once; a token's look goes on from just before its run's end (a token of the same shape whose start
+// crosses that end is still found); the assignment finder looks at every name, even inside a value it redacted (a
+// value starting inside a redacted one is not read again only where its end cannot pass that one's, by the forms of
+// their ends), and a value that is no finding holds no other name's value (it has no = : or space). Every finder reads
+// the whole text on its own. Timed on hostile 7 MiB inputs per shape.
 import crypto from 'node:crypto';
 
 export const MARK = '[REDACTED';
@@ -124,7 +125,7 @@ export const SECRET_NAME = /pass(?:word|wd|phrase)?|secret|token|api[_-]?key|acc
 const AUTH_NAME = /^-*_?auth$/i;
 // (a redaction in a key is no name: [REDACTED:github-token] does not make its value a secret)
 // (a name of any length: a long one is looked through once, as any text)
-export const isSecretName = (k) => typeof k === 'string' && (SECRET_NAME.test(k.replace(/\[REDACTED:[a-z-]*\]/g, '')) || (k.length <= 64 && AUTH_NAME.test(k)));
+export const isSecretName = (k) => typeof k === 'string' && (SECRET_NAME.test(k.replace(/\[REDACTED:[a-z-]*\]/g, '')) || AUTH_NAME.test(k));
 const KEYWORD = new RegExp(`${SECRET_NAME.source}|(?<![A-Za-z0-9])_?auth(?![A-Za-z0-9_-])`, 'gi');
 // headers whose whole value (to the end of the line or the closing quote) is the secret
 const HEADER = /^(?:proxy-)?authorization$|^(?:set-)?cookie$/i;
@@ -209,12 +210,32 @@ function quotedEnd(text, v, q, escq) {
   let end = v;
   while (end < n) {
     const c = text[end];
-    if (c === '\n' || c === '\r') break;
+    if (lineBreak(text.charCodeAt(end))) break;
     if (c === '\\') { if (escq && text[end + 1] === q) break; end += 2; continue; }
     if (!escq && c === q) break;
     end++;
   }
   return Math.min(end, n);
+}
+// unquotedEnd(text, v) -> where an unquoted value ends: at a space, a quote or a backtick — but a shell expansion ${…}
+// anywhere in it may hold them (${X:?set it}, ${X:-"a b"}): it goes on to its closing brace on the line; with none
+// there, the value goes to the line's end (fail closed). Each character looked at once
+function unquotedEnd(text, v) {
+  const n = text.length;
+  let end = v;
+  while (end < n) {
+    const c = text.charCodeAt(end);
+    if (c === 36 && text.charCodeAt(end + 1) === 123) {
+      let k = end + 2;
+      while (k < n && text.charCodeAt(k) !== 125 && !lineBreak(text.charCodeAt(k))) k++;
+      if (k >= n || text.charCodeAt(k) !== 125) return k;
+      end = k + 1;
+      continue;
+    }
+    if (valueStop(c)) break;
+    end++;
+  }
+  return end;
 }
 // blockScalar(text, s, after) -> {start, end} of a YAML block scalar's lines (key at s, its | or > line ending at after):
 // the lines below more indented than the key's line (blank ones within them too), else null
@@ -237,6 +258,7 @@ function blockScalar(text, s, after) {
 function assignments(text) {
   const out = [];
   const n = text.length;
+  // value(kind, start, end) -> whether it is a finding (then pushed); a whole placeholder is noted (cover.p)
   const value = (kind, start, end) => {
     const val = text.slice(start, end);
     // (a placeholder followed by a statement's end — password: string; — is one: judged without its trailing ; , ) } ];
@@ -245,22 +267,43 @@ function assignments(text) {
     while (z > 0 && ';,)}]'.includes(val[z - 1])) z--;
     const core = z === val.length ? val : val.slice(0, z);
     const ph = placeholder(val) || (core !== val && placeholder(core));
-    // (a value holding = or : — another assignment, a URL — is one whatever its entropy: what is not a finding never
-    // holds one, so the scan may look on inside it)
-    const ok = kind === 'assignment' ? val.length >= ASSIGN_MIN && !ph && (entropy(val) >= ASSIGN_ENTROPY || val.includes('=') || val.includes(':')) : val.length >= HEADER_MIN && !ph;
+    // (a value holding = or :, another assignment or a URL, or a space, is one whatever its entropy: what is not a
+    // finding holds no other name's value — so no value is ever read again inside one that is not redacted)
+    const ok = kind === 'assignment' ? val.length >= ASSIGN_MIN && !ph && (entropy(val) >= ASSIGN_ENTROPY || /[=:\s]/.test(val)) : val.length >= HEADER_MIN && !ph;
     if (ok) out.push({ kind, start, end });
-    // (a whole placeholder holds no assignment — none of its forms has = or : but a shell default, checked itself)
-    return ok || ph;
+    if (!ok && ph) covered(cover.p, start, end);
+    return ok;
   };
-  // (past a value only when it is a finding — redacted whole — or a placeholder; else the scan goes on right after the
-  // name, into it)
-  const past = (skip, e, end) => { KEYWORD.lastIndex = skip ? Math.max(e, end) : e; };
+  // Every name is looked at — the scan never steps past a value, so a name glued inside a redacted value
+  // (password=a,token="b c") still has its own. A value is not read again only where it cannot end beyond a redacted
+  // one it starts inside, by the form of their ends: an unquoted value inside an unquoted one (it ends where that one
+  // does, or before), an unquoted value or a header's inside a header's (a line's end), any of the three inside a YAML
+  // block. Quoted values and <name> values are read each time: of one quote mark (or one <), they never overlap. And a
+  // name inside a whole placeholder is none (${DB_PASSWORD:?set it}, --token <token>): no placeholder holds a value
+  // that could run on past it (none of its forms holds = or : but a shell default's, checked whole itself).
+  const cover = { u: [0, 0], h: [0, 0], y: [0, 0], p: [0, 0] };
+  const inside = (c, v) => v >= c[0] && v < c[1];
+  // (the value starts come in order: the cover kept is the one reaching furthest)
+  const covered = (c, a, b) => { if (b > c[1]) { c[0] = a; c[1] = b; } };
+  // (a .netrc's password: is there a login or machine before it on its line — the text read once, left to right, as
+  // the names come)
+  let np = 0, nMark = false;
+  const netrcBefore = (s) => {
+    if (s < np) return true;
+    for (; np < s; np++) {
+      const c = text.charCodeAt(np);
+      if (lineBreak(c)) nMark = false;
+      else if ((c === 108 && text.startsWith('login', np) && isBlank(text[np + 5])) || (c === 109 && text.startsWith('machine', np) && isBlank(text[np + 7]))) nMark = true;
+    }
+    return nMark;
+  };
   KEYWORD.lastIndex = 0;
   for (let m; (m = KEYWORD.exec(text)) !== null;) {
     let s = m.index, e = m.index + m[0].length;
     while (s > 0 && isId(text.charCodeAt(s - 1))) s--;
     while (e < n && isId(text.charCodeAt(e))) e++;
     KEYWORD.lastIndex = e;
+    if (inside(cover.p, m.index)) continue;
     // (only a name's first 64 and last 20 characters are ever looked at: a name of any length costs its run, once)
     const name = e - s <= 64 ? text.slice(s, e) : `${text.slice(s, s + 44)}${text.slice(e - 20, e)}`;
     // <password>value</password>
@@ -268,7 +311,7 @@ function assignments(text) {
       const close = text.indexOf('<', e + 1), end = close < 0 ? n : close;
       let a = skipBlanks(text, e + 1), z = end;
       while (z > a && isSpace(text.charCodeAt(z - 1))) z--;
-      past(value('assignment', a, z), e, end);
+      value('assignment', a, z);
       continue;
     }
     const i = text[e] === ']' ? e + 1 : skipQuote(text, e) + (text[skipQuote(text, e)] === ']' ? 1 : 0);
@@ -281,26 +324,24 @@ function assignments(text) {
     else if (text[j] === '=' && text[j + 1] !== '=') { v = j + 1; sep = '='; }
     else if (text[j] === ':' && text[j + 1] !== ':') { v = j + 1; sep = ':'; }
     else if (j > i && j < n && !lineBreak(text.charCodeAt(j))) {
-      // (no sign: a --flag's value; SQL's PASSWORD 'v'; a .netrc's password v)
-      // (at a line's start: only blanks before it on its line — looked at back to the first other character; or after
-      // login or machine within the 160 characters before it on its line)
+      // (no sign: a --flag's value; SQL's PASSWORD 'v'; a .netrc's password v — at a line's start, or after login or
+      // machine on its line)
       const netrc = NETRC_NAME.test(name) && (() => {
         let k = s;
         while (k > 0 && isBlank(text[k - 1])) k--;
-        if (k === 0 || lineBreak(text.charCodeAt(k - 1))) return true;
-        let before = text.slice(Math.max(0, s - 160), s);
-        const nl = Math.max(before.lastIndexOf('\n'), before.lastIndexOf('\r'));
-        if (nl >= 0) before = before.slice(nl + 1);
-        return before.includes('login ') || before.includes('login\t') || before.includes('machine ') || before.includes('machine\t');
+        return k === 0 || lineBreak(text.charCodeAt(k - 1)) || netrcBefore(s);
       })();
       if (text[s] === '-' || netrc || (NETRC_NAME.test(name) && QUOTE(text[j]))) v = j;
     }
     if (v < 0) continue;
     v = skipBlanks(text, v);
-    // (a type between ":" and "=": password: str = "v")
+    // (a type between ":" and "=": password: str = "v" — a "type" longer than 64 characters is judged as a value too)
     if (sep === ':') {
       const te = runEnd(text, v, TYPE_RUN);
-      if (te > v && te - v <= 64) { const k = skipBlanks(text, te); if (text[k] === '=' && text[k + 1] !== '=') v = skipBlanks(text, k + 1); }
+      if (te > v) {
+        const k = skipBlanks(text, te);
+        if (text[k] === '=' && text[k + 1] !== '=') { if (te - v > 64) value('assignment', v, te); v = skipBlanks(text, k + 1); }
+      }
     }
     // (YAML: key: | or key: > — the indented lines below)
     if (sep === ':' && (text[v] === '|' || text[v] === '>')) {
@@ -308,8 +349,9 @@ function assignments(text) {
       while (k < n && /[-+0-9]/.test(text[k])) k++;
       k = skipBlanks(text, k);
       if (k >= n || lineBreak(text.charCodeAt(k))) {
+        if (inside(cover.y, v)) continue;
         const b = blockScalar(text, s, k);
-        if (b) past(value('assignment', b.start, b.end), e, b.end);
+        if (b && value('assignment', b.start, b.end)) covered(cover.y, b.start, b.end);
         continue;
       }
     }
@@ -318,21 +360,17 @@ function assignments(text) {
     else if (QUOTE(text[v]) || text[v] === '`') { q = text[v]; v++; }
     let end;
     if (q) end = quotedEnd(text, v, q, escq);
-    else if (header) { end = lineEnd(text, v); while (end > v && isBlank(text[end - 1])) end--; }
     else {
-      end = v;
-      // (a shell expansion may hold spaces: ${X:?set it} — to its closing brace on the line, then on to a space)
-      // (within 256 characters: a longer one is taken to a space, as any value)
-      if (text.startsWith('${', v)) { let k = v + 2; const lim = Math.min(n, v + 256); while (k < lim && text[k] !== '}' && !lineBreak(text.charCodeAt(k))) k++; if (text[k] === '}') end = k + 1; }
-      while (end < n && !valueStop(text.charCodeAt(end))) end++;
+      if (inside(cover.y, v) || inside(cover.h, v) || (!header && inside(cover.u, v))) continue;
+      // (a header's value: to the end of its line; any other: to a space or a quote)
+      end = header ? lineEnd(text, v) : unquotedEnd(text, v);
     }
-    if (header) {
-      const sm = SCHEME.exec(text.slice(v, Math.min(end, v + 40)));
-      const from = sm ? v + sm[0].length : v;
-      past(value(/cookie$/i.test(name) ? 'cookie' : 'authorization', from, end), e, end);
-      continue;
-    }
-    past(value('assignment', v, end), e, end);
+    let z = end;
+    if (header && !q) while (z > v && isBlank(text[z - 1])) z--;
+    let from = v;
+    if (header) { const sm = SCHEME.exec(text.slice(v, Math.min(z, v + 40))); if (sm) from = v + sm[0].length; }
+    const found = value(header ? (/cookie$/i.test(name) ? 'cookie' : 'authorization') : 'assignment', from, z);
+    if (found && !q) covered(header ? cover.h : cover.u, v, end);
   }
   return out;
 }
@@ -359,7 +397,6 @@ function awsSecrets(text) {
     i = skipQuote(text, skipBlanks(text, i + 1));
     const e = runEnd(text, i, AWS_SECRET);
     if (e - i >= 40) out.push({ start: i, end: e });
-    AWS_SECRET_NAME.lastIndex = Math.max(AWS_SECRET_NAME.lastIndex, e);
   }
   return out;
 }
@@ -370,9 +407,7 @@ function sendgrid(text) {
   SENDGRID.lastIndex = 0;
   for (let m; (m = SENDGRID.exec(text)) !== null;) {
     const e1 = runEnd(text, m.index + m[0].length, SG_RUN);
-    let e = e1;
-    if (text[e1] === '.') { const e2 = runEnd(text, e1 + 1, SG_RUN); if (e2 - e1 - 1 >= 16) { out.push({ start: m.index, end: e2 }); e = e2; } }
-    SENDGRID.lastIndex = e;
+    if (text[e1] === '.') { const e2 = runEnd(text, e1 + 1, SG_RUN); if (e2 - e1 - 1 >= 16) out.push({ start: m.index, end: e2 }); }
   }
   return out;
 }
@@ -384,42 +419,47 @@ function bearers(text) {
   for (let m; (m = BEARER.exec(text)) !== null;) {
     const i = skipBlanks(text, m.index + m[0].length), e = runEnd(text, i, BEARER_RUN);
     if (e - i >= 16) out.push({ start: i, end: e });
-    BEARER.lastIndex = Math.max(i, e);
   }
   return out;
 }
-// a password in a URL: scheme://user:password@host — the scheme a run of [a-z0-9+.-] starting with a letter (and no
-// such character before it); the user up to ":" (it may be empty: redis://:pw@host); the password up to the LAST "@"
-// before the query's "?" (it may hold "/", "#" and "@" itself) — or, with no "@" before a "?" (a password holding
-// one), the last "@" before a space or a quote: more is redacted rather than less. At least 1 character.
-const URL_SCHEME = cls('a-zA-Z0-9+.-'), USER_STOP = cls('/:@"\'`'), AUTH_STOP = cls(' \t\r\n"\'`<>');
-// (each start's look is bounded — CAP characters of a user part or an authority, past which it is no longer examined —
-// and the finder's cursor always moves past what it examined, found or not: every finder reads the whole text on its
-// own, so this one stepping over a span never hides it from the others; in all, linear)
-const CAP = 2048;
-const runUntilMax = (text, at, stop, max) => { let e = at; const lim = Math.min(text.length, max); while (e < lim) { const c = text.charCodeAt(e); if (isSpace(c) || (c < 128 && stop[c] === 1)) break; e++; } return e; };
+// a password in a URL — scheme://user:password@host, and a bare user:password@host — found run by run: the text is
+// split into maximal runs of characters that are not a space, a quote, a backtick, < or > (each character in exactly
+// one run), each read once, left to right. A userinfo starts at the run's start, after "://", or after an "@" that
+// ends none; its ":" is the first after that start with no "/" between them. From that ":" every "@" up to the next
+// "://" or the run's end may end the password (one may hold "/", "?", "#", ":" and "@"), so the LAST of them does:
+// redacted is from the ":" to that "@" — more than the password when a path after its host holds an "@" too (fail
+// closed). Then it starts again after that "://": a URL in a URL's query (?next=https://u:p@h) is found too. No bound,
+// nothing skipped, nothing read twice.
+const RUN_STOP = (c) => isSpace(c) || c === 34 || c === 39 || c === 96 || c === 60 || c === 62;   // space " ' ` < >
+// (no password, each judged on the whole value: a port and its slash — http://localhost:5173/@vite/client; an image's
+// tag before its digest — node:22@sha256:…; the address of a mailto:)
+const PORT_ONLY = /^[0-9]{1,5}\/$/, IMAGE_TAG = /^[A-Za-z0-9_.-]{1,128}$/;
+const notPassword = (text, colon, at, v) => PORT_ONLY.test(v)
+  || (IMAGE_TAG.test(v) && (text.startsWith('sha256:', at + 1) || text.startsWith('sha512:', at + 1)))
+  || (colon >= 6 && text.slice(colon - 6, colon).toLowerCase() === 'mailto' && (colon === 6 || !ALNUM[text.charCodeAt(colon - 7)]));
 function urlPasswords(text) {
   const out = [];
-  for (let at = text.indexOf('://'); at >= 0; at = text.indexOf('://', at + 3)) {
-    const s = runStart(text, at, URL_SCHEME);
-    if (s === at || !/[A-Za-z]/.test(text[s])) continue;
-    const u = at + 3, ue = runUntilMax(text, u, USER_STOP, u + CAP);
-    if (text[ue] !== ':') { at = Math.max(at, ue - 3); continue; }
-    const stop = runUntilMax(text, ue + 1, AUTH_STOP, ue + 1 + CAP);
-    // (the last "@" of this authority, looked for in it only)
-    let last = -1, beforeQuery = -1, query = false;
-    for (let k = ue + 1; k < stop; k++) {
-      const c = text.charCodeAt(k);
-      if (c === 63) query = true;
-      else if (c === 64) { last = k; if (!query) beforeQuery = k; }
+  const n = text.length;
+  let colon = -1, at = -1, slash = false;
+  const decide = () => {
+    if (colon >= 0 && at > colon + 1) {
+      const v = text.slice(colon + 1, at);
+      if (!notPassword(text, colon, at, v) && !placeholder(v)) out.push({ start: colon + 1, end: at });
     }
-    if (beforeQuery > 0) last = beforeQuery;
-    if (last > ue + 1) {
-      const v = text.slice(ue + 1, last);
-      if (!placeholder(v)) out.push({ start: ue + 1, end: last });
-    }
-    at = Math.max(at, stop - 3);
+    colon = -1; at = -1; slash = false;
+  };
+  for (let i = 0; i < n; i++) {
+    const c = text.charCodeAt(i);
+    if (RUN_STOP(c)) { decide(); continue; }
+    if (c === 58 /* : */) {
+      // (a "://" after a ":" with no "@" yet may be in the password — jdbc:mysql://u:p@h is redacted from mysql on)
+      if (text.charCodeAt(i + 1) === 47 && text.charCodeAt(i + 2) === 47 && (colon < 0 || at >= 0)) { decide(); i += 2; continue; }
+      if (colon < 0 && !slash) colon = i;
+    } else if (c === 64 /* @ */) {
+      if (colon >= 0) at = i; else slash = false;
+    } else if (c === 47 /* / */ && colon < 0) slash = true;
   }
+  decide();
   return out;
 }
 // a password on a command line: curl -u user:pass (--user); mysql -pPASS (mariadb, mysqldump …); sshpass -p PASS;
@@ -428,6 +468,23 @@ function urlPasswords(text) {
 // words after it in that command mean — nothing is skipped
 const USER_FLAG = /(?<![A-Za-z0-9_-])(?:-u|--user)(?=[ \t=])/g;
 const cmdEnd = (c) => c === 10 || c === 13 || c === 59 || c === 124 || c === 38;   // \n \r ; | &
+// shellWord(text, i, cmd) -> the end of the shell word at i: a space or a backtick ends it (cmd: a command's end too, ;
+// | &) — but not in a quoted part ("…" or '…', to its closing quote or the line's end). Each character looked at once
+function shellWord(text, i, cmd) {
+  const n = text.length;
+  while (i < n) {
+    const c = text.charCodeAt(i);
+    if (c === 34 || c === 39) {
+      i++;
+      while (i < n && text.charCodeAt(i) !== c && !lineBreak(text.charCodeAt(i))) i++;
+      if (i < n && text.charCodeAt(i) === c) i++;
+      continue;
+    }
+    if (isSpace(c) || c === 96 || (cmd && cmdEnd(c))) break;
+    i++;
+  }
+  return i;
+}
 const MYSQL = new Set(['mysql', 'mysqldump', 'mysqladmin', 'mysqlimport', 'mysqlsh', 'mysqlcheck', 'mariadb', 'mariadb-dump', 'mariadb-admin']);
 // unquote(text, w) -> the span inside a word's quotes, if it is quoted
 const unquote = (text, w) => (w.end - w.start >= 2 && QUOTE(text[w.start]) && text[w.end - 1] === text[w.start] ? { start: w.start + 1, end: w.end - 1 } : w);
@@ -435,34 +492,35 @@ function commandPasswords(text) {
   const out = [];
   const n = text.length;
   const add = (w) => { const x = unquote(text, w); const v = text.slice(x.start, x.end); if (v.length >= 1 && !placeholder(v)) out.push({ start: x.start, end: x.end }); };
+  // (the value of -u, --user: one shell word, looked at once — the cursor always moves past it: user:pass redacted
+  // from its first ":" to the word's end, quotes aside; uid:gid — docker run -u 1000:1000 — only when both whole parts
+  // are numbers of at most 10 digits; date -u +%H:%M — a format, no user — only when the word starts with +%)
+  const numeric = (a, b) => b > a && b - a <= 10 && /^[0-9]+$/.test(text.slice(a, b));
   USER_FLAG.lastIndex = 0;
   for (let m; (m = USER_FLAG.exec(text)) !== null;) {
     let i = m.index + m[0].length;
     i = text[i] === '=' ? i + 1 : skipBlanks(text, i);
-    const q = QUOTE(text[i]) ? text[i] : null;
-    const a = q ? i + 1 : i;
-    // (the user part: its ":" looked for within CAP characters; a user:pass is then taken to its end, however long — the
-    // cursor moves past all it examined, found or not)
-    const ends = (k) => (q ? text[k] === q || lineBreak(text.charCodeAt(k)) : valueStop(text.charCodeAt(k)));
-    let e = a, colon = -1;
-    const lim = Math.min(n, a + CAP);
-    while (e < lim && !ends(e)) { if (colon < 0 && text.charCodeAt(e) === 58) colon = e; e++; }
-    if (colon > a) while (e < n && !ends(e)) e++;
-    if (colon > a) {
-      const user = text.slice(a, Math.min(colon, a + 64)), v = text.slice(colon + 1, Math.min(e, colon + 1 + 64));
-      // (a user id and a group id, docker run -u 1000:1000, are no password; any other digits are)
-      if (e > colon + 1 && !(/^[0-9]+$/.test(user) && /^[0-9]+$/.test(v) && e - colon - 1 <= 64) && !placeholder(text.slice(colon + 1, e))) out.push({ start: colon + 1, end: e });
-    }
+    const e = shellWord(text, i, false);
     USER_FLAG.lastIndex = Math.max(USER_FLAG.lastIndex, e);
+    let colon = i;
+    while (colon < e && text.charCodeAt(colon) !== 58) colon++;
+    if (colon >= e) continue;
+    const us = QUOTE(text[i]) ? i + 1 : i;
+    if (text[us] === '+' && text[us + 1] === '%') continue;
+    let vs = colon + 1, ve = e;
+    if (ve > vs && QUOTE(text[ve - 1])) ve--;
+    if (ve > vs && QUOTE(text[vs])) vs++;
+    if (ve <= vs || (numeric(us, colon) && numeric(vs, ve))) continue;
+    if (!placeholder(text.slice(vs, ve))) out.push({ start: vs, end: ve });
   }
   // (each command: its words, once)
   let i = 0;
   while (i < n) {
     const ws = [];
     while (i < n && !cmdEnd(text.charCodeAt(i))) {
-      if (isSpace(text.charCodeAt(i))) { i++; continue; }
+      if (isSpace(text.charCodeAt(i)) || text.charCodeAt(i) === 96) { i++; continue; }
       const s = i;
-      while (i < n && !isSpace(text.charCodeAt(i)) && !cmdEnd(text.charCodeAt(i))) i++;
+      i = shellWord(text, i, true);
       ws.push({ start: s, end: i });
     }
     i++;
@@ -475,7 +533,7 @@ function commandPasswords(text) {
       if (t === 'sshpass') { ctx = 'sshpass'; continue; }
       if ((t === 'docker' || t === 'podman') && w(k + 1) === 'login') { ctx = 'login'; k++; continue; }
       if (t === 'identified' && w(k + 1) === 'by' && ws[k + 2]) { add(ws[k + 2]); continue; }
-      if (t === 'configure' && w(k + 1) === 'set' && ws[k + 3] && isSecretName(text.slice(ws[k + 2].start, Math.min(ws[k + 2].end, ws[k + 2].start + 256)))) { add(ws[k + 3]); continue; }
+      if (t === 'configure' && w(k + 1) === 'set' && ws[k + 3] && isSecretName(text.slice(ws[k + 2].start, ws[k + 2].end))) { add(ws[k + 3]); continue; }
       if (!ctx) continue;
       if ((t === '-p' || t === '--password') && (ctx === 'sshpass' || ctx === 'login') && ws[k + 1]) { add(ws[k + 1]); continue; }
       // (glued: -pPASS — mysql's and sshpass')
@@ -525,6 +583,7 @@ function envLines(text) {
 // and its least length (one group, at the pattern's end: where the finding starts); the run that follows is taken by a
 // loop. generic: a shape that also matches placeholders and examples
 const T = '(?<![A-Za-z0-9])';
+const PREFIX_MAX = 32;
 const tok = (re, run) => ({ re: new RegExp(re, 'g'), run: cls(run) });
 const KINDS_ = [
   { kind: 'private-key', label: 'a private key', find: pemBlocks },
@@ -568,6 +627,9 @@ const KINDS_ = [
 // What each bound does beyond it — every one closed (more is redacted, nothing is missed):
 //   a token's usual length (AKIA… 20, ghp_… 40 …)  none: the whole run of its characters is redacted, however long
 //   spaces around ":" or "=", a URL's parts        none: any number, any length
+//   a name, a -u value, a ${…} in a value, a       none; a ${…} with no closing brace on its line: to the line's end;
+//   .netrc line, a type before "=" (password: T =   a "type" over 64 characters is judged as a value too
+//   v), a URL's run, a command's words
 //   a JWT's segments, a PEM marker's label          none; a BEGIN with no END: to the end of the text, an END with no
 //                                                   BEGIN: from the start (or the block before); a PuTTY key with no
 //                                                   Private-MAC: to the end of the text
@@ -597,7 +659,10 @@ function candidates(k, text, cap, ctx) {
       const at = m.index + m[0].length;
       const end = runEnd(text, at, t.run);
       out.push({ start: at - m[1].length, end });
-      t.re.lastIndex = end;   // (the run is the token's: no other one starts inside it)
+      // (a token of the same shape starting inside this run ends where it does — unless its start crosses the run's
+      // end: ya29.…-ya29.…, whsec_…/whsec_…; so the next look starts that far back: PREFIX_MAX covers every shape's
+      // start before its run, and a run is looked at again only there)
+      t.re.lastIndex = Math.max(m.index + 1, end - PREFIX_MAX);
       if (out.length > cap) return null;
     }
   }
@@ -606,11 +671,11 @@ function candidates(k, text, cap, ctx) {
 // item(text) -> {name, start, end} of a NAME=value item of a list (an environment: docker's Env, a process's), by hand:
 // the first "=", a name of at most 128 characters around it (spaces and tabs trimmed by loops), the value trimmed the
 // same way — no pattern that could try a run of spaces again and again
-const NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
+const NAME_START = cls('A-Za-z_'), NAME_CHAR = cls('A-Za-z0-9_.-');
 const blank = (c) => c === ' ' || c === '\t';
 function item(text) {
   const eq = text.indexOf('=');
-  if (eq < 1 || eq > 256) return null;
+  if (eq < 1) return null;
   let a = 0, b = eq;
   while (a < b && blank(text[a])) a++;
   while (b > a && blank(text[b - 1])) b--;
@@ -618,7 +683,8 @@ function item(text) {
   let d = 0;
   while (d < name.length && name[d] === '-') d++;   // (--api-key=value)
   name = name.slice(d);
-  if (!NAME.test(name)) return null;
+  // (a name of any length: [A-Za-z_][A-Za-z0-9_.-]*, checked by a loop)
+  if (!name.length || runEnd(name, 0, NAME_CHAR) !== name.length || NAME_START[name.charCodeAt(0)] !== 1) return null;
   let start = eq + 1, end = text.length;
   while (start < end && blank(text[start])) start++;
   while (end > start && blank(text[end - 1])) end--;
@@ -775,7 +841,7 @@ export function processEntries(entries, { part = 'main', keep = new Set(), key =
       return v.map((x, i) => {
         if (thinkingHere && THINKING(x)) return x;
         const c = under || flag ? 'named' : 'item';
-        flag = typeof x === 'string' && x.length <= 256 && x[0] === '-' && !x.includes('=') && isSecretName(x);
+        flag = typeof x === 'string' && x[0] === '-' && !x.includes('=') && isSecretName(x);
         return walk(x, `${path}[${i}]`, String(i), c, key0, depth + 1);
       });
     }

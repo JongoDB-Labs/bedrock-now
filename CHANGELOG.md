@@ -43,7 +43,8 @@ All notable changes to bedrock-now are documented here. The format follows
   name/value pair such as Kubernetes' env, SSM or CloudFormation, a `--flag` and its value, assignments with the name
   anywhere in an identifier, `.netrc`, SQL, XML, YAML blocks, passwords on command lines and in URLs —, treats a value as
   a placeholder only when all of it is one (a shell default holding a value is none), ends an unquoted value only at a
-  space or a quote, shows only a token's public start (nothing of a password), merges overlapping
+  space or a quote, reads URLs run by run (nested ones in a query too) and command lines word by word, never steps
+  over text one of its own matches needs, shows only a token's public start (nothing of a password), merges overlapping
   findings, never backtracks (patterns only find where a token starts; loops take the rest — timed on hostile 7 MiB
   inputs for every shape), and runs once per check or copy in a worker thread with a deadline (past it: not copied).
   Every bound fails closed: JSON nested too deep is not copied, said so; titles are scanned whole before they are cut. A kept finding is named by its file and a keyed hash of what it is, never a position; a

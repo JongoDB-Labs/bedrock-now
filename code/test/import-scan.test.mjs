@@ -4,7 +4,7 @@
 // rewritten only where it stands as a path of its own, lines that are no JSON dropped). Fake secrets are made at run time.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scan, scanEntries, redactEntries, processEntries, redactText, entropy, masked, keepToken, KINDS, MAX_TEXT, KEEP_TOKEN, MAX_DEPTH, TooDeep } from '../server/secrets.mjs';
+import { scan, scanEntries, redactEntries, processEntries, redactText, entropy, masked, keepToken, isSecretName, KINDS, MAX_TEXT, KEEP_TOKEN, MAX_DEPTH, TooDeep } from '../server/secrets.mjs';
 import { parseLines, toJsonl, stripThinking, dropThinking, thinkingCount, rewriteString, rewritePaths, rewrites, outsidePaths } from '../server/transcript.mjs';
 import { session, fake, rand, uuid } from './transcripts.mjs';
 
@@ -592,7 +592,7 @@ test('the scan stays linear without its jumps: values that are no findings, nest
   }
 });
 
-test('every finder: bounded work per start and a cursor that only moves on — a secret right after an unredacted URL or -u value is still found by its own finder; hostile starts stay linear', () => {
+test('every finder reads on: a secret right after an unredacted URL or -u value is still found by its own finder; hostile starts stay linear', () => {
   const x = rand(12);
   for (const [t, kind] of [
     [`https://a:b@h?x=1 https://u:${x}@h2/db`, 'url-password'], [`https://host:443/plain https://me:${x}@db.example/x`, 'url-password'],
@@ -601,7 +601,7 @@ test('every finder: bounded work per start and a cursor that only moves on — a
     assert.ok(scan(t).some((f) => f.kind === kind), `${kind}: ${t.slice(0, 80)}`);
     assert.ok(!redactText(t).includes(x), t.slice(0, 80));
   }
-  // a user:pass longer than the look's bound is redacted to its end (fail closed)
+  // a long user:pass is redacted to its end
   const long = `${'p'.repeat(1500)}${rand(3000)}`;
   assert.ok(!redactText(`curl -u admin:${long} x`).includes(long.slice(-40)));
   const M = 7 << 20;
@@ -611,5 +611,112 @@ test('every finder: bounded work per start and a cursor that only moves on — a
     const t0 = Date.now();
     scan(text);
     assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
+  }
+});
+
+test('URL credentials run by run: nested ones in a query, a password holding @ / ? # :, no bound — and uid:gid only as two short whole numbers', () => {
+  const [x, y] = [rand(12), rand(12)];
+  const hidden = (t, ...secrets) => { const out = redactText(t); for (const v of secrets) assert.ok(!out.includes(v), `${t.slice(0, 120)} -> ${out.slice(0, 160)}`); };
+  // (nested credentialed URLs in a query, no spaces: both found)
+  hidden(`https://ann:${x}@h/?next=https://bob:${y}@h2`, x, y);
+  hidden(`https://ann:${x}@h/cb?r=https%3A%2F%2Fbob:${y}@h2/x`, x, y);
+  hidden(`git clone https://a:${x}@h/r.git&&curl https://b:${y}@h2`, x, y);
+  // (a password holding @, /, ?, #, :)
+  for (const pw of [`p@ss/${x}`, `${x}/a@b`, `a?b#c:${x}`, `${x}@@/@`]) hidden(`postgres://admin:${pw}@db.internal:5432/app`, pw, x);
+  // (bare user:pass@host)
+  hidden(`redis-cli -u default:${x}@cache:6379`, x);
+  hidden(`mongodb+srv://${['app', x].join(':')}@cluster0.example.net/db`, x);
+  // (no bound: a 1 MiB authority, and a 1 MiB run after user: with no terminator at all, both under a second)
+  const mib = rand(1 << 20);
+  let t0 = Date.now();
+  hidden(`https://user:${mib}@host/x`, mib.slice(0, 64), mib.slice(-64));
+  assert.ok(Date.now() - t0 < 1000, `1 MiB authority: ${Date.now() - t0} ms`);
+  t0 = Date.now();
+  hidden(`curl -u user:${mib}`, mib.slice(0, 64), mib.slice(-64));
+  assert.ok(Date.now() - t0 < 1000, `1 MiB -u value: ${Date.now() - t0} ms`);
+  t0 = Date.now();
+  scan(`https://user:${mib}`);
+  assert.ok(Date.now() - t0 < 1000, `1 MiB with no @: ${Date.now() - t0} ms`);
+  // (https:// x100k with long authorities, one run and spaced)
+  for (const [label, unit] of [['one run', `https://${'u'.repeat(30)}:${'p'.repeat(30)}@`], ['spaced', `https://${'u'.repeat(30)}:${'p'.repeat(30)}@h `], ['no @', `https://${'h'.repeat(30)}:${'1'.repeat(30)}/`]]) {
+    const text = unit.repeat(100000);
+    t0 = Date.now();
+    scan(text);
+    assert.ok(Date.now() - t0 < 1000, `https:// x100k, ${label}: ${Date.now() - t0} ms`);
+  }
+  // (no password: a port, an image's digest, a mailto:, a git remote)
+  for (const t of ['http://localhost:5173/@vite/client', `FROM node:22-bookworm-slim@sha256:${'ab'.repeat(32)}`, 'mailto:someone@example.com', 'git@github.com:org/repo.git', 'ssh://git@host:22/r']) {
+    assert.deepEqual(scan(t).filter((f) => f.kind === 'url-password'), [], t);
+  }
+  // uid:gid — whole parts, at most 10 digits each
+  assert.deepEqual(scan('docker run -u 1000:1000 img'), []);
+  assert.deepEqual(scan('docker run --user "1000:1000" img'), []);
+  assert.deepEqual(scan('stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"'), []);
+  assert.ok(scan(`curl -u +x:${x} h`).some((f) => f.kind === 'command-password'));
+  for (const t of [`docker run -u ${'1'.repeat(70)}:1000 img`, `docker run -u 1000:${'1234567890'.repeat(7)} img`, `curl -u 12345678901:1234 x`, `curl -u 1000:12345678901 x`]) {
+    assert.ok(scan(t).some((f) => f.kind === 'command-password'), t.slice(0, 60));
+  }
+  // -u: one shell word, quotes and all
+  hidden(`curl -u :${x} https://api`, x);
+  hidden(`curl -u admin:'${x} ${y}' https://api`, x, y);
+  hidden(`curl --user="admin:${x};${y}" https://api`, x, y);
+  hidden(`mysql -p'${x};${y}' db`, x, y);
+  hidden(`mysql -uroot -p"${x}|${y}" db`, x, y);
+});
+
+test('no finder steps over text another of its own matches needs: names glued inside a redacted value, tokens crossing a run\'s end, a bearer after a bearer', () => {
+  const [x, y] = [rand(12), rand(12)];
+  const hidden = (t, ...secrets) => { const out = redactText(t); for (const v of secrets) assert.ok(!out.includes(v), `${t.slice(0, 120)} -> ${out.slice(0, 160)}`); };
+  // (a name inside a redacted value whose own value runs on past it)
+  hidden(`password=a,token="${x} ${y}"`, x, y);
+  hidden(`password=abc,--token ${x}`, x);
+  hidden(`password=abc,api_key: ${x}`, x);
+  hidden(`password="a token=\${X:-${x} ${y}}"`, x, y);
+  hidden(`password=x,token=\${X:-${x} ${y}}`, x, y);
+  hidden(`<password>aaa token="${x} ${y}" </password>`, x, y);
+  hidden(`Cookie: a=b <token> ${x} ${y}\n<`, x, y);
+  // (a \${ with no closing brace on its line: to the line's end)
+  hidden(`password=\${X:-${x} ${y}\nnext`, x, y);
+  // (.netrc: login and machine anywhere before it on its line)
+  hidden(`machine h login ${'u'.repeat(400)} password ${x}`, x);
+  // (a "type" longer than 64 characters: judged as a value too)
+  const longType = `Ab${rand(80)}`;
+  hidden(`password: ${longType} = ${x}`, longType, x);
+  // (each finder alone)
+  const find = (kind, t) => KINDS.find((k) => k.kind === kind).find(t, {});
+  const tok = rand(20);
+  assert.ok(find('authorization', `x bearer bearer ${tok}`).some((f) => f.start === 16), 'a bearer after a bearer');
+  const aws = rand(40, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789');
+  assert.equal(find('aws-secret', `secret_access_key=abc${'SecretAccessKey'}=${aws}`).length, 1);
+  const SG = ['S', 'G'].join(''), tail = rand(16, 'abcdefghij');
+  const sgText = `${SG}.${rand(16, 'abcdefghij')}-${SG}.${rand(16, 'abcdefghij')}.${tail}`;
+  assert.equal(find('sendgrid-key', sgText).length, 2);
+  hidden(sgText, tail);
+  for (const [kind, t, secret] of [
+    ['google-oauth', `${['ya', '29.'].join('')}${rand(20)}-${['ya', '29.'].join('')}${x}${rand(20)}`, x],
+    ['stripe-key', `${['wh', 'sec_'].join('')}${rand(20)}/${['wh', 'sec_'].join('')}${x}${rand(20)}`, x],
+    ['slack-webhook', `https://hooks.slack.com/services/${rand(20)}/hooks.slack.com/services/${x}${rand(10)}`, x],
+  ]) {
+    hidden(t, secret);
+    const out = scan(t);
+    assert.ok(out.length >= 1 && out.every((f) => f.kind === kind), `${kind}: ${JSON.stringify(out)}`);
+  }
+  // (a long name of only dashes and auth is still one)
+  assert.ok(isSecretName(`${'-'.repeat(70)}auth`));
+});
+
+test('the assignment finder reads every name and stays linear: chains of names in redacted values, units, headers on one line, nested blocks — on 7 MiB', () => {
+  const M = 7 << 20;
+  const fill = (head, unit, tail = '') => head + unit.repeat(Math.floor((M - head.length - tail.length) / unit.length)) + tail;
+  for (const [label, text] of [
+    ['token= chain', fill('password=', 'token=')], ['"token=" chain', fill('password="', 'token="')], ['<password> chain', fill('', '<password>')],
+    ['Cookie: on one line', fill('', 'Cookie: ')], ['${ with no brace', fill('password=', '${')], ['${ in a low-entropy unit', fill('password=${', `${'a'.repeat(98)} --pass \${`)],
+    ['--pass ${ chain', fill('', '--pass ${ ')], ['token: | nested', Array.from({ length: 20000 }, (_, i) => `${' '.repeat(i % 300)}token: |`).join('\n')],
+    ['escaped quotes', fill('password=\\"', 'token=\\"a\\\\')], ['low-entropy with <token>', fill('password=', `${'a'.repeat(99)}<token>`)],
+    ['machine lines', fill('', 'machine h login u password p\n')], ['-u quoted words', fill('', '-u "a b:c" ')], ['quotes in commands', fill('mysql ', `-p'a;b' `)],
+  ]) {
+    const t0 = Date.now();
+    scan(text);
+    assert.ok(Date.now() - t0 < 1500, `${label}: ${Date.now() - t0} ms`);
   }
 });
