@@ -445,7 +445,7 @@ test_the_image_pins_every_tool_it_downloads() {
   # everything of theirs root's in the image (whatever owner a tarball recorded), checked at the build's end; one tool
   # that fails is left out (said), not the image
   assert_contains "$(cat "$d")" "COPY --from=ai-tools --chown=0:0 /out/ /usr/local/lib/bn-tools/"
-  assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'chown -R 0:0 /out'
+  assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'chown -hR 0:0 /out'
   [ "$(grep -c 'tar ' "$STACK_DIR/terminal/tools/install.sh")" = "$(grep -c 'tar --no-same-owner ' "$STACK_DIR/terminal/tools/install.sh")" ] || return 1
   assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'is LEFT OUT of this image'
   # Copilot's own package unpacked into the image at build (never run from the writable home)

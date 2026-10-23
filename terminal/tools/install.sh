@@ -112,10 +112,11 @@ for t in $want; do
     echo "ai-tools: $t is LEFT OUT of this image (its download or its check failed, above); the other tools are kept. ./stack update tries again." >&2
   fi
 done
-# everything root's, read-only to the sandbox's user (whatever owner a tarball recorded)
-chown -R 0:0 /out
+# everything root's, read-only to the sandbox's user (whatever owner a tarball recorded) — links too (-h); a link's own
+# mode bits mean nothing (always rwx on Linux), its owner and its target's are what count
+chown -hR 0:0 /out
 chmod -R a+rX,go-w /out
-if [ -n "$(find /out \( ! -user 0 -o ! -group 0 -o -perm -g+w -o -perm -o+w \) -print -quit)" ]; then
+if [ -n "$(find /out \( ! -user 0 -o ! -group 0 -o \( ! -type l \( -perm -g+w -o -perm -o+w \) \) \) -print -quit)" ]; then
   echo "ai-tools: a file in /out is not root's alone" >&2; exit 1
 fi
 cat /out/VERSIONS

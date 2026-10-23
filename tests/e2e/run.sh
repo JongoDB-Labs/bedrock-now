@@ -1157,7 +1157,7 @@ elif [ "$SUBSCRIPTIONS" = 1 ]; then
   # after its sign-in ran), Cursor without a compile cache there, every file of theirs root's and not writable by others
   t0="$(now)"
   home_code="$(docker exec "$tc" sh -c 'ls -d ~/.cache/copilot ~/.cache/cursor-compile-cache 2>/dev/null' | tr '\n' ' ')"
-  not_root="$(docker exec "$tc" sh -c 'find /usr/local/lib/bn-tools \( ! -user 0 -o -perm -g+w -o -perm -o+w \) -print 2>/dev/null | head -n 3')"
+  not_root="$(docker exec "$tc" sh -c 'find /usr/local/lib/bn-tools \( ! -user 0 -o \( ! -type l \( -perm -g+w -o -perm -o+w \) \) \) -print 2>/dev/null | head -n 3')"
   if [ -z "$home_code$not_root" ] && docker exec "$tc" test -e /usr/local/lib/bn-tools/copilot/cache/pkg; then
     record subscriptions tools-code-in-image PASS "$(( $(now) - t0 ))" "the tools' code is the image's (root's, read-only); none unpacked into the home"
   else record subscriptions tools-code-in-image FAIL "$(( $(now) - t0 ))" "in the home: ${home_code:-none}; not root's: ${not_root:-none}"; fi
