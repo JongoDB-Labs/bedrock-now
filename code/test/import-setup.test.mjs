@@ -582,7 +582,7 @@ test('linear on hostile input: paths, programs, MCP secrets, URLs, front matter,
   const big = (unit, n) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
   const MB = 1 << 20;
   const cases = [
-    ['~/ runs', (k) => big('~/', 2 * k * MB), (t) => plan.hostPaths(t)], ['/Users/a runs', (k) => big('/Us' + 'ers/a', 2 * k * MB), (t) => plan.hostPaths(t, '/home/x', ['/Us' + 'ers/a'])],
+    ['~/ runs', (k) => big('~/', 2 * k * MB), (t) => plan.hostPaths(t)], ['a macOS home runs', (k) => big('/Us' + 'ers/a', 2 * k * MB), (t) => plan.hostPaths(t, '/home/x', ['/Us' + 'ers/a'])],
     ['$HOME/x', (k) => big('$HOME/x ', k * MB), (t) => plan.hostPaths(t)], ['pipes', (k) => big('a | ', k * MB / 4), plan.programsOf], ['quotes', (k) => big('"\\', k * MB / 4), plan.programsOf],
     ['assignments', (k) => big('X=1 ', k * MB / 4), plan.programsOf],
     ['MCP arguments and env', (k) => ({ type: 'stdio', command: 'npx', args: Array.from({ length: 16 * k }, () => big('--api-key=', 2000)), env: Object.fromEntries(Array.from({ length: 8 * k }, (_, i) => [`K${i}_KEY`, big('ab', 4000)])) }), (c) => plan.mcpSecrets(c, 'k')],

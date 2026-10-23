@@ -116,7 +116,7 @@ export function hostPaths(text, home = null, projects = []) {
       if (n === '~/' && at > 0 && !PATH_END.has(s[at - 1]) && s[at - 1] !== '=' && s[at - 1] !== ':') continue;
       if ((n === MAC_HOME || n === MAC_VOL || n === '/home/' || n === `${home}/`) && at > 0 && /[A-Za-z0-9._-]/.test(s[at - 1])) continue;
       if (n === '/home/' && s.startsWith('claude/', at + 6)) continue;
-      // (one place found by two needles — your home's and /Users/ — counted once)
+      // (one place found by two needles — your home's and a macOS home's — counted once)
       if (starts.has(at)) continue;
       starts.add(at);
       let e = at + n.length;
