@@ -567,11 +567,11 @@ test('L8: a server of the sandbox\'s own replaced goes to its trash first, and c
 test('M-a: a command\'s ```! blocks and !`…` across lines, as Claude Code reads them (trust.mjs); $ARGUMENTS in one said', () => {
   const item = (text) => ({ meta: { key: plan.itemKey('claude', 'command', '-', 'go'), tool: 'claude', kind: 'command', scope: '-', name: 'go', hmac: 'k', files: [] },
     files: [{ path: 'go.md', text, exec: false }] });
-  // (as Claude Code reads it: a span of inline code is blanked first — `x !`y` z` runs nothing; a !` after it on a line of
-  // its own does)
+  // (as Claude Code reads it: a span of inline code is blanked first — `x !`y z` runs nothing there; the trust step's
+  // second reading lists y z all the same, the union: an extra line, never a command missed)
   const p = plan.planUnit({ items: [item('---\ndescription: Go\n---\n```!\nnpm test\n```\nThen !`git log\n-1`\nAnd !`echo $ARGUMENTS`, not `x !`y z`.\n')] });
   const t = flagsText(p);
-  assert.match(t, /warn: It runs 3 shell commands in the sandbox each time it is used.*npm test \| git log\n-1 \| echo \$ARGUMENTS/s);
+  assert.match(t, /warn: It runs 4 shell commands in the sandbox each time it is used.*npm test \| git log\n-1 \| echo \$ARGUMENTS \| y z/s);
   assert.match(t, /warn: What you type after it goes into a shell command it runs/);
   assert.doesNotMatch(flagsText(plan.planUnit({ items: [item('!`echo $HOME`')] })), /What you type after it/);
   assert.match(flagsText(plan.planUnit({ items: [item('!`echo ${1}`')] })), /What you type after it/);
