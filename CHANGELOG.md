@@ -41,8 +41,25 @@ All notable changes to bedrock-now are documented here. The format follows
   destination as it is) refuses a copy of anything that changed since the check.
 - bn-coded writes a setup item only into a fixed destination of the sandbox's `~/.claude` (or its `~/.gitconfig`
   through `git config --file`), never through a link, only while it is as the page showed it, by a temporary file or
-  folder renamed into place; what it replaces is moved into `~/.claude/.bedrock-now-trash/`, never deleted. Which
-  programs the sandbox has is looked up, never run. Nothing is ever written back to the computer.
+  folder renamed into place; what it replaces is moved into `~/.claude/.bedrock-now-trash/`, never deleted (an MCP
+  server of the sandbox's own too, put back when the new one is not taken). Which programs the sandbox has is looked
+  up, never run — and only names that can exist there: a path only this computer has is never sent to the sandbox.
+  Nothing is ever written back to the computer.
+- **What lets Claude act without asking is said in its own words** — a whole tool allowed (*any shell command without
+  asking, in every session*), a skill's, command's or agent's front matter grants (`allowed-tools`,
+  `permissionMode: bypassPermissions`, hooks, MCP servers; front matter that cannot be read), ``!`…` `` commands,
+  hooks, a status line, a stdio MCP server's command line — and from another device it is copied only with the portal
+  password. A secret by its shape alone (a capability URL's random path, a token in an `mcp-remote` URL or a plugin
+  marketplace's URL) keeps that server or marketplace out unless kept, and is shown masked to every device. Copying a
+  tool's settings again never takes out the other tool's rules, and lists what it takes out first.
+
+### Fixed
+
+- **Command palette: Tab, Shift+Tab and Enter typed quickly run the entry they chose.** The selection went back to the
+  first entry a moment after a query changed, so a Tab typed before that was undone and the next Shift+Tab could land
+  on another entry.
+- `./stack sessions` (and Bring your setup): the reader's failure now says why (its message was read after it was
+  removed).
 
 ## [0.21.1] - 2026-10-23
 
@@ -71,11 +88,6 @@ All notable changes to bedrock-now are documented here. The format follows
   Since v0.21.0 its tidying of the request folder kept update, settings and diagnostic requests but deleted the Import
   sheet's (`ses-*.json`) before reading them, so a look, a read, suggestions or a copy keeping a possible secret asked
   from the page did nothing on a running helper (`./stack sessions` in a terminal was not affected).
-- **Command palette: Tab, Shift+Tab and Enter typed quickly run the entry they chose.** The selection went back to the
-  first entry a moment after a query changed, so a Tab typed before that was undone and the next Shift+Tab could land
-  on another entry.
-- `./stack sessions` (and Bring your setup): the reader's failure now says why (its message was read after it was
-  removed).
 
 ## [0.21.0] - 2026-10-23
 

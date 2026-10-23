@@ -2933,23 +2933,46 @@ else, says what each item brings before it is copied, and never copies a secret-
   deadline) says: about how many tokens it adds to **every request** (a `CLAUDE.md` all of it; a skill, agent or
   command its name and description — a skill's body when it is used —; an output style while it is chosen; an MCP
   server's tools once it connects; a plugin's commands, agents and skills), the programs it runs and whether the
-  sandbox has each (looked up by bn-coded, never run: `uvx`, Docker, an absolute path of your computer, a
-  `~/.claude/…` script of yours are *not in the sandbox*; a program in the project folder or named through a variable
-  shows when it runs), paths of your computer, `permissions.allow` rules that run commands, change files or fetch
-  without asking — in the sandbox, in every mode but Plan —, hooks and their events, an MCP server on `localhost` or a
-  private address (not reachable with *Internet only*), one that may sign in with OAuth (signed in again in the
-  sandbox, `/mcp`: the computer's sign-in is never read), a marketplace that is a folder of your computer (not
-  offered), and the settings and keys dropped.
+  sandbox has each (looked up by bn-coded, never run — and only names that can exist in the sandbox: a name in its
+  `PATH`, a path in its home, its system folders or a project folder; a path only this computer has, such as one in
+  your home folder, is never sent to the sandbox before you copy and is said as *not in the sandbox*, like `uvx`,
+  Docker or a `~/.claude/…` script of yours; a program in the project folder or named through a variable shows when it
+  runs), paths of your computer (a path in a project folder said apart: the sandbox has it at the same path; a program
+  there is *a file in a folder Claude can write*), `permissions.allow` rules that run commands, change files or fetch
+  without asking — in the sandbox, in every mode but Plan; a whole tool allowed (`Bash`, `Bash(*)`, `Edit`, `Write`,
+  `WebFetch`, `mcp__*` …) in words of its own, *Lets Claude run any shell command without asking, in every session*
+  —, hooks and their events, a skill's, command's or agent's front matter grants (read the way the trust step reads
+  them, `trust.mjs`: `allowed-tools` — *runs shell commands without asking* when it names Bash —, `permissionMode:
+  bypassPermissions` or `acceptEdits`, `hooks`, `mcpServers`, `tools`, `model`; front matter that is not plain `key:
+  value` lines is said as such), a command's or skill's ``!`…` `` lines (run each time it is used, before Claude reads
+  it), a stdio MCP server (it starts with every session: its command line shown, every possible secret in it masked,
+  and what `npx`/`uvx` fetch), an MCP server on `localhost` or a private address (not reachable with *Internet only*),
+  one that may sign in with OAuth (signed in again in the sandbox, `/mcp`: the computer's sign-in is never read), a
+  plugin's hooks (and hooks of another kind, and files of hooks or MCP servers its manifest names: what they hold
+  shows once installed; what the look says is the version on this computer — the marketplace may install a newer
+  one), a marketplace that is a folder of your computer (not offered), and the settings and keys dropped.
 - [x] **Secrets never copied silently.** Every string of a copied file or setting is scanned once (`secrets.mjs`,
   linear, every bound failing closed) and each finding redacted unless you keep it; an MCP server's `env` and
   `headers` values are each a choice when their name says a secret (`secrets.mjs`'s names, and `*_KEY`, `PAT`, `DSN`,
   `AUTH`, a connection string …), when the scan finds one in them, or when they look random (20 characters or more,
-  no space, high entropy) — when in doubt, a secret —, **left out** by default; one in a server's URL, arguments or
-  command keeps that server out unless you keep it (a changed URL or argument would be a broken server, not a safer
-  one). Keeping one needs the portal password: the page asks the portal (`setup-copy`: the units' keys, a digest, the
-  choices, the keep tokens — never a path), the update helper checks it all again and makes that copy. A preview never
-  holds a secret (it is made with every finding redacted and every secret left out; a kept one is said, masked); a
-  keep names the item's part and a keyed hash, never a position.
+  no space, high entropy), or have a secret's shape alone — when in doubt, a secret —, **left out** by default; one in
+  a server's URL, arguments or command keeps that server out unless you keep it (a changed URL or argument would be a
+  broken server, not a safer one). A URL is read part by part — a user or password, each part of its host and path,
+  each query name and value, its fragment — and an argument piece by piece, each by name, by the scan, and by shape
+  alone: a UUID, 32 or more hex digits, a run of 24 or more base64url characters with letters and digits, a long
+  random value, anything longer than 4 KiB; so a capability URL (a secret path, no name saying so) and the URL an
+  `mcp-remote` argument carries keep their server out. A plugin's marketplace URL with a query, a fragment, a user or
+  any of the above is not added unless you keep it. Every such URL is shown masked to every device (`https://host/…/•••
+  /mcp?key=•••`). Keeping one needs the portal password: the page asks the portal (`setup-copy`: the units' keys, a
+  digest, the choices, the keep tokens — never a path), the update helper checks it all again and makes that copy. A
+  preview never holds a secret (it is made with every finding redacted and every secret left out; a kept one is said,
+  masked); a keep names the item's part and a keyed hash, never a position.
+- [x] **From another device, what lets Claude act without asking needs the password.** A unit that brings a whole tool
+  allowed (`Bash`, `Edit`, `WebFetch`, `mcp__*` …), a front matter's grant (`allowed-tools`, a permission mode that
+  asks less, `hooks`, `mcpServers`, front matter that cannot be read), hooks or a status line is refused by the Code
+  page's own copy (`POST /api/setup/copy`) when the request came over remote access; the page sends it through the
+  portal with the password instead (`setup-copy` with nothing kept), and the update helper makes the copy. On this
+  computer such a copy is the page's warning and your *Copy*.
 - [x] **Preview is the copy.** The preview and the copy come from one function over the same inputs: the item as
   staged, your choices, and the sandbox's destination as bn-coded reads it now (`setup.read`: a file's SHA-256 and
   text, a skill folder's digest, the MCP servers of its user scope, its Git name and email, its plugins). Its digest
@@ -2957,11 +2980,15 @@ else, says what each item brings before it is copied, and never copies a secret-
   again"). The text shown is the text written (made visible: direction-changing and control characters shown as
   such); a file too long to show is named by its size and SHA-256.
 - [x] **The sandbox's own kept.** Permission rules and hooks are added to the sandbox's `settings.json`, every other
-  key of it kept; a later copy removes only what bedrock-now added before (recorded in the code container, by rule and
-  hook). Any other destination — a file, a skill's folder, `statusLine`, `outputStyle`, an MCP server of that name,
-  the Git name and email — is replaced without asking only while it is exactly what bedrock-now wrote there; otherwise
-  it is a conflict, **left as it is** unless you choose *Replace*. `CLAUDE.md` can be appended to instead (a later
-  copy replaces the part bedrock-now appended while it is still at the end).
+  key of it kept; a later copy removes only what bedrock-now added before **from the same tool** (recorded in the code
+  container by tool, rule and hook group: Claude Code's copy never takes out a rule `claude-bedrock`'s brought, nor the
+  other way round; a rule both bring stays while either does) — and every rule and hook group it takes out is listed
+  in a warning before you copy (*taken out of the sandbox's settings*: your computer no longer has it). Any other
+  destination — a file, a skill's folder, `statusLine`, `outputStyle`, an MCP server of that name, the Git name and
+  email — is replaced without asking only while it is exactly what bedrock-now wrote there (when that was the other
+  tool's copy, it is said); otherwise it is a conflict — every conflict of a unit listed — **left as it is** unless
+  you choose *Replace*. `CLAUDE.md` can be appended to instead (a later copy replaces the part bedrock-now appended
+  while it is still at the end).
 - [x] **Written into the sandbox by bn-coded, checked again there.** `setup.write` takes one destination of a fixed
   set in the sandbox's `~/.claude` (`CLAUDE.md`, `settings.json`, `keybindings.json`, `agents/…`, `commands/…`,
   `output-styles/<name>.md`, `skills/<name>/`; no other name passes its pattern), every folder on the way a real
@@ -2970,9 +2997,13 @@ else, says what each item brings before it is copied, and never copies a secret-
   moved into `~/.claude/.bedrock-now-trash/` first, never deleted. `setup.git` runs `git config --file ~/.gitconfig
   user.name|user.email` (fixed arguments, the panel's git environment) only while the sandbox's name and email are
   as shown, never through a link. An MCP server goes in through `claude mcp add-json --scope=user` (bn-coded's
-  allowlisted shape); a plugin through Claude Code's own install from its marketplace (`plugin marketplace add`,
-  `plugin install --scope=user`), a marketplace-declared command shown verbatim and accepted by its SHA-256 in the
-  page, as *Plugins* does. Nothing is ever written back to the computer.
+  allowlisted shape); one that replaces the sandbox's own server of that name first has bn-coded copy the sandbox's
+  definition into the trash folder (`setup.trash`: it reads it from the sandbox's `~/.claude.json` itself, never from
+  the request; `mcp__<name>.json`, mode 600), and puts it back when the new one is not taken. A plugin goes in through
+  Claude Code's own install from its marketplace (`plugin marketplace add`, `plugin install --scope=user`), a
+  marketplace-declared command shown verbatim and accepted by its SHA-256 in the page, as *Plugins* does; never from a
+  marketplace of the same name the sandbox added from another source (refused, said); one off on this computer is
+  turned off after its install (said when it could not be). Nothing is ever written back to the computer.
 - [x] **The folders, one direction each** (beside the sessions' table above):
 
   | Folder (on this computer) | Written by | Read by | Mounted | Shape |
@@ -2981,7 +3012,7 @@ else, says what each item brings before it is copied, and never copies a secret-
   | `.state/sessions/setup/<nonce>.tsv`, `.state/sessions/consent.tsv` | ./stack and the helper | them only | none | host-only |
   | `.state/requests/ses-<nonce>.json` (`setup-scan`, `setup-fetch`, `setup-copy`) | the portal (after it checked the password) | the helper (as the sessions' requests) | rw into the portal only | a container writes, the host reads |
   | code-state volume `imports/setup-index.json`, `imports/setup-copied.json`; tmpfs `/run/bn-import-stage/setup/` | the code container (from ./stack's stdin) | the code container | the code container only | the container's own |
-  | the sandbox's `/home/claude/.claude/…` above, `/home/claude/.claude.json` (MCP), `/home/claude/.gitconfig`, `~/.claude/.bedrock-now-trash/` | bn-coded (`setup.write`, `setup.git`), Claude Code's CLI in the sandbox | the sandbox | the terminal container only | the sandbox's own |
+  | the sandbox's `/home/claude/.claude/…` above, `/home/claude/.claude.json` (MCP), `/home/claude/.gitconfig`, `~/.claude/.bedrock-now-trash/` (what a copy replaced: files, folders, `mcp__<name>.json`) | bn-coded (`setup.write`, `setup.git`, `setup.trash`), Claude Code's CLI in the sandbox | the sandbox | the terminal container only | the sandbox's own |
 
   Tests: every flag case and what is never offered, on a fake home only (`code/test/setup-fixtures.mjs`: fake secrets
   made at run time); hostile homes (links, a FIFO, huge, binary and deep files); the reader's mounts and the helper's
@@ -2992,9 +3023,12 @@ else, says what each item brings before it is copied, and never copies a secret-
 - [ ] **Not covered.** What you copy runs in the sandbox as you chose it: a hook, a status line or a skill's script
   of yours can do anything the sandbox can, and an MCP server's command is fetched from the internet (`npx`) — the
   sheet names them, it cannot judge them. A secret in a shape the scan does not know, or under a name it does not
-  know with a value that does not look random, can still go along in a file — you see the text first. A kept secret
-  is in the sandbox, where Claude and anything it runs can read it. A plugin's install is Claude Code's own (its
-  marketplace's code); the plugin's files on your computer are never copied. Linux dialogs (`zenity`, `kdialog`) were
+  know with a value that does not look random — short, or of words —, can still go along in a file or an MCP
+  server's URL — you see the text first; and the shapes that count as a secret also catch values that are not (an
+  image's digest, a commit's hash, a resource's UUID): such a server is left out until you keep it. Front matter
+  grants are read where the front matter is plain; anything else is said, not read. A kept secret is in the sandbox,
+  where Claude and anything it runs can read it. A plugin's install is Claude Code's own (its marketplace's code, the
+  version it has now); the plugin's files on your computer are never copied. Linux dialogs (`zenity`, `kdialog`) were
   tested with a stub only.
 
 ## Code provenance

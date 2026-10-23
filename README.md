@@ -938,14 +938,20 @@ email — into the sandbox's own configuration, one way: nothing is ever written
   descriptions; MCP servers' tools once they connect), programs (a skill's scripts, hooks, the status line, an MCP
   server's command) — each one the sandbox does not have said as *not in the sandbox* (`uvx`, Docker, a program of
   your computer; `npx`, `node`, `python3` are there) —, paths of your computer, `permissions.allow` rules that let
-  commands run without asking (in the sandbox, in every mode but Plan), an MCP server on `localhost` or a private
-  address (not reachable with *Internet only*), one that signs in with OAuth (sign in again in the sandbox: `/mcp`).
+  commands run without asking (in the sandbox, in every mode but Plan; a whole tool such as `Bash` in words of its own:
+  *any shell command without asking, in every session*), what a skill's, command's or agent's front matter grants
+  (`allowed-tools`, `permissionMode: bypassPermissions`, hooks, MCP servers) and the ``!`…` `` commands it runs, a
+  stdio MCP server's command line (it starts with every session), an MCP server on `localhost` or a private address
+  (not reachable with *Internet only*), one that signs in with OAuth (sign in again in the sandbox: `/mcp`). From a
+  phone or another computer, copying what lets Claude act without asking needs the portal password too.
 - **Possible secrets**: in a copied file or setting they are listed (as the Import sheet's) and redacted unless you
   keep one; an MCP server's `env` and `headers` values that look like a secret — by their name or their shape — are
-  each **left out** unless you tick *copy into the sandbox (Claude could read it)*; one in its URL or arguments keeps
-  the server out unless you keep it. Keeping one needs the portal password (the update helper makes that copy).
+  each **left out** unless you tick *copy into the sandbox (Claude could read it)*; one in its URL or arguments — a
+  capability URL's random path too — keeps the server out unless you keep it, and a plugin marketplace's URL with a
+  token is not added unless you keep it (such URLs are shown masked). Keeping one needs the portal password (the
+  update helper makes that copy).
 - **The sandbox's own is kept**: permission rules and hooks are added to its `settings.json` (a later copy replaces
-  only what bedrock-now added); any other file, a skill's folder, a server of the same name or a Git name the
+  only what bedrock-now added from that tool, and lists what it takes out first); any other file, a skill's folder, a server of the same name or a Git name the
   sandbox has of its own is left as it is unless you choose *Replace* — and then it goes to
   `~/.claude/.bedrock-now-trash/` in the sandbox, never deleted. A copy is refused when what it was checked against
   changed meanwhile (check it again).
