@@ -12,7 +12,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 import httpx
 from starlette.applications import Starlette
@@ -213,6 +213,13 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     # the password-again cookies of the browser terminal and of the Code page: one each; the terminal's never opens the
     # Code page, the Code page's opens the terminal only through the single-use hand-off (unlock_handoff, above)
     unlocks = {app: TerminalUnlocks(settings.secret, sessions, app=app) for app in (TERMINAL, CODE)}
+
+    def roots() -> tuple:
+        """The project folders of this computer the sandbox sees (their paths there): folders the pickers may name."""
+        try:
+            return tuple(f["path"] for f in answers.folders(settings.status_dir))
+        except (OSError, ValueError, KeyError, TypeError):
+            return ()
     # the Code page's previews: a capability in each preview's host name, from the Code page's unlock (below); over remote
     # access a cookie on the one preview host, set through a single-use hand-off of that unlock
     previews = PreviewCaps(settings.secret, sessions)
@@ -396,7 +403,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return Response(status_code=200, headers={"X-Portal-User": settings.user_email, "Cache-Control": "no-store"})
         if method in ("GET", "HEAD") and "text/html" in request.headers.get("accept", ""):
             # (the Code page: its deep links; the terminal: the pickers' words — answers.terminal_next)
-            nxt = codepage.deep_link(request.headers.get("x-forwarded-uri")) if app == CODE else answers.terminal_next(request.headers.get("x-forwarded-uri"))
+            nxt = codepage.deep_link(request.headers.get("x-forwarded-uri")) if app == CODE else answers.terminal_next(request.headers.get("x-forwarded-uri"), roots())
             return _unlock_page(settings, rem, app=app, next_link=nxt)
         return _no_store(PlainTextResponse(f"{NAME[app]} locked: unlock it with the portal password", status_code=401))
 
@@ -405,7 +412,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         a launch token valid for exactly those words and this login (answers.Launches) — its page, and its WebSocket,
         which starts the tool (or reconnects it: that token is then remembered). Without one nothing starts: a page
         shows "Open … here?" (its own form makes a token on your click), anything else is refused. None: let it in."""
-        got = answers.parse_terminal_uri(request.headers.get("x-forwarded-uri"))
+        got = answers.parse_terminal_uri(request.headers.get("x-forwarded-uri"), roots())
         if got is None:
             return None
         path, args = got
@@ -453,11 +460,11 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         except ValueError:
             form = {}
         mode, tool, folder = ((form.get(k) or [""])[0] for k in ("mode", "tool", "folder"))
-        words = answers.terminal_words(mode, tool, folder)
+        words = answers.terminal_words(mode, tool, folder, roots())
         if words is None:
             return _no_store(PlainTextResponse("no such tool, or a folder that is not one", status_code=400))
         token = launches.issue(session_login(request.headers, settings), words)
-        resp = RedirectResponse(answers.terminal_link(answers.terminal_args(mode, tool, token, folder)), status_code=303)
+        resp = RedirectResponse(answers.terminal_link(answers.terminal_args(mode, tool, token, folder, roots())), status_code=303)
         resp.headers["Referrer-Policy"] = "no-referrer"
         log.warning("terminal: %s %s opened from its own page%s", mode, tool, " (remote)" if rem else "")
         return _no_store(resp)
@@ -496,7 +503,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             form = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True, max_num_fields=4)
         except ValueError:
             form = {}
-        nxt = codepage.deep_link((form.get("next") or [""])[0]) if app == CODE else answers.terminal_next((form.get("next") or [""])[0])
+        nxt = codepage.deep_link((form.get("next") or [""])[0]) if app == CODE else answers.terminal_next((form.get("next") or [""])[0], roots())
         if wait := throttle.retry_after():
             return _unlock_page(settings, rem, f"Too many wrong passwords. Try again in {wait} s.", 429, wait, app=app, next_link=nxt)
         password = (form.get("password") or [""])[0]
@@ -552,20 +559,52 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             return _no_store(PlainTextResponse("locked", status_code=401))
         host = settings.app_host(TERMINAL, rem)
         token = unlock_handoff.issue(host, code["iat"], login, s=sess["iat"])
-        # ?open=TOOL[&dir=FOLDER]: the terminal panel's Open menu — a window of that tool, after the hand-off (answers.py)
+        # ?open=TOOL[&dir=FOLDER][&launch=TOKEN]: the terminal panel's Open menu — a window of that tool, after the
+        # hand-off (answers.py). The token is made only by the panel's own POST (code_terminal_launch): an address
+        # alone — a link in an answer, a preview — never makes one, and without one the terminal asks "Open … here?"
         nxt = ""
         if "open" in request.query_params:
-            # (this request is the Code page's own — Sec-Fetch-Site same-origin, its unlock — on your choice in its
-            # Open menu: the launch token is made here, for exactly these words)
             tool, folder = request.query_params.get("open", ""), request.query_params.get("dir")
-            words = answers.terminal_words("open", tool, folder)
+            words = answers.terminal_words("open", tool, folder, roots())
             if words is None:
                 return _no_store(PlainTextResponse("no such tool, or a folder that is not one", status_code=400))
-            launch = launches.issue(login, words)
-            nxt = "&next=" + quote(answers.terminal_link(answers.terminal_args("open", tool, launch, folder)), safe="")
+            launch = request.query_params.get("launch", "")
+            if not launches.valid(launch, login, words, sessions.not_before):
+                launch = answers.ASK_TOKEN
+            nxt = "&next=" + quote(answers.terminal_link(answers.terminal_args("open", tool, launch, folder, roots())), safe="")
         resp = RedirectResponse(f"{settings.origin(TERMINAL, rem)}/.bn/unlock-callback?t={quote(token, safe='')}{nxt}", status_code=303)
         resp.headers["Referrer-Policy"] = "no-referrer"
         return _no_store(resp)
+
+    # --- the terminal panel's Open menu: POST /.bn/terminal-launch on the code host (Caddy → here, after its check) — the
+    # --- Code page's own script on your choice (its Origin, X-Requested-With: no other site can send that without a
+    # --- preflight, never allowed), a launch token for exactly those words: the panel then loads /.bn/terminal with it
+    async def code_terminal_launch(request: Request) -> Response:
+        if (deny := code_guard(request)) is not None:
+            return deny
+        rem = remote(request)
+        if request.headers.get("origin") != settings.origin(CODE, rem) or request.headers.get("x-requested-with") != "bn-code" \
+                or request.headers.get("sec-fetch-site", "same-origin") != "same-origin":
+            log.warning("code → terminal launch refused: not the Code page's own request (Origin %s)", request.headers.get("origin", "none")[:100])
+            return _no_store(JSONResponse({"error": "cross-site request refused"}, status_code=403))
+        if not settings.terminal_on(rem):
+            return _no_store(JSONResponse({"error": "the terminal is off here"}, status_code=404))
+        length = request.headers.get("content-length", "")
+        if not length.isdigit() or not length.isascii() or int(length) > 4096:
+            return _no_store(JSONResponse({"error": "request too large or without a length"}, status_code=413))
+        try:
+            data = json.loads(await request.body())
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return _no_store(JSONResponse({"error": "not a JSON object"}, status_code=400))
+        tool, folder = data.get("tool"), data.get("dir") or None
+        words = answers.terminal_words("open", tool, folder, roots()) if isinstance(tool, str) else None
+        if words is None:
+            return _no_store(JSONResponse({"error": "no such tool, or a folder that is not one"}, status_code=400))
+        token = launches.issue(session_login(request.headers, settings), words)
+        q = [("open", tool)] + ([("dir", folder)] if folder else []) + [("launch", token)]
+        return _no_store(JSONResponse({"url": "/.bn/terminal?" + urlencode(q)}))
 
     # --- the Code page's Import sheet asks the computer: POST /.bn/sessions on the code host (Caddy → here, after the
     # --- code host's check) — a look, a read of rows of a look, suggestions, a copy that keeps a possible secret — with
@@ -664,7 +703,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if not unlocks[TERMINAL].valid(cookie, login):   # signed out, a new password, or the 12 hours are over
             return _error_page("The Code page's unlock has ended (Sign out, a new password, or 12 hours). Unlock it again.",
                                401, again, "Back to the Code page")
-        resp = RedirectResponse(answers.terminal_next(request.query_params.get("next")) or "/", status_code=303)
+        resp = RedirectResponse(answers.terminal_next(request.query_params.get("next"), roots()) or "/", status_code=303)
         if not authed(request):
             # remote: this host has no session cookie of its own yet — the token carries the portal session's start
             # (as the session hand-off does); locally the session cookie covers every app host already
@@ -1170,11 +1209,11 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         if not isinstance(data, dict):
             return _no_store(JSONResponse({"error": "not a JSON object"}, status_code=400))
         mode, tool, folder = data.get("mode"), data.get("tool"), data.get("folder") or None
-        words = answers.terminal_words(mode, tool, folder) if isinstance(mode, str) and isinstance(tool, str) else None
+        words = answers.terminal_words(mode, tool, folder, roots()) if isinstance(mode, str) and isinstance(tool, str) else None
         if words is None:
             return _no_store(JSONResponse({"error": "no such tool, or a folder that is not one"}, status_code=400))
         token = launches.issue(session_login(request.headers, settings), words)
-        url = settings.origin(TERMINAL, rem) + answers.terminal_link(answers.terminal_args(mode, tool, token, folder))
+        url = settings.origin(TERMINAL, rem) + answers.terminal_link(answers.terminal_args(mode, tool, token, folder, roots()))
         return _no_store(JSONResponse({"url": url}))
 
     # --- who answers (answers.py): the pickers of the Terminal and Chat tabs and Settings › Your AI subscriptions —
@@ -1411,6 +1450,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             Route("/auth/code-spend", code_spend, methods=["GET"]),
             Route("/auth/code-answers", code_answers, methods=["GET"]),
             Route("/auth/code-terminal", code_terminal, methods=["GET"]),
+            Route("/auth/code-terminal-launch", code_terminal_launch, methods=["POST"]),
             Route("/auth/code-sessions", code_sessions, methods=["POST"]),
             Route("/auth/code-preview", code_preview, methods=["GET"]),
             Route("/auth/preview-callback", preview_callback, methods=["GET"]),

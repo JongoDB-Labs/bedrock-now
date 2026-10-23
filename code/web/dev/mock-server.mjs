@@ -1760,6 +1760,13 @@ const body = (req, max = 30 * 1024 * 1024) =>
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+// the terminal panel's Open menu: a launch token for the page's own request only (the portal's code_terminal_launch)
+async function bnTerminalLaunch(req, res) {
+  if (req.headers['x-requested-with'] !== 'bn-code') return json(res, 403, { error: 'cross-site request refused' });
+  const b = await jsonBody(req);
+  const q = new URLSearchParams({ open: String(b?.tool ?? ''), ...(b?.dir ? { dir: String(b.dir) } : {}), launch: `${Math.floor(Date.now() / 1000)}-0123456789abcdef-${'0'.repeat(32)}` });
+  return json(res, 200, { url: `/.bn/terminal?${q.toString()}` });
+}
 // (read once per request, then kept: more than one handler may look at it)
 const jsonBody = async (req) => {
   if (req.bnBody !== undefined) return req.bnBody;
@@ -2882,6 +2889,7 @@ function bn(req, res, url) {
     const id = url.searchParams.get('session') || '';
     return json(res, 200, { session: id, rows: spendRows.get(id) ?? [], key: { ...keyBudget, error: null } });
   }
+  if (url.pathname === '/.bn/terminal-launch' && req.method === 'POST') return bnTerminalLaunch(req, res);
   if (url.pathname === '/.bn/answers') {
     // your AI subscriptions' tools in the sandbox (the portal's answers.py): none signed in here; a hostile name in
     // HOSTILE_MODE (the panel's Open menu shows it as text)

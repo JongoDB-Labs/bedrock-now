@@ -14,7 +14,8 @@
 # TOKEN: a launch token, <iat>-<16 hex>-<32 hex> — the portal makes one only on your click (in its own page, the Code
 # page's hand-off, or the terminal host's own "Open … here?" page) and lets no request to the terminal carry words
 # without a valid one for exactly these words (portal/portal/answers.py, app.py launch_gate); here only its form is
-# checked (this side cannot tell a real one: the gate did). Each acts once (a reconnect only attaches). DIR: /workspace
+# checked (this side cannot tell a real one: the gate did). Each acts once, and only within 10 minutes of when it was
+# made (its <iat>: a reconnect — or the same address after the sandbox restarted — only attaches). DIR: /workspace
 # or a folder below it, or one of the project folders of your computer (BN_CODE_ROOTS); default /workspace. Anything
 # else — more words, other words, a folder elsewhere — is the plain attach above.
 set -uo pipefail
@@ -42,16 +43,26 @@ if [ "$ok" = 0 ] && [ -n "${BN_CODE_ROOTS:-}" ]; then
 fi
 [ "$ok" = 1 ] || plain
 
-# the window: the tool's name, and the folder's when it is not the workspace
+# the window: the tool's name, and — when it is not the workspace — the folder's (letters, digits, _ and - only: a "." or
+# ":" would be read as a pane or a window in a tmux target) and a short hash of its path (two folders of one name
+# stay two windows). Claude on your plan's is claude-sub (the first window, claude, is claude-bedrock's).
 name="$tool"
-if [ "$real" != "$WS" ]; then name="$tool-$(printf '%s' "${real##*/}" | LC_ALL=C tr -c 'A-Za-z0-9_.-' '-' | cut -c1-24)"; fi
+[ "$tool" != claude ] || name=claude-sub
+if [ "$real" != "$WS" ]; then
+  name="$name-$(printf '%s' "${real##*/}" | LC_ALL=C tr -c 'A-Za-z0-9_-' '-' | cut -c1-20)-$(printf '%s' "$real" | sha256sum | cut -c1-6)"
+fi
+# a token acts once, and only while fresh (made at most 10 minutes ago, not ahead of this clock by more than 30 s)
 fresh=0
-mkdir -p "$STATE" 2>/dev/null && chmod 700 "$STATE" 2>/dev/null && mkdir "$STATE/$token" 2>/dev/null && fresh=1
+iat="${token%%-*}" now="$(date +%s)"
+if [ $((now - 10#$iat)) -le 600 ] && [ $((10#$iat - now)) -le 30 ]; then
+  mkdir -p "$STATE" 2>/dev/null && chmod 700 "$STATE" 2>/dev/null && mkdir "$STATE/$token" 2>/dev/null && fresh=1
+fi
 ensure
 if [ "$fresh" = 1 ]; then
   # (-S: the window of that name if there is one; the command is fixed words — TOOL is one of the list above — and the
-  # image's own subscriptions by its full path: never one put in ~/.local/bin, which comes first on PATH)
-  tmux new-window -S -d -t "=$S:" -n "$name" -c "$real" "/usr/local/bin/subscriptions open $tool; exec bash" 2>/dev/null || plain
+  # image's own subscriptions by its full path: never one put in ~/.local/bin, which comes first on PATH; the folder
+  # with its "#" doubled: tmux reads -c as a format)
+  tmux new-window -S -d -t "=$S:" -n "$name" -c "${real//#/##}" "/usr/local/bin/subscriptions open $tool; exec bash" 2>/dev/null || plain
 fi
 if [ "$mode" = open ]; then
   [ "$fresh" = 0 ] || tmux select-window -t "=$S:=$name" 2>/dev/null || true

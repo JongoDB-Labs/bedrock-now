@@ -40,7 +40,7 @@
       { label: "Your AI subscriptions — each signs in with its own flow", items: tools }].filter((g) => g.items.length);
   }
   // chatOptions(DATA) -> the Chat tab's groups: Open WebUI, Bedrock and OpenRouter models, your API keys (next), the
-  // tools themselves (they open here), and the subscriptions as Chat models (greyed until the next release, each saying how)
+  // tools themselves (they open here), and the subscriptions as Chat models (greyed: planned, each saying how and under which terms)
   function chatOptions(d) {
     const here = Boolean(d && d.terminal && d.terminal.here);
     const models = d && Array.isArray(d.models) ? d.models : [];
@@ -56,7 +56,7 @@
         return { value: `tool:${t.id}`, label: `${t.name} · ${s.word}`, disabled: !s.ok, title: s.why || `${t.provider}: ${t.plan}. You type into ${t.name} itself.` };
       }) },
       { label: "Your AI subscriptions as Chat models", items: tools.filter((t) => t.chat_model !== "yes").map((t) => (
-        { value: `as-model:${t.id}`, label: `${t.name} — as a Chat model: next release`, disabled: true, title: t.chat_why || "" })) },
+        { value: `as-model:${t.id}`, label: `${t.name} — as a Chat model: planned`, disabled: true, title: t.chat_why || "" })) },
     ].filter((g) => g.items.length);
   }
   const bare = (base) => String(base).split(/[?#]/)[0];
@@ -137,7 +137,10 @@
   const cFolder = el("select", { id: "answers-folder", "aria-label": "Folder the tool works in" });
   const cFolderWrap = el("span", { class: "answers-group answers-folder" }, el("label", { for: "answers-folder", text: "in" }), cFolder);
   const cNote = el("span", { class: "answers-note", id: "answers-chat-note" });
-  const cWrap = el("span", { class: "answers-group" }, el("label", { for: "answers-chat", text: PHONE.matches ? "" : "Who answers" }), cSelect, cFolderWrap, cNote);
+  // a tool chosen before this page loaded is not started again by itself: "Reopen …" (a click, as everything that starts)
+  const cReopen = el("button", { type: "button", class: "action", id: "answers-chat-reopen" });
+  cReopen.hidden = true;
+  const cWrap = el("span", { class: "answers-group" }, el("label", { for: "answers-chat", text: PHONE.matches ? "" : "Who answers" }), cSelect, cReopen, cFolderWrap, cNote);
   bar.append(tWrap, cWrap);
 
   function toolFrame() {
@@ -151,14 +154,15 @@
   }
   // what the Chat tab shows: Open WebUI, or the tool's own screen
   function showChat() {
-    const tool = saved.chat.startsWith("tool:") && data && data.terminal && data.terminal.here;
-    const owui = document.querySelector('#frames iframe[data-app="chat"]');
     const tf = document.querySelector('#frames iframe[data-app="chat-tool"]');
+    // (the tool's screen only once it was opened in this page: after a reload, Open WebUI and "Reopen …")
+    const tool = saved.chat.startsWith("tool:") && Boolean(tf) && data && data.terminal && data.terminal.here;
+    const owui = document.querySelector('#frames iframe[data-app="chat"]');
     if (owui) owui.hidden = Boolean(tool);
     if (tf) tf.hidden = !tool;
     cFolderWrap.hidden = !tool;
     const t = tool && data.tools.find((x) => `tool:${x.id}` === saved.chat);
-    cNote.textContent = t ? `${t.name} itself, on ${t.plan}: you type into it. Its own sign-in; bedrock-now never sees it. As a Chat model: ${t.chat_model === "yes" ? "yes" : t.chat_why || "next release"}`
+    cNote.textContent = t ? `${t.name} itself, on ${t.plan}: you type into it. Its own sign-in; bedrock-now never sees it. As a Chat model: ${t.chat_model === "yes" ? "yes" : t.chat_why || "planned"}`
       : saved.chat.startsWith("model:") ? "A new chat with this model in Open WebUI." : "";
   }
   function openTool(id) {
@@ -167,8 +171,16 @@
       saved.chat = "owui"; save(); cSelect.value = "owui"; showChat();
     });
   }
+  cReopen.addEventListener("click", () => {
+    const id = cReopen.dataset.tool;
+    if (!id) return;
+    cReopen.hidden = true;
+    saved.chat = `tool:${id}`; save(); cSelect.value = saved.chat;
+    openTool(id);
+  });
   cSelect.addEventListener("change", () => {
     const v = cSelect.value;
+    cReopen.hidden = true;
     if (v.startsWith("model:")) {
       saved.chat = v; save();
       const owui = document.querySelector('#frames iframe[data-app="chat"]');
@@ -209,9 +221,15 @@
       // (a choice this page no longer offers — a model turned off, a tool left out — is Open WebUI again)
       if (d && cSelect.value !== saved.chat) { saved.chat = cSelect.value || "owui"; save(); }
       folders(d);
-      // a tool chosen earlier comes back (its window is still there; a new token only selects it)
-      if (saved.chat.startsWith("tool:") && !document.querySelector('#frames iframe[data-app="chat-tool"]') && cSelect.value === saved.chat) openTool(saved.chat.slice(5));
-      else showChat();
+      // a tool chosen earlier is offered again, never started by itself: Reopen … (its window is still in the terminal)
+      if (saved.chat.startsWith("tool:") && !document.querySelector('#frames iframe[data-app="chat-tool"]') && cSelect.value === saved.chat) {
+        const id = saved.chat.slice(5), t = d && d.tools.find((x) => x.id === id);
+        cReopen.dataset.tool = id;
+        cReopen.textContent = `Reopen ${t ? t.name : id}`;
+        cReopen.hidden = false;
+        cSelect.value = "owui";
+      }
+      showChat();
     }
   }
 

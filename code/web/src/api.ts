@@ -1727,6 +1727,14 @@ export function normAnswers(raw: unknown): BnAnswers {
   }
   return { here: obj(o.terminal)?.here === true, tools };
 }
+/** A launch token for the terminal panel's Open menu (POST /.bn/terminal-launch: the portal makes it only for this
+ *  page's own request, X-Requested-With) -> the panel's address with it (/.bn/terminal?open=…&launch=…). */
+export async function terminalLaunch(tool: string, dir: string | null): Promise<string> {
+  const o = await request('POST', '/.bn/terminal-launch', { tool, ...(dir ? { dir } : {}) }, { 'X-Requested-With': 'bn-code' });
+  const url = str(o.url);
+  if (!/^\/\.bn\/terminal\?open=[A-Za-z]{1,20}(&dir=[^&#]{1,2000})?&launch=[0-9]{10}-[0-9a-f]{16}-[0-9a-f]{32}$/.test(url)) throw new ApiError(502, 'The portal gave no address for the terminal.');
+  return url;
+}
 export async function getModels(): Promise<BnModels> {
   return normModels(await request('GET', '/.bn/models'));
 }

@@ -4,6 +4,7 @@
 as bn-session's), and Settings' two actions for the update helper (Check again, a tool's own Sign out)."""
 
 import json
+import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -24,7 +25,8 @@ TERM_HOST = "terminal.bedrock-now.localhost"
 TERM = f"http://{TERM_HOST}"
 CODE_HOST = "code.bedrock-now.localhost"
 CODE = f"http://{CODE_HOST}"
-CATALOG = Path(__file__).resolve().parents[2] / "catalog" / "ai-tools.tsv"
+# (the repository's, or the copy the image's test stage gets: portal/Dockerfile, BN_REPO_DIR)
+CATALOG = Path(os.environ.get("BN_REPO_DIR") or Path(__file__).resolve().parents[2]) / "catalog" / "ai-tools.tsv"
 H = {"X-Requested-With": "bedrock-now"}
 
 
@@ -80,8 +82,19 @@ def test_only_the_sandboxs_words_are_kept(s):
         "garbage"]})
     t = {r["id"]: r for r in answers.tools(s.catalog_dir, s.status_dir)["tools"]}
     assert t["claude"]["signed_in"] == "yes" and t["claude"]["kind_words"] == "Claude Max" and t["claude"]["version"] == "2.1.309"
-    assert t["codex"] | {} == {**t["codex"], "version": "", "signed_in": "unknown", "kind": "", "kind_words": "", "how": "none"}
-    assert t["grok"]["installed"] is False and t["grok"]["signed_in"] == "no" and t["grok"]["version"] == ""
+    # (how a tool tells is its own — Codex: its status command — whatever the sandbox wrote)
+    assert t["codex"] | {} == {**t["codex"], "version": "", "signed_in": "unknown", "kind": "", "kind_words": "", "how": "command"}
+    assert t["grok"]["installed"] is False and t["grok"]["signed_in"] == "no" and t["grok"]["version"] == "" and t["grok"]["how"] == "none"
+    # a kind another tool would say is not this one's: dropped (Google for Copilot, ChatGPT for Grok)
+    _status(s, {"version": 1, "written_at": 1792760000, "terminal": "running", "tools": [
+        {"id": "copilot", "installed": True, "version": "1.0.103", "signed_in": "yes", "kind": "google", "how": "none"},
+        {"id": "grok", "installed": True, "version": "1.0.67", "signed_in": "yes", "kind": "chatgpt", "how": "file"}]})
+    st = answers.read_status(s.status_dir)["tools"]
+    assert st["copilot"]["kind"] == "" and st["grok"]["kind"] == "" and st["grok"]["how"] == "file"
+    _status(s, {"version": 1, "written_at": 1792760000, "terminal": "running", "tools": [
+        {"id": "claude", "installed": True, "version": "2.1.309", "signed_in": "yes", "kind": "claude-max", "how": "command"},
+        {"id": "codex", "installed": True, "version": "<script>", "signed_in": "maybe", "kind": tok, "how": "rm -rf"},
+        {"id": "grok", "installed": False, "version": "1.0.67", "signed_in": "yes", "kind": "xai", "how": "file"}]})
     assert t["gemini"]["installed"] is None          # not in the file: not checked yet
     assert tok not in json.dumps(answers.tools(s.catalog_dir, s.status_dir))
     # not JSON, a link, too large: nothing
@@ -113,7 +126,14 @@ TOK = "1792760000-0123456789abcdef-" + "0" * 32   # a launch token's form (not a
     (["open", "codex", TOK], True),
     (["chat", "claude", TOK], True),
     (["open", "shell", TOK, "/workspace/app"], True),
-    (["open", "codex", TOK, "/home/me/src/app"], True),
+    (["open", "codex", TOK, "/workspace/a/b/c/d"], True),
+    (["open", "codex", TOK, "/home/me/src/app"], False),      # (a project folder of this computer only when it is one: below)
+    (["open", "codex", TOK, "/workspace/a/b/c/d/e"], False),
+    (["open", "codex", TOK, "/workspace/.git"], False),
+    (["open", "codex", TOK, "/workspace/" + "x" * 300], False),
+    (["open", "codex", TOK, "/workspace/a\u202egnp.exe"], False),
+    (["open", "codex", TOK, "/workspace/a\u200bb"], False),
+    (["open", "codex", TOK, "/workspace/a\ud800"], False),
     (["run", "codex", TOK], False),
     (["open", "evil", TOK], False),
     (["open", "codex", "0123456789abcdef"], False),
@@ -125,8 +145,28 @@ TOK = "1792760000-0123456789abcdef-" + "0" * 32   # a launch token's form (not a
 ])
 def test_the_terminals_words_follow_bn_sessions_rules(words, ok):
     assert (answers.terminal_args(*words) is not None) is ok
-    link = "/?" + "&".join(f"arg={quote(w, safe='')}" for w in words)
+    try:
+        link = "/?" + "&".join(f"arg={quote(w, safe='')}" for w in words)
+    except UnicodeEncodeError:   # (a lone surrogate: no address can carry it)
+        return
     assert (answers.terminal_next(link) is not None) is ok
+
+
+def test_a_project_folder_of_this_computer_is_one_the_pickers_may_name():
+    roots = ("/home/me/src/app",)
+    assert answers.terminal_args("open", "codex", TOK, "/home/me/src/app", roots) is not None
+    assert answers.terminal_args("open", "codex", TOK, "/home/me/src/app/inner", roots) is None
+    assert answers.terminal_next(f"/?arg=open&arg=codex&arg={TOK}&arg=%2Fhome%2Fme%2Fsrc%2Fapp", roots) is not None
+    assert answers.terminal_next(f"/?arg=open&arg=codex&arg={TOK}&arg=%2Fhome%2Fme%2Fsrc%2Fapp") is None
+
+
+def test_the_words_are_read_only_as_written_one_way():
+    good = f"/?arg=open&arg=codex&arg={TOK}&arg=%2Fworkspace%2Fapp"
+    assert answers.terminal_next(good) == good
+    for other in (f"/?arg=open&arg=codex&arg={TOK}&arg=%2fworkspace%2fapp", f"/?arg=open&arg=codex&arg={TOK}&arg=/workspace/app",
+                  f"/?arg=open;arg=codex;arg={TOK}", f"/?arg=open&arg=codex&arg={TOK}&arg=%2Fworkspace%2Fa%20b",
+                  f"/?arg=%6Fpen&arg=codex&arg={TOK}"):
+        assert answers.parse_terminal_uri(other) == ("/", None), other
 
 
 def test_terminal_next_keeps_nothing_else():
@@ -231,6 +271,10 @@ def test_the_portals_own_page_gets_a_token_on_a_click(s):
         assert post({"mode": "open", "tool": "codex"}, {"Origin": "http://evil.example"}).status_code == 403
         assert post({"mode": "open", "tool": "rm"}).status_code == 400
         assert post({"mode": "chat", "tool": "grok", "folder": "/workspace/../x"}).status_code == 400
+        assert post({"mode": "chat", "tool": "grok", "folder": "/workspace/a\u202eb"}).status_code == 400
+        r = c.post("/api/terminal/launch", content=b'{"mode": "chat", "tool": "grok", "folder": "/workspace/\\ud800"}',
+                   headers={**H, "Origin": PORTAL, "Cookie": f"{COOKIE}={tok}", "Content-Type": "application/json"})
+        assert r.status_code == 400   # (a lone surrogate: refused, never a server error)
         r = post({"mode": "chat", "tool": "grok", "folder": "/workspace/app"})
         assert r.status_code == 200
         url = r.json()["url"]
@@ -274,15 +318,49 @@ def test_the_code_pages_open_menu_goes_through_the_hand_off(s):
         ut = r.cookies.get(CODE_COOKIE)
         c.cookies.clear()
         hdr = {"Host": CODE_HOST, "Cookie": f"{COOKIE}={tok}; {CODE_COOKIE}={ut}", "Sec-Fetch-Site": "same-origin"}
-        r = c.get("/auth/code-terminal", params={"open": "codex", "dir": "/workspace/app", "t": "1"}, headers=hdr)
-        assert r.status_code == 303
-        loc = r.headers["location"]
-        assert loc.startswith(f"{TERM}/.bn/unlock-callback?t=") and "&next=%2F%3Farg%3Dopen%26arg%3Dcodex%26arg%3D" in loc
-        r = c.get(f"/auth/terminal-unlock-callback?{loc.split('?', 1)[1]}", headers={"Host": TERM_HOST, "Cookie": f"{COOKIE}={tok}"})
-        assert r.status_code == 303 and r.headers["location"].startswith("/?arg=open&arg=codex&arg=") \
-            and r.headers["location"].endswith("&arg=%2Fworkspace%2Fapp")
-        term_ut = r.cookies.get("bn_terminal")
-        assert _verify(c, tok, term_ut, r.headers["location"]).status_code == 200   # its token: valid for those words
+
+        def hand_off(params):
+            r = c.get("/auth/code-terminal", params=params, headers=hdr)
+            assert r.status_code == 303
+            loc = r.headers["location"]
+            assert loc.startswith(f"{TERM}/.bn/unlock-callback?t=") and "&next=%2F%3Farg%3Dopen%26arg%3Dcodex%26arg%3D" in loc
+            r = c.get(f"/auth/terminal-unlock-callback?{loc.split('?', 1)[1]}", headers={"Host": TERM_HOST, "Cookie": f"{COOKIE}={tok}"})
+            assert r.status_code == 303 and r.headers["location"].startswith("/?arg=open&arg=codex&arg=") \
+                and r.headers["location"].endswith("&arg=%2Fworkspace%2Fapp")
+            return r.cookies.get("bn_terminal"), r.headers["location"]
+
+        # an address alone (a link in an answer, a preview — a same-origin GET too): no token is made, the terminal
+        # asks "Open … here?" (its page), and nothing starts
+        term_ut, link = hand_off({"open": "codex", "dir": "/workspace/app", "t": "1"})
+        assert f"&arg={answers.ASK_TOKEN}&" in link
+        page = _verify(c, tok, term_ut, link)
+        assert page.status_code == 403 and "Open" in page.text
+        assert _verify(c, tok, term_ut, link.replace("/?", "/ws?"), ws=True).status_code == 403
+        # the panel's own request makes one (its Origin and X-Requested-With), and the hand-off carries it
+        mint = lambda body, **h: c.post("/auth/code-terminal-launch", json=body,
+                                        headers={"Host": CODE_HOST, "Cookie": hdr["Cookie"], "Origin": CODE, "X-Requested-With": "bn-code", **h})
+        r = mint({"tool": "codex", "dir": "/workspace/app"})
+        assert r.status_code == 200
+        url = r.json()["url"]
+        assert url.startswith("/.bn/terminal?open=codex&dir=%2Fworkspace%2Fapp&launch=")
+        from urllib.parse import parse_qsl
+        term_ut, link = hand_off(dict(parse_qsl(url.split("?", 1)[1])) | {"t": "2"})
+        assert answers.ASK_TOKEN not in link
+        assert _verify(c, tok, term_ut, link).status_code == 200   # its token: valid for those words
+        # another tool's or folder's token, a forged one: the question again
+        other = dict(parse_qsl(mint({"tool": "grok"}).json()["url"].split("?", 1)[1]))
+        _, link = hand_off({"open": "codex", "dir": "/workspace/app", "launch": other["launch"]})
+        assert f"&arg={answers.ASK_TOKEN}&" in link
+        # not the panel's own request: refused
+        assert mint({"tool": "codex"}, **{"X-Requested-With": "bedrock-now"}).status_code == 403
+        assert mint({"tool": "codex"}, Origin=PORTAL).status_code == 403
+        assert mint({"tool": "codex"}, **{"Sec-Fetch-Site": "cross-site"}).status_code == 403
+        assert c.post("/auth/code-terminal-launch", json={"tool": "codex"}, headers={"Host": CODE_HOST, "Origin": CODE, "X-Requested-With": "bn-code"}).status_code == 401
+        assert mint({"tool": "evil"}).status_code == 400
+        assert mint({"tool": "codex", "dir": "/etc"}).status_code == 400
+        r = c.post("/auth/code-terminal-launch", content=b'{"tool": "codex", "dir": "/workspace/\\ud800"}',
+                   headers={"Host": CODE_HOST, "Cookie": hdr["Cookie"], "Origin": CODE, "X-Requested-With": "bn-code", "Content-Type": "application/json"})
+        assert r.status_code == 400
         # only from the Code page itself
         assert c.get("/auth/code-terminal", params={"open": "codex"}, headers={**hdr, "Sec-Fetch-Site": "same-site"}).status_code == 403
         assert c.get("/auth/code-terminal", params={"open": "evil"}, headers=hdr).status_code == 400

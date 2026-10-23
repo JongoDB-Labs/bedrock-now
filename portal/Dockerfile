@@ -40,7 +40,7 @@ COPY requirements-dev.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore --require-hashes -r requirements-dev.txt
 COPY tests ./tests
 # (a wildcard in every part: without the context nothing matches, and nothing is copied)
-COPY --from=repo catalo[g]/settings*.tsv /repo/catalog/
+COPY --from=repo catalo[g]/settings*.tsv catalo[g]/ai-tools.tsv /repo/catalog/
 COPY --from=repo README.m[d] /repo/
 COPY --from=repo doc[s]/*.md /repo/docs/
 ENV BN_REPO_DIR=/repo

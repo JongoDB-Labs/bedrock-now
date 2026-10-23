@@ -3338,9 +3338,13 @@ export async function terminalWindow(root = WS_ROOT, { tmux = tmuxBin() } = {}) 
 // tmux runs an after-capture-pane or after-display-message hook each time those commands run: with one set, it refuses.
 export const CAPTURE = Object.freeze({ linesDefault: 200, linesMax: 2000, readMax: 4 << 20, textMax: 64 << 10, lineMax: 4000 });
 const CAPTURE_HOOKS = ['after-capture-pane', 'after-display-message'];
-// what display-message prints for the pane: is its session exactly `claude` (1/0), its id, its window's index, then the
-// free texts (its command, the window's name: shown only); and the client's locale (UTF-8: no "_" for a character)
-export const CAPTURE_FORMAT = `#{==:#{session_name},${TMUX_SESSION}}|#{pane_id}|#{window_index}|#{pane_current_command}|#{window_name}`;
+// what display-message prints for the pane: is its session exactly `claude` (1/0), its id, its window's index, whether
+// it was started for one of your subscriptions' tools (1/0: bn-session's `subscriptions open …`), then the free texts
+// (its command, the window's name: shown only); and the client's locale (UTF-8: no "_" for a character)
+export const CAPTURE_FORMAT = `#{==:#{session_name},${TMUX_SESSION}}|#{pane_id}|#{window_index}|#{m:*/usr/local/bin/subscriptions open *,#{pane_start_command}}|#{pane_current_command}|#{window_name}`;
+// A window of a subscription's tool is never read: its screen may show a sign-in's one-time code or link (or a token a
+// setup command prints) — those windows (started for one: the flag above), or a pane running one of their commands now
+export const CAPTURE_REFUSED = Object.freeze(['claude-sub', 'codex', 'gemini', 'copilot', 'cursor-agent', 'grok', 'subscriptions']);
 export const CAPTURE_ENV = Object.freeze({ LC_ALL: 'C.UTF-8' });
 const PANE_ID = /^%[0-9]{1,6}$/;
 
@@ -3452,10 +3456,14 @@ export async function terminalCapture(req = {}, { tmux = tmuxBin() } = {}) {
   // printable separator, and a UTF-8 locale for the client (with LANG=C tmux prints a control character as "_")
   const d = await run(tmux, ['display-message', '-p', '-t', asked ?? `=${TMUX_SESSION}:`, CAPTURE_FORMAT], 10000, 4000, CAPTURE_ENV);
   if (d.code !== 0 || d.cut) throw new Error(asked ? 'no such pane in the terminal' : `tmux: ${printable(d.err, 200) || `exit ${d.code}`}`);
-  const m = d.out.match(/^1\|(%[0-9]{1,6})\|([0-9]{1,6})\|([^\n]*)\n?$/);
+  const m = d.out.match(/^1\|(%[0-9]{1,6})\|([0-9]{1,6})\|([01])\|([^\n]*)\n?$/);
   if (!m || (asked !== null && m[1] !== asked)) throw new Error('no such pane in the terminal');
-  const [, pane, index, rest] = m;
+  const [, pane, index, tool, rest] = m;
   const bar = rest.indexOf('|');
+  const cmd = bar < 0 ? rest : rest.slice(0, bar);
+  if (tool === '1' || CAPTURE_REFUSED.includes(cmd)) {
+    throw new Error('that window runs one of your AI subscriptions\' tools, whose screen may show a sign-in code: it is not read (copy what you need from it yourself)');
+  }
   // -p: to stdout; -J: wrapped lines joined; -S -N: from N lines back in the history (and the screen below them)
   const r = await runTail(tmux, ['capture-pane', '-p', '-J', '-S', `-${n}`, '-t', pane], 10000, CAPTURE.readMax, CAPTURE_ENV);
   if (r.code !== 0) throw new Error(`tmux: ${printable(r.err, 200) || `exit ${r.code}`}`);

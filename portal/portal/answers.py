@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import unicodedata
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote_plus, urlencode
 
@@ -27,6 +28,13 @@ KINDS = {"claude-pro": "Claude Pro", "claude-max": "Claude Max", "claude-team": 
          "third-party": "a cloud provider", "access-token": "an access token", "bedrock-key": "an Amazon Bedrock key",
          "google": "Google", "vertex-ai": "Vertex AI", "cursor": "Cursor", "xai": "xAI"}
 SANDBOX = ("running", "off", "down", "error")
+# what each tool can say of its login (terminal/bin/subscriptions' state): its kinds, and how it says it — anything
+# else from the sandbox is not taken (lib/subscriptions.sh checks the same)
+TOOL_KINDS = {"claude": ("claude-pro", "claude-max", "claude-team", "claude-enterprise", "claude.ai", "api-key", "oauth-token",
+                         "api-key-helper", "third-party"),
+              "codex": ("chatgpt", "api-key", "access-token", "bedrock-key"), "cursor": ("cursor",),
+              "gemini": ("google", "vertex-ai", "api-key"), "grok": ("xai",), "copilot": ()}
+TOOL_HOW = {"claude": "command", "codex": "command", "cursor": "command", "gemini": "file", "grok": "file", "copilot": "none"}
 VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,39}")
 TERMS = re.compile(r"https://[A-Za-z0-9.-]{1,100}/[\x21-\x7e]{0,300}")
 MAX_STATUS = 16 * 1024
@@ -79,8 +87,8 @@ def read_status(status_dir: Path) -> dict:
         installed = t.get("installed") is True
         version = t.get("version") if isinstance(t.get("version"), str) and VERSION.fullmatch(t.get("version")) else ""
         signed = t.get("signed_in") if t.get("signed_in") in ("yes", "no", "unknown") else "unknown"
-        kind = t.get("kind") if t.get("kind") in KINDS else ""
-        how = t.get("how") if t.get("how") in ("command", "file", "none") else "none"
+        kind = t.get("kind") if t.get("kind") in TOOL_KINDS[t["id"]] else ""
+        how = TOOL_HOW[t["id"]] if installed else "none"   # (what this tool's check is, whatever the sandbox wrote)
         tools[t["id"]] = {"installed": installed, "version": version if installed else "",
                           "signed_in": signed if installed else "no", "kind": kind if installed else "", "how": how}
         if len(tools) >= len(TOOL_IDS):
@@ -139,27 +147,48 @@ def build(s, remote: bool, models: dict | None = None) -> dict:
 # --- once per token.
 TERMINAL_TOOLS = ("bedrock", "claude", "codex", "gemini", "copilot", "cursor", "grok", "shell")
 TOKEN = re.compile(r"([0-9]{10})-([0-9a-f]{16})-([0-9a-f]{32})")
-FOLDER = re.compile(r"/[^\x00-\x1f\x7f]{0,511}")
+# never valid (made at 0, before any Sign out): the words with it lead to the terminal's own "Open … here?" page
+ASK_TOKEN = "0000000000-" + "0" * 16 + "-" + "0" * 32
+FOLDER_MAX = 255   # bytes
+# a folder of the workspace as the Code page's projects are (1 to 4 names, none starting with "."), or the workspace
+WS_FOLDER = re.compile(r"/workspace(?:/[^/.\x00-\x1f\x7f][^/\x00-\x1f\x7f]{0,99}){0,4}")
+# no control, format (bidi, zero-width), surrogate, private-use or unassigned character, no line or paragraph separator
+ODD = ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp")
 FRESH_S = 600          # a token starts something only this long after it was made (time to unlock first)
 LAUNCH_MAX_S = 12 * 3600   # a token that started something keeps reconnecting its terminal while the unlock lasts
 SEEN_MAX = 2000
 
 
-def terminal_words(mode: str, tool: str, folder: str | None = None) -> list[str] | None:
-    """[MODE, TOOL(, FOLDER)] when each word passes bn-session's rules, else None."""
+def folder_ok(folder, roots=()) -> bool:
+    """A folder the pickers may name: the workspace, a folder of it as the Code page's projects are, or one of the
+    project folders of this computer (ROOTS: their paths in the sandbox) — at most FOLDER_MAX bytes of UTF-8, and no
+    character that could hide what the "Open … here?" page shows (ODD)."""
+    if not isinstance(folder, str):
+        return False
+    try:
+        raw = folder.encode("utf-8")
+    except UnicodeEncodeError:   # (a lone surrogate)
+        return False
+    if not raw or len(raw) > FOLDER_MAX or any(unicodedata.category(c) in ODD for c in folder):
+        return False
+    return folder in roots or WS_FOLDER.fullmatch(folder) is not None
+
+
+def terminal_words(mode: str, tool: str, folder: str | None = None, roots=()) -> list[str] | None:
+    """[MODE, TOOL(, FOLDER)] when each word passes bn-session's rules and FOLDER is one the pickers may name, else None."""
     if mode not in ("open", "chat") or tool not in TERMINAL_TOOLS:
         return None
     words = [mode, tool]
     if folder not in (None, ""):
-        if not isinstance(folder, str) or not FOLDER.fullmatch(folder) or "/../" in folder + "/" or "/./" in folder + "/":
+        if not folder_ok(folder, roots):
             return None
         words.append(folder)
     return words
 
 
-def terminal_args(mode: str, tool: str, token: str, folder: str | None = None) -> list[str] | None:
+def terminal_args(mode: str, tool: str, token: str, folder: str | None = None, roots=()) -> list[str] | None:
     """[MODE, TOOL, TOKEN(, FOLDER)] — bn-session's argument order — when every word passes (TOKEN: its form only)."""
-    words = terminal_words(mode, tool, folder)
+    words = terminal_words(mode, tool, folder, roots)
     if words is None or not isinstance(token, str) or not TOKEN.fullmatch(token):
         return None
     return words[:2] + [token] + words[2:]
@@ -177,10 +206,10 @@ def carries_words(query: str) -> bool:
     return any(unquote_plus(f).startswith("arg=") for f in re.split(r"[&;]", query))
 
 
-def parse_terminal_uri(uri: str | None) -> tuple[str, list[str] | None] | None:
+def parse_terminal_uri(uri: str | None, roots=()) -> tuple[str, list[str] | None] | None:
     """A request to the terminal host: None when its query carries no words for bn-session (nothing to check: ttyd
     ignores the rest); else (path, [MODE, TOOL, TOKEN(, FOLDER)] or None when the query is anything but the pickers'
-    words in bn-session's form)."""
+    words in bn-session's form, written exactly as terminal_link writes them)."""
     if not isinstance(uri, str) or "?" not in uri:
         return None
     path, query = uri.split("?", 1)
@@ -194,14 +223,20 @@ def parse_terminal_uri(uri: str | None) -> tuple[str, list[str] | None] | None:
         return path, None
     if not 3 <= len(pairs) <= 4 or any(k != "arg" for k, _ in pairs):
         return path, None
-    return path, terminal_args(*[v for _, v in pairs])
+    # (one way of writing them only: what ttyd decodes is then exactly what was checked)
+    try:
+        if query != urlencode(pairs):
+            return path, None
+    except UnicodeEncodeError:
+        return path, None
+    return path, terminal_args(*[v for _, v in pairs], roots=roots)
 
 
-def terminal_next(uri: str | None) -> str | None:
+def terminal_next(uri: str | None, roots=()) -> str | None:
     """The terminal's address rebuilt from a request's path and query when it is the root with the pickers' words
     (their token in its form) and nothing else; else None (the unlock then opens the terminal as it is). Whether the
     token is valid is checked when that address is asked for (launch_gate)."""
-    got = parse_terminal_uri(uri)
+    got = parse_terminal_uri(uri, roots)
     return terminal_link(got[1]) if got and got[0] == "/" else None
 
 

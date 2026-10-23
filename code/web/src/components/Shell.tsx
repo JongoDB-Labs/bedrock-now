@@ -32,6 +32,7 @@ import {
   openModelMenu,
   openProjectDialog,
   currentProject,
+  toast,
 } from '../app';
 import { GitPanel } from './GitPanel';
 import { SandboxSaid } from './Said';
@@ -43,7 +44,7 @@ import { CommandPalette, openPaletteFromMenu } from './CommandPalette';
 import { useReviewList } from './Review';
 import { shortcuts, keysFor } from '../shortcuts';
 import { BOUNDS } from '../prefs';
-import { getAnswers, type BnAnswers, type BnTool } from '../api';
+import { getAnswers, terminalLaunch, type BnAnswers, type BnTool } from '../api';
 import { basename, label, perMtok } from '../text';
 import { modeName } from '../permission';
 import { ChatPane } from './Chat';
@@ -269,7 +270,8 @@ function SidePanel({ onOpenFile }: { onOpenFile?: () => void }) {
 
 /** The terminal panel's Open menu: Claude Code on Bedrock, a shell, or one of your AI subscriptions' tools (each the
  *  provider's own client in the sandbox, signed in there with its own flow) — a window of its own in the project's
- *  folder, through the terminal hand-off (/.bn/terminal?open=TOOL&dir=FOLDER: the portal and bn-session check both). */
+ *  folder, through the terminal hand-off with a launch token this page asks the portal for on your choice
+ *  (/.bn/terminal?open=TOOL&dir=FOLDER&launch=TOKEN: the portal and bn-session check it all). */
 function ToolMenu({ onOpen }: { onOpen: (src: string) => void }) {
   const [answers, setAnswers] = useState<BnAnswers | null>(null);
   const folder = useSel(store, (s) => currentProject(s).path);
@@ -280,10 +282,10 @@ function ToolMenu({ onOpen }: { onOpen: (src: string) => void }) {
     : t.signedIn === 'no' ? 'sign in first' : t.installed === null ? 'not checked yet' : 'sign-in not known');
   const pick = (id: string) => {
     if (!id) return;
-    const q = new URLSearchParams({ open: id });
-    if (folder && folder !== '/workspace') q.set('dir', folder);
-    q.set('t', String(Date.now()));   // (the same tool again loads again: its window is selected anew)
-    onOpen(`/.bn/terminal?${q.toString()}`);
+    terminalLaunch(id, folder && folder !== '/workspace' ? folder : null).then(
+      (url) => onOpen(`${url}&t=${Date.now()}`),   // (the same tool again loads again: its window is selected anew)
+      (e: unknown) => toast(`Not opened: ${e instanceof Error ? e.message : String(e)}`, 'error'),
+    );
   };
   return (
     <select

@@ -24,7 +24,7 @@ for a in "$@"; do printf '%s\\n' "$a" >> ${F('tmux.log')}; done; echo --- >> ${F
 case "$1" in
   has-session) [ -e ${F('nosession')} ] && exit 1 ;;
   show-hooks) [ -e ${F('hooks')} ] && cat ${F('hooks')} ;;
-  display-message) echo "display LC_ALL=\${LC_ALL-}" >> ${F('env.log')}; if [ -e ${F('display')} ]; then cat ${F('display')}; else printf '1|%%3|1|bash|bash\\n'; fi ;;
+  display-message) echo "display LC_ALL=\${LC_ALL-}" >> ${F('env.log')}; if [ -e ${F('display')} ]; then cat ${F('display')}; else printf '1|%%3|1|0|bash|bash\\n'; fi ;;
   capture-pane) echo "capture LC_ALL=\${LC_ALL-}" >> ${F('env.log')}; [ -e ${F('capfail')} ] && { echo "can't find pane" >&2; exit 1; }; cat ${F('capture')} ;;
   *) echo "unexpected: $1" >&2; exit 3 ;;
 esac
@@ -52,7 +52,7 @@ test('the current pane of the terminal session: fixed arguments in a fixed order
   const c = calls();
   assert.deepEqual(c[0], ['has-session', '-t', '=claude']);
   assert.deepEqual(c.slice(1, 4), [['show-hooks', '-g'], ['show-hooks', '-gw'], ['show-hooks', '-t', '=claude:']]);
-  assert.deepEqual(c[4], ['display-message', '-p', '-t', '=claude:', '#{==:#{session_name},claude}|#{pane_id}|#{window_index}|#{pane_current_command}|#{window_name}']);
+  assert.deepEqual(c[4], ['display-message', '-p', '-t', '=claude:', '#{==:#{session_name},claude}|#{pane_id}|#{window_index}|#{m:*/usr/local/bin/subscriptions open *,#{pane_start_command}}|#{pane_current_command}|#{window_name}']);
   assert.equal(coded.CAPTURE_FORMAT, c[4][4]);
   assert.deepEqual(c[5], ['capture-pane', '-p', '-J', '-S', '-50', '-t', '%3']);
   assert.equal(c.length, 6, 'read only: no session made, no window, nothing typed');
@@ -82,7 +82,7 @@ test('lines and the pane are checked before tmux is asked anything', async () =>
 
 test('a pane named by the page must be one of the terminal session\'s; tmux\'s own answer is checked too', async () => {
   fresh('ok\n');
-  fs.writeFileSync(path.join(ROOT, 'display'), '1|%12|2|vim|edit|or\n');
+  fs.writeFileSync(path.join(ROOT, 'display'), '1|%12|2|0|vim|edit|or\n');
   const r = await op({ op: 'terminal.capture', pane: '%12' });
   assert.equal(r.pane, '%12');
   assert.deepEqual(r.window, { index: 2, name: 'edit|or' });
@@ -92,9 +92,9 @@ test('a pane named by the page must be one of the terminal session\'s; tmux\'s o
   // another session's pane (tmux says 0) — also one whose session is named to look like an answer —, a different pane
   // than asked, a hostile id or index, the old tab-separated shape and what tmux prints for it under LANG=C, two lines:
   // refused, nothing captured
-  for (const [display, pane] of [['0|%12|0|bash|x\n', '%12'], ['0|%7|1|x|%12|0|bash|x\n', '%12'], ['1|%13|0|bash|x\n', '%12'], ['1|%3 -t evil|0|bash|x\n', null],
-    ['1|%3;rm|0|bash|x\n', null], ['1|%3|1a|bash|x\n', null], ['claude\t%3\t1\tbash\tx\n', null], ['claude_%3_1_bash_x\n', null], ['1|%3|1|bash|x\nmore\n', null],
-    ['1\n', null], ['', null]]) {
+  for (const [display, pane] of [['0|%12|0|0|bash|x\n', '%12'], ['0|%7|1|0|x|%12|0|0|bash|x\n', '%12'], ['1|%13|0|0|bash|x\n', '%12'], ['1|%3 -t evil|0|0|bash|x\n', null],
+    ['1|%3;rm|0|0|bash|x\n', null], ['1|%3|1a|0|bash|x\n', null], ['1|%3|1|2|bash|x\n', null], ['1|%3|1|bash|x\n', null], ['claude\t%3\t1\t0\tbash\tx\n', null],
+    ['claude_%3_1_0_bash_x\n', null], ['1|%3|1|0|bash|x\nmore\n', null], ['1\n', null], ['', null]]) {
     fresh('secret\n');
     fs.writeFileSync(path.join(ROOT, 'display'), display);
     assert.match((await op({ op: 'terminal.capture', ...(pane ? { pane } : {}) })).error, /no such pane in the terminal/, display);
@@ -102,12 +102,24 @@ test('a pane named by the page must be one of the terminal session\'s; tmux\'s o
   }
   // a hostile window name and command: printable ASCII, capped
   fresh('ok\n');
-  fs.writeFileSync(path.join(ROOT, 'display'), `1|%3|1|\u001b]0;x\u0007${'c'.repeat(100)}|<img src=x onerror=alert(1)>\u202e${'n'.repeat(100)}\n`);
+  fs.writeFileSync(path.join(ROOT, 'display'), `1|%3|1|0|\u001b]0;x\u0007${'c'.repeat(100)}|<img src=x onerror=alert(1)>\u202e${'n'.repeat(100)}\n`);
   const h = await op({ op: 'terminal.capture' });
   assert.match(h.command, /^\?\]0;x\?c+$/);
   assert.equal(h.command.length, 60);
   assert.equal(h.window.name.length, 60);
   assert.doesNotMatch(JSON.stringify(h.window.name), /\\u/);
+});
+
+test('a window of one of your subscriptions\' tools is never read: started for one, or running one of their commands', async () => {
+  for (const display of ['1|%3|1|1|bash|codex\n', ...['claude-sub', 'codex', 'gemini', 'copilot', 'cursor-agent', 'grok', 'subscriptions'].map((c) => `1|%3|1|0|${c}|x\n`)]) {
+    fresh('Enter this one-time code: ABCD-1234\n');
+    fs.writeFileSync(path.join(ROOT, 'display'), display);
+    assert.match((await op({ op: 'terminal.capture' })).error, /runs one of your AI subscriptions' tools, whose screen may show a sign-in code: it is not read/, display);
+    assert.ok(!calls().some((c) => c[0] === 'capture-pane'), display);
+  }
+  fresh('ok\n');
+  fs.writeFileSync(path.join(ROOT, 'display'), '1|%3|1|0|bash|codex-notes\n');
+  assert.equal((await op({ op: 'terminal.capture' })).text, 'ok');
 });
 
 test('no terminal session: refused, and none is made; a hook that would run on the read: refused', async () => {

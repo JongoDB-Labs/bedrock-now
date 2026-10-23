@@ -340,7 +340,8 @@ http://{$FILES_HOST} {
 # stack's prices (/.bn/models), your AI subscriptions' tools in the sandbox and what each says of its login
 # (/.bn/answers), a session's spend from LiteLLM's logs (/.bn/spend; the master key stays in the portal) and the
 # hand-off of this unlock to the terminal host for the page's terminal panel (/.bn/terminal: a redirect to that host's
-# /.bn/unlock-callback, terminal_callback; ?open=TOOL: a window of that tool there), a preview link for a port in the
+# /.bn/unlock-callback, terminal_callback; ?open=TOOL: a window of that tool there, with a launch token the page's own
+# POST /.bn/terminal-launch made — else the terminal asks "Open … here?"), a preview link for a port in the
 # sandbox (/.bn/preview: locally its capability, from this unlock, caddy/preview-on.caddy; remotely a single-use
 # hand-off to the preview host, remote_preview below) and the sandboxed artifact viewer's address (/.bn/artifact: its
 # capability, from this unlock; caddy/artifact-on.caddy; local only). Any other /.bn/ path is nobody's.
@@ -356,6 +357,14 @@ http://{$FILES_HOST} {
 	@bn_code_terminal path /.bn/terminal
 	reverse_proxy @bn_code_terminal portal:8000 {
 		rewrite /auth/code-terminal?{query}
+	}
+	# (the terminal panel's Open menu: a launch token, made only by the page's own POST — an address alone makes none)
+	request_body /.bn/terminal-launch {
+		max_size 4KB
+	}
+	@bn_code_terminal_launch path /.bn/terminal-launch
+	reverse_proxy @bn_code_terminal_launch portal:8000 {
+		rewrite /auth/code-terminal-launch
 	}
 	@bn_code_models path /.bn/models
 	reverse_proxy @bn_code_models portal:8000 {

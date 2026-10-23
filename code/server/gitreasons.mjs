@@ -200,6 +200,8 @@ export const SANDBOX_REFUSALS = Object.freeze([
   '~/.gitconfig is not a regular file: change it in the terminal',
   'git config failed',
   'too many names',
+  // (@terminal: a window of one of your subscriptions' tools is never read)
+  "that window runs one of your AI subscriptions' tools, whose screen may show a sign-in code: it is not read (copy what you need from it yourself)",
 ]);
 // bn-coded's own fixed texts in an answer's error field (the launch configurations, Run's sources and tasks, the
 // permission rules' files, a search): the literal values of its error:, bad(…) and taskError(…) and NO_PROGRAM's —
