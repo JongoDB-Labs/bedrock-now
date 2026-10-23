@@ -447,21 +447,22 @@ test_fix_checkout_modes_repairs_tracked_files_only() {
 
 # --- the repository's rename on GitHub (lib/repo_rename.sh): origin follows it once, only from the exact old address ---
 
-_renamed() { # _fixture, origin stored as $1; the old and the new name's every form served by local repos through
-  # url.<path>.insteadOf (no network): the old name = $TMP/origin, the new = $TMP/new.git — a copy of it (the renamed
-  # repository) unless $2 = missing
-  local pre suf
+_renamed() { # _fixture, origin stored as $1; the two public https addresses the looks use served by local repos through
+  # url.<path>.insteadOf (no network; local paths allowed — the looks allow https only): the old name = $TMP/origin,
+  # the new = $TMP/new.git, a copy of it (the renamed repository) unless $2 = missing
   _fixture
   git -C "$STACK_DIR" remote set-url origin "$1"
   [ "${2:-}" = missing ] || git clone -q --bare "$TMP/origin" "$TMP/new.git"
-  for pre in https://github.com/ ssh://git@github.com/ git@github.com:; do
-    for suf in "" .git; do
-      git -C "$STACK_DIR" config --add "url.$TMP/origin.insteadOf" "${pre}JongoDB-Labs/bedrock-now$suf"
-      git -C "$STACK_DIR" config --add "url.$TMP/new.git.insteadOf" "${pre}JongoDB-Labs/devos-ade$suf"
-    done
-  done
+  git -C "$STACK_DIR" config "url.$TMP/origin.insteadOf" https://github.com/JongoDB-Labs/bedrock-now.git
+  git -C "$STACK_DIR" config "url.$TMP/new.git.insteadOf" https://github.com/JongoDB-Labs/devos-ade.git
+  git -C "$STACK_DIR" config protocol.file.allow always
+  # ssh is never used for the looks: an ssh that would run says so
+  printf '#!/bin/sh\necho "$@" >> "%s/ssh-ran"\nexit 1\n' "$TMP" > "$TMP/ssh"; chmod +x "$TMP/ssh"
+  export GIT_SSH_COMMAND="$TMP/ssh"
 }
 _origin() { git -C "$STACK_DIR" config --get-all remote.origin.url; }
+_look_again() { rm -f "$STATE_DIR/repo-rename-checked"; }   # (the looks: at most once a day)
+_no_ssh() { [ ! -e "$TMP/ssh-ran" ] || { echo "ssh ran: $(cat "$TMP/ssh-ran")" >&2; return 1; }; }
 
 test_origin_follows_the_rename_in_the_same_form_once() {
   local from to
@@ -474,15 +475,43 @@ test_origin_follows_the_rename_in_the_same_form_once() {
     origin_follow_rename 2> "$TMP/err"
     assert_eq "$(_origin)" "$to"
     assert_contains "$(cat "$TMP/err")" "now fetches from $to (was $from)"
-    origin_follow_rename 2> "$TMP/err"   # said once: a second run finds origin moved
+    [ ! -e "$STATE_DIR/repo-rename-checked" ]   # moved: no daily look left to wait for
+    _look_again; origin_follow_rename 2> "$TMP/err"   # said once: a second run finds origin moved
     assert_eq "$(_origin)" "$to"; assert_eq "$(cat "$TMP/err")" ""
+    _no_ssh   # the ssh forms too: both looks went to the https addresses
   done
 }
 
-test_origin_stays_until_the_new_repository_exists() {
+test_the_looks_never_use_ssh_even_when_your_config_sends_github_there() {
+  _renamed git@github.com:JongoDB-Labs/bedrock-now.git
+  # an insteadOf of yours that sends the new https address to ssh: refused (https only), so nothing changes
+  git -C "$STACK_DIR" config --unset "url.$TMP/new.git.insteadOf"
+  git -C "$STACK_DIR" config url.ssh://git@github.com/JongoDB-Labs/devos-ade.git.insteadOf https://github.com/JongoDB-Labs/devos-ade.git
+  origin_follow_rename 2> "$TMP/err"
+  assert_eq "$(_origin)" git@github.com:JongoDB-Labs/bedrock-now.git; assert_eq "$(cat "$TMP/err")" ""
+  _no_ssh
+}
+
+test_origin_stays_until_the_new_repository_exists_and_looks_once_a_day() {
+  local now
   _renamed https://github.com/JongoDB-Labs/bedrock-now.git missing   # before rename day: the new name does not answer
   origin_follow_rename 2> "$TMP/err"
   assert_eq "$(_origin)" https://github.com/JongoDB-Labs/bedrock-now.git; assert_eq "$(cat "$TMP/err")" ""
+  [ -f "$STATE_DIR/repo-rename-checked" ]
+  # within the day: no look at all
+  ( _repo_tags() { echo "$1" >> "$TMP/asked"; return 1; }; origin_follow_rename )
+  [ ! -e "$TMP/asked" ] || { echo "looked again within the day: $(cat "$TMP/asked")" >&2; return 1; }
+  # a day later, a time in the future, or an unreadable one: it looks again
+  now="$(date +%s)"
+  for stamp in "$((now - 86401))" "$((now + 3600))" "garbage" "99999999999999999999"; do
+    printf '%s\n' "$stamp" > "$STATE_DIR/repo-rename-checked"; rm -f "$TMP/asked"
+    ( _repo_tags() { echo "$1" >> "$TMP/asked"; return 1; }; origin_follow_rename )
+    assert_eq "$(cat "$TMP/asked" 2>/dev/null)" "JongoDB-Labs/devos-ade"
+  done
+  # rename day: the next look moves it
+  git clone -q --bare "$TMP/origin" "$TMP/new.git"; _look_again
+  origin_follow_rename 2> "$TMP/err"
+  assert_eq "$(_origin)" https://github.com/JongoDB-Labs/devos-ade.git
 }
 
 test_origin_moves_only_when_the_new_repository_has_every_tag_at_the_same_commit() {
@@ -491,12 +520,12 @@ test_origin_moves_only_when_the_new_repository_has_every_tag_at_the_same_commit(
   origin_follow_rename 2> "$TMP/err"
   assert_eq "$(_origin)" https://github.com/JongoDB-Labs/bedrock-now.git; assert_eq "$(cat "$TMP/err")" ""
   git -C "$TMP/new.git" tag v0.1.0 'v0.2.0^{commit}'                 # ... there, at another commit
-  origin_follow_rename 2> "$TMP/err"
+  _look_again; origin_follow_rename 2> "$TMP/err"
   assert_eq "$(_origin)" https://github.com/JongoDB-Labs/bedrock-now.git; assert_eq "$(cat "$TMP/err")" ""
   # the same tag again (the same tag object), and one more: a superset is the same repository
   git -C "$TMP/new.git" tag -f v0.1.0 "$(git -C "$TMP/origin" rev-parse v0.1.0)" >/dev/null
   git -C "$TMP/new.git" tag v0.3.0 main
-  origin_follow_rename 2> "$TMP/err"
+  _look_again; origin_follow_rename 2> "$TMP/err"
   assert_eq "$(_origin)" https://github.com/JongoDB-Labs/devos-ade.git
 }
 
@@ -512,6 +541,7 @@ test_forks_mirrors_and_other_spellings_are_never_touched_nor_asked() {
     ( _repo_tags() { echo "$1" >> "$TMP/asked"; return 1; }; origin_follow_rename ) 2> "$TMP/err"
     assert_eq "$(_origin)" "$url"; assert_eq "$(cat "$TMP/err")" ""
     [ ! -e "$TMP/asked" ] || { echo "asked the network for $url: $(cat "$TMP/asked")" >&2; return 1; }
+    [ ! -e "$STATE_DIR/repo-rename-checked" ]
   done
   # two origin URLs: never one of the exact forms
   rm -rf "$TMP/origin" "$TMP/stack" "$TMP/new.git"; _renamed https://github.com/JongoDB-Labs/bedrock-now.git

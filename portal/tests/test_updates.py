@@ -169,7 +169,7 @@ class Renamed:
     `status` with a Location — the API's to api_to, the raw host's to raw_to — and the new places answer. Records
     requests; anything else is a 404."""
 
-    def __init__(self, api_to="https://api.github.com/repositories/123456/releases?per_page=30",
+    def __init__(self, api_to="https://api.github.com/repositories/1415949652/releases?per_page=30",
                  raw_to="https://raw.githubusercontent.com/JongoDB-Labs/devos-ade/v0.3.0/compose.yaml", status=301,
                  new_redirects_to=None):
         self.api_to, self.raw_to, self.status, self.new_redirects_to = api_to, raw_to, status, new_redirects_to
@@ -180,7 +180,7 @@ class Renamed:
         host, path = request.url.host, request.url.path
         if host == "api.github.com" and path == "/repos/JongoDB-Labs/bedrock-now/releases":
             return httpx.Response(self.status, headers={"location": self.api_to} if self.api_to is not None else {})
-        if host == "api.github.com" and path in ("/repositories/123456/releases", "/repos/JongoDB-Labs/devos-ade/releases"):
+        if host == "api.github.com" and path.lower() in ("/repositories/1415949652/releases", "/repos/jongodb-labs/devos-ade/releases"):
             if self.new_redirects_to:
                 return httpx.Response(301, headers={"location": self.new_redirects_to})
             return httpx.Response(200, json=[release(html_url="https://github.com/JongoDB-Labs/devos-ade/releases/tag/v0.3.0")])
@@ -192,10 +192,11 @@ class Renamed:
 
 
 @pytest.mark.parametrize("api_to,status", [
-    ("https://api.github.com/repositories/123456/releases?per_page=30", 301),    # what GitHub's API answers
-    ("/repositories/123456/releases?per_page=30", 301),                          # ... relative
-    ("https://api.github.com/repositories/123456/releases?per_page=30", 307),
+    ("https://api.github.com/repositories/1415949652/releases?per_page=30", 301),    # what GitHub's API answers
+    ("/repositories/1415949652/releases?per_page=30", 301),                          # ... relative
+    ("https://api.github.com/repositories/1415949652/releases?per_page=30", 307),
     ("https://api.github.com/repos/JongoDB-Labs/devos-ade/releases?per_page=30", 301),  # the new name
+    ("https://api.github.com/repos/jongodb-labs/DevOS-ADE/releases?per_page=30", 301),  # ... in any case, as GitHub takes it
 ])
 def test_one_redirect_to_the_renamed_repository_is_followed(paths, api_to, status):
     write_version(paths)
@@ -215,15 +216,20 @@ def test_one_redirect_to_the_renamed_repository_is_followed(paths, api_to, statu
 
 
 @pytest.mark.parametrize("api_to", [
-    "https://evil.example/repositories/123456/releases",                   # another host
-    "http://api.github.com/repositories/123456/releases",                  # not https
-    "https://api.github.com:8443/repositories/123456/releases",            # another port
-    "https://someone@api.github.com/repositories/123456/releases",         # credentials in it
+    "https://evil.example/repositories/1415949652/releases",                   # another host
+    "http://api.github.com/repositories/1415949652/releases",                  # not https
+    "https://api.github.com:8443/repositories/1415949652/releases",            # another port
+    "https://someone@api.github.com/repositories/1415949652/releases",         # credentials in it
     "https://api.github.com/repos/someone/fork/releases",                  # another repository
     "https://api.github.com/repos/JongoDB-Labs/bedrock-now-x/releases",    # ... a longer name
-    "https://api.github.com/repositories/123456/tags",                     # another resource
-    "https://api.github.com/repositories/123456/releases/../../user",      # ... by dot segments
+    "https://api.github.com/repositories/1415949652/tags",                     # another resource
+    "https://api.github.com/repositories/1415949652/releases/../../user",      # ... by dot segments
     "https://api.github.com/repositories/12ab/releases",                   # not a repository id
+    "https://api.github.com/repositories/123456/releases",                 # another repository's id
+    "https://api.github.com/repositories/14159496520/releases",            # ... ours with a digit more
+    "https://api.github.com/repositories/1415949652/Releases",             # the rest of the path: exact
+    "https://api.github.com/repos/JongoDB-Labs/devos-ade/Releases",        # ... also under the new name
+    "https://api.github.com/repos/JongoDB-Labs/bedroc%E2%84%AA-now/releases",  # the Kelvin sign (lower() is "k")
     "https://raw.githubusercontent.com/JongoDB-Labs/devos-ade/releases",   # the raw host from the API
     "javascript:alert(1)",
     "",                                                                    # an empty Location
@@ -242,7 +248,7 @@ def test_any_other_redirect_is_refused_and_not_asked(paths, api_to):
 def test_a_second_redirect_is_not_followed(paths):
     write_version(paths)
     gh = Renamed(api_to="https://api.github.com/repos/JongoDB-Labs/devos-ade/releases?per_page=30",
-                 new_redirects_to="https://api.github.com/repositories/123456/releases?per_page=30")
+                 new_redirects_to="https://api.github.com/repositories/1415949652/releases?per_page=30")
     rec = run_check(paths, gh)
     assert "HTTP 301" in rec["error"]
     assert [r.url.path for r in gh.seen] == ["/repos/JongoDB-Labs/bedrock-now/releases", "/repos/JongoDB-Labs/devos-ade/releases"]
@@ -257,11 +263,31 @@ def test_a_refused_raw_redirect_only_loses_the_estimate(paths):
 
 
 def test_release_pages_of_either_name_are_the_projects():
-    assert updates.repo_page("https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v1.0.0")
-    assert updates.repo_page("https://github.com/JongoDB-Labs/devos-ade/releases/tag/v1.0.0")
+    for url in ("https://github.com/JongoDB-Labs/bedrock-now/releases/tag/v1.0.0",
+                "https://github.com/JongoDB-Labs/devos-ade/releases/tag/v1.0.0",
+                "https://github.com/jongodb-labs/DEVOS-ADE/releases/tag/v1.0.0",   # owner and name in any case
+                "https://github.com/JongoDB-Labs/devos-ade/releases/tag/v1.0.0?x=/../y",  # (a query is not a path)
+                "https://github.com/JongoDB-Labs/devos-ade/blob/main/a.b/..c/x..md"):
+        assert updates.repo_page(url), url
     for url in ("https://github.com/JongoDB-Labs/devos-ade-x/releases", "https://github.com/someone/devos-ade/releases",
-                "http://github.com/JongoDB-Labs/devos-ade/releases", "https://github.com/JongoDB-Labs/devos-ade", None, 3):
+                "http://github.com/JongoDB-Labs/devos-ade/releases", "https://github.com/JongoDB-Labs/devos-ade",
+                "https://GitHub.com/JongoDB-Labs/devos-ade/releases",                # the rest: exact
+                "https://github.com/JongoDB-Labs/bedroc" + chr(0x212A) + "-now/releases",  # Kelvin sign: lower() is "k"
+                "https://github.com/JongoDB-Labs/devos-ade/../../someone/x/releases",  # out of the repository
+                "https://github.com/JongoDB-Labs/devos-ade/releases/../../../x",
+                "https://github.com/JongoDB-Labs/devos-ade/./releases",
+                "https://github.com/JongoDB-Labs/devos-ade/releases/..",
+                "https://github.com/JongoDB-Labs/devos-ade/%2e%2e/%2E%2E/someone/x",   # ... percent-encoded
+                "https://github.com/JongoDB-Labs/devos-ade/.%2e/x",
+                "https://github.com/JongoDB-Labs/devos-ade/..\\..\\someone",           # a browser reads a backslash as /
+                None, 3):
         assert not updates.repo_page(url), url
+
+
+def test_a_release_link_out_of_the_repository_is_replaced(paths):
+    write_version(paths)
+    run_check(paths, GitHub(rel=release(html_url="https://github.com/JongoDB-Labs/devos-ade/../../evil/x/releases")))
+    assert updates.status(paths, True)["url"] == "https://github.com/JongoDB-Labs/bedrock-now/releases"
 
 
 def test_disabled_reports_nothing(paths):

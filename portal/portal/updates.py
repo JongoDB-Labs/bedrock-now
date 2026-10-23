@@ -49,8 +49,10 @@ REPO = "JongoDB-Labs/bedrock-now"
 # followed once (_redirect_target) — and its release pages are under it.
 REPO_NEXT = "JongoDB-Labs/devos-ade"
 REPOS = (REPO, REPO_NEXT)
+# The repository's numeric id on GitHub (it never changes, a rename included): GitHub's API sends the old name of a
+# renamed repository to /repositories/<id> — only this id is followed.
+REPO_ID = 1415949652
 REDIRECTS = (301, 302, 307, 308)
-API_REPO_ID = re.compile(r"/repositories/[0-9]{1,20}(/.*)", re.DOTALL)  # where GitHub's API sends a renamed repository
 PER_PAGE = 30  # the newest releases: a jump over more than this shows the newest PER_PAGE (and says so)
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases?per_page={PER_PAGE}"
 RAW_URL = "https://raw.githubusercontent.com/" + REPO + "/{tag}/compose.yaml"
@@ -199,26 +201,45 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
+def _after_repo(path: str, pre: str) -> str | None:
+    """The rest of PATH (from its "/") after PRE and the project's repository under either name (REPOS) — the owner
+    and name in any ASCII case, as GitHub takes them (ASCII only: the Kelvin sign's lower case is "k"); everything else
+    exact — else None."""
+    if not path.startswith(pre):
+        return None
+    for repo in REPOS:
+        n = len(pre) + len(repo)
+        name = path[len(pre):n]
+        if name.isascii() and name.lower() == repo.lower() and path[n:n + 1] == "/":
+            return path[n:]
+    return None
+
+
 def repo_page(url) -> bool:
-    """A page of the project's repository on github.com, under either of its names (REPOS)."""
-    return isinstance(url, str) and any(url.startswith(f"https://github.com/{repo}/") for repo in REPOS)
+    """A page of the project's repository on github.com, under either of its names (REPOS): no "." or ".." segment
+    (also as %2e), no backslash (a browser reads it as "/"), so it cannot lead out of the repository."""
+    if not isinstance(url, str) or "\\" in url:
+        return False
+    rest = _after_repo(url, "https://github.com/")
+    if rest is None:
+        return False
+    path = rest.split("?", 1)[0].split("#", 1)[0]
+    return not any(seg.lower().replace("%2e", ".") in (".", "..") for seg in path.split("/"))
 
 
 def _repo_rest(host: str, path: str) -> str | None:
     """The rest of a path on GitHub's API or raw host after the project's repository — under either name (REPOS), or
-    on api.github.com /repositories/<id> — else None."""
-    pre = "/repos/" if host == "api.github.com" else "/"
-    for repo in REPOS:
-        if path.startswith(f"{pre}{repo}/"):
-            return path[len(pre) + len(repo):]
-    m = API_REPO_ID.fullmatch(path) if host == "api.github.com" else None
-    return m.group(1) if m else None
+    on api.github.com /repositories/REPO_ID — else None."""
+    if host == "api.github.com":
+        by_id = f"/repositories/{REPO_ID}/"
+        return path[len(by_id) - 1:] if path.startswith(by_id) else _after_repo(path, "/repos/")
+    return _after_repo(path, "/")
 
 
 def _redirect_target(url: httpx.URL, location: str | None) -> httpx.URL | None:
     """Where the one redirect a request may follow goes: GitHub's, for a renamed repository — the same https host, the
     same resource (the rest of the path), another name of the project's repository only (its other name, or
-    api.github.com/repositories/<id>). None — not followed — for anything else."""
+    api.github.com/repositories/REPO_ID). None — not followed — for anything else."""
     if not location or len(location) > 2048:
         return None
     try:
