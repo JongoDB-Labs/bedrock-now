@@ -3097,9 +3097,12 @@ never reads, copies, keeps, passes on or relays a login.**
   (a preview, Chat's output) or an old address therefore starts nothing. `bn-session` then takes only `open`/`chat`, a
   tool of its fixed list, a token's form (each acts once) and a folder that resolves inside `/workspace` or a project
   folder; anything else is the plain attach of before.
-- [x] **No subscription behind an API.** None of these logins is used by LiteLLM, Open WebUI or the Code page's
-  sessions in this release; Chat shows them as models greyed out, with each provider's reason. The Chat tab can show
-  the app itself (its own screen, in the terminal frame) — you type into the real app.
+- [x] **No login behind an API.** In this release none of these logins is used by LiteLLM, Open WebUI or the Code page's
+  sessions (Chat lists them as models coming next); the Chat tab can show the app itself (its own screen, in the
+  terminal frame) — you type into the real app. When they come as Chat models and Code page sessions, it will be through
+  each provider's own interface for other apps (the Claude Agent SDK, Codex's app server, ACP), the app itself making
+  every request with its own login in the sandbox, reachable only from Chat — never a token held or relayed by
+  bedrock-now.
 - [ ] **Anything in the sandbox can read those files.** Claude, a command it runs, a web page it reads, a plugin or an
   MCP server there runs as the same user and can copy a login out and use your plan elsewhere until you sign out **and
   revoke it at the provider** (your account's settings at Anthropic, OpenAI, GitHub, Cursor or xAI). The sandbox

@@ -595,9 +595,10 @@ without the stack's `ANTHROPIC_*` variables so it uses your login; only its upda
 - **Chat**: *Who answers* above it — a Bedrock or OpenRouter model (a new chat with it in Open WebUI), or one of your
   tools **itself**, in place of Open WebUI, in the folder you pick (the workspace or a project folder): you type into
   the real app, with its own history (`/resume`) and its own usage display. *Open WebUI* brings Chat back. As Chat
-  *models*, the subscriptions are greyed out for now, each with the provider's reason (Claude's comes next — Anthropic
-  allows the Agent SDK and `claude -p` on a plan; the others' terms don't offer it, or no consumer plan works); your
-  own API keys (OpenAI, Anthropic, xAI, Google, Mistral) come next too.
+  *models* answering in the same conversation view — each through the interface its provider ships for other apps
+  (the Claude Agent SDK, Codex's app server, the ACP mode of Copilot, Cursor and Grok) — your subscriptions come in the
+  next release; they are listed greyed out until then. Google's plans no longer work in Gemini CLI: Gemini in Chat will
+  use your own Gemini API key, as will the other providers' keys (OpenAI, Anthropic, xAI, Mistral).
 
 Settings › Claude Code › **Your AI subscriptions** shows each tool, whether it said it is signed in and which kind
 (*ChatGPT*, *Claude Max* …: its own status command, or for Gemini CLI and Grok whether their login file is there —

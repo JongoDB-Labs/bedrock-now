@@ -769,7 +769,7 @@
         p(b("Who answers"), ", on each page:"),
         list("ul", [
           [b("Terminal"), ": the ", b("Open"), " menu above it — Claude Code on Bedrock, a tool of yours, or a shell, each in a window of its own (the Code page's terminal panel has the same)."],
-          [b("Chat"), ": the ", b("Who answers"), " menu above it — a Bedrock or OpenRouter model in Open WebUI, or one of your tools ", b("itself"), ", right there, in the folder you pick. As Chat ", b("models"), ", your subscriptions are greyed out for now, each with the provider's reason; your own API keys (OpenAI, Anthropic, xAI, Google, Mistral) come next."]]),
+          [b("Chat"), ": the ", b("Who answers"), " menu above it — a Bedrock or OpenRouter model in Open WebUI, or one of your tools ", b("itself"), ", right there, in the folder you pick. As Chat ", b("models"), " in the same conversation view, your subscriptions come next — greyed out until then, each saying how (Google's plans no longer work in Gemini CLI: your own Gemini key instead); your own API keys (OpenAI, Anthropic, xAI, Google, Mistral) come next too."]]),
         note("Usage counts against each plan's own limits; bedrock-now shows no $ for it. ", settings("Claude Code", "+subscriptions"), " › ",
           b("Your AI subscriptions"), " lists each tool, whether it says it is signed in, ", b("Sign out"), " and ", b("Check again"), "; ", code("./stack subscriptions"), " in a terminal."),
       ],

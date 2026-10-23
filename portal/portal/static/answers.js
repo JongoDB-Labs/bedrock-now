@@ -40,7 +40,7 @@
       { label: "Your AI subscriptions — each signs in with its own flow", items: tools }].filter((g) => g.items.length);
   }
   // chatOptions(DATA) -> the Chat tab's groups: Open WebUI, Bedrock and OpenRouter models, your API keys (next), the
-  // tools themselves (they open here), and the subscriptions as Chat models (greyed, each with its reason)
+  // tools themselves (they open here), and the subscriptions as Chat models (greyed until the next release, each saying how)
   function chatOptions(d) {
     const here = Boolean(d && d.terminal && d.terminal.here);
     const models = d && Array.isArray(d.models) ? d.models : [];
@@ -56,7 +56,7 @@
         return { value: `tool:${t.id}`, label: `${t.name} · ${s.word}`, disabled: !s.ok, title: s.why || `${t.provider}: ${t.plan}. You type into ${t.name} itself.` };
       }) },
       { label: "Your AI subscriptions as Chat models", items: tools.filter((t) => t.chat_model !== "yes").map((t) => (
-        { value: `as-model:${t.id}`, label: `${t.name} — not as a Chat model`, disabled: true, title: t.chat_why || "" })) },
+        { value: `as-model:${t.id}`, label: `${t.name} — as a Chat model: next release`, disabled: true, title: t.chat_why || "" })) },
     ].filter((g) => g.items.length);
   }
   const bare = (base) => String(base).split(/[?#]/)[0];
@@ -158,7 +158,7 @@
     if (tf) tf.hidden = !tool;
     cFolderWrap.hidden = !tool;
     const t = tool && data.tools.find((x) => `tool:${x.id}` === saved.chat);
-    cNote.textContent = t ? `${t.name} itself, on ${t.plan}: you type into it. Its own sign-in; bedrock-now never sees it. As a Chat model: ${t.chat_model === "yes" ? "yes" : "not yet — " + (t.chat_why || "")}`
+    cNote.textContent = t ? `${t.name} itself, on ${t.plan}: you type into it. Its own sign-in; bedrock-now never sees it. As a Chat model: ${t.chat_model === "yes" ? "yes" : t.chat_why || "next release"}`
       : saved.chat.startsWith("model:") ? "A new chat with this model in Open WebUI." : "";
   }
   function openTool(id) {
