@@ -783,3 +783,110 @@ test('two readings stay linear: apostrophes, quotes with and without a match, gl
     }
   }
 });
+
+test('a name and its value apart in TEXT (H1): JSON, YAML, SSM, CloudFormation, Terraform, .NET, escaped JSON — either order; not across items', () => {
+  const x = `Zq${rand(14)}`;
+  const hidden = (t) => { const out = redactText(t); assert.ok(!out.includes(x), `${t.slice(0, 100)} -> ${out.slice(0, 140)}`); assert.equal(redactText(out), out); };
+  hidden(`[{"name":"DB_PASSWORD","value":"${x}"}]`);
+  hidden(`[{"name": "HOST", "value": "h"}, {"name": "DB_PASSWORD", "value": "${x}"}]`);
+  hidden(`env:\n- name: DB_PASSWORD\n  value: ${x}\n- name: HOST\n  value: h`);
+  hidden(`env:\n  - name: API_TOKEN\n    value: "${x}"`);
+  hidden(`{"Parameters":[{"Name":"/prod/db_password","Type":"SecureString","Value":"${x}","Version":1}]}`);
+  hidden(`[{"ParameterKey":"DbPassword","ParameterValue":"${x}"}]`);
+  hidden(`{\n  "db_password": {\n    "sensitive": true,\n    "type": "string",\n    "value": "${x}"\n  }\n}`);
+  hidden(`<appSettings>\n  <add key="DbPassword" value="${x}" />\n</appSettings>`);
+  hidden(`{"Value":"${x}","Name":"API_TOKEN"}`);
+  hidden(`log: "{\\"name\\":\\"DB_PASSWORD\\",\\"value\\":\\"${x}\\"}"`);
+  hidden(`{"name":"DB_PASSWORD","description":"see {docs} for it","value":"${x}"}`);
+  hidden(`{ name = "DB_PASSWORD", value = "${x}" }`);
+  // (not across items: another item's value is its own — the pairs' finder alone; an unquoted {… after a secret's name
+  // is a value of its own to the assignment finder, read to a space)
+  const pairs = (t) => KINDS.find((k) => k.kind === 'named').find(t, {});
+  for (const t of [`[{"name":"DB_PASSWORD","valueFrom":{"secretKeyRef":{"name":"db"}}},{"name":"HOST","value":"${x}"}]`, `- name: DB_PASSWORD\n  valueFrom: ref\n- name: HOST\n  value: ${x}`,
+    `{"name":"HOST","value":"${x}"}`, `<add key="Host" value="${x}" />`]) {
+    assert.deepEqual(pairs(t), [], t);
+  }
+});
+
+test('B fixes: markers only whole (M1), no image-tag exemption in a URL (M2), tokens right after an escape (M3), the public start only at the finding\'s start (L1)', () => {
+  const x = `Zq${rand(14)}`;
+  const hidden = (t, ...v) => { const out = redactText(t); for (const s of v.length ? v : [x]) assert.ok(!out.includes(s), `${t.slice(0, 100)} -> ${out.slice(0, 140)}`); };
+  // M1: an unfinished or fake marker hides nothing
+  hidden(`password=[REDACTED:${x}`);
+  hidden(`[REDACTED:password=${x}`);
+  hidden(`x [REDACTED:${x}:pw${rand(6)}@h`, x);
+  hidden(`[REDACTED:user:${x}@host`);
+  assert.deepEqual(scan('password=[REDACTED:assignment]'), []);
+  // M2
+  hidden(`postgres://admin:${x}@sha256:5432/db`);
+  assert.deepEqual(scan(`FROM node:22@sha256:${'ab'.repeat(32)}`), []);
+  // M3: a token right after an escape of JSON-escaped text
+  const gh = fake.github(), jwt = fake.jwt();
+  hidden(`{"out":"line one\\n${gh}\\tdone"}`, gh);
+  hidden(`{"out":"a\\t${gh}"}`, gh);
+  hidden(`{"out":"a\\u00a0${gh}"}`, gh);
+  hidden(`{"out":"token is\\n${jwt}"}`, jwt);
+  hidden(`{"out":"x\\nBearer ${x}${rand(8)}"}`);
+  hidden(`{"cmd":"run\\n-u admin:${x} h"}`);
+  // L1: a merged finding whose token starts after its start shows its length only
+  const { findings } = processEntries([{ type: 'user', message: { content: `password=abc-${gh}` } }]);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].kind, 'github-token');
+  assert.match(findings[0].preview, /^[0-9]+ characters$/);
+  assert.match(processEntries([{ type: 'user', message: { content: `token ${gh}` } }]).findings[0].preview, /^gh[a-z]_… \(/);
+});
+
+test('B fixes: pwd names (L2), comparisons with a quoted literal, password flags of other tools, "pass" only as a whole segment, base64 image data, a key with no END', () => {
+  const x = `Zq${rand(14)}`;
+  const hidden = (t) => { const out = redactText(t); assert.ok(!out.includes(x), `${t.slice(0, 100)} -> ${out.slice(0, 140)}`); };
+  const left = (t) => assert.ok(redactText(t).includes(x), t);
+  for (const k of ['MYSQL_PWD', 'db-pwd', 'PGPWD', 'db_pass', 'dbPass', 'DB_PASS', '--pass', 'Pass']) assert.ok(isSecretName(k), k);
+  for (const k of ['PWD', 'OLDPWD', 'bypass', 'compass', 'passport', 'Passenger', 'PASSPORT', 'BYPASS', 'passive']) assert.ok(!isSecretName(k), k);
+  hidden(`MYSQL_PWD=${x}`); hidden(`export PGPWD=${x}`); hidden(`db_pass: ${x}`); hidden(`--pass ${x}`);
+  left(`bypass: ${x}`); left(`compass=${x}`); left(`passport_number: ${x}`); left(`cd $PWD ${x}`);
+  // comparisons
+  hidden(`if password == "${x}":`); hidden(`if (token !== '${x}') {`); hidden(`assert api_key === \`${x}\``);
+  assert.deepEqual(scan('if password == confirm_password:'), []);
+  assert.deepEqual(scan('if token == "":'), []);
+  // tools whose flag takes the password
+  for (const t of [`redis-cli -h r -a ${x} ping`, `redis-cli --pass ${x}`, `mongosh -u a -p ${x}`, `mongo --password ${x} db`, `sqlcmd -S h -U sa -P ${x}`, `sqlcmd -P${x}`,
+    `ldapsearch -x -D cn=admin -w ${x} -b dc=x`, `ldapmodify -w${x}`, `ipmitool -H h -U u -P ${x} power on`, `zip -P ${x} a.zip f`, `unzip -P '${x}' a.zip`,
+    `smbclient //h/s -U bob%${x}`, `smbclient //h/s -Ubob%${x}`, `smbclient //h/s --user=bob%${x}`]) hidden(t);
+  left(`sqlcmd -S h -p ${x}`);
+  // base64 image data is not text: no token is looked for in it; data that is not base64 is scanned
+  const b64 = `iVBORw0KGgo${['AK', 'IA'].join('')}${'ABCDEFGHIJKLMNOP'}${rand(40)}==`;
+  assert.deepEqual(scanEntries([{ type: 'user', message: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } }] } }]), []);
+  // a key's BEGIN with no END: to the end of the quoted string it is in
+  const pem = `-----BEGIN RSA ${'PRIVATE'} KEY-----\\nMIIE${rand(60)}`;
+  const out = redactText(`{"key":"${pem}","note":"keep me"}`);
+  assert.ok(out.includes('"note":"keep me"') && !out.includes('MIIE'), out);
+  assert.ok(!redactText(`-----BEGIN RSA ${'PRIVATE'} KEY-----\nMIIE${rand(60)}\nrest ${x}`).includes(x));
+});
+
+test('M5: keys made equal by a redaction are numbered in linear time (40,000 in one object, under 2 s)', () => {
+  const obj = {};
+  for (let i = 0; i < 40000; i++) obj[fake.github()] = i;
+  const t0 = Date.now();
+  const r = redactEntries([{ type: 'user', toolUseResult: obj }]);
+  assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
+  const keys = Object.keys(r.entries[0].toolUseResult);
+  assert.equal(keys.length, 40000);
+  assert.equal(new Set(keys).size, 40000);
+  assert.deepEqual(keys.slice(0, 3), ['[REDACTED:github-token]', '[REDACTED:github-token]#2', '[REDACTED:github-token]#3']);
+});
+
+test('the new finders stay linear on 8 MiB: name/value fields, quotes and braces, comparisons, tool flags, escapes', () => {
+  const size = MAX_TEXT - 16;
+  const fill = (head, unit, tail = '') => head + unit.repeat(Math.floor((size - head.length - tail.length) / unit.length)) + tail;
+  for (const [label, text] of [
+    ['quote marks', fill('', '"')], ['apostrophes and braces', fill('', "'{}")], ['value: on one line', fill('', 'value: ')], ['name: password lines', fill('', 'name: password\n')],
+    ['JSON pairs', fill('[', '{"name":"DB_PASSWORD","value":"v1234"},', ']')], ['name then values', fill('{"name":"x",', '"value":"v",')], ['values then a secret name', fill('{', '"value":"v",', '"name":"API_TOKEN"}')],
+    ['secret keys opening objects', fill('', 'db_password: {')], ['escaped quotes', fill('', '\\"')], ['backslashes then a quote', fill('', '\\\\\\\\"')],
+    ['- items', fill('', '\n- name: DB_PASSWORD\n  value: ')], ['<add', fill('', '<add key="password" value="')], ['comparisons', fill('', 'password == "')],
+    ['redis-cli -a', fill('redis-cli', ' -a')], ['smbclient -U', fill('smbclient', ' -U a%')], ['escapes before tokens', fill('', '\\nghp_')], ['\\u escapes', fill('', '\\u0041sk-')],
+  ]) {
+    const t0 = Date.now();
+    scan(text);
+    assert.ok(Date.now() - t0 < 1000, `${label}: ${Date.now() - t0} ms`);
+  }
+});
