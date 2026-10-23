@@ -15,17 +15,17 @@ All notable changes to bedrock-now are documented here. The format follows
   **Gemini CLI** (an organisation's Code Assist, or your own Gemini API key — Google AI Pro and Ultra no longer work in
   it), **GitHub Copilot CLI**, **Cursor CLI** and **Grok Build** (SuperGrok, the X Subscription). Each is in the
   sandbox's image, pinned and checked when it is built (Codex's and Copilot's release files by SHA-256, Gemini CLI's and
-  Grok's npm lockfiles, Cursor's by a SHA-256 recorded here — Cursor publishes none), its self-update off;
-  `TERMINAL_AI_TOOLS` (all, none or a list) keeps fewer. The update downloads them once (about 500 MB, 1.3 GB
-  unpacked); `TERMINAL_AI_TOOLS=none` in `.env` before updating leaves them out. Each login stays in its own app's file in the sandbox:
+  Grok's npm lockfiles, Cursor's by a SHA-256 recorded here — Cursor publishes none; one that fails is left out and
+  said), its self-update off; `TERMINAL_AI_TOOLS` (all, none or a list) keeps fewer. The update downloads them once
+  (about 500 MB, 1.5 GB unpacked); `TERMINAL_AI_TOOLS=none` in `.env` before updating leaves them out. Each login stays in its own app's file in the sandbox:
   bedrock-now never reads, copies or passes one on, and backups leave them out. `subscriptions` in the terminal and
   `./stack subscriptions status|login TOOL|logout TOOL` here.
 - **Who answers, on each page.** The Terminal tab's **Open** menu (Claude Code on Bedrock, a shell, one of your tools —
   each in a window of its own, starting with its sign-in when it has none), the same **Open…** menu in the Code page's
   terminal panel (in the project's folder), and Chat's **Who answers**: a Bedrock or OpenRouter model (a new chat with
   it), or one of your tools **itself** in place of Open WebUI, in the workspace or a project folder — you type into the
-  real app. As Chat models your subscriptions are greyed out for now, each with the provider's reason; your own API
-  keys come next.
+  real app. As Chat models your subscriptions are planned (greyed out for now, each with its provider's terms for that
+  use); so are your own API keys.
 - **Settings › Claude Code › Your AI subscriptions**: each tool, its version, whether it says it is signed in and which
   kind (its own status command — never the login), **Sign out** (its own) and **Check again**, through the update
   helper with the password. *Tools in the sandbox* (`TERMINAL_AI_TOOLS`) under More.
@@ -41,7 +41,16 @@ All notable changes to bedrock-now are documented here. The format follows
 ### Security
 
 - A login made in the sandbox can be read by anything running there (Claude, a command it runs, a page it reads):
-  said wherever you sign in, with how to sign out and where to revoke it ([docs/security.md](docs/security.md#your-ai-subscriptions)).
+  said by `subscriptions login` and `./stack subscriptions login`, in Settings › Your AI subscriptions, the walkthrough,
+  the README and [docs/security.md](docs/security.md#your-ai-subscriptions), with how to sign out and where to revoke it.
+- `claude-sub` gets no stack MCP server (Chat's knowledge bases, the shared bucket): `CLAUDE_SUB_STACK_MCP=1` gives it,
+  said each time. The other tools get none of the stack's variables either.
+- The Code page's terminal menu asks the portal for a launch token with a request of its own; an address alone (a
+  link in an answer, a preview) only gets the terminal's *Open … here?* question. `@terminal` never reads a window of
+  your subscriptions' tools (their screens may show sign-in codes).
+- `./stack subscriptions` runs the sandbox's command by its path with the system's `PATH`, reads at most 16 KiB of its
+  status, marks each line it shows as the sandbox's, and keeps your keyboard away from every sign-in but the two that
+  ask something back; Settings' messages for those jobs are never the sandbox's text.
 
 ## [0.22.1] - 2026-10-23
 

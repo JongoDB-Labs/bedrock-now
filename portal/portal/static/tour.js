@@ -763,13 +763,14 @@
         list("ul", [
           [b("Claude Code"), " on your Claude plan (", code("claude-sub"), "), ", b("Codex"), " on your ChatGPT plan, ", b("Copilot"), ", ", b("Cursor"), ", ",
             b("Grok"), " (SuperGrok or the X Subscription) and ", b("Gemini CLI"), " (an organisation's Gemini Code Assist, or your own Gemini API key — Google AI Pro and Ultra no longer work in it)."],
-          [b("Signing in"), ": pick the tool in the terminal's ", b("Open"), " menu (or type its name there). It shows a link and a code: open the link in your browser, sign in with the provider, and it is done — Codex needs ",
-            b("device code login"), " turned on in ChatGPT's Security settings first."],
-          ["Each login stays in that tool's own file in the sandbox: ", b("bedrock-now never sees it"), ", and backups leave it out. Anything running in the sandbox could read it, so sign out (Settings) and revoke it at the provider if that ever worries you."]]),
+          [b("Signing in"), ": pick the tool in the terminal's ", b("Open"), " menu (or type its name there). It shows a link (and for most a code): open the link in your browser and sign in with the provider. Codex, Copilot, Cursor and Grok then finish by themselves; ",
+            b("Claude Code"), " and ", b("Gemini CLI"), " show a code in your browser that you paste back into the terminal. Codex needs ", b("device code login"), " turned on in ChatGPT's Security settings first."],
+          ["Each login stays in that tool's own file in the sandbox: ", b("bedrock-now never sees it"), ", and backups leave it out. Anything running in the sandbox could read it: sign out and revoke it at the provider if that ever worries you — Settings' ",
+            b("Sign out"), " for Claude Code, Codex, Cursor and Grok; Gemini CLI and Copilot sign out inside themselves (", code("/auth signout"), ", ", code("/logout"), ")."]]),
         p(b("Who answers"), ", on each page:"),
         list("ul", [
           [b("Terminal"), ": the ", b("Open"), " menu above it — Claude Code on Bedrock, a tool of yours, or a shell, each in a window of its own (the Code page's terminal panel has the same)."],
-          [b("Chat"), ": the ", b("Who answers"), " menu above it — a Bedrock or OpenRouter model in Open WebUI, or one of your tools ", b("itself"), ", right there, in the folder you pick. As Chat ", b("models"), " in the same conversation view, your subscriptions come next — greyed out until then, each saying how (Google's plans no longer work in Gemini CLI: your own Gemini key instead); your own API keys (OpenAI, Anthropic, xAI, Google, Mistral) come next too."]]),
+          [b("Chat"), ": the ", b("Who answers"), " menu above it — a Bedrock or OpenRouter model in Open WebUI, or one of your tools ", b("itself"), ", right there, in the folder you pick. As Chat ", b("models"), " in the same conversation view, your subscriptions are planned — greyed out until then, each saying how and under which of its provider's terms (Google's plans no longer work in Gemini CLI: your own Gemini key instead); so are your own API keys (OpenAI, Anthropic, xAI, Google, Mistral)."]]),
         note("Usage counts against each plan's own limits; bedrock-now shows no $ for it. ", settings("Claude Code", "+subscriptions"), " › ",
           b("Your AI subscriptions"), " lists each tool, whether it says it is signed in, ", b("Sign out"), " and ", b("Check again"), "; ", code("./stack subscriptions"), " in a terminal."),
       ],

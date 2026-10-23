@@ -582,9 +582,22 @@ backups leave it out.
 | Grok Build (xAI) | SuperGrok or the X Subscription (or its free tier) | `grok` | `grok login --device-auth`: a link and a code | `grok logout` |
 
 `subscriptions` in the terminal (or `./stack subscriptions` on this computer) lists each with its version and whether
-it says it is signed in; `subscriptions login TOOL` runs its sign-in. Plain `claude` and `claude-bedrock` stay on
-Bedrock: `claude-sub` is the same, unmodified Claude Code in its own config folder (`~/.claude-subscription`), started
-without the stack's `ANTHROPIC_*` variables so it uses your login; only its updates stay off (the image pins it).
+it says it is signed in; `subscriptions login TOOL` runs its sign-in (`./stack subscriptions login TOOL` shows the
+sandbox's words here, each line marked `sandbox│`; what you type then reaches the sandbox only for Claude Code — the
+code from your browser — and Copilot — whether to keep its login in a file — and it says so first). Plain `claude` and
+`claude-bedrock` stay on Bedrock: `claude-sub` is the same, unmodified Claude Code in its own config folder
+(`~/.claude-subscription`), started without the stack's `ANTHROPIC_*` variables so it uses your login; only its
+updates stay off (the image pins it). It does **not** get the stack's shared MCP server (Chat's knowledge bases and the
+shared bucket, which that server can write): what it reads would go to Anthropic under your plan's terms —
+`CLAUDE_SUB_STACK_MCP=1` in a shell gives it anyway, said each time. None of the tools gets the stack's own variables
+(its gateway, the terminal's LiteLLM key, Bedrock's settings).
+
+Claude on your plan, outside Anthropic's own apps: Anthropic's support article (*Use the Claude Agent SDK with your
+Claude plan*, 2026-10-07) says *"You can still use the Claude Agent SDK, `claude -p`, and third-party apps with your
+subscription limits"*; its legal and compliance page still says developers may not *"offer Claude.ai login into their
+own applications, or … route requests through Free, Pro, or Max plan credentials on behalf of their users"*.
+`claude-sub` is Claude Code itself, signed in by you with Anthropic's own flow on your own computer; bedrock-now offers
+no Claude login and never holds the token.
 
 **Who answers** — one menu on each page:
 
@@ -596,9 +609,11 @@ without the stack's `ANTHROPIC_*` variables so it uses your login; only its upda
   tools **itself**, in place of Open WebUI, in the folder you pick (the workspace or a project folder): you type into
   the real app, with its own history (`/resume`) and its own usage display. *Open WebUI* brings Chat back. As Chat
   *models* answering in the same conversation view — each through the interface its provider ships for other apps
-  (the Claude Agent SDK, Codex's app server, the ACP mode of Copilot, Cursor and Grok) — your subscriptions come in the
-  next release; they are listed greyed out until then. Google's plans no longer work in Gemini CLI: Gemini in Chat will
-  use your own Gemini API key, as will the other providers' keys (OpenAI, Anthropic, xAI, Mistral).
+  (the Claude Agent SDK, Codex's app server, the ACP mode of Copilot, Cursor and Grok) — your subscriptions are
+  planned, each under its provider's own terms for that use (Anthropic's two texts below; OpenAI's *Sign in with
+  ChatGPT* terms for other apps; xAI's acceptable use policy); they are listed greyed out, each with its reason, until
+  then. Google's plans no longer work in Gemini CLI: Gemini in Chat is planned through your own Gemini API key, like the
+  other providers' keys (OpenAI, Anthropic, xAI, Mistral).
 
 Settings › Claude Code › **Your AI subscriptions** shows each tool, whether it said it is signed in and which kind
 (*ChatGPT*, *Claude Max* …: its own status command, or for Gemini CLI and Grok whether their login file is there —
@@ -608,9 +623,12 @@ it and shows no $ for it.
 
 The tools are in the sandbox's image, each **pinned and checked** when it is built on your computer: Codex's and
 Copilot's release files by the SHA-256 their GitHub releases list, Gemini CLI and Grok Build by their npm lockfiles,
-Cursor's by the SHA-256 bedrock-now recorded (Cursor publishes none: a changed file stops the build). Together about
-1.3 GB; `TERMINAL_AI_TOOLS` in `.env` (`all`, `none`, or e.g. `codex,copilot`), then `./stack terminal enable`, keeps
-fewer. Their self-updates stay off. Each reaches its own provider through the sandbox's egress proxy (public
+Cursor's by the SHA-256 bedrock-now recorded (Cursor publishes none). A tool whose download or check fails is left out
+of the image — the build says so, the tool's command says so, and the others are kept. Copilot's own package (the code
+it runs) is unpacked into the image, not into your home; all of it is root's, read-only. Together about 1.5 GB;
+`TERMINAL_AI_TOOLS` in `.env` (`all`, `none`, or e.g. `codex,copilot`), then `./stack terminal enable`, keeps fewer.
+Their self-updates stay off (Codex still looks for a newer version and may say one is out: it cannot replace itself
+in the read-only image; `./stack update` brings the pinned one). Each reaches its own provider through the sandbox's egress proxy (public
 addresses on port 443: nothing to open with the default *Internet only*; with `TERMINAL_EGRESS_ALLOW` set, add their
 names — [docs/security.md](docs/security.md#your-ai-subscriptions) lists them).
 

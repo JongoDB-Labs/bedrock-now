@@ -3051,13 +3051,24 @@ never reads, copies, keeps, passes on or relays a login.**
   (`npm ci --ignore-scripts`: none of their install scripts runs; Grok's binary is unpacked at build the way its own
   postinstall would, into the read-only image rather than your home folder), Cursor's package by the SHA-256
   bedrock-now recorded on 2026-10-23 — **Cursor publishes no checksum**, so that one is trust on first use: a file that
-  changed since stops the build. Read-only at run time. Nothing in any of them is changed, and no sign-in method is
-  removed: the launchers on `PATH` (`terminal/bin/`) only pick each app's config folder, keep its self-update off
-  (an update would install an unpinned copy into the home folder, first on `PATH`) and — for `claude-sub` alone —
-  start it without the stack's own `ANTHROPIC_*` variables (the gateway and the terminal's LiteLLM key, Bedrock's model
-  ids), so the unmodified Claude Code uses its own login in `~/.claude-subscription`. A key you export yourself in a
-  shell for another tool (`GH_TOKEN`, `GEMINI_API_KEY` …) stays: it is one of that tool's own sign-in methods.
-  `TERMINAL_AI_TOOLS` (`all`, `none` or a list) decides which are in the image.
+  changed since is not kept. A tool whose download or check fails is left out of the image, said in the build and by
+  its command (`/usr/local/lib/bn-tools/SKIPPED`); the others stay. Everything of theirs is root's (whatever owner a
+  tarball recorded; the build checks it) and read-only at run time; what an app would unpack and run from the home
+  folder is unpacked into the image instead (Grok's binary, as its own postinstall would; Copilot's own package, which
+  it otherwise extracts into `~/.cache` at its first run and runs from there: `COPILOT_PKG_CACHE_HOME` points at the
+  image's copy), and Cursor's script gets no Node compile cache in the home (`NODE_DISABLE_COMPILE_CACHE`). Nothing in
+  any of them is changed, and no sign-in method is removed: the launchers on `PATH` (`terminal/bin/`) only pick each
+  app's config folder, keep its self-update off (an update would install an unpinned copy into the home folder, first
+  on `PATH`; Codex still checks for a newer version and may say one is out — it cannot replace itself here), make what
+  they write private (`umask 077`) and start it without the stack's own variables (the gateway and the terminal's
+  LiteLLM key, Bedrock's model ids and switches, the shared MCP server's token, AWS's), so the unmodified Claude Code
+  uses its own login in `~/.claude-subscription`. A key you export yourself in a shell for another tool (`GH_TOKEN`,
+  `GEMINI_API_KEY` …) stays: it is one of that tool's own sign-in methods. `TERMINAL_AI_TOOLS` (`all`, `none` or a
+  list) decides which are in the image.
+- [x] **No stack MCP server for your plan.** `claude-sub` does not get the stack's shared MCP server (its token is in
+  `~/.config/bedrock-now/mcp.json`): through it, Chat's knowledge bases and the shared bucket — which it can write —
+  would flow to Claude on your plan, under your plan's terms rather than Bedrock's. `CLAUDE_SUB_STACK_MCP=1` in a shell
+  gives it for that session, with a warning each time.
 - [x] **Its own sign-in, in the sandbox.** Each signs in there with a flow that needs no callback into the sandbox:
   Codex's and Grok's device codes, Copilot's GitHub device flow, Cursor's link that the app polls, Claude Code's and
   Gemini CLI's link with the code pasted back. Your browser talks to the provider; the sandbox talks to the provider;
@@ -3079,27 +3090,40 @@ never reads, copies, keeps, passes on or relays a login.**
   can at most claim "signed in".
 - [x] **Sign-in and sign-out where you are.** Signing in happens in the terminal like any terminal use (remotely only
   with `REMOTE_TERMINAL`); `./stack subscriptions login TOOL` on this computer runs the same sign-in in the sandbox and
-  shows its words as plain text only — no terminal escape of the sandbox's reaches this computer's terminal. *Sign out* in Settings runs the app's own sign-out in the sandbox, through the update helper
+  shows its words as plain text only, each line marked `sandbox│`, cut at 300 characters and 400 lines — no terminal
+  escape of the sandbox's reaches this computer's terminal, and nothing it prints passes for a line of `./stack`'s. Your
+  keyboard reaches the sandbox only for the two sign-ins that ask something back (Claude Code: the code your browser
+  shows; Copilot: whether to keep its login in a file), said first; the others get nothing of this terminal's. Every
+  call runs the sandbox's `/usr/local/bin/subscriptions` by its path with the system's `PATH` (never a program of that
+  name the sandbox's home put first), and a status answer is read up to 16 KiB inside its deadline. A failed *Check
+  again* or *Sign out* says so in this side's words only (the sandbox's text stays in the log). *Sign out* in Settings runs the app's own sign-out in the sandbox, through the update helper
   with the password (a request of fixed fields: the action and a tool id among `claude`, `codex`, `cursor`, `grok` —
   Gemini CLI and Copilot sign out inside their own screens); it does not revoke the login at the provider.
 - [x] **Nothing starts from an address alone.** The Terminal tab's *Open*, the Code page's terminal panel and the Chat
   tab's embedded tool load the terminal with `?arg=MODE&arg=TOOL&arg=TOKEN[&arg=FOLDER]`; ttyd (`--url-arg`) hands
   those words to `bn-session` as arguments, never through a shell. TOKEN is a **launch token** the portal makes only on
   your click — in its own page (`POST /api/terminal/launch`: the session, `X-Requested-With`, the portal's Origin), in
-  the Code page's hand-off (its own same-origin request, its unlock), or on the terminal host's own *Open … here?* page
+  the Code page's terminal menu (`POST /.bn/terminal-launch`: its unlock, its Origin, `X-Requested-With`; the hand-off
+  address then carries the token — the same address without one, a link in an answer or a preview, only shows the
+  question below), or on the terminal host's own *Open … here?* page
   (`POST /.bn/launch`: that host's Origin, `Sec-Fetch-Site: same-origin`) — an HMAC over the login, exactly those words
   and when it was made, keyed by the portal's secret and the password (a new password voids them all), refused if made
   before the last *Sign out everywhere*, fresh for 10 minutes, then valid only for reconnecting the terminal it opened
   (12 hours, while the portal runs). The portal's check of every request to the terminal host refuses an address that
   carries words (as ttyd reads them: fragments split at `&` and `;`, URL-decoded, `arg%3D…` included) without a valid
-  token for exactly those words: a page shows the *Open … here?* question instead — nothing starts until you choose
+  token for exactly those words, written exactly one way, with a folder that is `/workspace`, a folder of it like the
+  Code page's projects or a project folder of this computer (at most 255 bytes, no control, invisible or
+  direction-changing character): a page shows the *Open … here?* question instead — nothing starts until you choose
   *Open* there — and the WebSocket that would start the tool gets 403. A link from another site, a page of the same site
   (a preview, Chat's output) or an old address therefore starts nothing. `bn-session` then takes only `open`/`chat`, a
-  tool of its fixed list, a token's form (each acts once) and a folder that resolves inside `/workspace` or a project
-  folder; anything else is the plain attach of before.
+  tool of its fixed list, a token's form (each acts once, and only within 10 minutes of when it was made — also after
+  the sandbox restarted) and a folder that resolves inside `/workspace` or a project folder; anything else is the plain
+  attach of before. A tool chosen in the Chat tab earlier is offered again after a reload (*Reopen …*), never started
+  by itself. The Code page's `@terminal` never reads a window of one of these tools, nor a pane running one of their
+  commands: their screens may show a sign-in's one-time code.
 - [x] **No login behind an API.** In this release none of these logins is used by LiteLLM, Open WebUI or the Code page's
-  sessions (Chat lists them as models coming next); the Chat tab can show the app itself (its own screen, in the
-  terminal frame) — you type into the real app. When they come as Chat models and Code page sessions, it will be through
+  sessions (Chat lists them as planned models); the Chat tab can show the app itself (its own screen, in the
+  terminal frame) — you type into the real app. If they come as Chat models and Code page sessions, it will be through
   each provider's own interface for other apps (the Claude Agent SDK, Codex's app server, ACP), the app itself making
   every request with its own login in the sandbox, reachable only from Chat — never a token held or relayed by
   bedrock-now.
@@ -3114,18 +3138,18 @@ What each provider says (read 2026-10-23; the design notes keep the quotes):
 
 | Provider | What applies | Where |
 |---|---|---|
-| Anthropic | *"Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription"*; developers *"may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow"*; and since 2026-10-07: *"You can still use the Claude Agent SDK, `claude -p`, and third-party apps with your subscription limits."* | [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance), [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) |
-| OpenAI | *"When you sign in to Codex using an existing ChatGPT account, the ChatGPT Terms of Use and Privacy Policy … apply"*; Codex's docs prefer device-code sign-in on remote and headless machines; *"Do not share the same file across concurrent jobs or multiple machines"* | [Using Codex with your ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan), [Codex authentication](https://learn.chatgpt.com/docs/auth), [Terms of Use](https://openai.com/policies/terms-of-use/) |
+| Anthropic | *"Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription"*; developers *"may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow"*, nor *"offer Claude.ai login into their own applications, or … route requests through Free, Pro, or Max plan credentials on behalf of their users"*; and since 2026-10-07: *"You can still use the Claude Agent SDK, `claude -p`, and third-party apps with your subscription limits."* The two texts pull apart: Claude in the Code page or as a Chat model on your plan would sit behind a switch of its own | [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance), [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) |
+| OpenAI | *"When you sign in to Codex using an existing ChatGPT account, the ChatGPT Terms of Use and Privacy Policy … apply"*; Codex's docs prefer device-code sign-in on remote and headless machines; *"Do not share the same file across concurrent jobs or multiple machines"*; for other apps on a ChatGPT sign-in, the *Sign in with ChatGPT* terms: *"Requests must originate from the user's local runtime or a remote runtime only that user controls"*, *"Do not provide general-purpose API access for other tools"* | [Using Codex with your ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan), [Codex authentication](https://learn.chatgpt.com/docs/auth), [Terms of Use](https://openai.com/policies/terms-of-use/), [Sign in with ChatGPT terms](https://openai.com/policies/sign-in-with-chatgpt-terms/) |
 | Google | Gemini CLI stopped serving Google AI Pro and Ultra (and Code Assist for individuals) on 2026-06-18; Standard and Enterprise logins remain; reusing Gemini CLI's sign-in from other software *"is a violation of applicable terms"* (bedrock-now runs the CLI itself) | [Deprecations](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals), [Gemini CLI terms](https://geminicli.com/docs/resources/tos-privacy/) |
 | GitHub | *"Your login may only be used by one person"*; Copilot CLI runs in containers by GitHub's own docs, with the device flow there | [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service), [Authenticate Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli) |
 | Cursor | no reproducing or modifying the service; nothing on containers; its CLI's own login | [Terms of service](https://cursor.com/terms-of-service), [CLI authentication](https://cursor.com/docs/cli/reference/authentication) |
-| xAI | *"You may not share your account credentials"*; no unauthorised automated use; Grok Build documents `grok login --device-auth` for containers | [Terms](https://x.ai/legal/terms-of-service), [Acceptable use](https://x.ai/legal/acceptable-use-policy), [Grok Build CLI](https://docs.x.ai/build/cli/reference) |
+| xAI | *"You may not share your account credentials"*; the acceptable use policy rules out *"unauthorized automated or non-human means"*; Grok Build documents `grok login --device-auth` for containers, and its own headless and ACP modes | [Terms](https://x.ai/legal/terms-of-service), [Acceptable use](https://x.ai/legal/acceptable-use-policy), [Grok Build CLI](https://docs.x.ai/build/cli/reference) |
 
 Kiro CLI and Amp are not in the image (not asked for; both have their own CLI sign-in and could be added the same way).
 The names each app reaches, all public on port 443 — nothing to open with the default *Internet only*; with
 `TERMINAL_EGRESS_ALLOW` set, add them: `claude.ai`, `claude.com`, `platform.claude.com`, `api.anthropic.com`;
-`auth.openai.com`, `chatgpt.com`; `accounts.google.com`, `oauth2.googleapis.com`, `codeassist.google.com`,
-`cloudcode-pa.googleapis.com`; `github.com`, `githubcopilot.com`; `cursor.com`, `cursor.sh`; `x.ai` (also Cursor's
+`auth.openai.com`, `chatgpt.com`, `api.openai.com` (an API key's sign-in); `accounts.google.com`, `oauth2.googleapis.com`,
+`codeassist.google.com`, `cloudcode-pa.googleapis.com`, `generativelanguage.googleapis.com` (a Gemini API key); `github.com`, `githubcopilot.com`; `cursor.com`, `cursor.sh`; `x.ai` (also Cursor's
 sign-in from 2026-10-30, `accounts.x.ai`), `grok.com`. Each name covers the names under it there.
 
 ## Code provenance
