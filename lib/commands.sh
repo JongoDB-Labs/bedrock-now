@@ -207,27 +207,27 @@ run_phase() {
 # stderr every BUILD_TICK_S seconds (150) while CMD runs: a long build on a slow computer is progress to the helper,
 # which ends a job whose log says nothing new for 20 minutes (lib/settings_helper.sh) — a build only at its 4 h
 # limit. Phases that only wait (up --wait, a restart) stay silent, so a stuck one is still ended at 20 minutes.
-# CMD runs as before (in the foreground: Ctrl-C, its status); the ticker beside it is ended with it, by its own
-# process group's PID (its sleep too), and ends by itself within a second should this shell be gone.
+# CMD runs as before (in the foreground: Ctrl-C, its status); the ticker beside it is ended with it by KILL to its own
+# PID — not a TERM to a process group of its own: a build that ends before the ticker's group exists, or a caller that
+# ignores TERM (the ticker inherits that), left `wait` waiting for a ticker that waits for this shell (v0.20.1). KILL
+# can be neither missed nor ignored, the PID is ours until waited for, and the ticker's last `sleep 1` ends by itself.
+# The ticker stays in the caller's process group (the helper ends a job's group), and ends by itself within a second
+# should this shell be gone.
 BUILD_TICK_S="${BUILD_TICK_S:-150}"
 building() {
-  local what="$1" me t rc=0 jc=''
+  local what="$1" me t rc=0
   shift
   [ -n "${_PHASE_TICK:-}" ] || { "$@"; return; }
   me="$(exec sh -c 'echo "$PPID"')"   # (this shell's PID, a subshell's too: bash 3.2 has no BASHPID)
-  case "$-" in *m*) jc=1 ;; esac
-  set -m   # (the ticker in a process group of its own)
   _build_ticker "$what" "$me" </dev/null >/dev/null 2>&1 &
   t=$!
-  [ -n "$jc" ] || set +m
   "$@" 8>&- || rc=$?
-  kill -TERM -- "-$t" 2>/dev/null || true
+  kill -KILL "$t" 2>/dev/null || true
   wait "$t" 2>/dev/null || true
   return "$rc"
 }
 _build_ticker() {   # WHAT PID — building's: a line to fd 8 every BUILD_TICK_S seconds while PID runs
   local start=$SECONDS next=$((SECONDS + BUILD_TICK_S))
-  trap 'exit 0' TERM
   while kill -0 "$2" 2>/dev/null; do
     sleep 1
     [ "$SECONDS" -ge "$next" ] || continue

@@ -86,6 +86,30 @@ test_building_says_it_is_still_at_work_only_in_a_phase_with_no_terminal() {
   unset BUILD_TICK_S
 }
 
+test_building_never_waits_for_good_for_its_ticker() {
+  # (v0.20.1 stopped the ticker with a TERM to a process group of its own: a build that ended before that group existed,
+  # or a caller that ignores TERM, left building waiting for a ticker that waited for it — an update could hang)
+  local d="$TMP/never" pid n m
+  mkdir -p "$d"
+  cat > "$d/run.sh" <<'RUN'
+set -euo pipefail
+. "$STACK_DIR/lib/common.sh"; . "$STACK_DIR/lib/commands.sh"
+_PHASE_TICK=1; BUILD_TICK_S=150
+exec 8>/dev/null
+[ "$1" != ignore ] || trap '' TERM
+for i in $(seq 1 "$2"); do building x true; done
+echo done
+RUN
+  for m in "fast 300" "ignore 50"; do
+    # shellcheck disable=SC2086  # (mode and count)
+    bash "$d/run.sh" $m > "$d/out" 2>&1 & pid=$!
+    n=0; while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 150 ]; do sleep 0.2; n=$((n + 1)); done
+    if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; echo "building hung ($m)" >&2; return 1; fi
+    wait "$pid"
+    assert_eq "$(cat "$d/out")" done
+  done
+}
+
 test_missing_images_skips_local_builds_and_present_images() {
   dc() { printf 'pgvector/pgvector:0.8.7-pg17\nghcr.io/berriai/litellm:1.105.0\nbedrock-now/shared-mcp:local\n'; }
   docker() { case "$*" in "image inspect pgvector/pgvector:0.8.7-pg17") return 0 ;; *) return 1 ;; esac; }

@@ -1850,18 +1850,23 @@ test_helper_a_long_quiet_image_build_is_progress_a_stuck_wait_is_not() {
   local log="$TMP/job.log" pid rc t0 p
   helper_heartbeat() { :; }
   HELPER_JOB_POLL_S=0.2
+  export TICKER_PIDS="$TMP/ticker.pids"
   cat > "$TMP/job.sh" <<'JOB'
 set -euo pipefail
 . "$STACK_DIR/lib/common.sh"; . "$STACK_DIR/lib/commands.sh"
 BUILD_TICK_S=1
 _quiet_build() { sleep "$1"; }
+# the ticker, by its PID (it stays in the job's process group, so it is not told apart by its group)
+eval "$(declare -f _build_ticker | sed '1s/_build_ticker/_real_build_ticker/')"
+_build_ticker() { sh -c 'echo "$PPID"' >> "$TICKER_PIDS"; _real_build_ticker "$@"; }
 case "$1" in
   build) run_phase "X image (build)" x building "the x image" _quiet_build "$2" ;;
   wait) run_phase "X (start)" x sleep "$2" ;;
 esac
 JOB
-  # each poll: the job's processes below it, by PID and process group (the ticker: one of its own; its sleep; the build)
-  : > "$TMP/kids"
+  # each poll: the job's processes below it, by PID (the ticker and its sleep; the build); the ticker's own PID from
+  # its file
+  : > "$TMP/kids"; : > "$TICKER_PIDS"
   _kids() {
     local all k
     all="$(ps -A -o pid= -o ppid= -o pgid= 2>/dev/null)"
@@ -1869,11 +1874,11 @@ JOB
       printf '%s\n' "$all" | awk -v p="$k" '$1 == p || $2 == p { print $1, $3 }' >> "$TMP/kids"
     done
   }
-  _ticker_seen() { awk '$1 == $2 { f = 1 } END { exit !f }' "$TMP/kids" || { echo "no ticker seen" >&2; return 1; }; }
+  _ticker_seen() { [ -s "$TICKER_PIDS" ] || { echo "no ticker seen" >&2; return 1; }; }
   _none_left() {   # within 3 s (a ticker whose phase was killed sees it gone within a second)
     local k n=0
     while [ "$n" -lt 15 ]; do
-      p=''; while read -r k _; do ! kill -0 "$k" 2>/dev/null || p="$p $k"; done < <(sort -u "$TMP/kids")
+      p=''; while read -r k _; do ! kill -0 "$k" 2>/dev/null || p="$p $k"; done < <(sort -u "$TMP/kids" "$TICKER_PIDS")
       [ -n "$p" ] || return 0
       sleep 0.2; n=$((n + 1))
     done
@@ -1889,7 +1894,7 @@ JOB
   _ticker_seen
   _none_left
   # one that builds past the ceiling: ended there (not as idle), and its ticker goes too
-  : > "$log"; : > "$TMP/kids"
+  : > "$log"; : > "$TMP/kids"; : > "$TICKER_PIDS"
   set -m; bash "$TMP/job.sh" build 30 > "$log" 2>&1 & pid=$!; set +m
   t0="$(date +%s)"; rc=0; _WAIT_TICK=_kids _wait_beating "$pid" 5 "$log" 3 || rc=$?
   assert_eq "$rc" 124
@@ -1898,7 +1903,7 @@ JOB
   _ticker_seen
   _none_left
   # a phase that only waits (up --wait) and hangs: silent, so ended after 3 s without a new line
-  : > "$log"; : > "$TMP/kids"
+  : > "$log"; : > "$TMP/kids"; : > "$TICKER_PIDS"
   set -m; bash "$TMP/job.sh" wait 30 > "$log" 2>&1 & pid=$!; set +m
   t0="$(date +%s)"; rc=0; _WAIT_TICK=_kids _wait_beating "$pid" 60 "$log" 3 || rc=$?
   assert_eq "$rc" 125

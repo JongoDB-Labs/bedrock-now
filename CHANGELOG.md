@@ -22,6 +22,10 @@ All notable changes to bedrock-now are documented here. The format follows
   within 20 seconds changes nothing; `./stack test` (and Settings' smoke test) only reports the refusal as a failed
   check. The Bedrock path stays: half a second of audio decides at each of those checks, so it works again if AWS takes
   audio again (docs/voice.md).
+- **An image build in a log (Update now, Settings) could wait for good** (v0.20.1). The "still building" ticker was
+  stopped with a TERM to a process group of its own: a build that ended before that group existed, or a caller that
+  ignores TERM, left the build step waiting for a ticker that waited for it — and an update has no time limit. The
+  ticker is now ended by KILL to its own PID, which can be neither missed nor ignored.
 - **The README and the walkthrough no longer say every model call is billed to Bedrock under "your team's" access
   key.** Models run on Amazon Bedrock in your own AWS account — with an IAM user's access key or an EC2 instance role —
   and the only other places a call can go are the ones you turn on: OpenRouter with your own key (billed by OpenRouter;
