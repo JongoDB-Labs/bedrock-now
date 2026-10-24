@@ -34,6 +34,9 @@ HOST = os.environ["E2E_HOST"]
 PORT = int(os.environ["E2E_PORT"])
 LITELLM_PORT = int(os.environ["E2E_LITELLM_PORT"])
 MCP_PORT = int(os.environ["E2E_MCP_PORT"])
+# the Claude Code version this checkout pins (terminal/claude-code/package.json, read by browser.sh): what the sandbox and
+# the Code page say they run
+CLAUDE_CODE_VERSION = os.environ.get("E2E_CLAUDE_CODE_VERSION", "")
 FILTER = os.environ.get("E2E_FILTER", "")
 # tests/e2e/run.sh: E2E_CHECKS narrows every pass further (a focused run that spends less on Bedrock)
 CHECKS_RE = os.environ.get("E2E_CHECKS", "")

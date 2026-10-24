@@ -35,7 +35,7 @@ from urllib.parse import urlencode
 
 from playwright.sync_api import expect as see
 
-from common import ENV, HOST, PORT, SHOTS, Skip, check, expect, http, origin
+from common import CLAUDE_CODE_VERSION, ENV, HOST, PORT, SHOTS, Skip, check, expect, http, origin
 from checks_browser import _confirm, _need_helper, _switch, _wait_job, goto_setting, login, open_settings, shot
 
 ON = ENV.get("CODE_ENABLED") == "true" and ENV.get("TERMINAL_ENABLED") == "true"
@@ -343,7 +343,8 @@ def host(ctx):
         expect(r.status == 403, f"POST /api/sessions with Origin {o}: {r.status}")
     r = http("GET", "code", "/api/state", cookie=jar)
     st = r.json()
-    expect(r.status == 200 and st["versions"]["claudeCode"] == "2.1.296" and st["limits"]["maxOpen"] == 4, f"/api/state {r.text[:200]}")
+    expect(CLAUDE_CODE_VERSION and r.status == 200 and st["versions"]["claudeCode"] == CLAUDE_CODE_VERSION and st["limits"]["maxOpen"] == 4,
+           f"/api/state {r.text[:200]} (the checkout pins {CLAUDE_CODE_VERSION!r})")
     return f"login → unlock form → (other Origins refused) → unlocked: CSP with a per-request nonce = the page's meta; /.bn/models {len(m.json()['models'])} models; Claude Code {st['versions']['claudeCode']} via SDK {st['versions']['sdk']}"
 
 
@@ -358,7 +359,8 @@ def stream(ctx):
     init = next((e for e in evs if e["type"] == "init"), None)
     res = [e for e in evs if e["type"] == "result"][-1]
     expect(init and "haiku" in init["model"] and init["cwd"] == "/workspace" and init["permissionMode"] == "default", f"init {init}")
-    expect(init["cliVersion"] == "2.1.296" and any(s["name"] == "bedrock-shared" for s in init["mcp"]), f"init {init}")
+    expect(CLAUDE_CODE_VERSION and init["cliVersion"] == CLAUDE_CODE_VERSION and any(s["name"] == "bedrock-shared" for s in init["mcp"]),
+           f"init {init} (the checkout pins {CLAUDE_CODE_VERSION!r})")
     user = next((e for e in evs if e["type"] == "user"), None)
     expect(user and re.fullmatch(r"[0-9a-f-]{36}", user["uuid"] or ""), f"the prompt's echo: {user}")
     expect(any(e["type"] == "delta" for e in evs), "no streamed delta")

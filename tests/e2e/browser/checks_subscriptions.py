@@ -118,6 +118,17 @@ def terminal_open(ctx):
     return "Open › Codex: a window of its own, at Codex's own device-code sign-in (its link shown, never completed)"
 
 
+def tool_frame(page, timeout_s=30):
+    """The Chat tab's frame of the tool, once it has the terminal's address with the Chat words (answers.js sets its src
+    and unhides it in one go: for a moment it is still about:blank)."""
+    for _ in range(timeout_s * 5):
+        f = next((fr for fr in page.frames if fr.url.startswith(TERM) and "arg=chat" in fr.url), None)
+        if f is not None:
+            return f
+        page.wait_for_timeout(200)
+    raise AssertionError(f"no frame of the tool at the terminal's address: {[fr.url[:80] for fr in page.frames]}")
+
+
 @check("browser", "subscriptions-chat-embed")
 def chat_embed(ctx):
     need_on()
@@ -136,9 +147,9 @@ def chat_embed(ctx):
     page.select_option("#answers-chat", "tool:grok")
     page.wait_for_selector("iframe[data-app=chat-tool]:not([hidden])", timeout=10000)
     expect(page.locator("iframe[data-app=chat]").is_hidden(), "Open WebUI still shows with a tool chosen")
-    f = next(fr for fr in page.frames if fr.url.startswith(TERM) and "arg=chat" in fr.url)
+    f = tool_frame(page)
     unlock_in(f, ENV["PORTAL_PASSWORD"])
-    f = next(fr for fr in page.frames if fr.url.startswith(TERM) and "arg=chat" in fr.url)
+    f = tool_frame(page)
     f.locator(".xterm").wait_for(timeout=30000)
     wait_text(f, GROK_SIGNIN, 60)
     note = page.inner_text("#answers-chat-note")
