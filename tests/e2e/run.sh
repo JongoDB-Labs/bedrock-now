@@ -1157,7 +1157,16 @@ elif [ "$SUBSCRIPTIONS" = 1 ]; then
   # after its sign-in ran), Cursor without a compile cache there, every file of theirs root's and not writable by others
   t0="$(now)"
   home_code="$(docker exec "$tc" sh -c 'ls -d ~/.cache/copilot ~/.cache/cursor-compile-cache 2>/dev/null' | tr '\n' ' ')"
-  not_root="$(docker exec "$tc" sh -c 'find /usr/local/lib/bn-tools \( ! -user 0 -o \( ! -type l \( -perm -g+w -o -perm -o+w \) \) \) -print 2>/dev/null | head -n 3')"
+  # (a link: relative, leading to something inside the tools' folder — its own mode bits mean nothing; nothing setuid;
+  # a find that fails says so)
+  not_root="$(docker exec -i "$tc" sh -s <<'SH' 2>&1 | head -n 3
+T=/usr/local/lib/bn-tools
+bad="$(find "$T" \( ! -user 0 -o \( ! -type l \( -perm -g+w -o -perm -o+w \) \) -o \( ! -type d ! -type l -perm /6000 \) \) -print)" || echo find-failed
+[ -z "$bad" ] || printf '%s\n' "$bad"
+find "$T" -type l -exec sh -c 'for l; do t="$(readlink "$l")"; case "$t" in /*) echo "absolute:$l"; continue ;; esac
+  r="$(readlink -e "$l")" || { echo "nowhere:$l"; continue; }; case "$r" in "$0"/*) ;; *) echo "out:$l" ;; esac; done' "$T" {} + || echo find-failed
+SH
+)"
   if [ -z "$home_code$not_root" ] && docker exec "$tc" test -e /usr/local/lib/bn-tools/copilot/cache/pkg; then
     record subscriptions tools-code-in-image PASS "$(( $(now) - t0 ))" "the tools' code is the image's (root's, read-only); none unpacked into the home"
   else record subscriptions tools-code-in-image FAIL "$(( $(now) - t0 ))" "in the home: ${home_code:-none}; not root's: ${not_root:-none}"; fi

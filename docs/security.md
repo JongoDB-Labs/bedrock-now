@@ -3053,7 +3053,9 @@ never reads, copies, keeps, passes on or relays a login.**
   bedrock-now recorded on 2026-10-23 — **Cursor publishes no checksum**, so that one is trust on first use: a file that
   changed since is not kept. A tool whose download or check fails is left out of the image, said in the build and by
   its command (`/usr/local/lib/bn-tools/SKIPPED`); the others stay. Everything of theirs is root's (whatever owner a
-  tarball recorded; the build checks it) and read-only at run time; what an app would unpack and run from the home
+  tarball recorded), nothing setuid or setgid, and every link in it relative and leading to something inside the tools'
+  folder (none to the home, `/tmp` or a folder outside it) — the build checks all of it and stops when it cannot — and
+  read-only at run time; what an app would unpack and run from the home
   folder is unpacked into the image instead (Grok's binary, as its own postinstall would; Copilot's own package, which
   it otherwise extracts into `~/.cache` at its first run and runs from there: `COPILOT_PKG_CACHE_HOME` points at the
   image's copy), and Cursor's script gets no Node compile cache in the home (`NODE_DISABLE_COMPILE_CACHE`). Nothing in
@@ -3106,13 +3108,13 @@ never reads, copies, keeps, passes on or relays a login.**
   the Code page's terminal menu (`POST /.bn/terminal-launch`: its unlock, its Origin, `X-Requested-With`; the hand-off
   address then carries the token — the same address without one, a link in an answer or a preview, only shows the
   question below), or on the terminal host's own *Open … here?* page
-  (`POST /.bn/launch`: that host's Origin, `Sec-Fetch-Site: same-origin`) — an HMAC over the login, exactly those words
+  (`POST /.bn/launch`: that host's Origin, or without one its Referer; a `Sec-Fetch-Site` other than same-origin is refused when sent) — an HMAC over the login, exactly those words
   and when it was made, keyed by the portal's secret and the password (a new password voids them all), refused if made
   before the last *Sign out everywhere*, fresh for 10 minutes, then valid only for reconnecting the terminal it opened
   (12 hours, while the portal runs). The portal's check of every request to the terminal host refuses an address that
   carries words (as ttyd reads them: fragments split at `&` and `;`, URL-decoded, `arg%3D…` included) without a valid
   token for exactly those words, written exactly one way, with a folder that is `/workspace`, a folder of it like the
-  Code page's projects or a project folder of this computer (at most 255 bytes, no control, invisible or
+  Code page's projects or a project folder of this computer (at most 251 bytes — what ttyd still hands on whole —, no control, invisible or
   direction-changing character): a page shows the *Open … here?* question instead — nothing starts until you choose
   *Open* there — and the WebSocket that would start the tool gets 403. A link from another site, a page of the same site
   (a preview, Chat's output) or an old address therefore starts nothing. `bn-session` then takes only `open`/`chat`, a
@@ -3122,8 +3124,9 @@ never reads, copies, keeps, passes on or relays a login.**
   by itself. The Code page's `@terminal` does not read a pane of one of these tools, whose screen may show a sign-in's
   one-time code: one marked as such (the tmux pane option `@bn-sub`, which each tool's launcher sets when it starts in
   tmux and `bn-session` sets on the windows it opens for them), one `bn-session` started for one, or one whose
-  processes — looked at anew in `/proc` — include one running from the tools' folder or a launcher, or with Claude on
-  your plan's folder in its environment. Never by a program's name (a tool runs as `node`, `claude`, a renamed binary).
+  processes — looked at anew in `/proc` — include one whose command line names the tools' folder or a launcher, whose
+  program is one of theirs, or with Claude on your plan's folder in its environment; a pane whose processes cannot be
+  looked at whole is not read either. Never by a program's name (a tool runs as `node`, `claude`, a renamed binary).
   **A guard against reading such a screen by accident, not a boundary**: anything in the sandbox can unset the mark or
   hide a process, and can read those screens itself.
 - [x] **No login behind an API.** In this release none of these logins is used by LiteLLM, Open WebUI or the Code page's

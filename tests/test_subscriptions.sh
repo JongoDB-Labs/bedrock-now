@@ -13,7 +13,7 @@ _stubs() {
   set_env_batch TERMINAL_ENABLED true
   stack_lock() { :; }
   stack_unlock() { :; }
-  export RUNNING=1 TSV='' FOREVER=0 LONG=0
+  export RUNNING=1 TSV='' FOREVER=0 LONG=0 ENDLESS=0
   SX="exec -T -e PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   dc() {
     echo "dc $*" >> "$TMP/dc"
@@ -26,7 +26,9 @@ _stubs() {
       "$SX terminal /usr/local/bin/subscriptions login "*)
         # (what reaches its stdin: this terminal's only for the two that ask something back)
         if IFS= read -r typed; then echo "STDIN: $typed" >> "$TMP/dc"; fi
-        if [ "$LONG" = 1 ]; then local i=0; while [ "$i" -lt 600 ]; do printf 'xx %0900d\n' "$i"; i=$((i + 1)); done; return 0; fi
+        if [ "$LONG" = 1 ]; then local i=0; while [ "$i" -lt 600 ]; do printf 'xx %0310d\n' "$i"; i=$((i + 1)); done; return 0; fi
+        # (one line that never ends: 64 MiB without a newline)
+        if [ "$ENDLESS" = 1 ]; then head -c 67108864 /dev/zero | LC_ALL=C tr '\0' x; return 0; fi
         printf '\033]0;owned\007\033]52;c;ZXZpbA==\007Open \033[1mhttps://auth.openai.com/codex/device\033[0m\r\nCode: ABCD-1234\n\033[?1049h\302\233x\n'; return 3 ;;
     esac
     return 0
@@ -149,6 +151,13 @@ sandbox│ x"
   assert_eq "$(printf '%s\n' "$out" | head -n 1 | sed 's/^sandbox│ //' | LC_ALL=C awk '{ print length($0) }')" 300
   assert_eq "$(printf '%s\n' "$out" | tail -n 1)" "sandbox│ (more not shown)"
   export LONG=0
+  # one line without end: at most SUBS_STREAM_MAX bytes reach awk (its memory stays small), one line of 300 shown
+  export ENDLESS=1
+  out="$(cmd_subscriptions login cursor 2>&1)" || true
+  assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" 1
+  assert_eq "$(printf '%s\n' "$out" | sed 's/^sandbox│ //' | LC_ALL=C awk '{ print length($0) }')" 300
+  export ENDLESS=0
+  assert_eq "$(grep -c 'head -c "$SUBS_STREAM_MAX" | subs_plain_stream' "$STACK_DIR/lib/subscriptions.sh")" 3
   # Gemini CLI signs in inside its own screen: said, the sandbox not asked
   : > "$TMP/dc"
   out="$( (cmd_subscriptions login gemini) 2>&1)" && return 1
@@ -446,6 +455,13 @@ test_the_image_pins_every_tool_it_downloads() {
   # that fails is left out (said), not the image
   assert_contains "$(cat "$d")" "COPY --from=ai-tools --chown=0:0 /out/ /usr/local/lib/bn-tools/"
   assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'chown -hR 0:0 /out'
+  # nothing setuid/setgid; every link relative and leading inside /out (readlink -e: there); a find that fails, fails
+  i="$(cat "$STACK_DIR/terminal/tools/install.sh")"
+  for want in '-perm /6000' 'ug-s' 'case "$t" in /*)' 'r="$(readlink -e "$l")" ||' 'case "$r" in /out/*) ;;' '-print)" || {' "sh {} + || {"; do
+    assert_contains "$i" "$want"
+  done
+  # (the build stage's /bin/sh is dash: the check is POSIX sh)
+  if command -v dash >/dev/null 2>&1; then dash -n "$STACK_DIR/terminal/tools/install.sh" || return 1; fi
   [ "$(grep -c 'tar ' "$STACK_DIR/terminal/tools/install.sh")" = "$(grep -c 'tar --no-same-owner ' "$STACK_DIR/terminal/tools/install.sh")" ] || return 1
   assert_contains "$(cat "$STACK_DIR/terminal/tools/install.sh")" 'is LEFT OUT of this image'
   # Copilot's own package unpacked into the image at build (never run from the writable home)

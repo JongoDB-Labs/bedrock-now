@@ -470,7 +470,8 @@ helper_run_diag() {
   if [ "$rc" -ne 0 ]; then
     JOB_RESULT=failed
     case "$action" in
-      test) msg="$(grep -c '^  FAIL' "$logf" | tr -d ' ') check(s) failed: $(grep '^  FAIL' "$logf" | head -n 2 | sed 's/^  FAIL  //' | tr '\n' ';' | sed 's/;$//')" ;;
+      # (the labels alone: what a check read — a container's answer — never becomes the job's message)
+      test) msg="$(grep -c '^  FAIL' "$logf" | tr -d ' ') check(s) failed: $(grep '^  FAIL' "$logf" | head -n 2 | sed 's/^  FAIL  //; s/ (got .*$//' | LC_ALL=C tr -cd ' -~\n' | cut -c1-200 | tr '\n' ';' | sed 's/;$//')" ;;
       # (this side's words only: the log holds the sandbox's output too, which never becomes the job's message)
       subscriptions-check) msg="The sandbox's AI tools were not checked (exit $rc)" ;;
       subscriptions-signout) msg="$(subs_name "$mode")'s sign-out did not finish (exit $rc)" ;;

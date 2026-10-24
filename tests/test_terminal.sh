@@ -850,7 +850,7 @@ test_test_checks_report_unlock_secret_gateway_and_isolation() {
   assert_contains "$out" "ok    the sandbox resolves no outside names (no DNS way out)"
   # an outside name resolved: FAIL on a current Docker, said (not failed) on one older than 26 (CVE-2024-29018)
   docker() { case "$*" in "version --format"*) echo "${ENGINE:-29.1.0}" ;; esac; }
-  assert_contains "$(DNS=resolved terminal_test_checks)" "FAIL  the sandbox resolves no outside names (no DNS way out) (got resolved"
+  assert_contains "$(DNS=resolved terminal_test_checks)" "FAIL  the sandbox resolves no outside names (no DNS way out) (got «resolved"
   out="$(DNS=resolved ENGINE=25.0.3 terminal_test_checks)"
   assert_contains "$out" "skip  the sandbox resolves no outside names (Docker Engine 25.0.3 forwards DNS from internal networks (CVE-2024-29018"
   assert_not_contains "$out" "FAIL  the sandbox resolves"
@@ -878,12 +878,12 @@ POST /v1/chat/completions"
   litellm_call() { echo 400; }   # a key without its routes: LiteLLM reads the (empty) request
   out="$(terminal_test_checks)"
   assert_contains "$out" "FAIL  terminal gateway"
-  assert_contains "$out" "(got 200 200 404 404 404 200"
-  assert_contains "$out" "FAIL  the terminal's gateway refuses ttyd requests without the secret header (got 200"
-  assert_contains "$out" "FAIL  the terminal's key is refused on LiteLLM's /bedrock/… and /v1/chat/completions (got 400 400"
+  assert_contains "$out" "(got «200 200 404 404 404 200"
+  assert_contains "$out" "FAIL  the terminal's gateway refuses ttyd requests without the secret header (got «200"
+  assert_contains "$out" "FAIL  the terminal's key is refused on LiteLLM's /bedrock/… and /v1/chat/completions (got «400 400"
   # a managed-settings file the sandbox could change (a writable mount), or another one than Settings chose: FAIL
   dc() { case "$*" in *"exec -T terminal timeout 20 sh -c f=/etc/claude-code"*) printf ' file open rw {"disableAutoMode":"disable"}\n' ;; *) ok_dc "$@" ;; esac; }
-  assert_contains "$(terminal_test_checks)" "FAIL  Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox (got  file open rw"
+  assert_contains "$(terminal_test_checks)" "FAIL  Claude Code's managed settings in the terminal: the file Settings chose, read-only to the sandbox (got « file open rw"
   set_env CODE_AUTO_MODE true
   dc() { ok_dc "$@"; }
   assert_contains "$(terminal_test_checks)" 'want none ro {"permissions":{"defaultMode":"default"},"useAutoModeDuringPlan":false})'
@@ -1072,4 +1072,13 @@ test_whats_new_says_once_that_the_sandbox_lost_this_computers_services() {
   assert_not_contains "$(update_whats_new "$new")" "Sandbox internet"
   printf 'TERMINAL_ENABLED=false\n' > "$ENV_FILE"
   assert_not_contains "$(update_whats_new "$old")" "Sandbox internet"
+}
+
+test_check_shows_what_it_read_quoted_and_printable() {
+  local fails=0 out
+  out="$(_check "a check" "$(printf 'x\033]0;owned\007\033[2Jy\nz')" ok)"
+  assert_contains "$out" "FAIL  a check (got «x ]0;owned  [2Jy z», want ok)"
+  ! printf '%s' "$out" | LC_ALL=C grep -q "$(printf '[\001-\010\013-\037\177]')" || { echo "a control reached the output" >&2; return 1; }
+  out="$(_check "long" "$(printf 'a%.0s' $(seq 1 400))" ok)"
+  assert_eq "$(printf '%s' "$out" | sed 's/.*«\(a*\)».*/\1/' | awk '{ print length($0) }')" 160
 }

@@ -754,6 +754,6 @@ test_a_probe_into_the_sandbox_that_never_answers_is_not_a_pass() {
   out="$(projects_test_checks 2>&1)"
   [ "$(( $(date +%s) - t0 ))" -le 12 ] || { echo "took $(( $(date +%s) - t0 )) s" >&2; return 1; }
   assert_contains "$out" "FAIL  project folder app in the sandbox at"
-  assert_contains "$out" "(got couldn't check (timed out after 1 s), want there writable)"
-  assert_contains "$out" "FAIL  the sandbox's project folders are the ones listed (BN_CODE_ROOTS) (got couldn't check (timed out after 1 s)"
+  assert_contains "$out" "(got «couldn't check (timed out after 1 s)», want there writable)"
+  assert_contains "$out" "FAIL  the sandbox's project folders are the ones listed (BN_CODE_ROOTS) (got «couldn't check (timed out after 1 s)"
 }

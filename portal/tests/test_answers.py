@@ -131,6 +131,11 @@ TOK = "1792760000-0123456789abcdef-" + "0" * 32   # a launch token's form (not a
     (["open", "codex", TOK, "/workspace/a/b/c/d/e"], False),
     (["open", "codex", TOK, "/workspace/.git"], False),
     (["open", "codex", TOK, "/workspace/" + "x" * 300], False),
+    # (251 bytes: what ttyd still hands on — "arg=" and the folder in its 256-byte buffer; 252: dropped there, refused here)
+    (["open", "codex", TOK, "/workspace/" + "a" * 100 + "/" + "b" * 100 + "/" + "c" * 38], True),
+    (["open", "codex", TOK, "/workspace/" + "a" * 100 + "/" + "b" * 100 + "/" + "c" * 39], False),
+    (["open", "codex", TOK, "/workspace/" + "a" * 100 + "/" + "b" * 100 + "/" + "é" * 19], True),
+    (["open", "codex", TOK, "/workspace/" + "a" * 100 + "/" + "b" * 100 + "/" + "é" * 20], False),
     (["open", "codex", TOK, "/workspace/a\u202egnp.exe"], False),
     (["open", "codex", TOK, "/workspace/a\u200bb"], False),
     (["open", "codex", TOK, "/workspace/a\ud800"], False),
@@ -153,6 +158,10 @@ def test_the_terminals_words_follow_bn_sessions_rules(words, ok):
 
 
 def test_a_project_folder_of_this_computer_is_one_the_pickers_may_name():
+    # (a project folder too: at most 251 bytes)
+    long251, long252 = "/home/me/" + "p" * 242, "/home/me/" + "p" * 243
+    assert answers.terminal_args("open", "codex", TOK, long251, (long251,)) is not None
+    assert answers.terminal_args("open", "codex", TOK, long252, (long252,)) is None
     roots = ("/home/me/src/app",)
     assert answers.terminal_args("open", "codex", TOK, "/home/me/src/app", roots) is not None
     assert answers.terminal_args("open", "codex", TOK, "/home/me/src/app/inner", roots) is None

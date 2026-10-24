@@ -151,6 +151,8 @@ subs_print() {
   done <<< "$SUBS_LAST_ROWS"
 }
 
+# (a sign-in's or sign-out's whole output: at most this many bytes reach awk — a line without end cannot grow it)
+SUBS_STREAM_MAX=262144
 # subs_plain_stream — the sandbox's output as it comes, line by line, as plain text marked as the sandbox's
 # ("sandbox│ "): terminal escapes (CSI, OSC — a clipboard write, a title) taken out, every other byte that is not
 # printable ASCII dropped, each line cut at SUBS_LINE_MAX characters, and after SUBS_LINES_MAX lines no more is read
@@ -193,7 +195,7 @@ cmd_subscriptions() {
       subs_need_sandbox
       if [ "$sub" = logout ]; then
         case " $SUBS_SIGNOUT " in
-          *" $1 "*) dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" logout "$1" </dev/null 2>&1 | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
+          *" $1 "*) dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" logout "$1" </dev/null 2>&1 | head -c "$SUBS_STREAM_MAX" | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
           *) [ "$1" = gemini ] && die "Gemini CLI signs out inside it: in the Terminal tab, gemini, then /auth signout"
              die "Copilot signs out inside it: in the Terminal tab, copilot, then /logout (and revoke it on github.com › Settings › Applications)" ;;
         esac
@@ -209,8 +211,8 @@ cmd_subscriptions() {
             [ "$1" != claude ] || printf 'Claude Code: open the link below in your browser and sign in; then paste the code it shows here and press Enter.\n'
             [ "$1" != copilot ] || printf 'Copilot: open the link below in your browser and enter the code; it may then ask here whether to keep its login in a file (answer y).\n'
             printf '(What you type here now goes to %s'"'"'s own sign-in in the sandbox, and nowhere else.)\n' "$(subs_name "$1")"
-            dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" login "$1" 2>&1 | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
-          *) dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" login "$1" </dev/null 2>&1 | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
+            dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" login "$1" 2>&1 | head -c "$SUBS_STREAM_MAX" | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
+          *) dc exec -T -e "PATH=$SUBS_PATH" terminal "$SUBS_CMD" login "$1" </dev/null 2>&1 | head -c "$SUBS_STREAM_MAX" | subs_plain_stream; rc="${PIPESTATUS[0]}" ;;
         esac
       fi
       subs_refresh >/dev/null 2>&1 || true

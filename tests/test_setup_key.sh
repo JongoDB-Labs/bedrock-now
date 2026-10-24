@@ -72,7 +72,7 @@ test_cmd_test_flags_missing_setup_key_and_skips_paid_checks() {
   _stub_curl_auth; litellm_key_status() { echo 200; }; curl() { printf 000; }
   (set +e; cmd_test) > "$TMP/o" 2>&1 || true
   out="$(cat "$TMP/o")"
-  assert_contains "$out" "FAIL  LiteLLM key 'setup' is valid (got missing"
+  assert_contains "$out" "FAIL  LiteLLM key 'setup' is valid (got «missing"
   assert_contains "$out" "skip  anthropic /v1/messages"
   assert_eq "$(grep -c '/v1/' "$TMP/calls" 2>/dev/null || true)" "0"
 }

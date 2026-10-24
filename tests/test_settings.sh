@@ -1029,7 +1029,7 @@ test_helper_diagnostics_run_only_their_commands() {
   _act test 0 11111111111111111111111111111111; settings_poll_once 2>/dev/null
   assert_contains "$(cat "$(helper_status_file)")" '"message": "All 2 checks passed"'
   _act test 0 22222222222222222222222222222222; FAKE_FAIL=1 settings_poll_once 2>/dev/null
-  assert_contains "$(cat "$(helper_status_file)")" '"phase": "failed", "message": "1 check(s) failed: anthropic /v1/messages (got 400, want 200)'
+  assert_contains "$(cat "$(helper_status_file)")" '"phase": "failed", "message": "1 check(s) failed: anthropic /v1/messages (full log: .state/helper/last-diag.log)"'
   _act restart-litellm 0 33333333333333333333333333333333; settings_poll_once 2>/dev/null
   assert_eq "$(cat "$CALLS" | tr '\n' ';')" "backup --portal;test;test;restart litellm;"
   for bad in restart-portal restart-postgres restore 'test --x' update; do

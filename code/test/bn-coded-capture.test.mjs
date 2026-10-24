@@ -32,6 +32,11 @@ exit 0
 `, { mode: 0o755 });
 Object.assign(process.env, { BN_CODE_WORKSPACE: WS, BN_CODE_SOCK_DIR: SOCKDIR, BN_CODE_CHILDREN: path.join(ROOT, 'children'), BN_TMUX_BIN: TMUX, HOME: ROOT,
   BN_PROC_DIR: path.join(ROOT, 'proc') });
+// (a stand-in /proc: the panes' shell, pid 100 — a pane whose processes cannot be looked at is never read)
+fs.mkdirSync(path.join(ROOT, 'proc/100'), { recursive: true });
+fs.writeFileSync(path.join(ROOT, 'proc/100/stat'), '100 (bash) S 1 1 1 0');
+fs.writeFileSync(path.join(ROOT, 'proc/100/cmdline'), 'bash\0');
+fs.writeFileSync(path.join(ROOT, 'proc/100/environ'), '');
 const coded = await import(path.join(TERMINAL_DIR, 'bin/bn-coded.mjs'));
 let server;
 const SOCK = path.join(SOCKDIR, 'coded.sock');
@@ -117,18 +122,26 @@ test('a pane of one of your subscriptions\' tools is never read: started for one
   // name; 300 a process with Claude on your plan's folder in its environment; 400 a shell running `codex` from a
   // launcher; 500 a shell whose program is named like a tool but is not one
   const P = path.join(ROOT, 'proc');
-  const proc = (pid, ppid, cmd, env = '') => {
-    fs.mkdirSync(path.join(P, String(pid)), { recursive: true });
-    fs.writeFileSync(path.join(P, String(pid), 'stat'), `${pid} (x) S ${ppid} 1 1 0`);
-    fs.writeFileSync(path.join(P, String(pid), 'cmdline'), `${cmd.join('\0')}\0`);
-    fs.writeFileSync(path.join(P, String(pid), 'environ'), env);
+  const proc = (pid, ppid, cmd, env = '', { cwd = '/workspace', exe = '/usr/bin/bash', root = P } = {}) => {
+    const d = path.join(root, String(pid));
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'stat'), `${pid} (x) S ${ppid} 1 1 0`);
+    fs.writeFileSync(path.join(d, 'cmdline'), `${cmd.join('\0')}\0`);
+    fs.writeFileSync(path.join(d, 'environ'), env);
+    for (const [k, v] of [['cwd', cwd], ['exe', exe]]) { try { fs.unlinkSync(path.join(d, k)); } catch { /* none */ } fs.symlinkSync(v, path.join(d, k)); }
   };
   proc(100, 1, ['bash']);
   proc(200, 1, ['bash']); proc(201, 200, ['node', '/usr/local/lib/bn-tools/cursor/index.js', 'login']);
   proc(300, 1, ['bash']); proc(301, 300, ['node', 'cli.js'], 'HOME=/home/claude\0CLAUDE_CONFIG_DIR=/home/claude/.claude-subscription\0');
   proc(400, 1, ['bash']); proc(401, 400, ['/bin/bash', '/usr/local/bin/codex', 'login', '--device-auth']);
   proc(500, 1, ['bash']); proc(501, 500, ['codex-notes']);
-  for (const display of ['1|%3|1|1|0|100|bash|x\n', '1|%3|1|0|1|100|bash|x\n', '1|%3|1|0|0|200|node|x\n', '1|%3|1|0|0|300|node|x\n', '1|%3|1|0|0|400|bash|x\n']) {
+  // 600: `cd …/bn-tools/codex && ./codex` (a relative path, resolved against its working folder); 700: a program in the
+  // tools' folder with a neutral command line; 800: Claude on your plan's folder spelled with a trailing "/."
+  proc(600, 1, ['bash']); proc(601, 600, ['./codex', 'login'], '', { cwd: '/usr/local/lib/bn-tools/codex' });
+  proc(700, 1, ['bash']); proc(701, 700, ['x', '--device'], '', { exe: '/usr/local/lib/bn-tools/grok/grok' });
+  proc(800, 1, ['bash']); proc(801, 800, ['node'], 'CLAUDE_CONFIG_DIR=/home/claude/.claude-subscription/.\0');
+  for (const display of ['1|%3|1|1|0|100|bash|x\n', '1|%3|1|0|1|100|bash|x\n', '1|%3|1|0|0|200|node|x\n', '1|%3|1|0|0|300|node|x\n', '1|%3|1|0|0|400|bash|x\n',
+    '1|%3|1|0|0|600|bash|x\n', '1|%3|1|0|0|700|bash|x\n', '1|%3|1|0|0|800|bash|x\n']) {
     fresh('Enter this one-time code: ABCD-1234\n');
     fs.writeFileSync(path.join(ROOT, 'display'), display);
     assert.match((await op({ op: 'terminal.capture' })).error, /runs one of your AI subscriptions' tools, whose screen may show a sign-in code: it is not read/, display);
@@ -142,7 +155,23 @@ test('a pane of one of your subscriptions\' tools is never read: started for one
   }
   assert.equal(coded.paneRunsTool(201, P), true);
   assert.equal(coded.paneRunsTool(100, P), false);
-  assert.equal(coded.paneRunsTool(100, path.join(ROOT, 'no-proc')), false);
+  // what cannot be looked at whole is not read: no /proc, the pane's process not there, more processes below it than
+  // looked at, a stat, command line or environment that cannot be read (not because the process ended)
+  assert.equal(coded.paneRunsTool(100, path.join(ROOT, 'no-proc')), true);
+  assert.equal(coded.paneRunsTool(999, P), true);
+  assert.equal(coded.paneRunsTool(200, P, { max: 1 }), true);
+  assert.equal(coded.paneRunsTool(100, P, { max: 1 }), false);
+  for (const broken of ['stat', 'cmdline', 'environ']) {
+    const Q = path.join(ROOT, `proc-${broken}`);
+    proc(100, 1, ['bash'], '', { root: Q }); proc(101, 100, ['vim'], '', { root: Q });
+    fs.rmSync(path.join(Q, '101', broken)); fs.mkdirSync(path.join(Q, '101', broken));   // (a folder: EISDIR, not an ended process)
+    assert.equal(coded.paneRunsTool(100, Q), true, broken);
+  }
+  // a process that ended while it was looked at: not a reason (its files gone)
+  const E = path.join(ROOT, 'proc-ended');
+  proc(100, 1, ['bash'], '', { root: E }); proc(101, 100, ['sleep'], '', { root: E });
+  for (const f of ['cmdline', 'environ', 'cwd', 'exe']) fs.rmSync(path.join(E, '101', f));
+  assert.equal(coded.paneRunsTool(100, E), false);
 });
 
 test('no terminal session: refused, and none is made; a hook that would run on the read: refused', async () => {
@@ -232,7 +261,7 @@ test('hostile pane content comes back as data: fences, markers, invalid UTF-8 an
 // UTF-8 locale of bn-coded's own — the pane is found and read; a session named to look like tmux's answer cannot pass
 // for the terminal's. A server of the test's own (its own TMUX_TMPDIR), never anyone else's.
 const REAL = ['/usr/bin/tmux', '/usr/local/bin/tmux', '/opt/homebrew/bin/tmux'].find((p) => fs.existsSync(p)) ?? null;
-test('a real tmux, LANG=C: the terminal session\'s pane found and read; another session named like an answer refused', { skip: REAL ? false : 'no tmux here' }, async () => {
+test('a real tmux, LANG=C: the terminal session\'s pane found and read; another session named like an answer refused', { skip: REAL && fs.existsSync('/proc/self') ? false : 'no tmux or no /proc here' }, async () => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'bnt-'));
   const keep = Object.fromEntries(['TMUX_TMPDIR', 'TMUX', 'LANG', 'LC_ALL', 'LC_CTYPE'].map((k) => [k, process.env[k]]));
   Object.assign(process.env, { TMUX_TMPDIR: dir, LANG: 'C' });

@@ -1143,8 +1143,13 @@ cmd_status() {
   ! stt_notice_on || printf '  %sVoice: %s%s\n' "$O_YEL" "$STT_REFUSED_NOTICE" "$O_OFF"
 }
 
-_check() { # _check LABEL GOT WANT — uses the caller's `fails` counter
-  if [ "$2" = "$3" ]; then printf '  ok    %s\n' "$1"; else printf '  FAIL  %s (got %s, want %s)\n' "$1" "${2:-nothing}" "$3"; fails=$((fails + 1)); fi
+_check() { # _check LABEL GOT WANT — uses the caller's `fails` counter. GOT is what a check read (often what a
+  # container — the sandbox among them — answered): shown as printable ASCII only, at most 160 characters, quoted
+  # apart («…»), never as this computer's own words or controls; the helper's job message takes the label alone
+  local got
+  if [ "$2" = "$3" ]; then printf '  ok    %s\n' "$1"; return 0; fi
+  got="$(printf '%s' "${2:-nothing}" | LC_ALL=C tr -c ' -~' ' ' | cut -c1-160)"
+  printf '  FAIL  %s (got «%s», want %s)\n' "$1" "$got" "$3"; fails=$((fails + 1))
 }
 _skip() { printf '  skip  %s (%s)\n' "$1" "$2"; }
 

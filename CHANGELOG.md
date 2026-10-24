@@ -48,10 +48,18 @@ All notable changes to bedrock-now are documented here. The format follows
 - The Code page's terminal menu asks the portal for a launch token with a request of its own; an address alone (a
   link in an answer, a preview) only gets the terminal's *Open … here?* question. `@terminal` does not read a pane of
   your subscriptions' tools (their screens may show sign-in codes): one their launchers or `bn-session` marked, or whose
-  processes are one of them — a guard against an accidental read, not a boundary.
+  processes are one of them (a command line naming them, a path resolved against its folder, its program), or one
+  whose processes cannot be looked at whole — a guard against an accidental read, not a boundary.
 - `./stack subscriptions` runs the sandbox's command by its path with the system's `PATH`, reads at most 16 KiB of its
-  status, marks each line it shows as the sandbox's, and keeps your keyboard away from every sign-in but the two that
-  ask something back; Settings' messages for those jobs are never the sandbox's text.
+  status (a sign-in's or sign-out's output at most 256 KiB, before anything reads its lines), marks each line it shows
+  as the sandbox's, and keeps your keyboard away from every sign-in but the two that ask something back; Settings'
+  messages for those jobs are never the sandbox's text.
+- The tools in the sandbox's image: the build also refuses a setuid or setgid file and any link that is absolute or
+  leads anywhere but inside the tools' folder (a link's target is what runs), and stops when it cannot check.
+- A folder the pickers name is at most 251 bytes — what ttyd still hands on whole; a longer one would have opened the
+  tool in the workspace instead of where *Open … here?* said.
+- `./stack test` shows what a failed check read quoted and as printable characters only (a container's answer, the
+  sandbox's among them), and the update helper's message for a test names the failed checks alone.
 
 ## [0.22.1] - 2026-10-23
 

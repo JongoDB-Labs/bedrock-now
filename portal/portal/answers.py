@@ -149,7 +149,9 @@ TERMINAL_TOOLS = ("bedrock", "claude", "codex", "gemini", "copilot", "cursor", "
 TOKEN = re.compile(r"([0-9]{10})-([0-9a-f]{16})-([0-9a-f]{32})")
 # never valid (made at 0, before any Sign out): the words with it lead to the terminal's own "Open … here?" page
 ASK_TOKEN = "0000000000-" + "0" * 16 + "-" + "0" * 32
-FOLDER_MAX = 255   # bytes
+# bytes: ttyd copies each arg= into a buffer of 256 (lws refuses a fragment of 256 or more) — "arg=" and 251 bytes; a
+# longer folder would be dropped there and the tool would open in /workspace, not where "Open … here?" said
+FOLDER_MAX = 251
 # a folder of the workspace as the Code page's projects are (1 to 4 names, none starting with "."), or the workspace
 WS_FOLDER = re.compile(r"/workspace(?:/[^/.\x00-\x1f\x7f][^/\x00-\x1f\x7f]{0,99}){0,4}")
 # no control, format (bidi, zero-width), surrogate, private-use or unassigned character, no line or paragraph separator

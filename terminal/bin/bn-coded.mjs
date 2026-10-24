@@ -3346,40 +3346,61 @@ export const CAPTURE_FORMAT = `#{==:#{session_name},${TMUX_SESSION}}|#{pane_id}|
 // A pane of one of your subscriptions' tools is never read: its screen may show a sign-in's one-time code or link (or a
 // token a setup command prints). Known by marks, not by a program's name (a tool runs as node, claude, a renamed
 // binary): the window bn-session started for one, the pane option the launchers set, and — looked at anew — the pane's
-// processes: one running from the tools' folder or a launcher, or with Claude on your plan's folder in its environment.
-// A guard against reading such a screen by accident, not a boundary: anything in the sandbox can unset a mark.
+// processes: one running from the tools' folder or a launcher, or with Claude on your plan's folder in its environment;
+// a pane whose processes cannot be looked at whole is not read either. A guard against reading such a screen by
+// accident, not a boundary: anything in the sandbox can unset a mark.
 const PROC_DIR = process.env.BN_PROC_DIR || '/proc';
 const TOOL_MARKS = ['/usr/local/lib/bn-tools/', '/usr/local/bin/claude-sub', '/usr/local/bin/codex', '/usr/local/bin/gemini', '/usr/local/bin/copilot',
   '/usr/local/bin/cursor-agent', '/usr/local/bin/grok', '/usr/local/bin/subscriptions'];
-// paneRunsTool(pid) -> whether that process or one below it is one of the tools (TOOL_MARKS in its command line, or
-// CLAUDE_CONFIG_DIR=…/.claude-subscription in its environment). At most 16,384 processes looked at, 64 KiB of each.
-export function paneRunsTool(pid, procDir = PROC_DIR) {
-  let names = [];
-  try { names = fs.readdirSync(procDir).filter((n) => /^[1-9][0-9]{0,9}$/.test(n)).slice(0, 16384); } catch { return false; }
+// paneRunsTool(pid) -> whether that process or one below it is one of the tools — or whether that cannot be told whole
+// (true then too: such a pane is not read). One of the tools: its command line names the tools' folder or a launcher
+// (as written, or a path in it resolved against its working folder: `cd …/bn-tools/codex && ./codex`), its program is
+// in the tools' folder or is a launcher, or its environment has Claude on your plan's folder as CLAUDE_CONFIG_DIR.
+// Cannot be told: /proc not listed, more processes than looked at (16,384), the pane's own process not there, a process
+// whose stat, command line, environment, program or working folder cannot be read for another reason than its end,
+// more than `max` processes below the pane. 64 KiB of each command line and environment.
+const TOOLS_DIR = '/usr/local/lib/bn-tools/';
+const toolPath = (p) => typeof p === 'string' && (p.startsWith(TOOLS_DIR) || TOOL_MARKS.slice(1).includes(p));
+export function paneRunsTool(pid, procDir = PROC_DIR, { max = 4096 } = {}) {
+  const gone = (e) => e?.code === 'ENOENT' || e?.code === 'ESRCH';
+  let names;
+  try { names = fs.readdirSync(procDir).filter((n) => /^[1-9][0-9]{0,9}$/.test(n)); } catch { return true; }
+  if (names.length > 16384 || !names.includes(String(pid))) return true;
   const kids = new Map();
   for (const n of names) {
-    let stat = '';
-    try { stat = fs.readFileSync(path.join(procDir, n, 'stat'), 'utf8').slice(0, 4096); } catch { continue; }
+    let stat;
+    try { stat = fs.readFileSync(path.join(procDir, n, 'stat'), 'utf8').slice(0, 4096); } catch (e) { if (gone(e)) continue; return true; }
     const ppid = stat.replace(/^.*\) /s, '').split(' ')[1];
-    if (!/^[0-9]{1,10}$/.test(ppid || '')) continue;
+    if (!/^[0-9]{1,10}$/.test(ppid || '')) return true;
     if (!kids.has(ppid)) kids.set(ppid, []);
     kids.get(ppid).push(n);
   }
+  // read(n, f) -> its text, null when the process ended; throws when it cannot be read otherwise
   const read = (n, f) => {
     let fd;
-    try { fd = fs.openSync(path.join(procDir, n, f), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK); } catch { return ''; }
-    try { return readSlice(fd, 0, 64 << 10).toString('utf8'); } catch { return ''; } finally { fs.closeSync(fd); }
+    try { fd = fs.openSync(path.join(procDir, n, f), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK); } catch (e) { if (gone(e)) return null; throw e; }
+    try { return readSlice(fd, 0, 64 << 10).toString('utf8'); } finally { fs.closeSync(fd); }
   };
+  // link(n, f) -> where /proc/N/exe or cwd leads, null when it ended or has none (a kernel thread); throws otherwise
+  const link = (n, f) => { try { return fs.readlinkSync(path.join(procDir, n, f)); } catch (e) { if (gone(e)) return null; throw e; } };
   const seen = new Set(), todo = [String(pid)];
-  while (todo.length && seen.size < 4096) {
-    const n = todo.shift();
-    if (seen.has(n)) continue;
-    seen.add(n);
-    const cmd = read(n, 'cmdline');
-    if (TOOL_MARKS.some((m) => cmd.includes(m))) return true;
-    if (/(^|\0)CLAUDE_CONFIG_DIR=[^\0]*\/\.claude-subscription\/?(\0|$)/.test(read(n, 'environ'))) return true;
-    for (const k of kids.get(n) ?? []) todo.push(k);
-  }
+  try {
+    while (todo.length) {
+      if (seen.size >= max) return true;
+      const n = todo.shift();
+      if (seen.has(n)) continue;
+      seen.add(n);
+      const cmd = read(n, 'cmdline');
+      if (cmd === null) continue;
+      if (TOOL_MARKS.some((m) => cmd.includes(m))) return true;
+      const cwd = link(n, 'cwd');
+      if (cwd !== null && cmd.split('\0').some((a) => a.includes('/') && toolPath(path.resolve(cwd, a)))) return true;
+      if (toolPath(link(n, 'exe'))) return true;
+      const env = read(n, 'environ');
+      if (env !== null && /(^|\0)CLAUDE_CONFIG_DIR=[^\0]*\/\.claude-subscription(\/\.?)?\/?(\0|$)/.test(env)) return true;
+      for (const k of kids.get(n) ?? []) todo.push(k);
+    }
+  } catch { return true; }
   return false;
 }
 export const CAPTURE_ENV = Object.freeze({ LC_ALL: 'C.UTF-8' });

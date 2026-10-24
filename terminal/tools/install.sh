@@ -112,11 +112,21 @@ for t in $want; do
     echo "ai-tools: $t is LEFT OUT of this image (its download or its check failed, above); the other tools are kept. ./stack update tries again." >&2
   fi
 done
-# everything root's, read-only to the sandbox's user (whatever owner a tarball recorded) — links too (-h); a link's own
-# mode bits mean nothing (always rwx on Linux), its owner and its target's are what count
+# everything root's, read-only to the sandbox's user (whatever owner a tarball recorded) — links too (-h) —, nothing
+# setuid or setgid; a link's own mode bits mean nothing (always rwx on Linux): its target is what counts, so every link
+# is relative and leads to something there, inside /out (one to /home/claude, /tmp or a folder outside would hand what
+# runs to whatever is there, and a folder outside is never walked here). A check that cannot run fails the build.
 chown -hR 0:0 /out
-chmod -R a+rX,go-w /out
-if [ -n "$(find /out \( ! -user 0 -o ! -group 0 -o \( ! -type l \( -perm -g+w -o -perm -o+w \) \) \) -print -quit)" ]; then
-  echo "ai-tools: a file in /out is not root's alone" >&2; exit 1
-fi
+chmod -R a+rX,go-w,ug-s /out
+bad="$(find /out \( ! -user 0 -o ! -group 0 -o \( ! -type l \( -perm -g+w -o -perm -o+w \) \) -o \( ! -type d ! -type l -perm /6000 \) \) -print)" || {
+  echo "ai-tools: /out could not be checked" >&2; exit 1; }
+if [ -n "$bad" ]; then echo "ai-tools: a file in /out is not root's alone, or setuid/setgid: $(printf '%s' "$bad" | head -n 1)" >&2; exit 1; fi
+# shellcheck disable=SC2016  # (the script is the -c argument: its own $1)
+find /out -type l -exec sh -c '
+  for l; do
+    t="$(readlink "$l")" || { echo "ai-tools: link $l cannot be read" >&2; exit 1; }
+    case "$t" in /*) echo "ai-tools: $l is an absolute link ($t)" >&2; exit 1 ;; esac
+    r="$(readlink -e "$l")" || { echo "ai-tools: $l leads nowhere ($t)" >&2; exit 1; }
+    case "$r" in /out/*) ;; *) echo "ai-tools: $l leads out of /out ($r)" >&2; exit 1 ;; esac
+  done' sh {} + || { echo "ai-tools: a link in /out is not one that stays in it" >&2; exit 1; }
 cat /out/VERSIONS
